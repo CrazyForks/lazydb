@@ -4111,6 +4111,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                         let Some(terminal_event) = terminal_event else { break; };
                         match terminal_event.context("terminal input failed")? {
                         Event::Key(key) => {
+                            ui_state.cancel_mouse_gesture();
                             if terminal_selection_mode && key.code == crossterm::event::KeyCode::Esc {
                                 match terminal.set_mouse_capture(true) {
                                             Ok(()) => {
@@ -4181,6 +4182,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                             let now = std::time::Instant::now();
                             let before = keymap.sequence_state(&app, now);
                             keymap.clear_pending();
+                            ui_state.cancel_mouse_gesture();
                             let cancelled_pane_drag = ui_state.pane_resize_drag.borrow_mut().take().is_some();
                             let actions = map_paste(value, &app);
                             if !actions.is_empty() {

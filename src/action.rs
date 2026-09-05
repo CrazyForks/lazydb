@@ -423,6 +423,13 @@ pub enum Action {
         end: crate::model::editor::EditorPosition,
         revision: u64,
     },
+    CompleteMouseTextSelection {
+        source: crate::ui::text_selection::TextGestureSource,
+        session_id: Uuid,
+        start: crate::model::editor::EditorPosition,
+        end: crate::model::editor::EditorPosition,
+        revision: u64,
+    },
     SetEditorMouseCursor {
         session_id: Uuid,
         position: crate::model::editor::EditorPosition,

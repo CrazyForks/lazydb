@@ -23,7 +23,9 @@ use lazydb::{
     profile::{DatabaseKind, import_connection_url},
     ui::{
         self, HitRegion, HitTarget, ProfileButton, UiState,
-        text_selection::{TextGesture, TextHitMap, TextPosition, TextSelectionTarget},
+        text_selection::{
+            TextGesture, TextGestureSource, TextHitMap, TextPosition, TextSelectionTarget,
+        },
     },
 };
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
@@ -102,7 +104,10 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
             &ui,
             &app,
         );
-        assert_eq!(up, None, "{source}");
+        assert!(
+            matches!(up, Some(Action::CompleteMouseTextSelection { .. })),
+            "{source}"
+        );
         assert!(ui.mouse_gesture.borrow().is_none(), "{source}");
         assert!(ui.text_gesture.borrow().is_none(), "{source}");
     }
@@ -184,9 +189,11 @@ fn text_mouse_gesture_captures_revision_and_positions() {
     ui.text_selection_targets.push(text_target(session_id));
     ui.text_gesture.replace(Some(TextGesture {
         session_id,
+        source: TextGestureSource::Editor,
         start: TextPosition { line: 0, column: 1 },
         end: TextPosition { line: 0, column: 4 },
         revision: 7,
+        has_dragged: true,
     }));
     ui.mouse_gesture
         .replace(Some(lazydb::ui::text_selection::GestureOwner::Text));
@@ -195,7 +202,107 @@ fn text_mouse_gesture_captures_revision_and_positions() {
         &ui,
         &app,
     );
-    assert_eq!(action, None);
+    assert!(matches!(
+        action,
+        Some(Action::CompleteMouseTextSelection {
+            source: TextGestureSource::Editor,
+            session_id: id,
+            start: lazydb::model::editor::EditorPosition { line: 0, column: 1 },
+            end: lazydb::model::editor::EditorPosition { line: 0, column: 4 },
+            revision: 7,
+        }) if id == session_id
+    ));
+    assert!(ui.mouse_gesture.borrow().is_none());
+    assert!(ui.text_gesture.borrow().is_none());
+}
+
+#[test]
+fn text_gesture_tracks_effective_source_movement() {
+    let ui = UiState::new();
+    let session_id = Uuid::new_v4();
+    assert!(ui.begin_text_gesture(TextGesture {
+        session_id,
+        source: TextGestureSource::Editor,
+        start: TextPosition { line: 0, column: 1 },
+        end: TextPosition { line: 0, column: 1 },
+        revision: 7,
+        has_dragged: false,
+    }));
+
+    assert!(ui.update_text_gesture(TextPosition { line: 0, column: 1 }));
+    assert!(!ui.text_gesture.borrow().unwrap().has_dragged);
+    assert!(ui.update_text_gesture(TextPosition { line: 0, column: 4 }));
+    assert!(ui.text_gesture.borrow().unwrap().has_dragged);
+    assert!(ui.update_text_gesture(TextPosition { line: 0, column: 1 }));
+    assert!(ui.text_gesture.borrow().unwrap().has_dragged);
+}
+
+#[test]
+fn clicking_text_without_drag_does_not_copy_or_leave_a_gesture() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let session_id = Uuid::new_v4();
+    ui.text_selection_targets.push(text_target(session_id));
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(0, 0, 40, 20),
+        target: HitTarget::Focus(Focus::Editor),
+    });
+
+    assert!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 11, 5),
+            &ui,
+            &app
+        )
+        .is_some()
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 11, 5),
+            &ui,
+            &app
+        ),
+        None
+    );
+    assert!(ui.mouse_gesture.borrow().is_none());
+    assert!(ui.text_gesture.borrow().is_none());
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 11, 5),
+            &ui,
+            &app
+        ),
+        None
+    );
+}
+
+#[test]
+fn releasing_after_text_context_changes_cancels_without_copy_action() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let session_id = Uuid::new_v4();
+    ui.text_selection_targets.push(text_target(session_id));
+    ui.text_gesture.replace(Some(TextGesture {
+        session_id,
+        source: TextGestureSource::Editor,
+        start: TextPosition { line: 0, column: 1 },
+        end: TextPosition { line: 0, column: 4 },
+        revision: 7,
+        has_dragged: true,
+    }));
+    ui.mouse_gesture
+        .replace(Some(lazydb::ui::text_selection::GestureOwner::Text));
+    ui.text_selection_targets.clear();
+    ui.text_selection_targets.push(text_target(Uuid::new_v4()));
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 14, 5),
+            &ui,
+            &app
+        ),
+        None
+    );
     assert!(ui.mouse_gesture.borrow().is_none());
     assert!(ui.text_gesture.borrow().is_none());
 }
@@ -1834,9 +1941,11 @@ fn text_gesture_does_not_fall_through_to_grid_resize() {
     assert!(
         ui.begin_text_gesture(lazydb::ui::text_selection::TextGesture {
             session_id: Uuid::new_v4(),
+            source: TextGestureSource::Editor,
             start: lazydb::ui::text_selection::TextPosition { line: 0, column: 1 },
             end: lazydb::ui::text_selection::TextPosition { line: 0, column: 1 },
             revision: 7,
+            has_dragged: false,
         })
     );
 
@@ -1892,14 +2001,17 @@ fn completed_mouse_selection_remains_available_for_explicit_copy() {
     )
     .unwrap();
     app.update(drag);
-    assert_eq!(
-        map_mouse(
-            mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
-            &ui,
-            &app,
-        ),
-        None
-    );
+    let up = map_mouse(
+        mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
+        &ui,
+        &app,
+    )
+    .unwrap();
+    let commands = app.update(up);
+    assert!(matches!(
+        commands.as_slice(),
+        [lazydb::action::Command::WriteClipboard(payload)] if payload.text == "ELECT"
+    ));
 
     assert!(matches!(
         app.update(Action::CopyEditorSelection {
@@ -1941,9 +2053,11 @@ fn mouse_gesture_owner_locks_until_release() {
     assert!(
         !ui.begin_text_gesture(lazydb::ui::text_selection::TextGesture {
             session_id: Uuid::new_v4(),
+            source: TextGestureSource::Editor,
             start: lazydb::ui::text_selection::TextPosition { line: 0, column: 0 },
             end: lazydb::ui::text_selection::TextPosition { line: 0, column: 0 },
             revision: 1,
+            has_dragged: false,
         })
     );
     assert_eq!(

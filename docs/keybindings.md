@@ -556,10 +556,12 @@ pane sizes.
 
 When mouse capture is enabled, left-button drag selects text in the SQL Editor,
 SQL Output/Plan, Relation DDL, and text-detail views. The selection is
-charwise, can span visible lines, and remains available to the view's explicit
-copy action. Dragging does not replace grid cell selection, grid scrollbar or
-column resizing, pane resizing, or form/selector controls. Those regions keep
-their existing mouse behavior.
+charwise, can span visible lines, and is copied immediately when the left button
+is released. A click without dragging only positions the cursor and does not
+overwrite the clipboard. The selection remains highlighted and available to the
+view's explicit copy action. Dragging does not replace grid cell selection, grid
+scrollbar or column resizing, pane resizing, or form/selector controls. Those
+regions keep their existing mouse behavior.
 
 `Ctrl-Shift-s` temporarily releases LazyDB's mouse capture so the terminal can
 perform its native selection; press `Esc` to restore capture. `--mouse off`
