@@ -268,6 +268,10 @@ pub enum Action {
     CatalogEditorConfirmUndo,
     CatalogEditorConfirmRedo,
     CatalogEditorFocusTableField(crate::model::catalog_editor::TableEditorFocus),
+    CatalogEditorSetCursor {
+        target: crate::action::CatalogEditorCursorTarget,
+        cursor: usize,
+    },
     CatalogEditorSelectTableColumn(usize),
     CatalogEditorOpenTableColumnDetails,
     CatalogEditorConfirmTableColumnDetails,
@@ -283,6 +287,10 @@ pub enum Action {
     ProfileFieldNext,
     ProfileFieldPrevious,
     ProfileFocusField(ProfileField),
+    ProfileSetCursor {
+        field: ProfileField,
+        cursor: usize,
+    },
     ProfileInsert(ProfileInput),
     ProfilePaste(ProfileInput),
     ProfileBackspace,
@@ -415,6 +423,11 @@ pub enum Action {
         end: crate::model::editor::EditorPosition,
         revision: u64,
     },
+    SetEditorMouseCursor {
+        session_id: Uuid,
+        position: crate::model::editor::EditorPosition,
+        revision: u64,
+    },
     CopyEditorStatement,
     CopyEditorBuffer,
     CopyGridCell,
@@ -517,6 +530,10 @@ pub enum Action {
         max_line_width: usize,
     },
     FocusDataQueryInput(crate::model::data_query::DataQueryInput),
+    SetDataQueryCursor {
+        input: crate::model::data_query::DataQueryInput,
+        cursor: usize,
+    },
     DataQueryInsert(char),
     DataQueryBackspace,
     DataQueryDeletePreviousWord,
@@ -951,6 +968,13 @@ pub enum Action {
     },
     WorkspaceSaveRetry,
     Quit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogEditorCursorTarget {
+    SchemaField(usize),
+    FormField(crate::model::catalog_editor::CatalogFormFocus),
+    TableField(crate::model::catalog_editor::TableEditorFocus),
 }
 
 #[allow(clippy::large_enum_variant)]

@@ -43,6 +43,36 @@ pub struct TextSelectionTarget {
     pub hit_maps: Vec<TextHitMap>,
 }
 
+/// Geometry for a single-line editable input. Boundaries are source character
+/// boundaries expressed in terminal cells before the visible horizontal offset.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputHitMap {
+    pub area: Rect,
+    pub source_to_display_cells: Vec<usize>,
+    pub horizontal_offset: usize,
+    pub prefix_width: usize,
+}
+
+impl InputHitMap {
+    pub fn source_at(&self, column: u16, row: u16) -> Option<usize> {
+        if !contains(self.area, column, row) {
+            return None;
+        }
+        if usize::from(column.saturating_sub(self.area.x)) < self.prefix_width {
+            return None;
+        }
+        let display_cell = self.horizontal_offset.saturating_add(
+            usize::from(column.saturating_sub(self.area.x)).saturating_sub(self.prefix_width),
+        );
+        Some(
+            self.source_to_display_cells
+                .partition_point(|&boundary| boundary <= display_cell)
+                .saturating_sub(1)
+                .min(self.source_to_display_cells.len().saturating_sub(1)),
+        )
+    }
+}
+
 impl TextSelectionTarget {
     pub fn source_at(&self, column: u16, row: u16) -> Option<TextPosition> {
         self.hit_maps
@@ -74,7 +104,7 @@ pub struct TextGesture {
 mod tests {
     use ratatui::layout::Rect;
 
-    use super::{TextHitMap, TextPosition};
+    use super::{InputHitMap, TextHitMap, TextPosition};
 
     fn map(source_to_display_cells: &[usize], width: u16, offset: usize) -> TextHitMap {
         TextHitMap {
@@ -163,5 +193,19 @@ mod tests {
                 column: 50_079
             })
         );
+    }
+
+    #[test]
+    fn input_hit_map_excludes_prefix_and_maps_visible_boundaries() {
+        let input = InputHitMap {
+            area: Rect::new(10, 4, 12, 1),
+            source_to_display_cells: vec![0, 1, 2, 3, 4],
+            horizontal_offset: 0,
+            prefix_width: 3,
+        };
+
+        assert_eq!(input.source_at(12, 4), None);
+        assert_eq!(input.source_at(13, 4), Some(0));
+        assert_eq!(input.source_at(16, 4), Some(3));
     }
 }

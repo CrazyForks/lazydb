@@ -297,7 +297,7 @@ impl SchemaDraft {
         self.selected_field = (self.selected_field as isize + delta).rem_euclid(3) as usize;
     }
 
-    fn selected_input_mut(&mut self) -> &mut TextInput {
+    pub(crate) fn selected_input_mut(&mut self) -> &mut TextInput {
         match self.selected_field {
             0 => &mut self.name,
             1 => &mut self.owner,
@@ -728,7 +728,7 @@ impl SequenceDraft {
             self.focus_enabled(focus)
         });
     }
-    fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+    pub(crate) fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
         match self.focus {
             CatalogFormFocus::Name => Some(&mut self.name),
             CatalogFormFocus::Schema => Some(&mut self.schema),
@@ -890,7 +890,7 @@ impl MaterializedViewDraft {
             });
     }
 
-    fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+    pub(crate) fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
         match self.focus {
             CatalogFormFocus::Name => Some(&mut self.name),
             CatalogFormFocus::Schema => Some(&mut self.schema),
@@ -1038,7 +1038,7 @@ impl ViewDraft {
             self.focus_enabled(focus)
         });
     }
-    fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+    pub(crate) fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
         match self.focus {
             CatalogFormFocus::Name => Some(&mut self.name),
             CatalogFormFocus::Schema => Some(&mut self.schema),
@@ -2528,7 +2528,7 @@ impl CatalogDraft {
         }
     }
 
-    fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+    pub(crate) fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
         match self {
             Self::Table(draft) => draft.selected_text_input_mut(),
             Self::Schema(draft) => Some(draft.selected_input_mut()),

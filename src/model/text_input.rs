@@ -104,6 +104,12 @@ impl TextInput {
         self.cursor
     }
 
+    /// Place the insertion cursor without changing the input value or history.
+    pub fn set_cursor(&mut self, column: usize) {
+        self.finish_edit_group();
+        self.cursor = column.min(self.value.chars().count());
+    }
+
     pub fn insert(&mut self, character: char) {
         let before = self.snapshot();
         let byte_index = self.byte_index(self.cursor);
@@ -379,6 +385,30 @@ mod tests {
 
         assert_eq!(input.value(), "");
         assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn set_cursor_places_subsequent_input_at_a_character_boundary() {
+        let mut input = TextInput::from("user名name");
+
+        input.set_cursor(5);
+        input.insert('X');
+
+        assert_eq!(input.value(), "user名Xname");
+        assert_eq!(input.cursor(), 6);
+    }
+
+    #[test]
+    fn set_cursor_clamps_without_creating_an_undo_step() {
+        let mut input = TextInput::from("abc");
+        input.insert('X');
+        input.set_cursor(99);
+        input.set_cursor(1);
+
+        assert_eq!(input.cursor(), 1);
+        assert!(input.undo());
+        assert_eq!(input.value(), "abc");
+        assert!(!input.undo());
     }
 
     #[test]

@@ -151,6 +151,19 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if let HitTarget::OpenTextDetail(request) = target {
                 return Some(Action::OpenTextDetail(request));
             }
+            if let HitTarget::DataQueryInput(input) = target
+                && let Some((_, cursor)) = ui.data_query_input_at(event.column, event.row)
+            {
+                return Some(Action::SetDataQueryCursor { input, cursor });
+            }
+            if let HitTarget::ProfileField(field) = target
+                && let Some((_, cursor)) = ui.profile_input_at(event.column, event.row)
+            {
+                return Some(Action::ProfileSetCursor { field, cursor });
+            }
+            if let Some((target, cursor)) = ui.catalog_input_at(event.column, event.row) {
+                return Some(Action::CatalogEditorSetCursor { target, cursor });
+            }
             if let Some(overlay) = &app.overlay
                 && (overlay != &Overlay::ProfileManager
                     && overlay != &Overlay::CatalogEditor
@@ -226,10 +239,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     end: position,
                     revision,
                 });
-                return Some(Action::SetEditorMouseSelection {
+                return Some(Action::SetEditorMouseCursor {
                     session_id: text_target.session_id,
-                    start: editor_position(position),
-                    end: editor_position(position),
+                    position: editor_position(position),
                     revision,
                 });
             }

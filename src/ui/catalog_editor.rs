@@ -436,6 +436,16 @@ fn render_schema(
             row.width.saturating_sub(label_width),
             1,
         );
+        ui.catalog_input_targets.push((
+            crate::action::CatalogEditorCursorTarget::SchemaField(index),
+            super::text_selection::InputHitMap {
+                area: value_area,
+                source_to_display_cells: crate::security::project_editor_line(input.value())
+                    .source_to_display_cells,
+                horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
+                prefix_width: 0,
+            },
+        ));
         let style = Style::new().fg(theme.text).bg(if active {
             theme.selection
         } else {
@@ -1954,6 +1964,27 @@ fn render_catalog_text_field(
     render_catalog_field_label(frame, label_area, label, active, enabled, theme);
     if enabled {
         ui.hit_regions.push(HitRegion { area, target });
+        let cursor_target = match &ui.hit_regions.last().map(|region| &region.target) {
+            Some(HitTarget::CatalogEditorFormField(field)) => {
+                Some(crate::action::CatalogEditorCursorTarget::FormField(*field))
+            }
+            Some(HitTarget::CatalogEditorTableField(field)) => {
+                Some(crate::action::CatalogEditorCursorTarget::TableField(*field))
+            }
+            _ => None,
+        };
+        if let Some(cursor_target) = cursor_target {
+            ui.catalog_input_targets.push((
+                cursor_target,
+                super::text_selection::InputHitMap {
+                    area: value_area,
+                    source_to_display_cells: crate::security::project_editor_line(input.value())
+                        .source_to_display_cells,
+                    horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
+                    prefix_width: 0,
+                },
+            ));
+        }
     }
     if active && enabled {
         render_text_input(
