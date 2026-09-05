@@ -73,7 +73,7 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
         let app = App::new(Vec::new());
         let mut ui = UiState::new();
         let session_id = Uuid::new_v4();
-        ui.text_selection_target = Some(text_target(session_id));
+        ui.text_selection_targets.push(text_target(session_id));
         ui.hit_regions.push(HitRegion {
             area: Rect::new(0, 0, 40, 20),
             target: HitTarget::Focus(Focus::Results),
@@ -109,12 +109,81 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
 }
 
 #[test]
+fn mouse_click_selects_the_text_target_at_the_pointer() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let sql_id = Uuid::new_v4();
+    let output_id = Uuid::new_v4();
+    let mut sql_target = text_target(sql_id);
+    sql_target.hit_maps[0].area = Rect::new(10, 5, 20, 1);
+    let mut output_target = text_target(output_id);
+    output_target.hit_maps[0].area = Rect::new(10, 10, 20, 1);
+    ui.text_selection_targets.push(sql_target);
+    ui.text_selection_targets.push(output_target);
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(0, 0, 40, 20),
+        target: HitTarget::Focus(Focus::Results),
+    });
+
+    let action = map_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 11, 10),
+        &ui,
+        &app,
+    );
+
+    assert_eq!(
+        action,
+        Some(Action::SetEditorMouseCursor {
+            session_id: output_id,
+            position: lazydb::model::editor::EditorPosition { line: 0, column: 1 },
+            revision: 0,
+        })
+    );
+}
+
+#[test]
+fn text_drag_keeps_the_starting_session_when_pointer_crosses_panes() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let sql_id = Uuid::new_v4();
+    let output_id = Uuid::new_v4();
+    let mut sql_target = text_target(sql_id);
+    sql_target.hit_maps[0].area = Rect::new(10, 5, 20, 1);
+    let mut output_target = text_target(output_id);
+    output_target.hit_maps[0].area = Rect::new(10, 10, 20, 1);
+    ui.text_selection_targets.push(sql_target);
+    ui.text_selection_targets.push(output_target);
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(0, 0, 40, 20),
+        target: HitTarget::Focus(Focus::Results),
+    });
+
+    assert!(matches!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 11, 10),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetEditorMouseCursor { session_id, .. }) if session_id == output_id
+    ));
+    let action = map_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), 11, 5),
+        &ui,
+        &app,
+    );
+
+    assert_eq!(action, None);
+    assert_eq!(ui.text_gesture.borrow().unwrap().session_id, output_id);
+}
+
+#[test]
 fn text_mouse_gesture_captures_revision_and_positions() {
     let app = App::new(Vec::new());
     let mut ui = UiState::new();
     let session_id = Uuid::new_v4();
-    ui.text_selection_target = Some(text_target(session_id));
+    ui.text_selection_targets.push(text_target(session_id));
     ui.text_gesture.replace(Some(TextGesture {
+        session_id,
         start: TextPosition { line: 0, column: 1 },
         end: TextPosition { line: 0, column: 4 },
         revision: 7,
@@ -140,7 +209,7 @@ fn overlay_hit_target_takes_precedence_over_underlying_text_selection() {
     });
     let mut ui = UiState::new();
     let session_id = Uuid::new_v4();
-    ui.text_selection_target = Some(text_target(session_id));
+    ui.text_selection_targets.push(text_target(session_id));
     ui.hit_regions.extend([
         HitRegion {
             area: Rect::new(10, 5, 20, 1),
@@ -1764,6 +1833,7 @@ fn text_gesture_does_not_fall_through_to_grid_resize() {
     let ui = UiState::new();
     assert!(
         ui.begin_text_gesture(lazydb::ui::text_selection::TextGesture {
+            session_id: Uuid::new_v4(),
             start: lazydb::ui::text_selection::TextPosition { line: 0, column: 1 },
             end: lazydb::ui::text_selection::TextPosition { line: 0, column: 1 },
             revision: 7,
@@ -1802,7 +1872,7 @@ fn completed_mouse_selection_remains_available_for_explicit_copy() {
     let session_id = app.active_console().id;
     let revision = app.active_editor_revision();
     let mut ui = UiState::new();
-    ui.text_selection_target = Some(text_target(session_id));
+    ui.text_selection_targets.push(text_target(session_id));
     ui.hit_regions.push(HitRegion {
         area: Rect::new(0, 0, 40, 20),
         target: HitTarget::Focus(Focus::Editor),
@@ -1870,6 +1940,7 @@ fn mouse_gesture_owner_locks_until_release() {
     );
     assert!(
         !ui.begin_text_gesture(lazydb::ui::text_selection::TextGesture {
+            session_id: Uuid::new_v4(),
             start: lazydb::ui::text_selection::TextPosition { line: 0, column: 0 },
             end: lazydb::ui::text_selection::TextPosition { line: 0, column: 0 },
             revision: 1,
