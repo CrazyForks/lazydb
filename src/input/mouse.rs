@@ -261,6 +261,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         Some(Action::ExplorerSelect(id))
                     }
                 }
+                HitTarget::ExplorerToggle(id) => Some(Action::ExplorerToggleNode(id)),
                 HitTarget::ResultCell { row, column } => Some(Action::GridSelect { row, column }),
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::UpdateCenter => Some(Action::OpenUpdateCenter),
@@ -411,7 +412,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             match ui.target_at(event.column, event.row)?.clone() {
                 HitTarget::ExplorerRow(crate::model::explorer::ExplorerNodeId::Profile(_))
-                | HitTarget::ExplorerRow(crate::model::explorer::ExplorerNodeId::Catalog(_)) => {
+                | HitTarget::ExplorerRow(crate::model::explorer::ExplorerNodeId::Catalog(_))
+                | HitTarget::ExplorerToggle(crate::model::explorer::ExplorerNodeId::Profile(_))
+                | HitTarget::ExplorerToggle(crate::model::explorer::ExplorerNodeId::Catalog(_)) => {
                     Some(Action::OpenCatalogEdit)
                 }
                 _ => None,
@@ -544,6 +547,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
     match ui.target_at(column, row)? {
         HitTarget::Focus(focus) => Some(*focus),
         HitTarget::ExplorerRow(_) => Some(Focus::Explorer),
+        HitTarget::ExplorerToggle(_) => Some(Focus::Explorer),
         HitTarget::ResultCell { .. }
         | HitTarget::ToggleResultView
         | HitTarget::ResultView(_)

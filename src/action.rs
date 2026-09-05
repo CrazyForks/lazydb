@@ -908,6 +908,7 @@ pub enum Action {
     ExplorerSearchClose,
     ExplorerSearchRetry,
     ExplorerSelect(ExplorerNodeId),
+    ExplorerToggleNode(ExplorerNodeId),
     CopyExplorerSelection,
     ExplorerToggle,
     ExplorerExpand,

@@ -93,6 +93,7 @@ pub enum HitTarget {
     TabScrollRight(usize),
     CloseTab(Uuid),
     ExplorerRow(crate::model::explorer::ExplorerNodeId),
+    ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ResultCell {
         row: usize,
         column: usize,
@@ -1941,14 +1942,16 @@ fn render_explorer(
     let indicator_rows = usize::from(viewport.show_ancestor_indicator);
     let displayed = viewport.rows.iter().collect::<Vec<_>>();
     for (row, visible) in viewport.pinned.iter().enumerate() {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(inner.x, inner.y.saturating_add(row as u16), inner.width, 1),
-            target: HitTarget::ExplorerRow(visible.id.clone()),
-        });
+        register_explorer_row_hits(
+            state,
+            Rect::new(inner.x, inner.y.saturating_add(row as u16), inner.width, 1),
+            visible,
+        );
     }
     for (row, visible) in displayed.iter().enumerate() {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
+        register_explorer_row_hits(
+            state,
+            Rect::new(
                 inner.x,
                 inner
                     .y
@@ -1956,8 +1959,8 @@ fn render_explorer(
                 inner.width,
                 1,
             ),
-            target: HitTarget::ExplorerRow(visible.id.clone()),
-        });
+            visible,
+        );
     }
     let mut items = viewport
         .pinned
@@ -1979,6 +1982,32 @@ fn render_explorer(
         List::new(items).style(Style::new().bg(theme.surface)),
         inner,
     );
+}
+
+fn register_explorer_row_hits(state: &mut UiState, area: Rect, visible: &VisibleCatalogNode) {
+    if area.is_empty() {
+        return;
+    }
+    state.hit_regions.push(HitRegion {
+        area,
+        target: HitTarget::ExplorerRow(visible.id.clone()),
+    });
+    if !visible.expandable {
+        return;
+    }
+    let offset = visible.depth.saturating_mul(2) as u16;
+    if offset >= area.width {
+        return;
+    }
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            area.x.saturating_add(offset),
+            area.y,
+            (area.width - offset).min(2),
+            1,
+        ),
+        target: HitTarget::ExplorerToggle(visible.id.clone()),
+    });
 }
 
 fn explorer_list_item(
@@ -2139,8 +2168,9 @@ fn render_explorer_find(
     let rows = viewport.pinned.iter().chain(viewport.rows.iter());
     for (row, visible) in rows.clone().enumerate() {
         // Find rows use the same stable IDs as normal Explorer rows.
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
+        register_explorer_row_hits(
+            state,
+            Rect::new(
                 tree_area.x,
                 tree_area.y.saturating_add(
                     (row + usize::from(row >= pinned_rows) * indicator_rows) as u16,
@@ -2148,8 +2178,8 @@ fn render_explorer_find(
                 tree_area.width,
                 1,
             ),
-            target: HitTarget::ExplorerRow(visible.id.clone()),
-        });
+            visible,
+        );
     }
     let mut items = viewport
         .pinned
