@@ -565,6 +565,30 @@ impl EditorWorkspace {
         Ok(selected)
     }
 
+    /// Place the editor cursor from a rendered source coordinate without
+    /// changing text, revision, or edit history.
+    pub(crate) fn set_mouse_cursor(
+        &mut self,
+        id: Uuid,
+        position: EditorPosition,
+    ) -> Result<(), EditorError> {
+        let position = self.mouse_position(id, position)?;
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        session.position = position;
+        let mut buffer = session
+            .buffer
+            .write()
+            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+        buffer.set_leader(
+            session.group_id,
+            modalkit::editing::cursor::Cursor::new(position.line, position.column),
+        );
+        Ok(())
+    }
+
     pub(crate) fn mouse_selection(&self, id: Uuid) -> Result<Option<String>, EditorError> {
         let text = self.text(id)?;
         let session = self

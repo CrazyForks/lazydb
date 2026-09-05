@@ -123,6 +123,11 @@ impl SecretTextInput {
         self.cursor
     }
 
+    fn set_cursor(&mut self, cursor: usize) {
+        self.finish_edit_group();
+        self.cursor = cursor.min(self.value().chars().count());
+    }
+
     fn set(&mut self, value: impl Into<String>) {
         self.value = SecretString::from(value.into());
         self.cursor = self.value().chars().count();
@@ -953,6 +958,16 @@ impl ProfileDraft {
             self.password.move_left();
         } else if let Some(input) = self.text_input_mut(field) {
             input.move_left();
+        }
+    }
+
+    pub fn set_cursor(&mut self, field: ProfileField, cursor: usize) {
+        if field == ProfileField::Url {
+            self.url.set_cursor(cursor);
+        } else if field == ProfileField::Password {
+            self.password.set_cursor(cursor);
+        } else if let Some(input) = self.text_input_mut(field) {
+            input.set_cursor(cursor);
         }
     }
 
@@ -1909,6 +1924,12 @@ impl ProfileManagerState {
         let field = self.selected_field;
         if let Some(draft) = self.draft.as_mut() {
             draft.move_end(field);
+        }
+    }
+
+    pub fn set_cursor(&mut self, field: ProfileField, cursor: usize) {
+        if let Some(draft) = self.draft.as_mut() {
+            draft.set_cursor(field, cursor);
         }
     }
 

@@ -4303,6 +4303,57 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::CatalogEditorSetCursor { target, cursor } => {
+                let Some(editor) = self.catalog_editor.as_mut() else {
+                    return Vec::new();
+                };
+                match target {
+                    crate::action::CatalogEditorCursorTarget::SchemaField(index) => {
+                        if let Some(crate::model::catalog_editor::CatalogDraft::Schema(draft)) =
+                            editor.draft.as_mut()
+                        {
+                            if index < 3 {
+                                draft.selected_field = index;
+                                draft.selected_input_mut().set_cursor(cursor);
+                            }
+                        }
+                    }
+                    crate::action::CatalogEditorCursorTarget::FormField(focus) => {
+                        let allow_with_data =
+                            editor.mode == crate::db::catalog_mutation::CatalogMutationMode::Create;
+                        if let Some(draft) = editor.draft.as_mut() {
+                            let accepted = match draft {
+                                crate::model::catalog_editor::CatalogDraft::View(draft) => {
+                                    draft.focus(focus)
+                                }
+                                crate::model::catalog_editor::CatalogDraft::MaterializedView(
+                                    draft,
+                                ) => draft.focus(focus, allow_with_data),
+                                crate::model::catalog_editor::CatalogDraft::Sequence(draft) => {
+                                    draft.focus(focus)
+                                }
+                                _ => false,
+                            };
+                            if accepted {
+                                if let Some(input) = draft.selected_input_mut() {
+                                    input.set_cursor(cursor);
+                                }
+                            }
+                        }
+                    }
+                    crate::action::CatalogEditorCursorTarget::TableField(field) => {
+                        if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) =
+                            editor.draft.as_mut()
+                        {
+                            draft.focus = field;
+                            if let Some(input) = draft.selected_text_input_mut() {
+                                input.set_cursor(cursor);
+                            }
+                        }
+                    }
+                }
+                Vec::new()
+            }
             Action::CatalogEditorSelectTableColumn(index) => {
                 if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
                     .catalog_editor
@@ -5429,6 +5480,13 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ProfileSetCursor { field, cursor } => {
+                if let Some(manager) = self.editable_profile_manager_mut() {
+                    manager.focus_field(field);
+                    manager.set_cursor(field, cursor);
+                }
+                Vec::new()
+            }
             Action::ProfileInsert(input) => {
                 if let Some(manager) = self.editable_profile_manager_mut() {
                     if let Some(character) = input.character() {
@@ -5939,6 +5997,19 @@ impl App {
             } => {
                 if self.editor.revision(session_id).ok() == Some(revision) {
                     let _ = self.editor.set_mouse_selection(session_id, start, end);
+                }
+                Vec::new()
+            }
+            Action::SetEditorMouseCursor {
+                session_id,
+                position,
+                revision,
+            } => {
+                if self.editor.revision(session_id).ok() == Some(revision) {
+                    self.focus = Focus::Editor;
+                    let _ = self.editor.set_mouse_cursor(session_id, position);
+                    self.clear_completion_request();
+                    self.active_console_mut().completion = None;
                 }
                 Vec::new()
             }
@@ -6671,6 +6742,23 @@ impl App {
                             }
                             None => {}
                         }
+                    }
+                    query.focus = Some(input);
+                    query.error = None;
+                }
+                self.refresh_active_data_query_completion();
+                Vec::new()
+            }
+            Action::SetDataQueryCursor { input, cursor } => {
+                if let Some(query) = self.active_data_query_mut()
+                    && matches!(
+                        query.capability,
+                        DataQueryCapability::Relation | DataQueryCapability::Sql
+                    )
+                {
+                    match input {
+                        DataQueryInput::Where => query.where_input.set_cursor(cursor),
+                        DataQueryInput::OrderBy => query.order_by_input.set_cursor(cursor),
                     }
                     query.focus = Some(input);
                     query.error = None;

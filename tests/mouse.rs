@@ -85,7 +85,7 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
             &app,
         );
         assert!(
-            matches!(down, Some(Action::SetEditorMouseSelection { .. })),
+            matches!(down, Some(Action::SetEditorMouseCursor { .. })),
             "{source}"
         );
         let drag = map_mouse(

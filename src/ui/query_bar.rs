@@ -6,7 +6,10 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use super::{HitRegion, HitTarget, UiState, icons::IconSet, render_text_input, theme::Theme};
+use super::{
+    HitRegion, HitTarget, UiState, icons::IconSet, register_data_query_input, render_text_input,
+    text_input_horizontal_offset, theme::Theme,
+};
 
 const FIELD_HEIGHT: u16 = 2;
 const HORIZONTAL_MIN_WIDTH: u16 = 56;
@@ -77,15 +80,24 @@ pub(crate) fn render(
         let field = Rect::new(chunk.x, chunk.y, chunk.width, 1);
         let underline = Rect::new(chunk.x, chunk.y.saturating_add(1), chunk.width, 1);
         let label = format!("{icon} {label}");
+        let text_input = match input {
+            DataQueryInput::Where => &query.where_input,
+            DataQueryInput::OrderBy => &query.order_by_input,
+        };
+        let prefix = format!("{label}  ");
+        register_data_query_input(
+            state,
+            input,
+            field,
+            &prefix,
+            text_input,
+            text_input_horizontal_offset(field, &prefix, text_input),
+        );
         if active {
-            let text_input = match input {
-                DataQueryInput::Where => &query.where_input,
-                DataQueryInput::OrderBy => &query.order_by_input,
-            };
             cursor = render_text_input(
                 frame,
                 field,
-                &format!("{label}  "),
+                &prefix,
                 text_input,
                 Style::new().fg(theme.accent),
                 state,

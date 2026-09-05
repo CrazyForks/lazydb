@@ -27,6 +27,7 @@ use super::{
     icons::{IconSet, SelectionIcon},
     loading::ActivityIndicator,
     shortcut_hints::{self, ShortcutHint},
+    text_input_horizontal_offset,
 };
 
 const FORM_MAX_WIDTH: u16 = 106;
@@ -504,6 +505,18 @@ fn render_field(
     if field == ProfileField::Kind {
         render_driver_options(frame, value_area, draft.kind, busy, state, theme, icons);
         return;
+    }
+    if let Some(input) = text_input(draft, field) {
+        state.profile_input_targets.push((
+            field,
+            super::text_selection::InputHitMap {
+                area: value_area,
+                source_to_display_cells: crate::security::project_editor_line(input.value())
+                    .source_to_display_cells,
+                horizontal_offset: text_input_horizontal_offset(value_area, "", input),
+                prefix_width: 0,
+            },
+        ));
     }
     let mut value = field_value(draft, field);
     if field == ProfileField::Url && !active {

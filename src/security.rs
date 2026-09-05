@@ -79,7 +79,8 @@ pub fn project_editor_line(value: &str) -> DisplayLineProjection {
         }
         cells += match character {
             '\t' => 0,
-            '\n' | '\r' | '\u{1b}' => 0,
+            '\n' | '\r' => 4,
+            '\u{1b}' => 5,
             value if value.is_control() => format!("<0x{:02X}>", value as u32).len(),
             value => value.width().unwrap_or(0),
         };

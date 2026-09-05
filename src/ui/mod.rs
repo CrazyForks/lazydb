@@ -225,6 +225,15 @@ pub struct UiState {
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
     pub text_selection_target: Option<text_selection::TextSelectionTarget>,
+    pub data_query_input_targets: Vec<(
+        crate::model::data_query::DataQueryInput,
+        text_selection::InputHitMap,
+    )>,
+    pub profile_input_targets: Vec<(ProfileField, text_selection::InputHitMap)>,
+    pub catalog_input_targets: Vec<(
+        crate::action::CatalogEditorCursorTarget,
+        text_selection::InputHitMap,
+    )>,
     pub(crate) animations: animation::AnimationState,
     pub(crate) result_area: Option<Rect>,
     pub(crate) activity_icons: icons::IconSet,
@@ -298,6 +307,9 @@ impl UiState {
             mouse_gesture: RefCell::new(None),
             text_gesture: RefCell::new(None),
             text_selection_target: None,
+            data_query_input_targets: Vec::new(),
+            profile_input_targets: Vec::new(),
+            catalog_input_targets: Vec::new(),
             animations: animation::AnimationState::new(mode, Instant::now()),
             result_area: None,
             activity_icons: icons::IconSet::default(),
@@ -329,6 +341,44 @@ impl UiState {
             .rev()
             .find(|region| contains(region.area, column, row))
             .map(|region| &region.target)
+    }
+
+    pub fn data_query_input_at(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(crate::model::data_query::DataQueryInput, usize)> {
+        self.data_query_input_targets
+            .iter()
+            .rev()
+            .find_map(|(input, map)| {
+                map.source_at(column, row)
+                    .map(|position| (*input, position))
+            })
+    }
+
+    pub fn profile_input_at(&self, column: u16, row: u16) -> Option<(ProfileField, usize)> {
+        self.profile_input_targets
+            .iter()
+            .rev()
+            .find_map(|(field, map)| {
+                map.source_at(column, row)
+                    .map(|position| (*field, position))
+            })
+    }
+
+    pub fn catalog_input_at(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(crate::action::CatalogEditorCursorTarget, usize)> {
+        self.catalog_input_targets
+            .iter()
+            .rev()
+            .find_map(|(target, map)| {
+                map.source_at(column, row)
+                    .map(|position| (target.clone(), position))
+            })
     }
 
     pub fn track_explorer_click(
@@ -625,6 +675,9 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.ddl_viewport = None;
     state.cursor_style = None;
     state.text_selection_target = None;
+    state.data_query_input_targets.clear();
+    state.profile_input_targets.clear();
+    state.catalog_input_targets.clear();
     state.result_area = None;
 
     if layout.mode == LayoutMode::TooSmall {
@@ -987,9 +1040,7 @@ pub(crate) fn render_text_input(
         .get(input.cursor())
         .copied()
         .unwrap_or_else(|| projection.text.width());
-    let offset = cursor_cells
-        .saturating_sub(available.saturating_sub(1))
-        .min(projection.text.width());
+    let offset = text_input_horizontal_offset(area, prefix, input);
     let mut visible = String::new();
     let mut cells = 0;
     for character in projection.text.chars() {
@@ -1016,6 +1067,43 @@ pub(crate) fn render_text_input(
     let cursor = Position::new(cursor_x, area.y);
     frame.set_cursor_position(cursor);
     Some(cursor)
+}
+
+pub(crate) fn register_data_query_input(
+    state: &mut UiState,
+    input: crate::model::data_query::DataQueryInput,
+    area: Rect,
+    prefix: &str,
+    value: &crate::model::text_input::TextInput,
+    offset: usize,
+) {
+    state.data_query_input_targets.push((
+        input,
+        text_selection::InputHitMap {
+            area,
+            source_to_display_cells: crate::security::project_editor_line(value.value())
+                .source_to_display_cells,
+            horizontal_offset: offset,
+            prefix_width: prefix.width(),
+        },
+    ));
+}
+
+pub(crate) fn text_input_horizontal_offset(
+    area: Rect,
+    prefix: &str,
+    input: &crate::model::text_input::TextInput,
+) -> usize {
+    let projection = crate::security::project_editor_line(input.value());
+    let available = usize::from(area.width).saturating_sub(prefix.width());
+    let cursor_cells = projection
+        .source_to_display_cells
+        .get(input.cursor())
+        .copied()
+        .unwrap_or_else(|| projection.text.width());
+    cursor_cells
+        .saturating_sub(available.saturating_sub(1))
+        .min(projection.text.width())
 }
 
 // Relation pages are rendered by `ui::relation`; keeping them out of the SQL path
