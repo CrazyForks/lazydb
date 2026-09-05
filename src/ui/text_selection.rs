@@ -94,10 +94,19 @@ pub enum GestureOwner {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextGestureSource {
+    Editor,
+    TextDetail,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextGesture {
+    pub session_id: uuid::Uuid,
+    pub source: TextGestureSource,
     pub start: TextPosition,
     pub end: TextPosition,
     pub revision: u64,
+    pub has_dragged: bool,
 }
 
 #[cfg(test)]

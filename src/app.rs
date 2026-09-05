@@ -1940,6 +1940,7 @@ impl App {
                         | Action::OpenRecordView
                         | Action::OpenTextDetail(_)
                         | Action::SetTextDetailSelection { .. }
+                        | Action::CompleteMouseTextSelection { .. }
                         | Action::CopyTextDetailSelection { .. }
                         | Action::CopyTextDetailAll { .. }
                         | Action::CloseTextDetail
@@ -3310,6 +3311,44 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::CompleteMouseTextSelection {
+                source,
+                session_id,
+                start,
+                end,
+                revision,
+            } => match source {
+                crate::ui::text_selection::TextGestureSource::Editor => {
+                    if self.overlay.is_some() {
+                        return Vec::new();
+                    }
+                    self.copy_editor_selection(session_id, start, end, revision)
+                }
+                crate::ui::text_selection::TextGestureSource::TextDetail => {
+                    let Some(Overlay::TextDetail(view)) = self.overlay.as_ref() else {
+                        return Vec::new();
+                    };
+                    if view.session_id != session_id
+                        || (!(view.source_session_id == Uuid::nil() && view.source_revision == 0)
+                            && self.editor.revision(view.source_session_id).ok()
+                                != Some(view.source_revision))
+                        || self.editor.revision(session_id).ok() != Some(revision)
+                    {
+                        return Vec::new();
+                    }
+                    if self
+                        .editor
+                        .set_mouse_selection(session_id, start, end)
+                        .is_err()
+                    {
+                        return Vec::new();
+                    }
+                    self.update(Action::CopyTextDetailSelection {
+                        session_id,
+                        revision,
+                    })
+                }
+            },
             Action::CopyTextDetailSelection {
                 session_id,
                 revision,

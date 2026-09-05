@@ -427,6 +427,7 @@ impl UiState {
             return false;
         }
         if let Some(gesture) = self.text_gesture.borrow_mut().as_mut() {
+            gesture.has_dragged |= gesture.end != end;
             gesture.end = end;
             true
         } else {

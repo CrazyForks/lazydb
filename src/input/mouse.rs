@@ -29,8 +29,14 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 && *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text)
             {
                 let target = ui.text_selection_target.as_ref()?;
-                let end = target.source_at(event.column, event.row)?;
                 let gesture = ui.text_gesture.borrow().as_ref().copied()?;
+                if gesture.source != crate::ui::text_selection::TextGestureSource::TextDetail
+                    || gesture.session_id != target.session_id
+                {
+                    ui.cancel_mouse_gesture();
+                    return None;
+                }
+                let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return Some(Action::SetTextDetailSelection {
                     session_id: target.session_id,
@@ -48,8 +54,14 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text) {
                 let target = ui.text_selection_target.as_ref()?;
-                let end = target.source_at(event.column, event.row)?;
                 let gesture = ui.text_gesture.borrow().as_ref().copied()?;
+                if gesture.source != crate::ui::text_selection::TextGestureSource::Editor
+                    || gesture.session_id != target.session_id
+                {
+                    ui.cancel_mouse_gesture();
+                    return None;
+                }
+                let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return Some(Action::SetEditorMouseSelection {
                     session_id: target.session_id,
@@ -83,8 +95,42 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text) {
-                ui.end_mouse_gesture();
-                return None;
+                let Some(mut gesture) = ui.text_gesture.borrow_mut().take() else {
+                    ui.end_mouse_gesture();
+                    return None;
+                };
+                let target_is_current = match gesture.source {
+                    crate::ui::text_selection::TextGestureSource::Editor => app.overlay.is_none(),
+                    crate::ui::text_selection::TextGestureSource::TextDetail => {
+                        matches!(app.overlay, Some(Overlay::TextDetail(_)))
+                    }
+                };
+                let target_matches = target_is_current
+                    && ui
+                        .text_selection_target
+                        .as_ref()
+                        .is_some_and(|target| target.session_id == gesture.session_id);
+                if !target_matches {
+                    ui.mouse_gesture.borrow_mut().take();
+                    return None;
+                }
+                if let Some(target) = ui.text_selection_target.as_ref()
+                    && let Some(end) = target.source_at(event.column, event.row)
+                {
+                    gesture.has_dragged |= end != gesture.start;
+                    gesture.end = end;
+                }
+                ui.mouse_gesture.borrow_mut().take();
+                if !gesture.has_dragged {
+                    return None;
+                }
+                return Some(Action::CompleteMouseTextSelection {
+                    source: gesture.source,
+                    session_id: gesture.session_id,
+                    start: editor_position(gesture.start),
+                    end: editor_position(gesture.end),
+                    revision: gesture.revision,
+                });
             }
             if let Some(drag) = ui.pane_resize_drag.borrow_mut().take() {
                 ui.mouse_gesture.borrow_mut().take();
@@ -129,9 +175,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     .and_then(|target| target.source_at(event.column, event.row));
                 return position.map(|position| {
                     ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
+                        session_id: view.session_id,
+                        source: crate::ui::text_selection::TextGestureSource::TextDetail,
                         start: position,
                         end: position,
                         revision: view.revision,
+                        has_dragged: false,
                     });
                     Action::SetTextDetailSelection {
                         session_id: view.session_id,
@@ -235,9 +284,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             {
                 let revision = app.editor_revision(text_target.session_id);
                 ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
+                    session_id: text_target.session_id,
+                    source: crate::ui::text_selection::TextGestureSource::Editor,
                     start: position,
                     end: position,
                     revision,
+                    has_dragged: false,
                 });
                 return Some(Action::SetEditorMouseCursor {
                     session_id: text_target.session_id,

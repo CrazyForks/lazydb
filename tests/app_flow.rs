@@ -172,6 +172,28 @@ fn editor_copy_actions_emit_complete_clipboard_payloads() {
 }
 
 #[test]
+fn completing_mouse_selection_copies_editor_text_without_mutating_revision() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::ReplaceEditor("SELECT 1;".into()));
+    let session_id = app.active_console().id;
+    let revision = app.active_editor_revision();
+
+    let commands = app.update(Action::CompleteMouseTextSelection {
+        source: lazydb::ui::text_selection::TextGestureSource::Editor,
+        session_id,
+        start: lazydb::model::editor::EditorPosition { line: 0, column: 1 },
+        end: lazydb::model::editor::EditorPosition { line: 0, column: 5 },
+        revision,
+    });
+
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::WriteClipboard(payload)] if payload.text == "ELECT"
+    ));
+    assert_eq!(app.active_editor_revision(), revision);
+}
+
+#[test]
 fn clipboard_failure_keeps_selection_usable_without_echoing_payload() {
     let mut app = App::new(Vec::new());
     app.update(Action::ReplaceEditor("secret selection".into()));
@@ -254,6 +276,40 @@ fn text_detail_selection_and_copy_keep_the_selection_and_reject_stale_sources() 
         })
         .is_empty()
     );
+}
+
+#[test]
+fn completing_mouse_selection_updates_text_detail_before_copying() {
+    let mut app = App::new(Vec::new());
+    let source_session_id = app.active_console().id;
+    let source_revision = app.active_editor_revision();
+    app.update(Action::OpenTextDetail(
+        lazydb::model::text_detail::TextDetailRequest::new(
+            "VALUE",
+            source_session_id,
+            source_revision,
+            "one two",
+            "complete\nvalue",
+            None,
+        ),
+    ));
+    let (session_id, revision) = match app.overlay.as_ref() {
+        Some(Overlay::TextDetail(view)) => (view.session_id, view.revision),
+        _ => panic!("detail was not opened"),
+    };
+
+    let commands = app.update(Action::CompleteMouseTextSelection {
+        source: lazydb::ui::text_selection::TextGestureSource::TextDetail,
+        session_id,
+        start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
+        end: lazydb::model::editor::EditorPosition { line: 0, column: 2 },
+        revision,
+    });
+
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::WriteClipboard(payload)] if payload.text == "one"
+    ));
 }
 
 #[test]
