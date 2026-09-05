@@ -931,6 +931,18 @@ impl App {
         }
     }
 
+    fn clear_active_data_query_focus(&mut self) {
+        if let Some(query) = self.active_data_query_mut() {
+            match query.focus {
+                Some(DataQueryInput::Where) => query.where_input.finish_edit_group(),
+                Some(DataQueryInput::OrderBy) => query.order_by_input.finish_edit_group(),
+                None => {}
+            }
+            query.focus = None;
+            query.completion = None;
+        }
+    }
+
     pub fn active_editor_text(&self) -> Result<String, EditorError> {
         self.active_console_opt()
             .map_or_else(|| Ok(String::new()), |tab| self.editor_text(tab.id))
@@ -2873,6 +2885,7 @@ impl App {
                 if self.tabs.is_empty() {
                     return Vec::new();
                 }
+                self.clear_active_data_query_focus();
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 self.normalize_focus_after_tab_switch();
                 self.load_active_relation(false)
@@ -2881,6 +2894,7 @@ impl App {
                 if self.tabs.is_empty() {
                     return Vec::new();
                 }
+                self.clear_active_data_query_focus();
                 self.active_tab = self
                     .active_tab
                     .checked_sub(1)
@@ -2890,6 +2904,7 @@ impl App {
             }
             Action::ActivateTab(index) => {
                 if index < self.tabs.len() {
+                    self.clear_active_data_query_focus();
                     self.active_tab = index;
                     self.normalize_focus();
                     return self.load_active_relation(false);
@@ -2897,6 +2912,7 @@ impl App {
                 Vec::new()
             }
             Action::FocusNext => {
+                self.clear_active_data_query_focus();
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -2909,6 +2925,7 @@ impl App {
                 Vec::new()
             }
             Action::FocusPrevious => {
+                self.clear_active_data_query_focus();
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -2921,6 +2938,7 @@ impl App {
                 Vec::new()
             }
             Action::Focus(focus) => {
+                self.clear_active_data_query_focus();
                 self.focus = focus;
                 self.normalize_focus();
                 Vec::new()
@@ -6002,6 +6020,7 @@ impl App {
                 revision,
             } => {
                 if self.editor.revision(session_id).ok() == Some(revision) {
+                    self.clear_active_data_query_focus();
                     self.focus = Focus::Editor;
                     let _ = self.editor.set_mouse_cursor(session_id, position);
                     self.clear_completion_request();
@@ -6647,6 +6666,7 @@ impl App {
             }
             Action::OpenSelectedRelation { view } => self.open_selected_relation(view),
             Action::SetRelationView(view) => {
+                self.clear_active_data_query_focus();
                 if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.view = view;
                 }
@@ -6741,6 +6761,7 @@ impl App {
                     }
                     query.focus = Some(input);
                     query.error = None;
+                    self.focus = Focus::Results;
                 }
                 self.refresh_active_data_query_completion();
                 Vec::new()
@@ -6758,6 +6779,7 @@ impl App {
                     }
                     query.focus = Some(input);
                     query.error = None;
+                    self.focus = Focus::Results;
                 }
                 self.refresh_active_data_query_completion();
                 Vec::new()
@@ -8059,40 +8081,47 @@ impl App {
                 Vec::new()
             }
             Action::ExplorerSelect(id) => {
+                self.clear_active_data_query_focus();
                 self.explorer.select_id(id);
                 self.focus = Focus::Explorer;
                 Vec::new()
             }
             Action::CopyExplorerSelection => self.copy_explorer_selection(),
             Action::GridMove { rows, columns } => {
+                self.clear_active_data_query_focus();
                 self.move_grid(rows, columns);
                 Vec::new()
             }
             Action::GridSelectRow(target) => {
+                self.clear_active_data_query_focus();
                 self.with_active_grid(|grid, (row_count, _)| {
                     grid.select_row_target(target, row_count);
                 });
                 Vec::new()
             }
             Action::GridSelectColumn(target) => {
+                self.clear_active_data_query_focus();
                 self.with_active_grid(|grid, (_, column_count)| {
                     grid.select_column_target(target, column_count);
                 });
                 Vec::new()
             }
             Action::GridScrollRows { direction, amount } => {
+                self.clear_active_data_query_focus();
                 self.with_active_grid(|grid, (row_count, _)| {
                     grid.scroll_rows(direction, amount, row_count);
                 });
                 Vec::new()
             }
             Action::GridAlignSelectedRow(alignment) => {
+                self.clear_active_data_query_focus();
                 self.with_active_grid(|grid, (row_count, _)| {
                     grid.align_selected_row(alignment, row_count);
                 });
                 Vec::new()
             }
             Action::GridSelect { row, column } => {
+                self.clear_active_data_query_focus();
                 self.focus = Focus::Results;
                 self.select_grid(row, column);
                 Vec::new()
@@ -8100,9 +8129,13 @@ impl App {
             Action::ExplorerToggle => self.toggle_explorer_selected(),
             Action::ExplorerExpand => self.expand_explorer_selected(),
             Action::ExplorerCollapse => self.collapse_explorer_selected(),
-            Action::ExplorerPrimary => self.primary_explorer_selected(),
+            Action::ExplorerPrimary => {
+                self.clear_active_data_query_focus();
+                self.primary_explorer_selected()
+            }
             Action::ExplorerRefresh => self.refresh_explorer_selected(),
             Action::ToggleResultView => {
+                self.clear_active_data_query_focus();
                 let Some(tab) = self.active_console_opt_mut() else {
                     return Vec::new();
                 };
@@ -8113,6 +8146,7 @@ impl App {
                 Vec::new()
             }
             Action::SetResultView(view) => {
+                self.clear_active_data_query_focus();
                 self.active_console_mut().result_view = view;
                 Vec::new()
             }
@@ -14829,6 +14863,27 @@ mod tests {
             command => panic!("unexpected command: {command:?}"),
         };
         (app, tab_id, generation)
+    }
+
+    #[test]
+    fn leaving_data_query_input_clears_input_focus_without_discarding_draft() {
+        let (mut app, tab_id, generation) = connected_query_app("SELECT id FROM users");
+        let connection = app.connection.active_identity().unwrap();
+        app.update(Action::QueryFinished {
+            tab_id,
+            generation,
+            connection,
+            outcome: empty_outcome(),
+        });
+        app.update(Action::FocusDataQueryInput(DataQueryInput::Where));
+        app.update(Action::DataQueryInsert('i'));
+        app.update(Action::Focus(Focus::Explorer));
+
+        let tab = app.active_console();
+        assert_eq!(app.focus, Focus::Explorer);
+        assert_eq!(tab.query.focus, None);
+        assert_eq!(tab.query.where_input.value(), "i");
+        assert!(tab.query.completion.is_none());
     }
 
     #[test]
