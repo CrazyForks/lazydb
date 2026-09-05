@@ -95,6 +95,7 @@ pub enum GestureOwner {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextGesture {
+    pub session_id: uuid::Uuid,
     pub start: TextPosition,
     pub end: TextPosition,
     pub revision: u64,

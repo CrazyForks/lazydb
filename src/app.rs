@@ -1017,6 +1017,24 @@ impl App {
         }
     }
 
+    fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::Sql(tab)) if session_id == tab.id => Some(Focus::Editor),
+            Some(WorkspaceTab::Sql(tab))
+                if session_id == tab.output_editor_id
+                    && matches!(tab.result_view, ResultView::Output | ResultView::Plan) =>
+            {
+                Some(Focus::Results)
+            }
+            Some(WorkspaceTab::Relation(tab))
+                if session_id == tab.ddl_editor_id && tab.view == RelationView::Ddl =>
+            {
+                Some(Focus::Results)
+            }
+            _ => None,
+        }
+    }
+
     fn copy_active_read_only_selection(&mut self) -> Vec<Command> {
         let Some(session_id) = self.active_read_only_session_id() else {
             return self.copy_editor_statement();
@@ -5995,7 +6013,9 @@ impl App {
                 end,
                 revision,
             } => {
-                if self.editor.revision(session_id).ok() == Some(revision) {
+                if self.mouse_session_focus(session_id).is_some()
+                    && self.editor.revision(session_id).ok() == Some(revision)
+                {
                     let _ = self.editor.set_mouse_selection(session_id, start, end);
                 }
                 Vec::new()
@@ -6005,11 +6025,15 @@ impl App {
                 position,
                 revision,
             } => {
-                if self.editor.revision(session_id).ok() == Some(revision) {
-                    self.focus = Focus::Editor;
-                    let _ = self.editor.set_mouse_cursor(session_id, position);
-                    self.clear_completion_request();
-                    self.active_console_mut().completion = None;
+                if let Some(focus) = self.mouse_session_focus(session_id)
+                    && self.editor.revision(session_id).ok() == Some(revision)
+                    && self.editor.set_mouse_cursor(session_id, position).is_ok()
+                {
+                    self.focus = focus;
+                    if focus == Focus::Editor {
+                        self.clear_completion_request();
+                        self.active_console_mut().completion = None;
+                    }
                 }
                 Vec::new()
             }
@@ -15925,6 +15949,32 @@ mod tests {
             commands
                 .iter()
                 .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+        );
+    }
+
+    #[test]
+    fn clicking_output_log_focuses_results_instead_of_sql_editor() {
+        let mut app = App::new(Vec::new());
+        let tab_id = app.active_console().id;
+        let output_id = app.active_console().output_editor_id;
+        app.active_console_mut().result_view = ResultView::Output;
+        app.editor
+            .set_read_only_text(output_id, "query complete", false)
+            .unwrap();
+        let revision = app.editor.revision(output_id).unwrap();
+
+        app.focus = Focus::Editor;
+        app.update(Action::SetEditorMouseCursor {
+            session_id: output_id,
+            position: crate::model::editor::EditorPosition { line: 0, column: 3 },
+            revision,
+        });
+
+        assert_eq!(app.focus, Focus::Results);
+        assert_eq!(app.active_console().id, tab_id);
+        assert_eq!(
+            app.editor.position(output_id).unwrap(),
+            crate::model::editor::EditorPosition { line: 0, column: 3 }
         );
     }
 

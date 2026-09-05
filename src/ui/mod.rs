@@ -224,7 +224,7 @@ pub struct UiState {
     pub pane_resize_drag: RefCell<Option<PaneResizeDrag>>,
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
-    pub text_selection_target: Option<text_selection::TextSelectionTarget>,
+    pub text_selection_targets: Vec<text_selection::TextSelectionTarget>,
     pub data_query_input_targets: Vec<(
         crate::model::data_query::DataQueryInput,
         text_selection::InputHitMap,
@@ -306,7 +306,7 @@ impl UiState {
             pane_resize_drag: RefCell::new(None),
             mouse_gesture: RefCell::new(None),
             text_gesture: RefCell::new(None),
-            text_selection_target: None,
+            text_selection_targets: Vec::new(),
             data_query_input_targets: Vec::new(),
             profile_input_targets: Vec::new(),
             catalog_input_targets: Vec::new(),
@@ -341,6 +341,21 @@ impl UiState {
             .rev()
             .find(|region| contains(region.area, column, row))
             .map(|region| &region.target)
+    }
+
+    pub fn text_selection_target_at(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(
+        &text_selection::TextSelectionTarget,
+        text_selection::TextPosition,
+    )> {
+        self.text_selection_targets.iter().rev().find_map(|target| {
+            target
+                .source_at(column, row)
+                .map(|position| (target, position))
+        })
     }
 
     pub fn data_query_input_at(
@@ -674,7 +689,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.explorer_viewport_rows = None;
     state.ddl_viewport = None;
     state.cursor_style = None;
-    state.text_selection_target = None;
+    state.text_selection_targets.clear();
     state.data_query_input_targets.clear();
     state.profile_input_targets.clear();
     state.catalog_input_targets.clear();
@@ -2533,26 +2548,28 @@ pub(crate) fn register_text_selection_target(
     text_viewport: Rect,
     snapshot: &crate::model::editor::EditorRenderSnapshot,
 ) {
-    state.text_selection_target = Some(text_selection::TextSelectionTarget {
-        session_id,
-        hit_maps: snapshot
-            .lines
-            .iter()
-            .take(usize::from(text_viewport.height))
-            .enumerate()
-            .map(|(row, line)| text_selection::TextHitMap {
-                area: Rect::new(
-                    text_viewport.x,
-                    text_viewport.y.saturating_add(row as u16),
-                    text_viewport.width,
-                    1,
-                ),
-                line: line.line,
-                source_to_display_cells: line.source_to_display_cells.clone(),
-                horizontal_offset: snapshot.horizontal_offset,
-            })
-            .collect(),
-    });
+    state
+        .text_selection_targets
+        .push(text_selection::TextSelectionTarget {
+            session_id,
+            hit_maps: snapshot
+                .lines
+                .iter()
+                .take(usize::from(text_viewport.height))
+                .enumerate()
+                .map(|(row, line)| text_selection::TextHitMap {
+                    area: Rect::new(
+                        text_viewport.x,
+                        text_viewport.y.saturating_add(row as u16),
+                        text_viewport.width,
+                        1,
+                    ),
+                    line: line.line,
+                    source_to_display_cells: line.source_to_display_cells.clone(),
+                    horizontal_offset: snapshot.horizontal_offset,
+                })
+                .collect(),
+        });
 }
 
 fn render_editor(

@@ -28,9 +28,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if matches!(app.overlay, Some(Overlay::TextDetail(_)))
                 && *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text)
             {
-                let target = ui.text_selection_target.as_ref()?;
-                let end = target.source_at(event.column, event.row)?;
                 let gesture = ui.text_gesture.borrow().as_ref().copied()?;
+                let target = ui
+                    .text_selection_targets
+                    .iter()
+                    .find(|target| target.session_id == gesture.session_id)?;
+                let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return Some(Action::SetTextDetailSelection {
                     session_id: target.session_id,
@@ -47,9 +50,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return None;
             }
             if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text) {
-                let target = ui.text_selection_target.as_ref()?;
-                let end = target.source_at(event.column, event.row)?;
                 let gesture = ui.text_gesture.borrow().as_ref().copied()?;
+                let target = ui
+                    .text_selection_targets
+                    .iter()
+                    .find(|target| target.session_id == gesture.session_id)?;
+                let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return Some(Action::SetEditorMouseSelection {
                     session_id: target.session_id,
@@ -124,11 +130,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     };
                 }
                 let position = ui
-                    .text_selection_target
-                    .as_ref()
-                    .and_then(|target| target.source_at(event.column, event.row));
+                    .text_selection_target_at(event.column, event.row)
+                    .filter(|(target, _)| target.session_id == view.session_id)
+                    .map(|(_, position)| position);
                 return position.map(|position| {
                     ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
+                        session_id: view.session_id,
                         start: position,
                         end: position,
                         revision: view.revision,
@@ -230,11 +237,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return None;
             }
             if app.overlay.is_none()
-                && let Some(text_target) = ui.text_selection_target.as_ref()
-                && let Some(position) = text_target.source_at(event.column, event.row)
+                && let Some((text_target, position)) =
+                    ui.text_selection_target_at(event.column, event.row)
             {
                 let revision = app.editor_revision(text_target.session_id);
                 ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
+                    session_id: text_target.session_id,
                     start: position,
                     end: position,
                     revision,
