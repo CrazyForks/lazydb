@@ -5,9 +5,10 @@ use std::{
 
 use clap::Parser;
 use lazydb::{
-    action::Action,
+    action::{Action, Command},
     app::App,
     cli::Cli,
+    input::keymap::Keymap,
     model::{
         explorer::{ExplorerConnectionStatus, ExplorerNodeId, ProfileProvenance},
         profile_manager::ProfileManagerPage,
@@ -24,6 +25,51 @@ fn cli(config: &std::path::Path, extra: &[&str]) -> Cli {
     let mut args = vec!["lazydb", "--config", config.to_str().unwrap()];
     args.extend_from_slice(extra);
     Cli::try_parse_from(args).unwrap()
+}
+
+#[test]
+fn disconnected_ctrl_c_quits_after_workspace_save_flush() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let profile = import_connection_url("sqlite::memory:", Some("demo"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile]);
+    assert!(app.active_console_opt().is_none());
+    assert!(app.tabs.is_empty());
+
+    let mut keymap = Keymap::default();
+    let action = keymap
+        .map(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &app,
+        )
+        .expect("Ctrl+C should map to quit");
+    assert_eq!(action, Action::Quit);
+
+    let commands = app.update(action);
+    let revision = match commands.as_slice() {
+        [
+            Command::PersistWorkspace { revision, .. },
+            Command::FlushWorkspace { revision: flushed },
+        ] if revision == flushed => *revision,
+        other => panic!("unexpected quit commands: {other:?}"),
+    };
+    assert!(!app.should_quit);
+
+    let completed = app.update(Action::WorkspaceSaveSucceeded { revision });
+    assert!(matches!(
+        completed.as_slice(),
+        [Command::CompleteWorkspaceSave {
+            revision: saved,
+            succeeded: true
+        }] if *saved == revision
+    ));
+    assert!(!app.should_quit);
+
+    let commands = app.update(Action::WorkspaceSaveFlushed { revision });
+    assert!(matches!(commands.as_slice(), [Command::Quit]));
+    assert!(app.should_quit);
 }
 
 #[test]

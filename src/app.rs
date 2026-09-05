@@ -2190,10 +2190,6 @@ impl App {
                     | Action::ConfirmDeleteConsole
                     | Action::CancelDeleteConsole
                     | Action::OpenNotificationHistory
-                    | Action::WorkspaceSaveSucceeded { .. }
-                    | Action::WorkspaceSaveFailed { .. }
-                    | Action::WorkspaceSaveRetry
-                    | Action::WorkspaceSaveFlushed { .. }
             )
         {
             return Vec::new();
@@ -14538,6 +14534,110 @@ mod tests {
         QueryOutcome {
             result_sets: vec![ResultSet::default()],
             stats: QueryStats::new(Duration::from_millis(2), Duration::from_millis(3), 0),
+        }
+    }
+
+    fn quit_revision(app: &mut App) -> u64 {
+        let commands = app.update(Action::Quit);
+        match commands.as_slice() {
+            [
+                Command::PersistWorkspace { revision, .. },
+                Command::FlushWorkspace { revision: flushed },
+            ] if revision == flushed => *revision,
+            other => panic!("unexpected quit commands: {other:?}"),
+        }
+    }
+
+    fn finish_workspace_quit(app: &mut App, revision: u64) {
+        assert!(matches!(
+            app.update(Action::WorkspaceSaveSucceeded { revision })
+                .as_slice(),
+            [Command::CompleteWorkspaceSave {
+                revision: saved,
+                succeeded: true
+            }] if *saved == revision
+        ));
+        assert!(matches!(
+            app.update(Action::WorkspaceSaveFlushed { revision })
+                .as_slice(),
+            [Command::Quit]
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn workspace_save_failure_can_be_retried_without_an_active_console() {
+        let mut app = App::new(Vec::new());
+        let revision = quit_revision(&mut app);
+
+        assert!(matches!(
+            app.update(Action::WorkspaceSaveFailed {
+                revision,
+                message: "test failure".into(),
+            })
+            .as_slice(),
+            [Command::CompleteWorkspaceSave {
+                revision: failed,
+                succeeded: false
+            }] if *failed == revision
+        ));
+        assert!(!app.should_quit);
+        assert!(matches!(
+            app.update(Action::WorkspaceSaveRetry).as_slice(),
+            [Command::RetryWorkspaceSave]
+        ));
+
+        finish_workspace_quit(&mut app, revision);
+    }
+
+    #[test]
+    fn workspace_flush_does_not_quit_before_save_is_acknowledged() {
+        let mut app = App::new(Vec::new());
+        let revision = quit_revision(&mut app);
+
+        assert!(
+            app.update(Action::WorkspaceSaveFlushed { revision })
+                .is_empty()
+        );
+        assert!(!app.should_quit);
+
+        finish_workspace_quit(&mut app, revision);
+    }
+
+    #[test]
+    fn workspace_save_success_is_processed_without_an_exit_request() {
+        let mut app = App::new(Vec::new());
+        let Command::PersistWorkspace { revision, .. } = app.persist_workspace_command() else {
+            panic!("workspace persistence command expected");
+        };
+
+        assert!(matches!(
+            app.update(Action::WorkspaceSaveSucceeded { revision })
+                .as_slice(),
+            [Command::CompleteWorkspaceSave {
+                revision: saved,
+                succeeded: true
+            }] if *saved == revision
+        ));
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn workspace_save_events_are_handled_for_relation_and_dashboard_tabs() {
+        for tab in [
+            WorkspaceTab::Relation(RelationTab::new("items")),
+            WorkspaceTab::Dashboard(crate::model::dashboard::DashboardTab::new()),
+        ] {
+            let profile = import_connection_url("postgres://localhost/kms", Some("kms"))
+                .unwrap()
+                .profile;
+            let mut app = App::new(vec![profile]);
+            app.tabs.push(tab);
+            app.active_tab = 0;
+            assert!(app.active_console_opt().is_none());
+
+            let revision = quit_revision(&mut app);
+            finish_workspace_quit(&mut app, revision);
         }
     }
 
