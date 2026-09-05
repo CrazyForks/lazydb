@@ -8110,6 +8110,18 @@ impl App {
                 self.focus = Focus::Explorer;
                 Vec::new()
             }
+            Action::ExplorerToggleNode(id) => {
+                let expandable = self
+                    .explorer
+                    .visible()
+                    .iter()
+                    .any(|node| node.id == id && node.expandable);
+                if !expandable || !self.explorer.select_id(id) {
+                    return Vec::new();
+                }
+                self.focus = Focus::Explorer;
+                self.toggle_explorer_selected()
+            }
             Action::CopyExplorerSelection => self.copy_explorer_selection(),
             Action::GridMove { rows, columns } => {
                 self.clear_active_data_query_focus();
