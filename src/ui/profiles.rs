@@ -24,6 +24,7 @@ use crate::{
 
 use super::{
     HitRegion, HitTarget, ProfileButton, Theme, UiState,
+    dialog::{self, DialogButton, DialogTone},
     icons::{IconSet, SelectionIcon},
     loading::ActivityIndicator,
     shortcut_hints::{self, ShortcutHint},
@@ -266,24 +267,40 @@ fn render_confirmation(
         ),
     );
     let buttons_y = inner.bottom().saturating_sub(2);
-    render_buttons(
+    let actions = dialog::render_actions(
         frame,
         Rect::new(inner.x, buttons_y, inner.width, 1),
         &[
-            (ProfileButton::ConfirmDelete, "DELETE PERMANENTLY", true),
-            (ProfileButton::CancelDelete, "CANCEL", false),
+            DialogButton {
+                label: "Cancel",
+                tone: DialogTone::Normal,
+                enabled: !busy,
+            },
+            DialogButton {
+                label: "Delete permanently",
+                tone: DialogTone::Danger,
+                enabled: !busy,
+            },
         ],
-        !busy,
-        state,
+        usize::from(
+            manager.delete_focus == crate::model::profile_manager::ProfileDeleteFocus::Delete,
+        ),
         theme,
     );
-    render_hint(
+    for action in actions {
+        state.hit_regions.push(HitRegion {
+            area: action.area,
+            target: if action.index == 0 {
+                HitTarget::ProfileButton(ProfileButton::CancelDelete)
+            } else {
+                HitTarget::ProfileButton(ProfileButton::ConfirmDelete)
+            },
+        });
+    }
+    dialog::render_hint(
         frame,
         Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-        &[
-            ShortcutHint::new("Enter", "confirm"),
-            ShortcutHint::new("Esc", "cancel"),
-        ],
+        "Tab / Left / Right switch   Enter activate   Esc cancel",
         theme,
     );
 }

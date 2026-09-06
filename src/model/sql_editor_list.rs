@@ -22,6 +22,14 @@ pub struct SqlEditorListState {
     pub query: TextInput,
     pub selected_id: Option<Uuid>,
     pub mode: SqlEditorListMode,
+    pub delete_focus: DeleteFocus,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DeleteFocus {
+    #[default]
+    Cancel,
+    Delete,
 }
 
 impl SqlEditorListState {

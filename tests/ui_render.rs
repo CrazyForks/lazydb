@@ -2615,7 +2615,9 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     app.overlay = Some(Overlay::SqlEditorList(app.sql_editor_list.clone()));
     let (delete, delete_state) = render_with_state(&app, 80, 24);
     assert!(delete.contains("Permanently delete 'alpha'"), "{delete}");
-    assert!(delete.contains("Enter delete  Esc cancel"), "{delete}");
+    assert!(delete.contains("[ > Cancel ]"), "{delete}");
+    assert!(delete.contains("[   Delete console ]"), "{delete}");
+    assert!(delete.contains("Enter activate"), "{delete}");
     assert!(delete_state.cursor_style.is_none(), "{delete}");
 }
 
@@ -5889,7 +5891,8 @@ fn profile_manager_renders_confirmation_busy_errors_and_warnings() {
     let confirmation = render(&deleting, 100, 30);
     assert!(confirmation.contains("DELETE CONNECTION"));
     assert!(confirmation.contains("throwaway"));
-    assert!(confirmation.contains("DELETE PERMANENTLY"));
+    assert!(confirmation.contains("Delete permanently"));
+    assert!(confirmation.contains("[ > Cancel ]"));
 
     let mut busy = App::new(Vec::new());
     busy.update(Action::OpenProfileManager);

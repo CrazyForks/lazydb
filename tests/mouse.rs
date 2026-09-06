@@ -1337,7 +1337,7 @@ fn maps_profile_fields_toggles_and_buttons() {
         &ui,
         &app,
         &HitTarget::ProfileButton(ProfileButton::ConfirmDelete),
-        Action::ProfileConfirmDelete,
+        Action::ActivateProfileDelete,
     );
 
     assert_eq!(

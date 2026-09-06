@@ -147,6 +147,7 @@ pub enum Overlay {
         console_id: Uuid,
         connection: ConnectionIdentity,
         transaction_generation: u64,
+        focus: ClearTransactionOutcomeFocus,
     },
     TransactionMenu {
         selected: usize,
@@ -161,6 +162,7 @@ pub enum Overlay {
     },
     DeleteConsole {
         console_id: Uuid,
+        focus: DeleteConsoleFocus,
     },
     SqlEditorList(crate::model::sql_editor_list::SqlEditorListState),
     CatalogDropConfirm {
@@ -176,6 +178,20 @@ pub enum Overlay {
     CatalogEditorDiscardConfirm {
         focus: CatalogEditorDiscardFocus,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DeleteConsoleFocus {
+    #[default]
+    Cancel,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ClearTransactionOutcomeFocus {
+    #[default]
+    Cancel,
+    Clear,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

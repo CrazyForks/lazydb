@@ -17,7 +17,7 @@ use crate::{
     sql::{ExecutionDraft, HighlightKind, SqlDialect, SqlRisk},
 };
 
-use super::{centered, panel_block, theme, theme::Theme};
+use super::{HitRegion, HitTarget, UiState, centered, dialog, panel_block, theme, theme::Theme};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Summary {
@@ -212,6 +212,7 @@ fn styled_chunk(
     Line::from(spans)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -219,6 +220,7 @@ pub(crate) fn render(
     focus: ExecutionConfirmFocus,
     offset: usize,
     app: &App,
+    state: &mut UiState,
     theme: Theme,
 ) {
     let popup = centered(
@@ -287,22 +289,44 @@ pub(crate) fn render(
         Paragraph::new(preview_lines).wrap(Wrap { trim: false }),
         sections[1],
     );
-    let cancel = if focus == ExecutionConfirmFocus::Cancel {
-        "[Cancel]"
-    } else {
-        " Cancel "
-    };
-    let execute = if focus == ExecutionConfirmFocus::Execute {
-        "[Execute]"
-    } else {
-        " Execute "
-    };
-    let action = Line::raw(format!(
-        "{cancel}   {execute}   Enter activate   Tab/Shift-Tab focus   Up/Down/PageUp/PageDown preview   Esc cancel"
-    ));
-    frame.render_widget(
-        Paragraph::new(action).wrap(Wrap { trim: false }),
-        sections[2],
+    let actions = dialog::render_actions(
+        frame,
+        Rect::new(sections[2].x, sections[2].y, sections[2].width, 1),
+        &[
+            dialog::DialogButton {
+                label: "Cancel",
+                tone: dialog::DialogTone::Normal,
+                enabled: true,
+            },
+            dialog::DialogButton {
+                label: "Execute",
+                tone: dialog::DialogTone::Danger,
+                enabled: true,
+            },
+        ],
+        usize::from(focus == ExecutionConfirmFocus::Execute),
+        theme,
+    );
+    for action in actions {
+        state.hit_regions.push(HitRegion {
+            area: action.area,
+            target: if action.index == 0 {
+                HitTarget::ExecutionCancel
+            } else {
+                HitTarget::ExecutionConfirm
+            },
+        });
+    }
+    dialog::render_hint(
+        frame,
+        Rect::new(
+            sections[2].x,
+            sections[2].y.saturating_add(1),
+            sections[2].width,
+            1,
+        ),
+        "Tab / Left / Right switch   Enter activate   Up / Down preview   Esc cancel",
+        theme,
     );
     frame.render_widget(panel_block(" EXECUTION CONFIRMATION ", true, theme), popup);
 }

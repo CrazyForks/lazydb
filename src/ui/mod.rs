@@ -2,6 +2,7 @@ pub mod animation;
 pub mod catalog_editor;
 pub(crate) mod dashboard;
 pub mod data_grid;
+pub(crate) mod dialog;
 pub(crate) mod execution_confirm;
 pub mod icons;
 pub mod layout;
@@ -172,6 +173,16 @@ pub enum HitTarget {
     TransactionMenuCancel,
     TransactionExitChoice(crate::model::transaction::TransactionExitChoice),
     TransactionExitCancel,
+    ManualCancellationKeepRunning,
+    ManualCancellationConfirm,
+    ExecutionConfirm,
+    ExecutionCancel,
+    ClearTransactionConfirm,
+    ClearTransactionCancel,
+    DeleteConsoleConfirm,
+    DeleteConsoleCancel,
+    SqlEditorListDeleteConfirm,
+    SqlEditorListDeleteCancel,
     TextDetailCopyAll,
     TextDetailClose,
     RecordViewCopyCell,
@@ -3481,7 +3492,16 @@ fn render_overlay(
             draft,
             focus,
             preview_offset,
-        } => execution_confirm::render(frame, area, draft, *focus, *preview_offset, app, theme),
+        } => execution_confirm::render(
+            frame,
+            area,
+            draft,
+            *focus,
+            *preview_offset,
+            app,
+            state,
+            theme,
+        ),
         Overlay::ManualCancelConfirm { focus, .. } => {
             use crate::model::workspace::ManualCancelFocus;
             let popup = centered(area, 76, 12);
@@ -3491,26 +3511,47 @@ fn render_overlay(
                 Line::from(Span::styled(" CANCEL ACTIVE QUERY? ", theme.title(true))),
                 Line::raw("Cancelling rolls back all uncommitted work in this transaction"),
                 Line::raw(""),
-                Line::raw(format!(
-                    "{}   {}",
-                    if cancel {
-                        " Keep Running "
-                    } else {
-                        "[Keep Running]"
-                    },
-                    if cancel {
-                        "[Cancel Query + Roll Back]"
-                    } else {
-                        " Cancel Query + Roll Back "
-                    }
-                )),
-                Line::raw("Tab/Left/Right focus, Enter confirm, Esc keep running"),
             ];
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(panel_block(" CANCELLATION CONFIRMATION ", true, theme))
-                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
-                popup,
+            let inner = dialog::render_frame(frame, popup, " CANCELLATION CONFIRMATION ", theme);
+            dialog::render_body(
+                frame,
+                Rect::new(inner.x, inner.y, inner.width, 3),
+                lines,
+                theme,
+            );
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &[
+                    dialog::DialogButton {
+                        label: "Keep running",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Cancel query + roll back",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                ],
+                usize::from(cancel),
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::ManualCancellationKeepRunning
+                    } else {
+                        HitTarget::ManualCancellationConfirm
+                    },
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   Esc keep running",
+                theme,
             );
         }
         Overlay::TransactionExitConfirm { prompt, choice } => {
@@ -3526,38 +3567,108 @@ fn render_overlay(
                 .find(|tab| tab.id() == *tab_id)
                 .map(|tab| tab.title())
                 .unwrap_or("unknown");
-            let commit = *choice == TransactionExitChoice::Commit;
             let lines = vec![
                 Line::from(Span::styled(" TRANSACTION ", theme.title(true))),
                 Line::raw(format!("console: {title}")),
-                Line::raw(format!(
-                    "{}   {}   Cancel",
-                    if commit { "[Commit]" } else { " Commit " },
-                    if !commit { "[Rollback]" } else { " Rollback " }
-                )),
-                Line::raw("Tab/Left/Right choose; Enter confirms; Esc cancels"),
             ];
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(panel_block(" TRANSACTION CONTROL ", true, theme))
-                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
-                popup,
+            let inner = dialog::render_frame(frame, popup, " TRANSACTION CONTROL ", theme);
+            dialog::render_body(
+                frame,
+                Rect::new(inner.x, inner.y, inner.width, 2),
+                lines,
+                theme,
+            );
+            let selected = match choice {
+                TransactionExitChoice::Commit => 0,
+                TransactionExitChoice::Rollback => 1,
+                _ => 2,
+            };
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &[
+                    dialog::DialogButton {
+                        label: "Commit",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Rollback",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                ],
+                selected,
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: match action.index {
+                        0 => HitTarget::TransactionExitChoice(TransactionExitChoice::Commit),
+                        1 => HitTarget::TransactionExitChoice(TransactionExitChoice::Rollback),
+                        _ => HitTarget::TransactionExitCancel,
+                    },
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right choose   Enter activate   Esc cancel",
+                theme,
             );
         }
-        Overlay::ClearTransactionOutcome { .. } => {
+        Overlay::ClearTransactionOutcome { focus, .. } => {
             let popup = centered(area, 78, 12);
-            frame.render_widget(Clear, popup);
-            frame.render_widget(
-                Paragraph::new(vec![
+            let inner = dialog::render_frame(frame, popup, " TRANSACTION OUTCOME UNKNOWN ", theme);
+            dialog::render_body(
+                frame,
+                Rect::new(inner.x, inner.y, inner.width, 4),
+                vec![
                     Line::from(Span::styled(" VERIFY UNKNOWN OUTCOME ", theme.title(true))),
                     Line::raw("LazyDB cannot know whether commit/rollback reached the server."),
                     Line::raw("Verify externally before clearing this transaction state."),
-                    Line::raw("Cancel (default)   [Clear after verification]"),
-                    Line::raw("Enter confirms clear; Esc cancels"),
-                ])
-                .block(panel_block(" TRANSACTION OUTCOME UNKNOWN ", true, theme))
-                .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
-                popup,
+                ],
+                theme,
+            );
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &[
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Clear after verification",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                ],
+                usize::from(*focus == crate::model::workspace::ClearTransactionOutcomeFocus::Clear),
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::ClearTransactionCancel
+                    } else {
+                        HitTarget::ClearTransactionConfirm
+                    },
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   Esc cancel",
+                theme,
             );
         }
         Overlay::TransactionMenu { selected } => {
@@ -3695,25 +3806,63 @@ fn render_overlay(
                 popup,
             );
         }
-        Overlay::DeleteConsole { console_id } => {
+        Overlay::DeleteConsole { console_id, focus } => {
             let popup = centered(area, 76, 8);
-            frame.render_widget(Clear, popup);
+            let inner = dialog::render_frame(frame, popup, " DELETE CONFIRMATION ", theme);
             let name = app
                 .sql_editors
                 .iter()
                 .find(|record| record.id == *console_id)
                 .map_or("unknown", |record| record.name.as_str());
-            frame.render_widget(
-                Paragraph::new(vec![
+            dialog::render_body(
+                frame,
+                Rect::new(
+                    inner.x,
+                    inner.y,
+                    inner.width,
+                    inner.height.saturating_sub(3),
+                ),
+                vec![
                     Line::from(Span::styled(" DELETE SQL EDITOR? ", theme.title(true))),
                     Line::raw(format!(
                         "Permanently delete '{name}' and its saved SQL file?"
                     )),
-                    Line::raw("Enter confirms; Esc cancels"),
-                ])
-                .block(panel_block(" DELETE CONFIRMATION ", true, theme))
-                .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
-                popup,
+                ],
+                theme,
+            );
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &[
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Delete console",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                ],
+                usize::from(*focus == crate::model::workspace::DeleteConsoleFocus::Delete),
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::DeleteConsoleCancel
+                    } else {
+                        HitTarget::DeleteConsoleConfirm
+                    },
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   Esc cancel",
+                theme,
             );
         }
         Overlay::SqlEditorList(list) => {
@@ -4676,10 +4825,7 @@ fn render_console_manager(
                 "Permanently delete '{name}' and its saved SQL file?"
             )));
             lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(
-                "Enter delete  Esc cancel",
-                theme.muted,
-            )));
+            lines.push(Line::raw(""));
         }
     }
     frame.render_widget(
@@ -4710,6 +4856,42 @@ fn render_console_manager(
             );
         }
         _ => {}
+    }
+    if let SqlEditorListMode::DeleteConfirm { .. } = &list.mode {
+        let actions = dialog::render_actions(
+            frame,
+            Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+            &[
+                dialog::DialogButton {
+                    label: "Cancel",
+                    tone: dialog::DialogTone::Normal,
+                    enabled: true,
+                },
+                dialog::DialogButton {
+                    label: "Delete console",
+                    tone: dialog::DialogTone::Danger,
+                    enabled: true,
+                },
+            ],
+            usize::from(list.delete_focus == crate::model::sql_editor_list::DeleteFocus::Delete),
+            theme,
+        );
+        for action in actions {
+            state.hit_regions.push(HitRegion {
+                area: action.area,
+                target: if action.index == 0 {
+                    HitTarget::SqlEditorListDeleteCancel
+                } else {
+                    HitTarget::SqlEditorListDeleteConfirm
+                },
+            });
+        }
+        dialog::render_hint(
+            frame,
+            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+            "Tab / Left / Right switch   Enter activate   Esc cancel",
+            theme,
+        );
     }
 }
 

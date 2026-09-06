@@ -451,6 +451,7 @@ pub enum HelpShortcutId {
     TransactionToggle,
     ClearOutcomeConfirm,
     ClearOutcomeCancel,
+    ClearOutcomeToggle,
     TargetMove,
     TargetConfirm,
     TargetCancel,
@@ -594,8 +595,8 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         ExplorerCollapse | EditorFormat | ResultsMoveUp | OutputSearch | RelationDdlSearch
         | RecordEnds | DataQueryCancel | ProfileFormSave | ProfileScopeRefresh
         | ConsoleManagerCreate | HelpExecute | ProfileAccessClose | ExecutionToggle
-        | ManualCancelToggle | TransactionToggle | TargetCancel | RelationEditText
-        | RelationVisualDelete => 3,
+        | ManualCancelToggle | TransactionToggle | ClearOutcomeToggle | TargetCancel
+        | RelationEditText | RelationVisualDelete => 3,
         ExplorerExpand
         | EditorCopyStatement
         | ResultsMoveRight
@@ -2024,14 +2025,14 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         ProfileDeleteConfirm,
         [ProfileManagerDelete],
-        "Enter/y",
+        "Enter",
         "delete profile",
         display
     ),
     row!(
         ProfileDeleteCancel,
         [ProfileManagerDelete],
-        "Esc/n/q",
+        "Esc",
         "cancel delete",
         display
     ),
@@ -2251,15 +2252,22 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         ClearOutcomeConfirm,
         [ClearTransactionOutcomeConfirmation],
-        "Enter/y",
+        "Enter",
         "clear unknown outcome",
         display
     ),
     row!(
         ClearOutcomeCancel,
         [ClearTransactionOutcomeConfirmation],
-        "Esc/n/q",
+        "Esc",
         "cancel",
+        display
+    ),
+    row!(
+        ClearOutcomeToggle,
+        [ClearTransactionOutcomeConfirmation],
+        "Tab/Left/Right",
+        "change choice",
         display
     ),
     row!(
@@ -2280,8 +2288,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         DeleteConsoleConfirm,
         [DeleteConsoleConfirmation],
-        "Enter",
-        "delete console",
+        "Tab, then Enter",
+        "activate focused action",
         display
     ),
     row!(
@@ -3528,7 +3536,6 @@ mod tests {
     #[test]
     fn representative_overlays_resolve_to_their_own_contexts() {
         let mut app = App::new(Vec::new());
-        let console_id = app.active_console().id;
         let cases = [
             (
                 Overlay::Help(HelpState::new(
@@ -3572,7 +3579,10 @@ mod tests {
                 ShortcutContext::ConsoleManager,
             ),
             (
-                Overlay::DeleteConsole { console_id },
+                Overlay::DeleteConsole {
+                    console_id: uuid::Uuid::nil(),
+                    focus: crate::model::workspace::DeleteConsoleFocus::Cancel,
+                },
                 ShortcutContext::DeleteConsoleConfirmation,
             ),
             (
@@ -4139,10 +4149,7 @@ mod tests {
                 ShortcutContext::ProfileManagerScope,
                 vec!["j/k", "Space", "r", "Esc/Enter"],
             ),
-            (
-                ShortcutContext::ProfileManagerDelete,
-                vec!["Enter/y", "Esc/n/q"],
-            ),
+            (ShortcutContext::ProfileManagerDelete, vec!["Enter", "Esc"]),
             (
                 ShortcutContext::ConsoleManager,
                 vec!["j/k or Up/Down", "Enter", "d", "r", "/", "a", "Esc"],
@@ -4195,12 +4202,12 @@ mod tests {
             ),
             (
                 ShortcutContext::ClearTransactionOutcomeConfirmation,
-                vec!["Enter/y", "Esc/n/q"],
+                vec!["Enter", "Esc", "Tab/Left/Right"],
             ),
             (ShortcutContext::TargetSelector, vec!["j/k", "Enter", "Esc"]),
             (
                 ShortcutContext::DeleteConsoleConfirmation,
-                vec!["Enter", "Esc"],
+                vec!["Tab, then Enter", "Esc"],
             ),
         ];
         for (context, expected) in cases {

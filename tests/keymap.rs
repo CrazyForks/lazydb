@@ -121,13 +121,14 @@ fn console_manager_delete_keys_are_confirmation_aware() {
         Some(Action::SqlEditorListDeleteRequest)
     );
     app.update(Action::SqlEditorListDeleteRequest);
+    assert_eq!(keymap.map(key(KeyCode::Char('y')), &app), None);
     assert_eq!(
-        keymap.map(key(KeyCode::Char('y')), &app),
-        Some(Action::SqlEditorListDeleteConfirm)
+        keymap.map(key(KeyCode::Tab), &app),
+        Some(Action::SqlEditorListDeleteFocusNext)
     );
     assert_eq!(
-        keymap.map(key(KeyCode::Char('n')), &app),
-        Some(Action::SqlEditorListDeleteCancel)
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::SqlEditorListDeleteConfirm)
     );
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
@@ -3458,6 +3459,11 @@ fn profile_confirmation_and_paste_are_contextual_and_redacted() {
         profile_id: app.profiles[0].id,
     });
     let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::ProfileConfirmDelete)
+    );
+    assert!(app.update(Action::ToggleProfileDeleteFocus).is_empty());
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
         Some(Action::ProfileConfirmDelete)
