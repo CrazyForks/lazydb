@@ -7,6 +7,7 @@ pub(crate) enum SyntaxColor {
     Relation,
     RelationAlias,
     Column,
+    Type,
     Function,
     String,
     Number,
@@ -131,10 +132,12 @@ impl Theme {
     pub(crate) const fn syntax_color(self, kind: SyntaxColor) -> Color {
         match kind {
             SyntaxColor::Keyword => self.accent,
-            SyntaxColor::Identifier | SyntaxColor::Number | SyntaxColor::Parameter => self.action,
+            SyntaxColor::Identifier => self.text,
+            SyntaxColor::Number | SyntaxColor::Parameter => self.action,
             SyntaxColor::Relation => self.syntax_relation,
             SyntaxColor::RelationAlias => self.syntax_relation_alias,
             SyntaxColor::Column => self.syntax_column,
+            SyntaxColor::Type => self.accent,
             SyntaxColor::Function => self.syntax_function,
             SyntaxColor::String => self.success,
             SyntaxColor::Comment => self.muted,
@@ -154,7 +157,8 @@ mod tests {
         let theme = Theme::deep_space();
 
         assert_eq!(theme.syntax_color(SyntaxColor::Keyword), theme.accent);
-        assert_eq!(theme.syntax_color(SyntaxColor::Identifier), theme.action);
+        assert_eq!(theme.syntax_color(SyntaxColor::Identifier), theme.text);
+        assert_eq!(theme.syntax_color(SyntaxColor::Type), theme.accent);
         assert_eq!(theme.syntax_color(SyntaxColor::String), theme.success);
         assert_eq!(theme.syntax_color(SyntaxColor::Comment), theme.muted);
         assert_eq!(theme.syntax_color(SyntaxColor::Plain), theme.text);
@@ -192,6 +196,7 @@ mod tests {
             SyntaxColor::Relation,
             SyntaxColor::RelationAlias,
             SyntaxColor::Column,
+            SyntaxColor::Type,
             SyntaxColor::Function,
         ] {
             assert_eq!(theme.syntax_color(kind), Color::Reset);

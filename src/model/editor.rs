@@ -53,6 +53,7 @@ pub enum EditorHighlightKind {
     Relation,
     RelationAlias,
     Column,
+    Type,
     Function,
     String,
     Number,

@@ -1,8 +1,9 @@
 use sqlparser::{
     ast::{
-        AssignmentTarget, Expr, FromTable, ObjectName, ObjectNamePart, Query, Select, SelectItem,
-        Statement, TableAlias, TableFactor, TableObject, TableWithJoins, UpdateTableFromKind,
-        Visit, Visitor,
+        AlterTableOperation, AssignmentTarget, ColumnDef, Expr, FromTable, IndexColumn, ObjectName,
+        ObjectNamePart, Query, Select, SelectItem, Spanned, Statement, TableAlias, TableConstraint,
+        TableFactor, TableObject, TableWithJoins, UpdateTableFromKind, ViewColumnDef, Visit,
+        Visitor,
     },
     dialect::{
         Dialect, GenericDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
@@ -22,6 +23,7 @@ pub enum HighlightKind {
     Relation,
     RelationAlias,
     Column,
+    Type,
     Function,
     String,
     Number,
@@ -109,6 +111,159 @@ impl SemanticCollector<'_> {
         }
         if let Some(at) = &alias.at {
             self.push_ident(at, HighlightKind::RelationAlias);
+        }
+    }
+
+    fn push_column_definition(&mut self, column: &ColumnDef) {
+        self.push_ident(&column.name, HighlightKind::Column);
+        let start = self.index.offset(
+            self.text,
+            column.name.span.end.line,
+            column.name.span.end.column,
+        );
+        let end = column
+            .options
+            .first()
+            .map(|option| {
+                self.index.offset(
+                    self.text,
+                    option.span().start.line,
+                    option.span().start.column,
+                )
+            })
+            .unwrap_or_else(|| self.column_type_end(start));
+        self.push_type_tokens(start, end);
+    }
+
+    fn push_view_column_definition(&mut self, column: &ViewColumnDef) {
+        self.push_ident(&column.name, HighlightKind::Column);
+    }
+
+    fn column_type_end(&self, start: usize) -> usize {
+        let index = LineIndex::new(self.text);
+        let mut tokenizer = Tokenizer::new(dialect_ref(SqlDialect::Generic), self.text);
+        let mut tokens = Vec::new();
+        let _ = tokenizer.tokenize_with_location_into_buf(&mut tokens);
+        let mut depth = 0usize;
+        for token in tokens {
+            let range = index.range(self.text, token.span.start, token.span.end);
+            if range.end <= start {
+                continue;
+            }
+            match token.token {
+                Token::LParen => depth = depth.saturating_add(1),
+                Token::RParen if depth == 0 => return range.start,
+                Token::RParen => depth = depth.saturating_sub(1),
+                Token::Comma if depth == 0 => return range.start,
+                _ => {}
+            }
+        }
+        self.text.len()
+    }
+
+    fn push_type_tokens(&mut self, start: usize, end: usize) {
+        if start >= end {
+            return;
+        }
+        let mut tokenizer = Tokenizer::new(dialect_ref(SqlDialect::Generic), self.text);
+        let mut tokens = Vec::new();
+        let _ = tokenizer.tokenize_with_location_into_buf(&mut tokens);
+        let index = LineIndex::new(self.text);
+        for token in tokens {
+            let range = index.range(self.text, token.span.start, token.span.end);
+            if range.start < start || range.end > end {
+                continue;
+            }
+            if matches!(token.token, Token::Word(_) | Token::DoubleQuotedString(_)) {
+                self.spans.push(SemanticHighlight {
+                    range,
+                    kind: HighlightKind::Type,
+                });
+            }
+        }
+    }
+
+    fn push_index_columns(&mut self, columns: &[IndexColumn]) {
+        for column in columns {
+            if let Expr::Identifier(ident) = &column.column.expr {
+                self.push_ident(ident, HighlightKind::Column);
+            }
+        }
+    }
+
+    fn push_table_constraint(&mut self, constraint: &TableConstraint) {
+        match constraint {
+            TableConstraint::PrimaryKey(constraint) => {
+                self.push_index_columns(&constraint.columns);
+            }
+            TableConstraint::Unique(constraint) => {
+                self.push_index_columns(&constraint.columns);
+            }
+            TableConstraint::ForeignKey(constraint) => {
+                for column in &constraint.columns {
+                    self.push_ident(column, HighlightKind::Column);
+                }
+                self.push_object_name(&constraint.foreign_table, HighlightKind::Relation);
+                for column in &constraint.referred_columns {
+                    self.push_ident(column, HighlightKind::Column);
+                }
+            }
+            TableConstraint::Index(constraint) => {
+                self.push_index_columns(&constraint.columns);
+            }
+            TableConstraint::FulltextOrSpatial(constraint) => {
+                self.push_index_columns(&constraint.columns);
+            }
+            TableConstraint::Check(_)
+            | TableConstraint::PrimaryKeyUsingIndex(_)
+            | TableConstraint::UniqueUsingIndex(_) => {}
+        }
+    }
+
+    fn push_ddl_bindings(&mut self, statement: &Statement) {
+        match statement {
+            Statement::CreateTable(table) => {
+                for column in &table.columns {
+                    self.push_column_definition(column);
+                }
+                for constraint in &table.constraints {
+                    self.push_table_constraint(constraint);
+                }
+            }
+            Statement::AlterTable(table) => {
+                for operation in &table.operations {
+                    match operation {
+                        AlterTableOperation::AddColumn { column_def, .. } => {
+                            self.push_column_definition(column_def);
+                        }
+                        AlterTableOperation::AddConstraint { constraint, .. } => {
+                            self.push_table_constraint(constraint);
+                        }
+                        AlterTableOperation::AlterColumn { column_name, .. } => {
+                            self.push_ident(column_name, HighlightKind::Column);
+                        }
+                        AlterTableOperation::DropColumn { column_names, .. } => {
+                            for column in column_names {
+                                self.push_ident(column, HighlightKind::Column);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Statement::CreateView(view) => {
+                self.push_object_name(&view.name, HighlightKind::Relation);
+                for column in &view.columns {
+                    self.push_view_column_definition(column);
+                }
+            }
+            Statement::CreateIndex(index) => {
+                self.push_index_columns(&index.columns);
+                for column in &index.include {
+                    self.push_ident(column, HighlightKind::Column);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -386,6 +541,7 @@ impl Visitor for SemanticCollector<'_> {
     }
 
     fn pre_visit_statement(&mut self, statement: &Statement) -> ControlFlow<Self::Break> {
+        self.push_ddl_bindings(statement);
         let has_scope = self.push_dml_bindings(statement);
         self.statement_scopes.push(has_scope);
         ControlFlow::Continue(())
@@ -453,11 +609,40 @@ fn recover_semantic_highlights(
         return Some(highlights);
     }
 
+    if let Some(suffix) = balanced_parenthesis_suffix(source, dialect) {
+        let mut completed = String::with_capacity(source.len() + suffix.len());
+        completed.push_str(source);
+        completed.push_str(&suffix);
+        if let Some(highlights) = semantic_highlights_for(&completed, dialect) {
+            return Some(
+                highlights
+                    .into_iter()
+                    .filter(|highlight| highlight.range.end <= source.len())
+                    .collect(),
+            );
+        }
+    }
+
     semantic_recovery_prefixes(source, dialect)
         .into_iter()
         .filter_map(|end| source.get(..end).map(str::trim_end))
         .filter(|prefix| !prefix.is_empty())
         .find_map(|prefix| semantic_highlights_for(prefix, dialect))
+}
+
+fn balanced_parenthesis_suffix(source: &str, dialect: SqlDialect) -> Option<String> {
+    let mut tokenizer = Tokenizer::new(dialect_ref(dialect), source);
+    let mut tokens = Vec::new();
+    let _ = tokenizer.tokenize_with_location_into_buf(&mut tokens);
+    let mut depth = 0usize;
+    for token in tokens {
+        match token.token {
+            Token::LParen => depth = depth.saturating_add(1),
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    (depth > 0).then(|| ")".repeat(depth))
 }
 
 fn apply_semantic_highlights(text: &str, dialect: SqlDialect, spans: &mut [HighlightSpan]) {
@@ -506,7 +691,7 @@ fn semantic_priority(kind: HighlightKind) -> u8 {
         HighlightKind::RelationAlias => 4,
         HighlightKind::Function => 3,
         HighlightKind::Relation => 2,
-        HighlightKind::Column => 1,
+        HighlightKind::Column | HighlightKind::Type => 1,
         _ => 0,
     }
 }
@@ -517,6 +702,9 @@ fn can_override(current: HighlightKind, semantic: HighlightKind) -> bool {
             matches!(current, HighlightKind::Identifier | HighlightKind::Keyword)
         }
         HighlightKind::Relation | HighlightKind::RelationAlias | HighlightKind::Column => {
+            matches!(current, HighlightKind::Identifier | HighlightKind::Keyword)
+        }
+        HighlightKind::Type => {
             matches!(current, HighlightKind::Identifier | HighlightKind::Keyword)
         }
         _ => false,
