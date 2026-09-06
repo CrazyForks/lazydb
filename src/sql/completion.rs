@@ -223,6 +223,15 @@ enum ExpressionContext {
     Returning,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OrderingStage {
+    Expression,
+    Direction,
+    AfterDirection,
+    NullPlacement,
+    Complete,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CompletionTokenKind {
     Word(String),
@@ -272,6 +281,14 @@ pub fn complete(
         dialect,
         &prefix,
     );
+    let ordering_stage =
+        matches!(context, Context::Expression(ExpressionContext::Ordering)).then(|| {
+            ordering_stage(
+                &tokens,
+                replace.start,
+                active_scopes.last().copied().flatten(),
+            )
+        });
     let projection_complete = context == Context::Expression(ExpressionContext::Projection)
         && projection_is_complete(
             &tokens,
@@ -317,7 +334,17 @@ pub fn complete(
         let Some(kind) = completion_kind(entry.kind) else {
             continue;
         };
-        if !catalog_kind_allowed(context, kind) {
+        if !catalog_kind_allowed(context, kind)
+            || matches!(
+                ordering_stage,
+                Some(
+                    OrderingStage::Direction
+                        | OrderingStage::AfterDirection
+                        | OrderingStage::NullPlacement
+                        | OrderingStage::Complete,
+                )
+            )
+        {
             continue;
         }
         if kind == CompletionKind::Column
@@ -380,7 +407,9 @@ pub fn complete(
         });
     }
     if qualifiers.is_empty() {
-        for keyword in keywords(context, dialect, projection_complete) {
+        for keyword in
+            keywords_for_completion(context, dialect, projection_complete, ordering_stage)
+        {
             if keyword.to_lowercase().starts_with(&folded_prefix) {
                 candidates.push(CompletionCandidate {
                     label: (*keyword).to_owned(),
@@ -402,6 +431,27 @@ pub fn complete(
                     },
                 });
             }
+        }
+        if let Some(keyword) = order_by_keyword(
+            &tokens,
+            statement_cursor,
+            &prefix,
+            context,
+            projection_complete,
+            active_scopes.last().copied().flatten(),
+        ) {
+            candidates.push(CompletionCandidate {
+                label: keyword.to_owned(),
+                insert_text: keyword.to_owned(),
+                kind: CompletionKind::Keyword,
+                detail: None,
+                replace,
+                score: CompletionScore {
+                    context: 4,
+                    name_match: 2,
+                    schema: 0,
+                },
+            });
         }
     }
     if qualifiers.is_empty() {
@@ -628,13 +678,39 @@ pub fn should_offer_completion_for_dialect(text: &str, cursor: usize, dialect: S
         return true;
     }
     if *previous != b'.' || cursor < 2 {
-        return false;
+        return should_offer_ordering_completion(text, cursor, dialect);
     }
     let mut qualifier_start = cursor - 2;
     while qualifier_start > 0 && is_identifier_byte(bytes[qualifier_start - 1], dialect) {
         qualifier_start -= 1;
     }
     !bytes[qualifier_start].is_ascii_digit()
+}
+
+fn should_offer_ordering_completion(text: &str, cursor: usize, dialect: SqlDialect) -> bool {
+    let (statement, statement_cursor) = current_statement(text, cursor.min(text.len()), dialect);
+    let tokens = completion_tokens(statement, dialect);
+    let active_scopes = active_scope_starts(&tokens, statement_cursor);
+    let current_scope = active_scopes.last().copied().flatten();
+    let context = context_at(&tokens, statement_cursor, current_scope, dialect, "");
+    if !matches!(context, Context::Expression(ExpressionContext::Ordering)) {
+        return false;
+    }
+    let Some(last) = tokens
+        .iter()
+        .rev()
+        .find(|token| token.end <= statement_cursor)
+    else {
+        return false;
+    };
+    matches!(
+        last.kind,
+        CompletionTokenKind::Comma
+            | CompletionTokenKind::Word(_)
+            | CompletionTokenKind::RightParen
+            | CompletionTokenKind::Literal
+            | CompletionTokenKind::Star
+    )
 }
 
 fn cursor_is_in_comment_or_literal(text: &str, dialect: SqlDialect) -> bool {
@@ -982,6 +1058,138 @@ fn context_at(
         Context::Qualifier
     } else {
         context
+    }
+}
+
+fn order_by_keyword(
+    tokens: &[CompletionToken],
+    cursor: usize,
+    prefix: &str,
+    context: Context,
+    projection_complete: bool,
+    current_scope: Option<usize>,
+) -> Option<&'static str> {
+    if !(matches!(
+        context,
+        Context::Relation
+            | Context::Expression(ExpressionContext::Predicate | ExpressionContext::Grouping,)
+    ) || projection_complete && context == Context::Expression(ExpressionContext::Projection))
+    {
+        return None;
+    }
+
+    let current_start = tokens
+        .iter()
+        .find(|token| token.start < cursor && token.end >= cursor)
+        .map_or(cursor, |token| token.start);
+    let previous = tokens
+        .iter()
+        .rfind(|token| token.end <= current_start && token.scope_start == current_scope);
+
+    if previous.is_some_and(|token| {
+        token_word(Some(token)).is_some_and(|word| word.eq_ignore_ascii_case("order"))
+    }) {
+        return "BY"
+            .starts_with(&prefix.to_ascii_uppercase())
+            .then_some("BY");
+    }
+
+    if prefix.is_empty() {
+        return None;
+    }
+    if !"order".starts_with(&prefix.to_ascii_lowercase()) {
+        return None;
+    }
+    if previous.is_none_or(|token| {
+        matches!(
+            token.kind,
+            CompletionTokenKind::Operator
+                | CompletionTokenKind::Comma
+                | CompletionTokenKind::LeftParen
+        ) || token_word(Some(token)).is_some_and(|word| {
+            matches!(
+                word.to_ascii_lowercase().as_str(),
+                "where" | "and" | "or" | "not" | "between" | "is" | "like" | "in"
+            )
+        })
+    }) {
+        return None;
+    }
+    Some("ORDER BY")
+}
+
+fn keywords_for_completion(
+    context: Context,
+    dialect: SqlDialect,
+    projection_complete: bool,
+    ordering_stage: Option<OrderingStage>,
+) -> &'static [&'static str] {
+    if let Some(stage) = ordering_stage {
+        return match stage {
+            OrderingStage::Expression => &[],
+            OrderingStage::Direction => match dialect {
+                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
+                    &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"]
+                }
+                SqlDialect::MySql | SqlDialect::SqlServer => &["ASC", "DESC"],
+            },
+            OrderingStage::AfterDirection => match dialect {
+                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
+                    &["NULLS FIRST", "NULLS LAST"]
+                }
+                SqlDialect::MySql | SqlDialect::SqlServer => &[],
+            },
+            OrderingStage::NullPlacement => match dialect {
+                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
+                    &["FIRST", "LAST"]
+                }
+                SqlDialect::MySql | SqlDialect::SqlServer => &[],
+            },
+            OrderingStage::Complete => &[],
+        };
+    }
+    keywords(context, dialect, projection_complete)
+}
+
+fn ordering_stage(
+    tokens: &[CompletionToken],
+    cursor: usize,
+    current_scope: Option<usize>,
+) -> OrderingStage {
+    let tokens = tokens
+        .iter()
+        .filter(|token| token.end <= cursor && token.scope_start == current_scope)
+        .collect::<Vec<_>>();
+    let Some(order_index) = tokens.iter().rposition(|token| {
+        token_word(Some(token)).is_some_and(|word| word.eq_ignore_ascii_case("order"))
+    }) else {
+        return OrderingStage::Expression;
+    };
+    let Some(by_index) = tokens.iter().position(|token| {
+        token.start > tokens[order_index].end
+            && token_word(Some(token)).is_some_and(|word| word.eq_ignore_ascii_case("by"))
+    }) else {
+        return OrderingStage::Expression;
+    };
+    let item = &tokens[by_index + 1..];
+    let Some(last) = item.last() else {
+        return OrderingStage::Expression;
+    };
+    match token_word(Some(last))
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("asc") | Some("desc") => OrderingStage::AfterDirection,
+        Some("nulls") => OrderingStage::NullPlacement,
+        Some("first") | Some("last") => OrderingStage::Complete,
+        _ if matches!(
+            last.kind,
+            CompletionTokenKind::Comma | CompletionTokenKind::Operator
+        ) =>
+        {
+            OrderingStage::Expression
+        }
+        _ => OrderingStage::Direction,
     }
 }
 
@@ -1769,7 +1977,7 @@ fn keywords(
         ],
         Context::Expression(ExpressionContext::Grouping) => &["HAVING", "CASE", "NULL"],
         Context::Expression(ExpressionContext::Ordering) => match dialect {
-            SqlDialect::MySql => &["ASC", "DESC"],
+            SqlDialect::MySql | SqlDialect::SqlServer => &["ASC", "DESC"],
             _ => &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"],
         },
         Context::Expression(ExpressionContext::Returning) => &["CASE", "NULL", "TRUE", "FALSE"],
