@@ -472,6 +472,32 @@ mod tests {
     }
 
     #[test]
+    fn empty_history_renders_an_empty_state_without_interaction_targets() {
+        let app = App::new(Vec::new());
+        let history = NotificationHistoryState::new();
+        let mut ui = UiState::new();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .expect("test terminal");
+
+        terminal
+            .draw(|frame| {
+                render_history(
+                    frame,
+                    frame.area(),
+                    &app,
+                    &history,
+                    Theme::default(),
+                    &mut ui,
+                );
+            })
+            .expect("render history");
+
+        let buffer = terminal.backend().buffer();
+        assert!(buffer.content().iter().any(|cell| cell.symbol() == "N"));
+        assert!(ui.hit_regions.is_empty());
+    }
+
+    #[test]
     fn notification_detail_request_copies_complete_sanitized_body() {
         let body = "first\nsecond\u{1b}[31m";
         let request = notification_detail_request(&Notification {
