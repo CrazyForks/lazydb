@@ -129,6 +129,7 @@ pub enum Overlay {
     ExecutionConfirm {
         draft: ExecutionDraft,
         focus: ExecutionConfirmFocus,
+        preview_offset: usize,
     },
     ManualCancelConfirm {
         intent: CancellationIntent,

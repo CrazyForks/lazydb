@@ -472,6 +472,9 @@ pub enum Action {
     ConfirmExecution,
     CancelExecution,
     ToggleExecutionConfirmationFocus,
+    ScrollExecutionConfirmation {
+        rows: isize,
+    },
     CancelActiveQuery,
     ConfirmManualCancellation,
     CancelManualCancellation,

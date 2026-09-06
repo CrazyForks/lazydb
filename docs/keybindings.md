@@ -506,8 +506,10 @@ last and stops, and `Esc`/`q` quits substitution.
 
 ### Execution Confirmation
 
-`Enter`/`e`/`y` executes; `Esc`/`n`/`q` cancels; Tab/Left/Right changes the
-focused choice.
+`Enter` activates the focused action; the dialog opens with Cancel focused, so
+the first Enter cancels. `Esc`/`n`/`q` cancels; Tab/Shift-Tab/Left/Right changes
+the focused choice. Up/Down scrolls the read-only SQL preview and PageUp/
+PageDown moves by a page. `e` and `y` have no confirmation meaning.
 
 ### Manual Cancellation
 

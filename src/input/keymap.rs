@@ -325,15 +325,17 @@ impl Keymap {
         if matches!(app.overlay, Some(Overlay::ExecutionConfirm { .. })) {
             self.pending = None;
             return match event.code {
-                KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('y') => {
-                    Some(Action::ConfirmExecution)
-                }
+                KeyCode::Enter => Some(Action::ConfirmExecution),
                 KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                     Some(Action::CancelExecution)
                 }
-                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
                     Some(Action::ToggleExecutionConfirmationFocus)
                 }
+                KeyCode::Up => Some(Action::ScrollExecutionConfirmation { rows: -1 }),
+                KeyCode::Down => Some(Action::ScrollExecutionConfirmation { rows: 1 }),
+                KeyCode::PageUp => Some(Action::ScrollExecutionConfirmation { rows: -10 }),
+                KeyCode::PageDown => Some(Action::ScrollExecutionConfirmation { rows: 10 }),
                 _ => None,
             };
         }

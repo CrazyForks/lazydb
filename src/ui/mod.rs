@@ -2,6 +2,7 @@ pub mod animation;
 pub mod catalog_editor;
 pub(crate) mod dashboard;
 pub mod data_grid;
+pub(crate) mod execution_confirm;
 pub mod icons;
 pub mod layout;
 pub mod loading;
@@ -3369,9 +3370,11 @@ fn render_overlay(
         Overlay::SubstituteConfirm { remaining } => {
             render_substitute_confirm(frame, area, *remaining, theme)
         }
-        Overlay::ExecutionConfirm { draft, focus } => {
-            render_execution_confirm(frame, area, draft, *focus, app, theme)
-        }
+        Overlay::ExecutionConfirm {
+            draft,
+            focus,
+            preview_offset,
+        } => execution_confirm::render(frame, area, draft, *focus, *preview_offset, app, theme),
         Overlay::ManualCancelConfirm { focus, .. } => {
             use crate::model::workspace::ManualCancelFocus;
             let popup = centered(area, 76, 12);
@@ -4686,78 +4689,6 @@ fn render_catalog_drop_confirm(
             .block(panel_block(" CATALOG DROP CONFIRMATION ", true, theme))
             .style(Style::new().fg(theme.text).bg(theme.surface_raised))
             .wrap(Wrap { trim: true }),
-        popup,
-    );
-}
-
-fn render_execution_confirm(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    draft: &crate::sql::ExecutionDraft,
-    focus: crate::model::workspace::ExecutionConfirmFocus,
-    app: &App,
-    theme: Theme,
-) {
-    use crate::model::workspace::ExecutionConfirmFocus;
-
-    let popup = centered(area, 86, 24);
-    frame.render_widget(Clear, popup);
-    let risk = draft
-        .risks
-        .iter()
-        .map(|risk| format!("{risk:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let database = app
-        .active_profile()
-        .map(|profile| profile.name.as_str())
-        .unwrap_or("disconnected");
-    let mut lines = vec![
-        Line::from(Span::styled(" EXECUTE SQL? ", theme.title(true))),
-        Line::raw(format!(
-            "scope: {:?}   lines: {}   statements: {}",
-            draft.scope,
-            draft.sql.lines().count().max(1),
-            draft.statement_count
-        )),
-        Line::raw(format!("risk: {risk}   database: {database}")),
-        Line::raw(format!(
-            "transaction: {:?}/{:?}",
-            draft.transaction_mode, draft.transaction_state
-        )),
-    ];
-    if draft.dialect == crate::sql::SqlDialect::MySql
-        && draft.transaction_mode == crate::model::transaction::TransactionMode::Manual
-        && draft.risks.contains(&crate::sql::SqlRisk::Ddl)
-    {
-        lines.push(Line::from(Span::styled(
-            "WARNING: MySQL DDL may implicitly commit before and after execution",
-            Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
-        )));
-    }
-    lines.push(Line::raw(""));
-    let sanitized_sql = sanitize_terminal_text(&draft.sql);
-    lines.extend(sanitized_sql.lines().map(Line::raw));
-    lines.push(Line::raw(""));
-    lines.push(Line::raw(format!(
-        "{}   {}   (Tab/Left/Right focus)",
-        if focus == ExecutionConfirmFocus::Cancel {
-            "[Cancel]"
-        } else {
-            " Cancel "
-        },
-        if focus == ExecutionConfirmFocus::Execute {
-            "[Execute]"
-        } else {
-            " Execute "
-        }
-    )));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel_block(" EXECUTION CONFIRMATION ", true, theme))
-            .style(Style::new().fg(theme.text).bg(theme.surface_raised))
-            .scroll((0, 0))
-            .wrap(Wrap { trim: false }),
         popup,
     );
 }

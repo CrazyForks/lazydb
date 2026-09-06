@@ -6196,6 +6196,18 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ScrollExecutionConfirmation { rows } => {
+                if let Some(Overlay::ExecutionConfirm { preview_offset, .. }) =
+                    self.overlay.as_mut()
+                {
+                    if rows.is_negative() {
+                        *preview_offset = preview_offset.saturating_sub(rows.unsigned_abs());
+                    } else {
+                        *preview_offset = preview_offset.saturating_add(rows as usize);
+                    }
+                }
+                Vec::new()
+            }
             Action::CancelActiveQuery => {
                 let active_connection = self.connection.active_identity();
                 let Some(tab_id) = self.active_console_opt().map(|tab| tab.id) else {
@@ -10525,6 +10537,7 @@ impl App {
             self.overlay = Some(Overlay::ExecutionConfirm {
                 draft,
                 focus: ExecutionConfirmFocus::Cancel,
+                preview_offset: 0,
             });
             return Vec::new();
         }
@@ -10626,7 +10639,7 @@ impl App {
     }
 
     fn confirm_execution(&mut self) -> Vec<Command> {
-        let Some(Overlay::ExecutionConfirm { draft, focus }) = self.overlay.take() else {
+        let Some(Overlay::ExecutionConfirm { draft, focus, .. }) = self.overlay.take() else {
             return Vec::new();
         };
         if focus == ExecutionConfirmFocus::Cancel {
