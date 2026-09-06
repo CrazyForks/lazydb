@@ -1,5 +1,5 @@
 use clap::ValueEnum;
-use nerd_font_symbols::{dev, md};
+use nerd_font_symbols::{dev, fa, md};
 use serde::Deserialize;
 
 use crate::{
@@ -121,21 +121,24 @@ impl IconSet {
     pub const fn sort_default(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "S",
-            IconMode::NerdFont | IconMode::Unicode => "↕",
+            IconMode::NerdFont => fa::FA_SORT,
+            IconMode::Unicode => "▴▾",
         }
     }
 
     pub const fn sort_ascending(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "^",
-            IconMode::NerdFont | IconMode::Unicode => "↑",
+            IconMode::NerdFont => fa::FA_SORT_UP,
+            IconMode::Unicode => "▴",
         }
     }
 
     pub const fn sort_descending(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "v",
-            IconMode::NerdFont | IconMode::Unicode => "↓",
+            IconMode::NerdFont => fa::FA_SORT_DOWN,
+            IconMode::Unicode => "▾",
         }
     }
 
@@ -509,5 +512,40 @@ mod tests {
             assert_eq!(icons.tab_previous().cell_width(), 1);
             assert_eq!(icons.tab_next().cell_width(), 1);
         }
+    }
+
+    #[test]
+    fn sorting_icons_match_each_mode() {
+        let nerd = IconSet::new(IconMode::NerdFont);
+        assert_eq!(nerd.sort_default(), fa::FA_SORT);
+        assert_eq!(nerd.sort_ascending(), fa::FA_SORT_UP);
+        assert_eq!(nerd.sort_descending(), fa::FA_SORT_DOWN);
+
+        let unicode = IconSet::new(IconMode::Unicode);
+        assert_eq!(unicode.sort_default(), "▴▾");
+        assert_eq!(unicode.sort_ascending(), "▴");
+        assert_eq!(unicode.sort_descending(), "▾");
+
+        let ascii = IconSet::new(IconMode::Ascii);
+        assert_eq!(ascii.sort_default(), "S");
+        assert_eq!(ascii.sort_ascending(), "^");
+        assert_eq!(ascii.sort_descending(), "v");
+    }
+
+    #[test]
+    fn sorting_icons_have_expected_display_widths() {
+        use unicode_width::UnicodeWidthStr;
+
+        for mode in [IconMode::NerdFont, IconMode::Ascii] {
+            let icons = IconSet::new(mode);
+            assert_eq!(icons.sort_default().width(), 1);
+            assert_eq!(icons.sort_ascending().width(), 1);
+            assert_eq!(icons.sort_descending().width(), 1);
+        }
+
+        let unicode = IconSet::new(IconMode::Unicode);
+        assert_eq!(unicode.sort_default().width(), 2);
+        assert_eq!(unicode.sort_ascending().width(), 1);
+        assert_eq!(unicode.sort_descending().width(), 1);
     }
 }

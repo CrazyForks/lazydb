@@ -310,15 +310,7 @@ fn automatic_widths(
         .enumerate()
         .map(|(column_index, column)| {
             let header = column_header_text(column, icons);
-            let sort_width = sort_projection.map_or(0, |projection| {
-                projection
-                    .get(column_index)
-                    .and_then(Option::as_ref)
-                    .map_or_else(
-                        || UnicodeWidthStr::width(icons.sort_default()),
-                        |sort| sort_indicator(sort, icons, projection).width(),
-                    )
-            });
+            let sort_width = sort_indicator_slot_width(column_index, icons, sort_projection);
             let content = rows
                 .clone()
                 .filter_map(|row| row.get(column_index))
@@ -427,6 +419,33 @@ fn sort_indicator(
     }
 }
 
+fn sort_indicator_slot_width(
+    column_index: usize,
+    icons: IconSet,
+    sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
+) -> usize {
+    let Some(projection) = sort_projection else {
+        return 0;
+    };
+    let base = [
+        icons.sort_default(),
+        icons.sort_ascending(),
+        icons.sort_descending(),
+    ]
+    .into_iter()
+    .map(UnicodeWidthStr::width)
+    .max()
+    .unwrap_or(0);
+    let priority_width = projection
+        .get(column_index)
+        .and_then(Option::as_ref)
+        .filter(|_| projection.iter().flatten().nth(1).is_some())
+        .map_or(0, |sort| {
+            (sort.priority.saturating_add(1)).to_string().len()
+        });
+    base.saturating_add(priority_width)
+}
+
 fn header_cell_text(
     column_index: usize,
     column: &crate::db::query::ColumnMeta,
@@ -443,18 +462,22 @@ fn header_cell_text(
                 |sort| sort_indicator(sort, icons, projection),
             )
     });
+    let slot_width = sort_indicator_slot_width(column_index, icons, sort_projection);
     let indicator = super::truncate_to_cells(&indicator, usize::from(width));
     let indicator_width = UnicodeWidthStr::width(indicator.as_str());
-    let available = usize::from(width).saturating_sub(indicator_width.saturating_add(1));
+    let reserved = slot_width.min(usize::from(width));
+    let available = usize::from(width).saturating_sub(reserved.saturating_add(1));
     let label = super::truncate_to_cells(&column_header_text(column, icons), available);
     let used = UnicodeWidthStr::width(label.as_str());
+    let indicator_padding = reserved.saturating_sub(indicator_width);
     format!(
-        "{label}{}{indicator}",
+        "{label}{}{}{indicator}",
         " ".repeat(
             usize::from(width)
                 .saturating_sub(used)
-                .saturating_sub(indicator_width)
-        )
+                .saturating_sub(reserved)
+        ),
+        " ".repeat(indicator_padding),
     )
 }
 
@@ -881,7 +904,7 @@ mod tests {
             })]),
         );
         assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
-        assert!(text.ends_with('↓'), "{text:?}");
+        assert!(text.ends_with('▾'), "{text:?}");
     }
 
     #[test]
@@ -928,7 +951,139 @@ mod tests {
             Some(&projection),
         );
         assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
-        assert!(text.ends_with("↓2"), "{text:?}");
+        assert!(text.ends_with("▾2"), "{text:?}");
+    }
+
+    #[test]
+    fn sorting_header_states_reserve_the_same_unicode_indicator_width() {
+        let column = ColumnMeta {
+            name: "long-header".into(),
+            type_name: "text".into(),
+        };
+        let projections = [
+            [None],
+            [Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 0,
+            })],
+            [Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Desc,
+                priority: 0,
+            })],
+        ];
+
+        let headers: Vec<_> = projections
+            .iter()
+            .map(|projection| {
+                super::header_cell_text(
+                    0,
+                    &column,
+                    14,
+                    IconSet::new(IconMode::Unicode),
+                    Some(projection),
+                )
+            })
+            .collect();
+
+        assert!(headers.iter().all(|header| header.width() == 14));
+        assert!(
+            headers
+                .iter()
+                .all(|header| header[..10].starts_with("│ long"))
+        );
+        assert_eq!(
+            super::sort_indicator_slot_width(
+                0,
+                IconSet::new(IconMode::Unicode),
+                Some(&projections[0])
+            ),
+            2
+        );
+        assert_eq!(
+            super::sort_indicator_slot_width(
+                0,
+                IconSet::new(IconMode::Unicode),
+                Some(&projections[1])
+            ),
+            2
+        );
+        assert_eq!(
+            super::sort_indicator_slot_width(
+                0,
+                IconSet::new(IconMode::Unicode),
+                Some(&projections[2])
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn sorting_header_stays_bounded_for_narrow_widths_and_unicode_names() {
+        let column = ColumnMeta {
+            name: "用户名称".into(),
+            type_name: "text".into(),
+        };
+        let projection = [Some(crate::sql::RelationColumnSort {
+            direction: crate::sql::SortDirection::Desc,
+            priority: 0,
+        })];
+
+        for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+            for width in [0, 1, 2, 6, 12] {
+                let text = super::header_cell_text(
+                    0,
+                    &column,
+                    width,
+                    IconSet::new(mode),
+                    Some(&projection),
+                );
+                assert_eq!(
+                    text.width(),
+                    usize::from(width),
+                    "mode={mode:?}, width={width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sorting_header_omits_indicator_without_sort_projection() {
+        let column = ColumnMeta {
+            name: "name".into(),
+            type_name: "text".into(),
+        };
+        let text = super::header_cell_text(0, &column, 12, IconSet::new(IconMode::Unicode), None);
+
+        assert_eq!(text.width(), 12);
+        assert!(!text.contains('▴'));
+        assert!(!text.contains('▾'));
+        assert_eq!(
+            super::sort_indicator_slot_width(0, IconSet::new(IconMode::Unicode), None),
+            0
+        );
+    }
+
+    #[test]
+    fn multiple_sort_indicator_slot_accounts_for_priority_digits() {
+        let projection = [
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 0,
+            }),
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Desc,
+                priority: 9,
+            }),
+        ];
+
+        assert_eq!(
+            super::sort_indicator_slot_width(0, IconSet::new(IconMode::Unicode), Some(&projection)),
+            3
+        );
+        assert_eq!(
+            super::sort_indicator_slot_width(1, IconSet::new(IconMode::Unicode), Some(&projection)),
+            4
+        );
     }
 
     #[test]
