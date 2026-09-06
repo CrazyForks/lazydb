@@ -433,6 +433,18 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     Some(Action::ConfirmTransactionExitChoice(choice))
                 }
                 HitTarget::TransactionExitCancel => Some(Action::CancelTransactionExit),
+                HitTarget::ManualCancellationKeepRunning => {
+                    Some(Action::ActivateManualCancellationKeepRunning)
+                }
+                HitTarget::ManualCancellationConfirm => Some(Action::ConfirmManualCancellation),
+                HitTarget::ExecutionConfirm => Some(Action::ConfirmExecution),
+                HitTarget::ExecutionCancel => Some(Action::CancelExecution),
+                HitTarget::ClearTransactionConfirm => Some(Action::ConfirmClearTransactionOutcome),
+                HitTarget::ClearTransactionCancel => Some(Action::CancelClearTransactionOutcome),
+                HitTarget::DeleteConsoleConfirm => Some(Action::ActivateDeleteConsole),
+                HitTarget::DeleteConsoleCancel => Some(Action::CancelDeleteConsole),
+                HitTarget::SqlEditorListDeleteConfirm => Some(Action::SqlEditorListDeleteActivate),
+                HitTarget::SqlEditorListDeleteCancel => Some(Action::SqlEditorListDeleteCancel),
                 HitTarget::TextDetailCopyAll => None,
                 HitTarget::TextDetailClose => None,
                 HitTarget::RecordViewCopyCell => Some(Action::CopyRecordViewCell),
@@ -586,7 +598,7 @@ fn profile_button_action(button: ProfileButton) -> Action {
         ProfileButton::Test => Action::ProfileTest,
         ProfileButton::Save => Action::ProfileSave { connect: false },
         ProfileButton::SaveAndConnect => Action::ProfileSave { connect: true },
-        ProfileButton::ConfirmDelete => Action::ProfileConfirmDelete,
+        ProfileButton::ConfirmDelete => Action::ActivateProfileDelete,
         ProfileButton::CancelDelete => Action::ProfileCancelDelete,
     }
 }
@@ -650,6 +662,13 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::TransactionMenuItem(_)
         | HitTarget::TransactionMenuCancel => None,
         HitTarget::TransactionExitChoice(_) | HitTarget::TransactionExitCancel => None,
+        HitTarget::DeleteConsoleConfirm
+        | HitTarget::DeleteConsoleCancel
+        | HitTarget::SqlEditorListDeleteConfirm
+        | HitTarget::SqlEditorListDeleteCancel => None,
+        HitTarget::ManualCancellationKeepRunning | HitTarget::ManualCancellationConfirm => None,
+        HitTarget::ExecutionConfirm | HitTarget::ExecutionCancel => None,
+        HitTarget::ClearTransactionConfirm | HitTarget::ClearTransactionCancel => None,
         HitTarget::TextDetailCopyAll
         | HitTarget::TextDetailClose
         | HitTarget::RecordViewCopyCell

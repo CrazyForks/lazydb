@@ -1285,7 +1285,7 @@ fn delete_success_removes_the_profile_and_clamps_selection() {
     app.update(Action::ProfileRequestDelete {
         profile_id: second_id,
     });
-    let request_id = match app.update(Action::ProfileConfirmDelete).as_slice() {
+    let request_id = match app.update(Action::ActivateProfileDelete).as_slice() {
         [
             Command::DeleteProfile {
                 request_id,
@@ -1316,7 +1316,7 @@ fn deleting_or_saving_a_pending_profile_clears_its_connection_state() {
     deleting.connection.pending_generation = Some(1);
     deleting.connection.status = ConnectionStatus::Connecting;
     deleting.update(Action::ProfileRequestDelete { profile_id });
-    let request_id = match deleting.update(Action::ProfileConfirmDelete).as_slice() {
+    let request_id = match deleting.update(Action::ActivateProfileDelete).as_slice() {
         [Command::DeleteProfile { request_id, .. }] => *request_id,
         commands => panic!("unexpected commands: {commands:?}"),
     };
@@ -1588,7 +1588,7 @@ fn deleting_an_active_profile_retires_it_before_disconnect_completes() {
     app.connection.generation = connection.generation;
     app.connection.status = ConnectionStatus::Connected;
     app.update(Action::ProfileRequestDelete { profile_id });
-    let request_id = match app.update(Action::ProfileConfirmDelete).as_slice() {
+    let request_id = match app.update(Action::ActivateProfileDelete).as_slice() {
         [Command::DeleteProfile { request_id, .. }] => *request_id,
         commands => panic!("unexpected commands: {commands:?}"),
     };

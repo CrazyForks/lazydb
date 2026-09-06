@@ -1450,6 +1450,7 @@ pub struct ProfileManagerState {
     pub page: ProfileManagerPage,
     pub draft: Option<ProfileDraft>,
     pub delete_profile_id: Option<Uuid>,
+    pub delete_focus: ProfileDeleteFocus,
     pub selected_field: ProfileField,
     pub operation: Option<ProfileOperation>,
     pub message: Option<String>,
@@ -1463,6 +1464,13 @@ pub struct ProfileManagerState {
     pub system_credential_availability: SecretStoreAvailability,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProfileDeleteFocus {
+    #[default]
+    Cancel,
+    Delete,
+}
+
 const SCOPE_VIEWPORT_CAPACITY: usize = 29;
 
 impl ProfileManagerState {
@@ -1471,6 +1479,7 @@ impl ProfileManagerState {
             page: ProfileManagerPage::Form,
             draft: None,
             delete_profile_id: None,
+            delete_focus: ProfileDeleteFocus::Cancel,
             selected_field: ProfileField::Kind,
             operation: None,
             message: None,

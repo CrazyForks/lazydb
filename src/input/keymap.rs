@@ -342,7 +342,13 @@ impl Keymap {
         if matches!(app.overlay, Some(Overlay::ManualCancelConfirm { .. })) {
             self.pending = None;
             return match event.code {
-                KeyCode::Enter | KeyCode::Char('c') => Some(Action::ConfirmManualCancellation),
+                KeyCode::Enter => match app.overlay {
+                    Some(Overlay::ManualCancelConfirm {
+                        focus: crate::model::workspace::ManualCancelFocus::KeepRunning,
+                        ..
+                    }) => Some(Action::CancelManualCancellation),
+                    _ => Some(Action::ConfirmManualCancellation),
+                },
                 KeyCode::Esc | KeyCode::Char('k') => Some(Action::CancelManualCancellation),
                 KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
                     Some(Action::ToggleManualCancellationFocus)
@@ -393,9 +399,10 @@ impl Keymap {
         if matches!(app.overlay, Some(Overlay::ClearTransactionOutcome { .. })) {
             self.pending = None;
             return match event.code {
-                KeyCode::Enter | KeyCode::Char('y') => Some(Action::ConfirmClearTransactionOutcome),
-                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
-                    Some(Action::CancelClearTransactionOutcome)
+                KeyCode::Enter => Some(Action::ConfirmClearTransactionOutcome),
+                KeyCode::Esc => Some(Action::CancelClearTransactionOutcome),
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::ToggleClearTransactionOutcomeFocus)
                 }
                 _ => None,
             };
@@ -693,9 +700,13 @@ impl Keymap {
                     }
                 }
                 SqlEditorListMode::DeleteConfirm { .. } => match event.code {
-                    KeyCode::Enter | KeyCode::Char('y') => Some(Action::SqlEditorListDeleteConfirm),
-                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
-                        Some(Action::SqlEditorListDeleteCancel)
+                    KeyCode::Enter => Some(Action::SqlEditorListDeleteConfirm),
+                    KeyCode::Esc => Some(Action::SqlEditorListDeleteCancel),
+                    KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                        Some(Action::SqlEditorListDeleteFocusNext)
+                    }
+                    KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                        Some(Action::SqlEditorListDeleteFocusPrevious)
                     }
                     _ => None,
                 },
@@ -706,6 +717,12 @@ impl Keymap {
             return match event.code {
                 KeyCode::Enter => Some(Action::ConfirmDeleteConsole),
                 KeyCode::Esc => Some(Action::CancelDeleteConsole),
+                KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                    Some(Action::ToggleDeleteConsoleFocus)
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                    Some(Action::ToggleDeleteConsoleFocus)
+                }
                 _ => None,
             };
         }
@@ -2570,8 +2587,11 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
 
 fn map_profile_delete_confirmation(code: KeyCode) -> Option<Action> {
     match code {
-        KeyCode::Enter | KeyCode::Char('y') => Some(Action::ProfileConfirmDelete),
-        KeyCode::Esc | KeyCode::Char('q' | 'n') => Some(Action::ProfileCancelDelete),
+        KeyCode::Enter => Some(Action::ProfileConfirmDelete),
+        KeyCode::Esc => Some(Action::ProfileCancelDelete),
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+            Some(Action::ToggleProfileDeleteFocus)
+        }
         _ => None,
     }
 }

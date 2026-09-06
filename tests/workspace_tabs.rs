@@ -258,7 +258,7 @@ fn default_console_can_be_closed_and_deleted() {
     app.update(Action::RequestDeleteActiveConsole);
     assert!(matches!(
         app.overlay,
-        Some(lazydb::model::workspace::Overlay::DeleteConsole { console_id })
+        Some(lazydb::model::workspace::Overlay::DeleteConsole { console_id, .. })
             if console_id == id
     ));
 
@@ -365,7 +365,7 @@ fn deleting_sql_editor_requires_confirmation_and_removes_record() {
     assert!(app.update(Action::RequestDeleteActiveConsole).is_empty());
     assert!(matches!(
         app.overlay,
-        Some(lazydb::model::workspace::Overlay::DeleteConsole { console_id })
+        Some(lazydb::model::workspace::Overlay::DeleteConsole { console_id, .. })
             if console_id == editor_id
     ));
 

@@ -312,7 +312,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
             profile_id: beta_id,
         },
     );
-    dispatch(&mut app, &mut runtime, Action::ProfileConfirmDelete);
+    dispatch(&mut app, &mut runtime, Action::ActivateProfileDelete);
     let (deleted, commands) = apply_next_with_commands(&mut app, &mut runtime, &mut receiver).await;
     assert!(matches!(
         deleted,
@@ -351,7 +351,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
             profile_id: alpha_id,
         },
     );
-    dispatch(&mut app, &mut runtime, Action::ProfileConfirmDelete);
+    dispatch(&mut app, &mut runtime, Action::ActivateProfileDelete);
     let deleted = apply_next(&mut app, &mut runtime, &mut receiver).await;
     assert!(matches!(
         deleted,

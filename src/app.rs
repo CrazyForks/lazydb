@@ -2630,14 +2630,40 @@ impl App {
                         [id],
                     );
                 }
-                self.overlay = Some(Overlay::DeleteConsole { console_id: id });
+                self.overlay = Some(Overlay::DeleteConsole {
+                    console_id: id,
+                    focus: crate::model::workspace::DeleteConsoleFocus::Cancel,
+                });
                 Vec::new()
             }
             Action::ConfirmDeleteConsole => {
-                let Some(Overlay::DeleteConsole { console_id }) = self.overlay.take() else {
+                let Some(Overlay::DeleteConsole { console_id, focus }) = self.overlay.take() else {
+                    return Vec::new();
+                };
+                if focus != crate::model::workspace::DeleteConsoleFocus::Delete {
+                    self.overlay = Some(Overlay::DeleteConsole { console_id, focus });
+                    return Vec::new();
+                }
+                self.delete_console(console_id)
+            }
+            Action::ActivateDeleteConsole => {
+                let Some(Overlay::DeleteConsole { console_id, .. }) = self.overlay.take() else {
                     return Vec::new();
                 };
                 self.delete_console(console_id)
+            }
+            Action::ToggleDeleteConsoleFocus => {
+                if let Some(Overlay::DeleteConsole { focus, .. }) = self.overlay.as_mut() {
+                    *focus = match *focus {
+                        crate::model::workspace::DeleteConsoleFocus::Cancel => {
+                            crate::model::workspace::DeleteConsoleFocus::Delete
+                        }
+                        crate::model::workspace::DeleteConsoleFocus::Delete => {
+                            crate::model::workspace::DeleteConsoleFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
             }
             Action::CancelDeleteConsole => {
                 if matches!(self.overlay, Some(Overlay::DeleteConsole { .. })) {
@@ -2712,8 +2738,30 @@ impl App {
                     list.mode = crate::model::sql_editor_list::SqlEditorListMode::DeleteConfirm {
                         console_id: id,
                     };
+                    list.delete_focus = crate::model::sql_editor_list::DeleteFocus::Cancel;
                 }
                 Vec::new()
+            }
+            Action::SqlEditorListDeleteFocusNext => {
+                if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
+                    && matches!(
+                        list.mode,
+                        crate::model::sql_editor_list::SqlEditorListMode::DeleteConfirm { .. }
+                    )
+                {
+                    list.delete_focus = match list.delete_focus {
+                        crate::model::sql_editor_list::DeleteFocus::Cancel => {
+                            crate::model::sql_editor_list::DeleteFocus::Delete
+                        }
+                        crate::model::sql_editor_list::DeleteFocus::Delete => {
+                            crate::model::sql_editor_list::DeleteFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
+            }
+            Action::SqlEditorListDeleteFocusPrevious => {
+                self.update(Action::SqlEditorListDeleteFocusNext)
             }
             Action::SqlEditorListDeleteConfirm => {
                 let Some((id, query, position)) =
@@ -2736,6 +2784,11 @@ impl App {
                 else {
                     return Vec::new();
                 };
+                if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_ref()
+                    && list.delete_focus != crate::model::sql_editor_list::DeleteFocus::Delete
+                {
+                    return Vec::new();
+                }
                 self.overlay = None;
                 let was_last_console = self.sql_editors.len() == 1;
                 let commands = self.delete_console(id);
@@ -2750,6 +2803,17 @@ impl App {
                     crate::model::sql_editor_list::SqlEditorListState::new(selected_id);
                 self.overlay = Some(Overlay::SqlEditorList(self.sql_editor_list.clone()));
                 commands
+            }
+            Action::SqlEditorListDeleteActivate => {
+                if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
+                    && matches!(
+                        list.mode,
+                        crate::model::sql_editor_list::SqlEditorListMode::DeleteConfirm { .. }
+                    )
+                {
+                    list.delete_focus = crate::model::sql_editor_list::DeleteFocus::Delete;
+                }
+                self.update(Action::SqlEditorListDeleteConfirm)
             }
             Action::SqlEditorListDeleteCancel => {
                 if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
@@ -5483,6 +5547,13 @@ impl App {
                 Vec::new()
             }
             Action::ProfileConfirmDelete => self.confirm_profile_delete(),
+            Action::ActivateProfileDelete => {
+                if let Some(manager) = self.profile_manager.as_mut() {
+                    manager.delete_focus =
+                        crate::model::profile_manager::ProfileDeleteFocus::Delete;
+                }
+                self.confirm_profile_delete()
+            }
             Action::ProfileCancelDelete => {
                 if self
                     .idle_profile_manager_mut(ProfileManagerPage::ConfirmDelete)
@@ -5490,6 +5561,19 @@ impl App {
                 {
                     self.profile_manager = None;
                     self.overlay = None;
+                }
+                Vec::new()
+            }
+            Action::ToggleProfileDeleteFocus => {
+                if let Some(manager) = self.profile_manager.as_mut() {
+                    manager.delete_focus = match manager.delete_focus {
+                        crate::model::profile_manager::ProfileDeleteFocus::Cancel => {
+                            crate::model::profile_manager::ProfileDeleteFocus::Delete
+                        }
+                        crate::model::profile_manager::ProfileDeleteFocus::Delete => {
+                            crate::model::profile_manager::ProfileDeleteFocus::Cancel
+                        }
+                    };
                 }
                 Vec::new()
             }
@@ -6238,6 +6322,12 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ActivateManualCancellationKeepRunning => {
+                if matches!(self.overlay, Some(Overlay::ManualCancelConfirm { .. })) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
             Action::CancelManualCancellation => {
                 self.overlay = None;
                 Vec::new()
@@ -6294,6 +6384,20 @@ impl App {
                 Vec::new()
             }
             Action::ConfirmClearTransactionOutcome => self.confirm_clear_outcome(),
+            Action::ToggleClearTransactionOutcomeFocus => {
+                if let Some(Overlay::ClearTransactionOutcome { focus, .. }) = self.overlay.as_mut()
+                {
+                    *focus = match *focus {
+                        crate::model::workspace::ClearTransactionOutcomeFocus::Cancel => {
+                            crate::model::workspace::ClearTransactionOutcomeFocus::Clear
+                        }
+                        crate::model::workspace::ClearTransactionOutcomeFocus::Clear => {
+                            crate::model::workspace::ClearTransactionOutcomeFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
+            }
             Action::CancelClearTransactionOutcome => {
                 if matches!(self.overlay, Some(Overlay::ClearTransactionOutcome { .. })) {
                     self.overlay = None;
@@ -8870,7 +8974,10 @@ impl App {
                         },
                     ))
                 } else {
-                    Some(Overlay::DeleteConsole { console_id: id })
+                    Some(Overlay::DeleteConsole {
+                        console_id: id,
+                        focus: crate::model::workspace::DeleteConsoleFocus::Cancel,
+                    })
                 };
                 Vec::new()
             }
@@ -9172,6 +9279,7 @@ impl App {
             console_id: tab.id,
             connection,
             transaction_generation: tab.transaction_generation,
+            focus: crate::model::workspace::ClearTransactionOutcomeFocus::Cancel,
         });
         Vec::new()
     }
@@ -9181,10 +9289,20 @@ impl App {
             console_id,
             connection,
             transaction_generation,
+            focus,
         }) = self.overlay.take()
         else {
             return Vec::new();
         };
+        if focus != crate::model::workspace::ClearTransactionOutcomeFocus::Clear {
+            self.overlay = Some(Overlay::ClearTransactionOutcome {
+                console_id,
+                connection,
+                transaction_generation,
+                focus,
+            });
+            return Vec::new();
+        }
         let valid = self.connection.active_identity() == Some(connection)
             && self
                 .tabs
@@ -9245,6 +9363,7 @@ impl App {
         let mut manager = ProfileManagerState {
             page: ProfileManagerPage::ConfirmDelete,
             delete_profile_id: Some(profile_id),
+            delete_focus: crate::model::profile_manager::ProfileDeleteFocus::Cancel,
             ..ProfileManagerState::default()
         };
         if blocked {
@@ -9255,6 +9374,11 @@ impl App {
     }
 
     fn confirm_profile_delete(&mut self) -> Vec<Command> {
+        if self.profile_manager.as_ref().is_some_and(|manager| {
+            manager.delete_focus != crate::model::profile_manager::ProfileDeleteFocus::Delete
+        }) {
+            return Vec::new();
+        }
         let Some(profile_id) = self
             .profile_manager
             .as_ref()
@@ -16224,7 +16348,7 @@ mod tests {
                 ..
             })) if console_id == id
         ));
-        let commands = app.update(Action::SqlEditorListDeleteConfirm);
+        let commands = app.update(Action::SqlEditorListDeleteActivate);
 
         assert!(!app.sql_editors.iter().any(|record| record.id == id));
         assert!(commands.iter().any(
@@ -16262,7 +16386,7 @@ mod tests {
         let id = app.active_console().id;
         app.update(Action::OpenSqlEditorList);
         app.update(Action::SqlEditorListDeleteRequest);
-        app.update(Action::SqlEditorListDeleteConfirm);
+        app.update(Action::SqlEditorListDeleteActivate);
 
         assert_eq!(app.sql_editors.len(), 1);
         assert_ne!(app.sql_editors[0].id, id);
