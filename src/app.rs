@@ -999,7 +999,7 @@ impl App {
         if self.editor.revision(session_id).ok() != Some(revision) {
             return Vec::new();
         }
-        let Ok(text) = self.editor.set_mouse_selection(session_id, start, end) else {
+        let Ok(text) = self.editor.mouse_range_text(session_id, start, end) else {
             return Vec::new();
         };
         if text.is_empty() {
@@ -1969,9 +1969,7 @@ impl App {
                         | Action::ViewRecordViewValue
                         | Action::OpenRecordView
                         | Action::OpenTextDetail(_)
-                        | Action::SetTextDetailSelection { .. }
                         | Action::CompleteMouseTextSelection { .. }
-                        | Action::CopyTextDetailSelection { .. }
                         | Action::CopyTextDetailAll { .. }
                         | Action::CloseTextDetail
                         | Action::RecordViewMoveFields(_)
@@ -3330,19 +3328,6 @@ impl App {
                 .map_or_else(Vec::new, |request| {
                     self.update(Action::OpenTextDetail(request))
                 }),
-            Action::SetTextDetailSelection {
-                session_id,
-                start,
-                end,
-                revision,
-            } => {
-                if matches!(self.overlay, Some(Overlay::TextDetail(_)))
-                    && self.editor.revision(session_id).ok() == Some(revision)
-                {
-                    let _ = self.editor.set_mouse_selection(session_id, start, end);
-                }
-                Vec::new()
-            }
             Action::CompleteMouseTextSelection {
                 source,
                 session_id,
@@ -3368,46 +3353,19 @@ impl App {
                     {
                         return Vec::new();
                     }
-                    if self
-                        .editor
-                        .set_mouse_selection(session_id, start, end)
-                        .is_err()
-                    {
+                    let Ok(text) = self.editor.mouse_range_text(session_id, start, end) else {
+                        return Vec::new();
+                    };
+                    if text.is_empty() {
                         return Vec::new();
                     }
-                    self.update(Action::CopyTextDetailSelection {
-                        session_id,
-                        revision,
-                    })
+                    vec![Command::WriteClipboard(ClipboardPayload {
+                        description: format!("Text selection: {} chars", text.chars().count()),
+                        text,
+                        sensitive: false,
+                    })]
                 }
             },
-            Action::CopyTextDetailSelection {
-                session_id,
-                revision,
-            } => {
-                let Some(Overlay::TextDetail(view)) = self.overlay.as_ref() else {
-                    return Vec::new();
-                };
-                if view.session_id != session_id
-                    || (!(view.source_session_id == Uuid::nil() && view.source_revision == 0)
-                        && self.editor.revision(view.source_session_id).ok()
-                            != Some(view.source_revision))
-                    || self.editor.revision(session_id).ok() != Some(revision)
-                {
-                    return Vec::new();
-                }
-                let Ok(Some(text)) = self.editor.mouse_selection(session_id) else {
-                    return Vec::new();
-                };
-                if text.is_empty() {
-                    return Vec::new();
-                }
-                vec![Command::WriteClipboard(ClipboardPayload {
-                    description: format!("Text selection: {} chars", text.chars().count()),
-                    text,
-                    sensitive: false,
-                })]
-            }
             Action::CopyTextDetailAll { session_id } => {
                 let Some(Overlay::TextDetail(view)) = self.overlay.as_ref() else {
                     return Vec::new();
@@ -6060,24 +6018,19 @@ impl App {
                 end,
                 revision,
             } => self.copy_editor_selection(session_id, start, end, revision),
-            Action::SetEditorMouseSelection {
-                session_id,
-                start,
-                end,
-                revision,
-            } => {
-                if self.mouse_session_focus(session_id).is_some()
-                    && self.editor.revision(session_id).ok() == Some(revision)
-                {
-                    let _ = self.editor.set_mouse_selection(session_id, start, end);
-                }
-                Vec::new()
-            }
             Action::SetEditorMouseCursor {
                 session_id,
                 position,
                 revision,
             } => {
+                if matches!(
+                    self.editor.mode(session_id),
+                    Ok(EditorMode::VisualChar)
+                        | Ok(EditorMode::VisualLine)
+                        | Ok(EditorMode::VisualBlock)
+                ) {
+                    let _ = self.editor.set_mode(session_id, EditorMode::Normal);
+                }
                 if let Some(focus) = self.mouse_session_focus(session_id)
                     && self.editor.revision(session_id).ok() == Some(revision)
                     && self.editor.set_mouse_cursor(session_id, position).is_ok()

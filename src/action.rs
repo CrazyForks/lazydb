@@ -417,12 +417,6 @@ pub enum Action {
         end: crate::model::editor::EditorPosition,
         revision: u64,
     },
-    SetEditorMouseSelection {
-        session_id: Uuid,
-        start: crate::model::editor::EditorPosition,
-        end: crate::model::editor::EditorPosition,
-        revision: u64,
-    },
     CompleteMouseTextSelection {
         source: crate::ui::text_selection::TextGestureSource,
         session_id: Uuid,
@@ -944,16 +938,6 @@ pub enum Action {
     RecordViewMoveRow(isize),
     CloseRecordView,
     OpenTextDetail(crate::model::text_detail::TextDetailRequest),
-    SetTextDetailSelection {
-        session_id: Uuid,
-        start: crate::model::editor::EditorPosition,
-        end: crate::model::editor::EditorPosition,
-        revision: u64,
-    },
-    CopyTextDetailSelection {
-        session_id: Uuid,
-        revision: u64,
-    },
     CopyTextDetailAll {
         session_id: Uuid,
     },

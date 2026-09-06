@@ -95,10 +95,7 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
             &ui,
             &app,
         );
-        assert!(
-            matches!(drag, Some(Action::SetEditorMouseSelection { .. })),
-            "{source}"
-        );
+        assert_eq!(drag, None, "{source}");
         let up = map_mouse(
             mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
             &ui,
@@ -1975,7 +1972,7 @@ fn text_gesture_does_not_fall_through_to_grid_resize() {
 }
 
 #[test]
-fn completed_mouse_selection_remains_available_for_explicit_copy() {
+fn completed_mouse_selection_is_copied_without_leaving_editor_selection() {
     let mut app = App::new(Vec::new());
     app.update(Action::ReplaceEditor("SELECT 1;".into()));
     let session_id = app.active_console().id;
@@ -1998,9 +1995,9 @@ fn completed_mouse_selection_remains_available_for_explicit_copy() {
         mouse(MouseEventKind::Drag(MouseButton::Left), 15, 5),
         &ui,
         &app,
-    )
-    .unwrap();
-    app.update(drag);
+    );
+    assert_eq!(drag, None);
+    assert_eq!(ui.text_gesture.borrow().unwrap().end.column, 5);
     let up = map_mouse(
         mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
         &ui,
@@ -2012,17 +2009,15 @@ fn completed_mouse_selection_remains_available_for_explicit_copy() {
         commands.as_slice(),
         [lazydb::action::Command::WriteClipboard(payload)] if payload.text == "ELECT"
     ));
-
-    assert!(matches!(
-        app.update(Action::CopyEditorSelection {
-            session_id,
-            start: lazydb::model::editor::EditorPosition { line: 0, column: 1 },
-            end: lazydb::model::editor::EditorPosition { line: 0, column: 5 },
-            revision,
+    assert!(ui.text_gesture.borrow().is_none());
+    let snapshot = app
+        .active_editor_render_snapshot(lazydb::model::editor::EditorViewport {
+            width: 40,
+            height: 4,
         })
-        .as_slice(),
-        [lazydb::action::Command::WriteClipboard(payload)] if payload.text == "ELECT"
-    ));
+        .unwrap();
+    assert!(snapshot.selections.is_empty());
+    assert_eq!(revision, app.active_editor_revision());
 }
 
 #[test]

@@ -4111,6 +4111,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                         let Some(terminal_event) = terminal_event else { break; };
                         match terminal_event.context("terminal input failed")? {
                         Event::Key(key) => {
+                            let had_text_gesture = ui_state.text_gesture.borrow().is_some();
                             ui_state.cancel_mouse_gesture();
                             if terminal_selection_mode && key.code == crossterm::event::KeyCode::Esc {
                                 match terminal.set_mouse_capture(true) {
@@ -4157,6 +4158,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                 redraw = true;
                             }
                             redraw |= cancelled_pane_drag;
+                            redraw |= had_text_gesture;
                             let after = keymap.sequence_state(&app, now);
                             redraw |= sequence_redraw_needed(&before, &after);
                             }
@@ -4169,12 +4171,14 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                 keymap.clear_pending();
                             }
                             let was_pane_drag = ui_state.pane_resize_drag.borrow().is_some();
+                            let before_text_gesture = *ui_state.text_gesture.borrow();
                             if let Some(action) = map_mouse(mouse, &ui_state, &app) {
                                 apply_action(&mut app, &mut runtime, action);
                                 redraw = true;
                             }
                             redraw |= was_pane_drag
                                 != ui_state.pane_resize_drag.borrow().is_some();
+                            redraw |= before_text_gesture != *ui_state.text_gesture.borrow();
                             let after = keymap.sequence_state(&app, now);
                             redraw |= sequence_redraw_needed(&before, &after);
                         }
@@ -4182,6 +4186,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                             let now = std::time::Instant::now();
                             let before = keymap.sequence_state(&app, now);
                             keymap.clear_pending();
+                            let had_text_gesture = ui_state.text_gesture.borrow().is_some();
                             ui_state.cancel_mouse_gesture();
                             let cancelled_pane_drag = ui_state.pane_resize_drag.borrow_mut().take().is_some();
                             let actions = map_paste(value, &app);
@@ -4192,6 +4197,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                 redraw = true;
                             }
                             redraw |= cancelled_pane_drag;
+                            redraw |= had_text_gesture;
                             let after = keymap.sequence_state(&app, now);
                             redraw |= sequence_redraw_needed(&before, &after);
                         }

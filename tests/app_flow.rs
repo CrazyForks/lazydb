@@ -138,12 +138,6 @@ fn editor_copy_actions_emit_complete_clipboard_payloads() {
 
     let session_id = app.active_console().id;
     let revision = app.active_editor_revision();
-    app.update(Action::SetEditorMouseSelection {
-        session_id,
-        start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
-        end: lazydb::model::editor::EditorPosition { line: 0, column: 5 },
-        revision,
-    });
     let commands = app.update(Action::CopyEditorSelection {
         session_id,
         start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
@@ -191,6 +185,13 @@ fn completing_mouse_selection_copies_editor_text_without_mutating_revision() {
         [Command::WriteClipboard(payload)] if payload.text == "ELECT"
     ));
     assert_eq!(app.active_editor_revision(), revision);
+    let snapshot = app
+        .active_editor_render_snapshot(lazydb::model::editor::EditorViewport {
+            width: 40,
+            height: 4,
+        })
+        .unwrap();
+    assert!(snapshot.selections.is_empty());
 }
 
 #[test]
@@ -200,12 +201,6 @@ fn clipboard_failure_keeps_selection_usable_without_echoing_payload() {
     let session_id = app.active_console().id;
     let revision = app.active_editor_revision();
 
-    app.update(Action::SetEditorMouseSelection {
-        session_id,
-        start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
-        end: lazydb::model::editor::EditorPosition { line: 0, column: 5 },
-        revision,
-    });
     app.update(Action::ClipboardWriteFailed {
         message: "Clipboard unavailable".into(),
     });
@@ -246,14 +241,11 @@ fn text_detail_selection_and_copy_keep_the_selection_and_reject_stale_sources() 
         Some(Overlay::TextDetail(view)) => (view.session_id, view.revision),
         other => panic!("expected text detail, got {other:?}"),
     };
-    app.update(Action::SetTextDetailSelection {
+    let commands = app.update(Action::CompleteMouseTextSelection {
+        source: lazydb::ui::text_selection::TextGestureSource::TextDetail,
         session_id: detail_session_id,
         start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
         end: lazydb::model::editor::EditorPosition { line: 0, column: 3 },
-        revision: detail_revision,
-    });
-    let commands = app.update(Action::CopyTextDetailSelection {
-        session_id: detail_session_id,
         revision: detail_revision,
     });
     assert!(
@@ -270,8 +262,11 @@ fn text_detail_selection_and_copy_keep_the_selection_and_reject_stale_sources() 
 
     app.update(Action::ReplaceEditor("changed".into()));
     assert!(
-        app.update(Action::CopyTextDetailSelection {
+        app.update(Action::CompleteMouseTextSelection {
+            source: lazydb::ui::text_selection::TextGestureSource::TextDetail,
             session_id: detail_session_id,
+            start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
+            end: lazydb::model::editor::EditorPosition { line: 0, column: 3 },
             revision: detail_revision,
         })
         .is_empty()
@@ -330,12 +325,6 @@ fn text_detail_escape_closes_to_return_overlay_and_copy_button_preserves_selecti
         Some(Overlay::TextDetail(view)) => view.session_id,
         _ => panic!("detail was not opened"),
     };
-    app.update(Action::SetTextDetailSelection {
-        session_id,
-        start: lazydb::model::editor::EditorPosition { line: 0, column: 0 },
-        end: lazydb::model::editor::EditorPosition { line: 0, column: 2 },
-        revision: 0,
-    });
     app.update(Action::CopyTextDetailAll { session_id });
     assert!(matches!(app.overlay, Some(Overlay::TextDetail(_))));
     app.update(Action::CloseTextDetail);

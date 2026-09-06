@@ -570,7 +570,7 @@ fn render_ddl_editor(
         frame.render_widget(block, area);
         return;
     };
-    if let Some(tab) = app.tabs.get(app.active_tab)
+    let ddl_session_id = if let Some(tab) = app.tabs.get(app.active_tab)
         && let crate::model::tab::WorkspaceTab::Relation(tab) = tab
     {
         super::register_text_selection_target(
@@ -579,11 +579,26 @@ fn render_ddl_editor(
             Rect::new(inner.x, inner.y, inner.width, inner.height),
             &snapshot,
         );
-    }
+        Some(tab.ddl_editor_id)
+    } else {
+        None
+    };
     frame.render_widget(block, area);
     for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
         let y = inner.y.saturating_add(row as u16);
-        let spans = super::editor_line_spans(line, &snapshot, theme, true, None);
+        let spans = super::editor_line_spans(
+            line,
+            &snapshot,
+            theme,
+            true,
+            None,
+            &super::mouse_selection_cells(
+                state,
+                ddl_session_id.unwrap_or_default(),
+                &snapshot,
+                line,
+            ),
+        );
         let selected = snapshot
             .selection_cells
             .iter()
