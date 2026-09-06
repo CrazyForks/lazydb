@@ -1,6 +1,6 @@
 use lazydb::sql::{
-    HighlightKind, HighlightSpan, LineIndex, SqlDialect, TextRange, highlight_sql,
-    highlight_sql_ranges,
+    HighlightKind, HighlightSpan, LineIndex, SqlClauseKind, SqlDialect, TextRange, highlight_sql,
+    highlight_sql_clause, highlight_sql_ranges,
 };
 
 fn kinds_for(text: &str, spans: &[HighlightSpan], needle: &str) -> Vec<HighlightKind> {
@@ -34,6 +34,65 @@ fn unicode_keywords_and_strings_are_highlighted() {
     );
     assert!(spans.iter().any(|span| span.kind == HighlightKind::String));
     assert!(spans.iter().any(|span| span.kind == HighlightKind::Comment));
+}
+
+#[test]
+fn sql_clause_highlighting_uses_statement_semantics() {
+    let where_text = "name = 'Ada' AND id >= 18";
+    let where_spans = highlight_sql_clause(where_text, SqlClauseKind::Where, SqlDialect::Sqlite);
+    assert_eq!(
+        kinds_for(where_text, &where_spans, "name"),
+        vec![HighlightKind::Column]
+    );
+    assert_eq!(
+        kinds_for(where_text, &where_spans, "'Ada'"),
+        vec![HighlightKind::String]
+    );
+    assert_eq!(
+        kinds_for(where_text, &where_spans, "18"),
+        vec![HighlightKind::Number]
+    );
+    assert_eq!(
+        kinds_for(where_text, &where_spans, "AND"),
+        vec![HighlightKind::Keyword]
+    );
+
+    let order_text = "created_at DESC, name ASC";
+    let order_spans = highlight_sql_clause(order_text, SqlClauseKind::OrderBy, SqlDialect::Sqlite);
+    assert_eq!(
+        kinds_for(order_text, &order_spans, "created_at"),
+        vec![HighlightKind::Column]
+    );
+    assert_eq!(
+        kinds_for(order_text, &order_spans, "DESC"),
+        vec![HighlightKind::Keyword]
+    );
+    assert_eq!(
+        kinds_for(order_text, &order_spans, "ASC"),
+        vec![HighlightKind::Keyword]
+    );
+}
+
+#[test]
+fn sql_clause_highlighting_keeps_ranges_relative_and_handles_incomplete_input() {
+    for (clause, text) in [
+        (SqlClauseKind::Where, "name ="),
+        (SqlClauseKind::OrderBy, "created_at DESC,"),
+    ] {
+        let spans = highlight_sql_clause(text, clause, SqlDialect::Postgres);
+        assert!(spans.iter().all(|span| span.range.end <= text.len()));
+        assert!(
+            spans
+                .iter()
+                .all(|span| text.is_char_boundary(span.range.start))
+        );
+        assert!(
+            spans
+                .iter()
+                .all(|span| text.is_char_boundary(span.range.end))
+        );
+    }
+    assert!(highlight_sql_clause("", SqlClauseKind::Where, SqlDialect::Postgres).is_empty());
 }
 
 #[test]

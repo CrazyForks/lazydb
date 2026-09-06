@@ -35,6 +35,12 @@ pub enum HighlightKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqlClauseKind {
+    Where,
+    OrderBy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HighlightSpan {
     pub range: TextRange,
     pub kind: HighlightKind,
@@ -44,6 +50,38 @@ pub fn highlight_sql(text: &str, dialect: SqlDialect) -> Vec<HighlightSpan> {
     let mut spans = lexical_highlights(text, dialect);
     apply_semantic_highlights(text, dialect, &mut spans);
     merge_sql_server_variables(text, spans, dialect == SqlDialect::SqlServer)
+}
+
+pub fn highlight_sql_clause(
+    text: &str,
+    clause: SqlClauseKind,
+    dialect: SqlDialect,
+) -> Vec<HighlightSpan> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let prefix = match clause {
+        SqlClauseKind::Where => "SELECT * FROM __lazydb_highlight WHERE ",
+        SqlClauseKind::OrderBy => "SELECT * FROM __lazydb_highlight ORDER BY ",
+    };
+    let source = format!("{prefix}{text}");
+    let input_start = prefix.len();
+    highlight_sql(&source, dialect)
+        .into_iter()
+        .filter_map(|span| {
+            if span.range.start < input_start
+                || span.range.end < input_start
+                || span.range.end > source.len()
+            {
+                return None;
+            }
+            Some(HighlightSpan {
+                range: TextRange::new(span.range.start - input_start, span.range.end - input_start),
+                kind: span.kind,
+            })
+        })
+        .collect()
 }
 
 fn lexical_highlights(text: &str, dialect: SqlDialect) -> Vec<HighlightSpan> {

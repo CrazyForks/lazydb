@@ -34,7 +34,10 @@ pub use derived_result::{
 pub use dialect::SqlDialect;
 pub use execution::ExecutionDraft;
 pub use format::{FormatError, format_sql};
-pub use highlight::{HighlightKind, HighlightSpan, highlight_sql, highlight_sql_ranges};
+pub use highlight::{
+    HighlightKind, HighlightSpan, SqlClauseKind, highlight_sql, highlight_sql_clause,
+    highlight_sql_ranges,
+};
 #[allow(unused_imports)]
 pub(crate) use identifier_match::{identifier_match, identifier_match_positions};
 pub use range::TextRange;

@@ -1,5 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::sql::HighlightKind;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SyntaxColor {
     Keyword,
@@ -16,6 +18,25 @@ pub(crate) enum SyntaxColor {
     Punctuation,
     Parameter,
     Plain,
+}
+
+pub(crate) const fn syntax_color_for_highlight(kind: HighlightKind) -> SyntaxColor {
+    match kind {
+        HighlightKind::Keyword => SyntaxColor::Keyword,
+        HighlightKind::Identifier => SyntaxColor::Identifier,
+        HighlightKind::Relation => SyntaxColor::Relation,
+        HighlightKind::RelationAlias => SyntaxColor::RelationAlias,
+        HighlightKind::Column => SyntaxColor::Column,
+        HighlightKind::Type => SyntaxColor::Type,
+        HighlightKind::Function => SyntaxColor::Function,
+        HighlightKind::String => SyntaxColor::String,
+        HighlightKind::Number => SyntaxColor::Number,
+        HighlightKind::Comment => SyntaxColor::Comment,
+        HighlightKind::Operator => SyntaxColor::Operator,
+        HighlightKind::Punctuation => SyntaxColor::Punctuation,
+        HighlightKind::Parameter => SyntaxColor::Parameter,
+        HighlightKind::Plain => SyntaxColor::Plain,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -150,7 +171,47 @@ impl Theme {
 mod tests {
     use ratatui::style::Color;
 
-    use super::{SyntaxColor, Theme};
+    use super::{SyntaxColor, Theme, syntax_color_for_highlight};
+    use crate::sql::HighlightKind;
+
+    #[test]
+    fn sql_highlight_kinds_use_the_editor_syntax_palette() {
+        let mappings = [
+            (HighlightKind::Keyword, SyntaxColor::Keyword),
+            (HighlightKind::Identifier, SyntaxColor::Identifier),
+            (HighlightKind::Relation, SyntaxColor::Relation),
+            (HighlightKind::RelationAlias, SyntaxColor::RelationAlias),
+            (HighlightKind::Column, SyntaxColor::Column),
+            (HighlightKind::Type, SyntaxColor::Type),
+            (HighlightKind::Function, SyntaxColor::Function),
+            (HighlightKind::String, SyntaxColor::String),
+            (HighlightKind::Number, SyntaxColor::Number),
+            (HighlightKind::Comment, SyntaxColor::Comment),
+            (HighlightKind::Operator, SyntaxColor::Operator),
+            (HighlightKind::Punctuation, SyntaxColor::Punctuation),
+            (HighlightKind::Parameter, SyntaxColor::Parameter),
+            (HighlightKind::Plain, SyntaxColor::Plain),
+        ];
+        for (kind, expected) in mappings {
+            assert_eq!(syntax_color_for_highlight(kind), expected);
+        }
+    }
+
+    #[test]
+    fn sql_highlight_kinds_respect_the_plain_color_mode() {
+        let theme = Theme::for_color_mode(crate::cli::ColorMode::Never);
+        for kind in [
+            HighlightKind::Keyword,
+            HighlightKind::Column,
+            HighlightKind::String,
+            HighlightKind::Number,
+        ] {
+            assert_eq!(
+                theme.syntax_color(syntax_color_for_highlight(kind)),
+                Color::Reset
+            );
+        }
+    }
 
     #[test]
     fn syntax_categories_match_the_editor_palette() {

@@ -250,6 +250,7 @@ pub struct UiState {
         crate::action::CatalogEditorCursorTarget,
         text_selection::InputHitMap,
     )>,
+    pub(crate) query_bar_highlights: query_bar::QueryBarHighlightCache,
     pub(crate) animations: animation::AnimationState,
     pub(crate) result_area: Option<Rect>,
     pub(crate) activity_icons: icons::IconSet,
@@ -326,6 +327,7 @@ impl UiState {
             data_query_input_targets: Vec::new(),
             profile_input_targets: Vec::new(),
             catalog_input_targets: Vec::new(),
+            query_bar_highlights: query_bar::QueryBarHighlightCache::default(),
             animations: animation::AnimationState::new(mode, Instant::now()),
             result_area: None,
             activity_icons: icons::IconSet::default(),
@@ -3113,8 +3115,15 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
             Constraint::Length(1),
         ])
         .split(inner);
-    let query_cursor =
-        query_bar::render(frame, chunks[0], &query, theme, state, state.activity_icons);
+    let query_cursor = query_bar::render(
+        frame,
+        chunks[0],
+        &query,
+        theme,
+        state,
+        state.activity_icons,
+        app.sql_dialect(),
+    );
     let result_area = chunks[1];
     let loading_identity = if tab.query_status == QueryStatus::Running {
         Some(animation::LoadIdentity::Query {

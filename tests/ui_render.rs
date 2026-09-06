@@ -26,7 +26,9 @@ use lazydb::{
         catalog_editor::{
             CatalogEditorOperation, CatalogEditorPage, CatalogEditorState, CatalogMutationOption,
         },
-        data_query::{DataQueryCandidate, DataQueryCompletion, DataQueryInput},
+        data_query::{
+            DataQueryCandidate, DataQueryCapability, DataQueryCompletion, DataQueryInput,
+        },
         execution_target::ExecutionTarget,
         explorer::{
             CatalogGroupState, ExplorerLoadState, ExplorerNodeId, ExplorerOwnerId, ProfilePlacement,
@@ -5432,6 +5434,103 @@ fn sql_data_renders_shared_query_bar_above_the_grid() {
             .hit_regions
             .iter()
             .any(|region| region.target == HitTarget::GridColumnSort(0))
+    );
+}
+
+#[test]
+fn query_bar_uses_sql_syntax_colors() {
+    let mut app = fixture();
+    app.active_console_mut().query.capability = DataQueryCapability::Sql;
+    app.active_console_mut()
+        .query
+        .where_input
+        .set("name = 'Ada' AND id >= 18");
+    app.active_console_mut()
+        .query
+        .order_by_input
+        .set("created_at DESC, name ASC");
+    let width = 120;
+    let height = 36;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = UiState::new();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut state))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let where_y = (0..height)
+        .find(|y| {
+            (0..width)
+                .map(|x| buffer[(x, *y)].symbol())
+                .collect::<String>()
+                .contains("WHERE  name = 'Ada' AND id >= 18")
+        })
+        .unwrap();
+    let cell_start = |needle: &str| {
+        (0..width.saturating_sub(needle.chars().count() as u16))
+            .find(|x| {
+                needle.chars().enumerate().all(|(offset, character)| {
+                    buffer[(x.saturating_add(offset as u16), where_y)].symbol()
+                        == character.to_string()
+                })
+            })
+            .unwrap()
+    };
+    let name_x = cell_start("name");
+    let string_x = cell_start("'Ada'");
+    let number_x = cell_start("18");
+    assert_eq!(buffer[(name_x, where_y)].fg, Color::Rgb(199, 146, 234));
+    assert_eq!(buffer[(string_x, where_y)].fg, Color::Rgb(92, 200, 150));
+    assert_eq!(buffer[(number_x, where_y)].fg, Color::Rgb(101, 167, 255));
+}
+
+#[test]
+fn relation_query_bar_uses_sql_syntax_colors() {
+    let mut app = fixture();
+    let mut relation = RelationTab::new("users");
+    relation.query.capability = DataQueryCapability::Relation;
+    relation.query.where_input.set("name = 'Ada'");
+    relation.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "SELECT id, name FROM users".into(),
+                result: app.active_console().outcome.clone().unwrap(),
+                pagination: lazydb::model::pagination::ResultPagination::from_page(
+                    lazydb::model::pagination::PageRequest::first(
+                        lazydb::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+            },
+            app.connection.active_identity().unwrap(),
+            lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(relation));
+    app.active_tab = 1;
+    let (output, _) = render_with_state(&app, 120, 36);
+    assert!(output.contains("WHERE  name = 'Ada'"), "{output}");
+}
+
+#[test]
+fn query_bar_keeps_unicode_input_and_disabled_state_safe() {
+    let mut app = fixture();
+    app.active_console_mut().query.capability = DataQueryCapability::Sql;
+    app.active_console_mut()
+        .query
+        .where_input
+        .set("名字 = '🙂' AND id = 18");
+    let (output, _) = render_with_state(&app, 120, 36);
+    assert!(output.contains("名 字"), "{output}");
+    assert!(output.contains("'🙂 "), "{output}");
+    assert!(output.contains("AND id = 18"), "{output}");
+
+    app.active_console_mut().query.capability = DataQueryCapability::AwaitingResult;
+    let (_, state) = render_with_state(&app, 120, 36);
+    assert!(
+        !state
+            .hit_regions
+            .iter()
+            .any(|region| matches!(region.target, HitTarget::DataQueryInput(_)))
     );
 }
 

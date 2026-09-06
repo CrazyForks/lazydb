@@ -142,6 +142,7 @@ fn render_data(
             theme,
             state,
             state.activity_icons,
+            app.sql_dialect(),
         );
         if let Some((message, retry, cancel)) = status {
             if cancel {
@@ -249,6 +250,7 @@ fn render_data(
             theme,
             state,
             state.activity_icons,
+            app.sql_dialect(),
         );
         if cancel {
             let identity = relation_loading_identity(tab, RelationView::Data);
