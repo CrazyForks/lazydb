@@ -22,6 +22,49 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn control(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
+#[test]
+fn result_pagination_keys_map_in_sql_and_relation_data_contexts() {
+    let mut sql = App::new(Vec::new());
+    sql.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+    for (event, action) in [
+        (key(KeyCode::PageUp), Action::ResultPreviousPage),
+        (key(KeyCode::PageDown), Action::ResultNextPage),
+        (control(KeyCode::Home), Action::ResultFirstPage),
+        (control(KeyCode::End), Action::ResultLastPage),
+    ] {
+        assert_eq!(keymap.map(event, &sql), Some(action));
+    }
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('P')), &sql),
+        Some(Action::OpenPageSizeSelector { relation: false })
+    );
+
+    let mut relation = App::new(Vec::new());
+    relation
+        .tabs
+        .push(WorkspaceTab::Relation(RelationTab::new("users")));
+    relation.active_tab = relation.tabs.len() - 1;
+    relation.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+    for (event, action) in [
+        (key(KeyCode::PageUp), Action::RelationPreviousPage),
+        (key(KeyCode::PageDown), Action::RelationNextPage),
+        (control(KeyCode::Home), Action::RelationFirstPage),
+        (control(KeyCode::End), Action::RelationLastPage),
+    ] {
+        assert_eq!(keymap.map(event, &relation), Some(action));
+    }
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('P')), &relation),
+        Some(Action::OpenPageSizeSelector { relation: true })
+    );
+}
+
 #[test]
 fn normal_mode_ctrl_r_routes_to_editor_redo() {
     let mut app = App::new(Vec::new());

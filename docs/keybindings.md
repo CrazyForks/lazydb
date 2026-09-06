@@ -58,6 +58,28 @@ prefix. Editor Insert Space remains text/completion input. A footer item can be
 display-only when the underlying mapper has no direct action for that
 presentation.
 
+## Result Pagination
+
+SQL Result Set and Relation Data share the same database-backed paginator. The
+following commands load data pages, rather than scrolling within the rows that
+are already loaded:
+
+| Keys | Behavior |
+| --- | --- |
+| `PageUp` | Load the previous data page |
+| `PageDown` | Load the next data page |
+| `Ctrl-Home` | Load the first data page |
+| `Ctrl-End` | Load the last data page; this may run a total-count query |
+| `P` | Open the page-size selector and return to the first page |
+
+These commands are active only when the SQL Result Set or Relation Data grid is
+focused. They can be remapped under `[keybindings.results]` with
+`first-page`, `previous-page`, `next-page`, `last-page`, and `page-size`.
+`Ctrl-f`/`Ctrl-b` and `Ctrl-d`/`Ctrl-u` remain viewport scrolling commands, and
+`gg`/`G` select the first or last row of the current data page. Pagination is
+disabled while a page request is running, when no usable result exists, and for
+Relation Data while edits or transaction restrictions are pending.
+
 ## Global
 
 | Keys | Behavior |

@@ -242,6 +242,17 @@ pub struct CompletionRequest {
 }
 
 impl ConsoleTab {
+    pub fn displayed_result_page(&self) -> Option<(&QueryOutcome, ResultPagination)> {
+        if let Some(derived) = self.derived.as_ref()
+            && let Some(outcome) = derived.outcome.as_ref()
+        {
+            return Some((outcome, derived.pagination));
+        }
+        self.outcome
+            .as_ref()
+            .map(|outcome| (outcome, self.pagination))
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -436,9 +447,50 @@ fn move_bounded(current: usize, delta: isize, count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataGridState, GridColumnTarget, GridRowAlignment, GridRowTarget, GridScrollAmount,
-        OutputEntry, OutputKind,
+        ConsoleTab, DataGridState, GridColumnTarget, GridRowAlignment, GridRowTarget,
+        GridScrollAmount, OutputEntry, OutputKind,
     };
+    use crate::db::query::{QueryOutcome, QueryStats, ResultSet};
+    use crate::model::pagination::{PageRequest, PageSize, ResultPagination, TotalRows};
+    use std::time::Duration;
+
+    fn outcome() -> QueryOutcome {
+        QueryOutcome {
+            result_sets: vec![ResultSet::default()],
+            stats: QueryStats::new(Duration::ZERO, Duration::ZERO, 0),
+        }
+    }
+
+    #[test]
+    fn displayed_result_page_pairs_base_outcome_with_base_pagination() {
+        let mut tab = ConsoleTab::new("test");
+        tab.outcome = Some(outcome());
+        tab.pagination = ResultPagination {
+            page_size: PageSize::Ten,
+            offset: 10,
+            visible_rows: 10,
+            has_next: true,
+            total: TotalRows::LowerBound(21),
+        };
+
+        let (displayed, pagination) = tab.displayed_result_page().expect("base result");
+
+        assert_eq!(displayed.result_sets.len(), 1);
+        assert_eq!(
+            pagination,
+            ResultPagination {
+                page_size: PageSize::Ten,
+                offset: 10,
+                visible_rows: 10,
+                has_next: true,
+                total: TotalRows::LowerBound(21),
+            }
+        );
+        assert_eq!(
+            pagination,
+            ResultPagination::from_page(PageRequest::at(PageSize::Ten, 10), 11)
+        );
+    }
 
     #[test]
     fn output_sql_entry_records_only_the_sql_suffix() {
