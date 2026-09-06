@@ -478,7 +478,6 @@ pub fn complete(
             .cmp(&left.score)
             .then_with(|| left.label.cmp(&right.label))
     });
-    candidates.truncate(10);
     candidates
 }
 

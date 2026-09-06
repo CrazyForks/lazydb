@@ -1316,11 +1316,15 @@ fn render_completion_popup(
     let inner_width = area.width.saturating_sub(POPUP_BORDER_WIDTH);
     let columns = columns.fit(inner_width);
     let editor_text = app.active_editor_text().ok();
+    let capacity = usize::from(area.height.saturating_sub(POPUP_BORDER_HEIGHT)).min(10);
+    let selected = popup.selected.min(popup.candidates.len().saturating_sub(1));
+    let start = selected.saturating_add(1).saturating_sub(capacity);
     let items = popup
         .candidates
         .iter()
-        .take(usize::from(area.height.saturating_sub(POPUP_BORDER_HEIGHT)).min(10))
         .enumerate()
+        .skip(start)
+        .take(capacity)
         .map(|(index, candidate)| {
             let row_style = if index == popup.selected {
                 Style::new().fg(theme.background).bg(theme.accent)

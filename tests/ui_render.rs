@@ -4164,6 +4164,32 @@ fn completion_candidate_label_aligns_with_identifier_start() {
 }
 
 #[test]
+fn completion_popup_scrolls_to_keep_selected_candidate_visible() {
+    let rows = (0..25)
+        .map(|index| (format!("candidate_{index:02}"), "table".to_owned()))
+        .collect::<Vec<_>>();
+    let row_refs = rows
+        .iter()
+        .map(|(label, detail)| (label.as_str(), detail.as_str()))
+        .collect::<Vec<_>>();
+    let mut app = completion_app_with_details(
+        "SELECT * FROM candidate_",
+        TextRange::new(18, 28),
+        &row_refs,
+    );
+    app.active_console_mut()
+        .completion
+        .as_mut()
+        .unwrap()
+        .selected = 20;
+
+    let output = render(&app, 100, 24);
+
+    assert!(output.contains("candidate_20"), "{output}");
+    assert!(!output.contains("candidate_00"), "{output}");
+}
+
+#[test]
 fn completion_candidate_labels_share_a_fixed_icon_column() {
     let mut app = fixture();
     app.focus = Focus::Editor;
