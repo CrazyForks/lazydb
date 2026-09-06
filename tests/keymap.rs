@@ -222,6 +222,28 @@ fn catalog_discard_enter_activates_the_focused_button() {
 }
 
 #[test]
+fn catalog_discard_navigation_supports_horizontal_and_tab_keys() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditorDiscardConfirm {
+        focus: lazydb::model::workspace::CatalogEditorDiscardFocus::KeepEditing,
+    });
+    let mut keymap = Keymap::default();
+
+    for event in [key(KeyCode::Right), key(KeyCode::Down), key(KeyCode::Tab)] {
+        assert_eq!(
+            keymap.map(event, &app),
+            Some(Action::CatalogEditorDiscardMove(1))
+        );
+    }
+    for event in [key(KeyCode::Left), key(KeyCode::Up), key(KeyCode::BackTab)] {
+        assert_eq!(
+            keymap.map(event, &app),
+            Some(Action::CatalogEditorDiscardMove(-1))
+        );
+    }
+}
+
+#[test]
 fn console_manager_rename_keys_use_shared_text_input_actions() {
     let mut app = App::new(Vec::new());
     app.update(Action::OpenSqlEditorList);

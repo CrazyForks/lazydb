@@ -217,6 +217,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     && !matches!(overlay, Overlay::TargetSelector { .. })
                     && !matches!(overlay, Overlay::TransactionMenu { .. })
                     && !matches!(overlay, Overlay::TransactionExitConfirm { .. })
+                    && !matches!(overlay, Overlay::CatalogEditorDiscardConfirm { .. })
                     && !matches!(overlay, Overlay::Update(_))
                     || !matches!(
                         target,
@@ -237,6 +238,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                             | HitTarget::CatalogEditorRemoveTableColumn
                             | HitTarget::CatalogEditorReview
                             | HitTarget::CatalogEditorCancel
+                            | HitTarget::CatalogEditorDiscardKeepEditing
+                            | HitTarget::CatalogEditorDiscardChanges
                             | HitTarget::CatalogEditorColumnDetailsConfirm
                             | HitTarget::CatalogEditorColumnDetailsCancel
                             | HitTarget::CatalogOwnerChoice(_)
