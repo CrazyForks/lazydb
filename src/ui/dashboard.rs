@@ -472,6 +472,7 @@ fn render_processes(
         state,
         None,
         state.activity_icons,
+        None,
     );
 }
 

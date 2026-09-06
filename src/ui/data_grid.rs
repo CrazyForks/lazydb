@@ -45,6 +45,7 @@ pub(crate) fn render(
     state: &mut UiState,
     edit: Option<&crate::model::relation_edit::RelationEditSession>,
     icons: IconSet,
+    sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
 ) {
     if result.columns.is_empty() {
         frame.render_widget(
@@ -62,7 +63,7 @@ pub(crate) fn render(
 
     let table_area = block.inner(area);
     let row_count = edit.map_or(result.rows.len(), |session| session.rows.len());
-    let widths = automatic_widths(result, edit, icons)
+    let widths = automatic_widths(result, edit, icons, sort_projection)
         .into_iter()
         .enumerate()
         .map(|(index, width)| {
@@ -104,6 +105,28 @@ pub(crate) fn render(
         visible_rows,
     });
     let row_y = table_area.y.saturating_add(1);
+    if sort_projection.is_some() {
+        let mut header_x = data_start_x(table_area, number_width);
+        for column in &visible {
+            if header_x >= table_area.right() {
+                break;
+            }
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(
+                    header_x,
+                    table_area.y,
+                    column
+                        .rendered_width
+                        .min(table_area.right().saturating_sub(header_x)),
+                    1,
+                ),
+                target: HitTarget::RelationColumnSort(column.index),
+            });
+            header_x = header_x
+                .saturating_add(column.rendered_width)
+                .saturating_add(1);
+        }
+    }
     for screen_row in 0..visible_rows.min(row_count.saturating_sub(row_offset)) {
         let row_index = row_offset.saturating_add(screen_row);
         let mut x = data_start_x(table_area, number_width);
@@ -131,18 +154,30 @@ pub(crate) fn render(
     for column in &visible {
         boundary_x = boundary_x.saturating_add(column.rendered_width);
         if column.is_complete() && boundary_x < table_area.right().saturating_sub(1) {
+            let target = HitTarget::RelationColumnResize {
+                column: column.index,
+                width: column.natural_width,
+            };
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(boundary_x, table_area.y, 1, 1),
+                target: target.clone(),
+            });
             state.hit_regions.push(HitRegion {
                 area: Rect::new(boundary_x, row_y, 1, 1),
-                target: HitTarget::RelationColumnResize {
-                    column: column.index,
-                    width: column.natural_width,
-                },
+                target,
             });
         }
         boundary_x = boundary_x.saturating_add(1);
     }
 
-    let header = Row::new(header_cells(&visible, result, number_width, theme, icons));
+    let header = Row::new(header_cells(
+        &visible,
+        result,
+        number_width,
+        theme,
+        icons,
+        sort_projection,
+    ));
     let rows = (0..visible_rows.min(row_count.saturating_sub(row_offset))).map(|screen_row| {
         let row_index = row_offset.saturating_add(screen_row);
         let row = edit
@@ -257,6 +292,7 @@ fn automatic_widths(
     result: &ResultSet,
     edit: Option<&crate::model::relation_edit::RelationEditSession>,
     icons: IconSet,
+    sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
 ) -> Vec<u16> {
     let rows = edit
         .map(|session| session.rows.iter().map(|row| row.current.as_slice()))
@@ -274,6 +310,15 @@ fn automatic_widths(
         .enumerate()
         .map(|(column_index, column)| {
             let header = column_header_text(column, icons);
+            let sort_width = sort_projection.map_or(0, |projection| {
+                projection
+                    .get(column_index)
+                    .and_then(Option::as_ref)
+                    .map_or_else(
+                        || UnicodeWidthStr::width(icons.sort_default()),
+                        |sort| sort_indicator(sort, icons, projection).width(),
+                    )
+            });
             let content = rows
                 .clone()
                 .filter_map(|row| row.get(column_index))
@@ -281,7 +326,12 @@ fn automatic_widths(
                 .map(|text| UnicodeWidthStr::width(text.as_str()))
                 .max()
                 .unwrap_or(0);
-            (UnicodeWidthStr::width(header.as_str()).max(content) + 2).clamp(6, 40) as u16
+            (UnicodeWidthStr::width(header.as_str())
+                .saturating_add(sort_width)
+                .saturating_add(1)
+                .max(content)
+                + 2)
+            .clamp(6, 40) as u16
         })
         .collect()
 }
@@ -324,6 +374,7 @@ fn header_cells(
     number_width: u16,
     theme: Theme,
     icons: IconSet,
+    sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
 ) -> Vec<Cell<'static>> {
     let header_style = Style::new()
         .fg(theme.grid_header_text)
@@ -339,7 +390,13 @@ fn header_cells(
         if position > 0 {
             cells.push(Cell::from("│").style(separator_style));
         }
-        let name = column_header_text(&result.columns[column.index], icons);
+        let name = header_cell_text(
+            column.index,
+            &result.columns[column.index],
+            column.rendered_width,
+            icons,
+            sort_projection,
+        );
         cells.push(Cell::from(name).style(header_style));
     }
     cells
@@ -350,6 +407,54 @@ fn column_header_text(column: &crate::db::query::ColumnMeta, icons: IconSet) -> 
         "{} {}",
         icons.catalog(CatalogKind::Column),
         sanitize_terminal_text(&column.name)
+    )
+}
+
+fn sort_indicator(
+    sort: &crate::sql::RelationColumnSort,
+    icons: IconSet,
+    projection: &[Option<crate::sql::RelationColumnSort>],
+) -> String {
+    let icon = match sort.direction {
+        crate::sql::SortDirection::Asc => icons.sort_ascending(),
+        crate::sql::SortDirection::Desc => icons.sort_descending(),
+    };
+    let multiple = projection.iter().flatten().nth(1).is_some();
+    if multiple {
+        format!("{icon}{}", sort.priority.saturating_add(1))
+    } else {
+        icon.to_owned()
+    }
+}
+
+fn header_cell_text(
+    column_index: usize,
+    column: &crate::db::query::ColumnMeta,
+    width: u16,
+    icons: IconSet,
+    sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
+) -> String {
+    let indicator = sort_projection.map_or_else(String::new, |projection| {
+        projection
+            .get(column_index)
+            .and_then(Option::as_ref)
+            .map_or_else(
+                || icons.sort_default().to_owned(),
+                |sort| sort_indicator(sort, icons, projection),
+            )
+    });
+    let indicator = super::truncate_to_cells(&indicator, usize::from(width));
+    let indicator_width = UnicodeWidthStr::width(indicator.as_str());
+    let available = usize::from(width).saturating_sub(indicator_width.saturating_add(1));
+    let label = super::truncate_to_cells(&column_header_text(column, icons), available);
+    let used = UnicodeWidthStr::width(label.as_str());
+    format!(
+        "{label}{}{indicator}",
+        " ".repeat(
+            usize::from(width)
+                .saturating_sub(used)
+                .saturating_sub(indicator_width)
+        )
     )
 }
 
@@ -624,11 +729,127 @@ mod tests {
         selected_data_cell, total_width, viewport_start, visible_columns,
     };
     use ratatui::style::Style;
+    use unicode_width::UnicodeWidthStr;
 
     use crate::{
-        db::query::ColumnMeta,
-        ui::{icons::IconMode, icons::IconSet, theme::Theme},
+        db::query::{ColumnMeta, ResultSet},
+        ui::{HitTarget, icons::IconMode, icons::IconSet, theme::Theme},
     };
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect, widgets::Block};
+
+    fn hit_regions(
+        column_offset: usize,
+        sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
+    ) -> crate::ui::UiState {
+        let result = ResultSet {
+            columns: vec![
+                ColumnMeta {
+                    name: "first".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "second".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "third".into(),
+                    type_name: "TEXT".into(),
+                },
+            ],
+            rows: vec![vec![
+                crate::db::value::CellValue::Text("a".into()),
+                crate::db::value::CellValue::Text("b".into()),
+                crate::db::value::CellValue::Text("c".into()),
+            ]],
+            affected_rows: 0,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(24, 8)).unwrap();
+        let mut state = crate::ui::UiState::new();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    Rect::new(0, 0, 24, 8),
+                    uuid::Uuid::nil(),
+                    &result,
+                    crate::model::tab::DataGridState {
+                        column_offset,
+                        selected_column: column_offset,
+                        ..Default::default()
+                    },
+                    &[Some(6); 3],
+                    Theme::deep_space(),
+                    Block::default(),
+                    &mut state,
+                    None,
+                    IconSet::new(IconMode::Ascii),
+                    sort_projection,
+                );
+            })
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn relation_sort_hit_regions_cover_header_content_not_separators() {
+        let projection = [None, None, None];
+        let state = hit_regions(0, Some(&projection));
+
+        assert!(state.hit_regions.iter().any(|region| {
+            region.target == HitTarget::RelationColumnSort(0)
+                && region.area.y == 0
+                && region.area.width > 0
+        }));
+        assert!(state.hit_regions.iter().any(|region| {
+            region.target
+                == HitTarget::RelationColumnResize {
+                    column: 0,
+                    width: 6,
+                }
+                && region.area.y == 0
+        }));
+        assert_eq!(
+            state.target_at(11, 0),
+            Some(&HitTarget::RelationColumnResize {
+                column: 0,
+                width: 6,
+            })
+        );
+        assert_eq!(
+            state.target_at(5, 0),
+            Some(&HitTarget::RelationColumnSort(0))
+        );
+    }
+
+    #[test]
+    fn relation_sort_hit_regions_follow_horizontal_scroll() {
+        let projection = [None, None, None];
+        let state = hit_regions(1, Some(&projection));
+
+        assert!(
+            state
+                .hit_regions
+                .iter()
+                .any(|region| region.target == HitTarget::RelationColumnSort(1))
+        );
+        assert!(
+            !state
+                .hit_regions
+                .iter()
+                .any(|region| region.target == HitTarget::RelationColumnSort(0))
+        );
+    }
+
+    #[test]
+    fn non_relation_grids_do_not_register_sort_hit_regions() {
+        let state = hit_regions(0, None);
+        assert!(
+            !state
+                .hit_regions
+                .iter()
+                .any(|region| matches!(region.target, HitTarget::RelationColumnSort(_)))
+        );
+    }
 
     #[test]
     fn column_header_includes_explorer_column_icon() {
@@ -641,6 +862,73 @@ mod tests {
             column_header_text(&column, IconSet::new(IconMode::Unicode)),
             "│ user_id"
         );
+    }
+
+    #[test]
+    fn sorted_header_keeps_indicator_at_the_right_edge() {
+        let column = ColumnMeta {
+            name: "name".into(),
+            type_name: "text".into(),
+        };
+        let text = super::header_cell_text(
+            0,
+            &column,
+            12,
+            IconSet::new(IconMode::Unicode),
+            Some(&[Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Desc,
+                priority: 1,
+            })]),
+        );
+        assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
+        assert!(text.ends_with('↓'), "{text:?}");
+    }
+
+    #[test]
+    fn sorted_header_truncates_label_without_changing_width() {
+        let column = ColumnMeta {
+            name: "very-long-name".into(),
+            type_name: "text".into(),
+        };
+        let text = super::header_cell_text(
+            0,
+            &column,
+            6,
+            IconSet::new(IconMode::Ascii),
+            Some(&[Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 0,
+            })]),
+        );
+        assert_eq!(UnicodeWidthStr::width(text.as_str()), 6);
+        assert!(text.ends_with('^'), "{text:?}");
+    }
+
+    #[test]
+    fn sorted_header_shows_priority_for_multiple_terms() {
+        let column = ColumnMeta {
+            name: "name".into(),
+            type_name: "text".into(),
+        };
+        let projection = [
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 0,
+            }),
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Desc,
+                priority: 1,
+            }),
+        ];
+        let text = super::header_cell_text(
+            1,
+            &column,
+            12,
+            IconSet::new(IconMode::Unicode),
+            Some(&projection),
+        );
+        assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
+        assert!(text.ends_with("↓2"), "{text:?}");
     }
 
     #[test]

@@ -1992,6 +1992,7 @@ impl App {
                         | Action::RelationQueryMoveEnd
                         | Action::RelationQueryClear
                         | Action::SubmitRelationQuery
+                        | Action::CycleRelationColumnSort(_)
                         | Action::CancelRelationQueryInput
                         | Action::RelationEditCell
                         | Action::RelationEditInsert(_)
@@ -2142,6 +2143,7 @@ impl App {
                     | Action::GridSelect { .. }
                     | Action::GridResizeColumn(_)
                     | Action::GridResetColumnWidth
+                    | Action::CycleRelationColumnSort(_)
                     | Action::GridStartColumnResize { .. }
                     | Action::GridSetColumnWidth { .. }
                     | Action::GridEndColumnResize
@@ -6867,6 +6869,39 @@ impl App {
             Action::RelationQueryClear => self.update(Action::DataQueryClear),
             Action::CancelRelationQueryInput => self.update(Action::CancelDataQueryInput),
             Action::SubmitRelationQuery => self.update(Action::SubmitDataQuery),
+            Action::CycleRelationColumnSort(column) => {
+                let Some((order_by, columns)) = self.tabs.get(self.active_tab).and_then(|tab| {
+                    let WorkspaceTab::Relation(tab) = tab else {
+                        return None;
+                    };
+                    if tab.view != RelationView::Data {
+                        return None;
+                    }
+                    Some((
+                        tab.query.order_by_input.value().to_owned(),
+                        self.relation_result()?.columns,
+                    ))
+                }) else {
+                    return Vec::new();
+                };
+                let column_names = columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect::<Vec<_>>();
+                let Ok(next_order_by) = sql::cycle_relation_column_sort(
+                    &order_by,
+                    &column_names,
+                    column,
+                    self.sql_dialect(),
+                ) else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
+                    return Vec::new();
+                };
+                tab.query.order_by_input.set(next_order_by);
+                self.update(Action::SubmitRelationQuery)
+            }
             Action::ResizeRelationColumn(delta) => {
                 self.resize_grid_column(delta);
                 Vec::new()
@@ -12562,7 +12597,7 @@ impl App {
 
     fn submit_relation_query(&mut self) -> Vec<Command> {
         let dialect = self.sql_dialect();
-        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
+        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
         if tab.view != RelationView::Data {
@@ -12570,19 +12605,38 @@ impl App {
         }
         let where_clause = tab.query.where_input.value().to_owned();
         let order_by_clause = tab.query.order_by_input.value().to_owned();
-        match sql::validate_relation_preview_options(&where_clause, &order_by_clause, dialect) {
-            Ok(options) => {
-                tab.query.submitted = options;
-                tab.query.error = None;
-                tab.query.focus = None;
-                tab.query.completion = None;
-                self.load_active_relation(true)
-            }
+        let options = match sql::validate_relation_preview_options(
+            &where_clause,
+            &order_by_clause,
+            dialect,
+        ) {
+            Ok(options) => options,
             Err(error) => {
+                let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
+                    return Vec::new();
+                };
                 tab.query.error = Some(error.to_string());
-                Vec::new()
+                return Vec::new();
             }
+        };
+        let previous_query = tab.query.clone();
+        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        tab.query.submitted = options;
+        let commands = self.load_active_relation(true);
+        if commands.is_empty() {
+            if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
+                tab.query = previous_query;
+            }
+            return commands;
         }
+        if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
+            tab.query.error = None;
+            tab.query.focus = None;
+            tab.query.completion = None;
+        }
+        commands
     }
 
     fn relation_result(&self) -> Option<crate::db::query::ResultSet> {

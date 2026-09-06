@@ -38,7 +38,10 @@ pub use highlight::{HighlightKind, HighlightSpan, highlight_sql, highlight_sql_r
 #[allow(unused_imports)]
 pub(crate) use identifier_match::{identifier_match, identifier_match_positions};
 pub use range::TextRange;
-pub use relation_filter::{RelationFilterError, validate_relation_preview_options};
+pub use relation_filter::{
+    RelationColumnSort, RelationFilterError, SortDirection, cycle_relation_column_sort,
+    relation_column_sort_projection, validate_relation_preview_options,
+};
 pub use risk::{SqlRisk, SqlRiskAggregate, SqlRiskAnalysis, classify_sql};
 pub use scope::{
     ResolvedScope, ScopeKind, ScopeSelection, ScopeSource, resolve_scope, scan_statements,

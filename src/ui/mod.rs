@@ -114,6 +114,7 @@ pub enum HitTarget {
         column: usize,
         width: u16,
     },
+    RelationColumnSort(usize),
     GridScrollbarThumb {
         track_x: u16,
         track_width: u16,
@@ -3160,7 +3161,7 @@ pub(crate) fn render_result_table(
     let overrides = grid.column_widths.clone();
     let icons = state.activity_icons;
     data_grid::render(
-        frame, area, tab_id, result, grid, &overrides, theme, block, state, None, icons,
+        frame, area, tab_id, result, grid, &overrides, theme, block, state, None, icons, None,
     );
 }
 

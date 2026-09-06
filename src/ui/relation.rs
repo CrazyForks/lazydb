@@ -125,27 +125,15 @@ fn render_data(
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let query_height = super::query_bar::height(&tab.query, inner.width, state.activity_icons);
-        let body = if status.is_some() {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(query_height),
-                    Constraint::Length(2),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
-                .split(inner)
-        } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(query_height),
-                    Constraint::Length(0),
-                    Constraint::Min(1),
-                    Constraint::Length(1),
-                ])
-                .split(inner)
-        };
+        let body = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(query_height),
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
         let query_cursor = super::query_bar::render(
             frame,
             body[0],
@@ -180,6 +168,12 @@ fn render_data(
             ratatui::widgets::Block::default().style(Style::new().bg(theme.surface)),
             state,
             tab.edit.as_ref(),
+            tab.query
+                .submitted
+                .order_by_clause
+                .as_deref()
+                .unwrap_or_default(),
+            app.sql_dialect(),
         );
         let sql = sanitize_terminal_text(&snapshot.value.sql);
         let footer = Rect::new(
@@ -385,10 +379,31 @@ fn render_relation_result_table(
     block: ratatui::widgets::Block<'_>,
     state: &mut super::UiState,
     edit: Option<&crate::model::relation_edit::RelationEditSession>,
+    order_by_clause: &str,
+    dialect: crate::sql::SqlDialect,
 ) {
     let icons = state.activity_icons;
+    let column_names = result
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let sort_projection =
+        crate::sql::relation_column_sort_projection(order_by_clause, &column_names, dialect)
+            .unwrap_or_else(|_| vec![None; column_names.len()]);
     super::data_grid::render(
-        frame, area, tab_id, result, grid, overrides, theme, block, state, edit, icons,
+        frame,
+        area,
+        tab_id,
+        result,
+        grid,
+        overrides,
+        theme,
+        block,
+        state,
+        edit,
+        icons,
+        Some(&sort_projection),
     );
 }
 
