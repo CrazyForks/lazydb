@@ -888,6 +888,150 @@ fn visible_find_starts_at_current_selection_and_wraps_downward() {
 }
 
 #[test]
+fn visible_find_previews_first_match_while_typing() {
+    let profile = profile_id(1);
+    let fixture = fixture(profile);
+    let mut state = lazydb::model::workspace::ExplorerState {
+        normalized: explorer_with_fixture(&fixture),
+        ..Default::default()
+    };
+    state.normalized.expanded.extend(expanded_path(&fixture));
+    state.normalized.expanded.insert(ExplorerNodeId::Group {
+        parent: fixture.schema.id.clone(),
+        group: ObjectGroup::Views,
+    });
+
+    state.open_find();
+    state.edit_find(|query| query.push_str("user"));
+
+    assert_eq!(state.find_match_position(), (1, 2));
+    assert_eq!(
+        state.selected_id(),
+        Some(&ExplorerNodeId::Catalog(fixture.table.id.clone()))
+    );
+    assert_eq!(
+        state.find.as_ref().unwrap().phase,
+        lazydb::model::workspace::ExplorerSearchPhase::Editing
+    );
+}
+
+#[test]
+fn visible_find_previews_first_match_before_original_selection() {
+    let profile = profile_id(1);
+    let fixture = fixture(profile);
+    let mut state = lazydb::model::workspace::ExplorerState {
+        normalized: explorer_with_fixture(&fixture),
+        ..Default::default()
+    };
+    state.normalized.expanded.extend(expanded_path(&fixture));
+    state.normalized.expanded.insert(ExplorerNodeId::Group {
+        parent: fixture.schema.id.clone(),
+        group: ObjectGroup::Views,
+    });
+    state
+        .normalized
+        .select(ExplorerNodeId::Catalog(fixture.view.id.clone()));
+
+    state.open_find();
+    state.edit_find(|query| query.push_str("user"));
+
+    assert_eq!(state.find_match_position(), (1, 2));
+    assert_eq!(
+        state.selected_id(),
+        Some(&ExplorerNodeId::Catalog(fixture.table.id.clone()))
+    );
+}
+
+#[test]
+fn visible_find_clear_restores_original_selection_and_scroll() {
+    let profiles: Vec<_> = (1..=8).map(profile_id).collect();
+    let mut normalized = ExplorerTreeState::default();
+    for (index, profile) in profiles.iter().enumerate() {
+        normalized.add_profile_with_metadata(
+            *profile,
+            format!("profile-{index}"),
+            lazydb::profile::DatabaseKind::Sqlite,
+            String::new(),
+            ProfileProvenance::Saved,
+        );
+    }
+    normalized.set_viewport_height(5);
+    normalized.select(ExplorerNodeId::Profile(profiles[3]));
+    normalized.scroll = 2;
+    let original = normalized.selected.clone();
+    let mut state = lazydb::model::workspace::ExplorerState {
+        normalized,
+        ..Default::default()
+    };
+    state.sync_selected_index();
+
+    state.open_find();
+    state.edit_find(|query| query.push_str("profile"));
+    assert_ne!(state.selected_id(), original.as_ref());
+    assert_ne!(state.normalized.scroll, 2);
+
+    state.edit_find(String::clear);
+
+    assert_eq!(state.selected_id(), original.as_ref());
+    assert_eq!(state.normalized.scroll, 2);
+    assert_eq!(state.find_match_position(), (0, 0));
+}
+
+#[test]
+fn visible_find_middle_alignment_keeps_selected_row_centered_with_pinned_ancestors() {
+    let profile = profile_id(1);
+    let fixture = fixture(profile);
+    let mut normalized = explorer_with_fixture(&fixture);
+    normalized.expanded.extend(expanded_path(&fixture));
+    normalized.expanded.insert(ExplorerNodeId::Group {
+        parent: fixture.schema.id.clone(),
+        group: ObjectGroup::Views,
+    });
+    normalized.set_viewport_height(5);
+    normalized.selected = Some(ExplorerNodeId::Catalog(fixture.view.id.clone()));
+    normalized.scroll = 4;
+
+    normalized.align_selected(ExplorerNodeAlignment::Middle);
+    let viewport = normalized.viewport(5);
+    let selected_row = viewport
+        .rows
+        .iter()
+        .position(|row| row.id == ExplorerNodeId::Catalog(fixture.view.id.clone()))
+        .unwrap();
+
+    assert_eq!(selected_row, (viewport.body_height - 1) / 2);
+}
+
+#[test]
+fn visible_find_editing_realigns_after_viewport_resize() {
+    let profiles: Vec<_> = (1..=8).map(profile_id).collect();
+    let mut normalized = ExplorerTreeState::default();
+    for (index, profile) in profiles.iter().enumerate() {
+        normalized.add_profile_with_metadata(
+            *profile,
+            format!("profile-{index}"),
+            lazydb::profile::DatabaseKind::Sqlite,
+            String::new(),
+            ProfileProvenance::Saved,
+        );
+    }
+    let mut state = lazydb::model::workspace::ExplorerState {
+        normalized,
+        ..Default::default()
+    };
+    state.set_viewport_height(5);
+    state.open_find();
+    state.edit_find(|query| query.push_str("profile"));
+    state.set_viewport_height(3);
+
+    assert_eq!(
+        state.selected_id(),
+        Some(&ExplorerNodeId::Profile(profiles[0]))
+    );
+    assert_eq!(state.normalized.scroll, 0);
+}
+
+#[test]
 fn visible_find_centers_each_current_match_in_the_viewport() {
     let profiles: Vec<_> = (1..=8).map(profile_id).collect();
     let mut normalized = ExplorerTreeState::default();

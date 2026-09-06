@@ -1608,6 +1608,10 @@ impl ExplorerTreeState {
         if self.viewport_height == 0 {
             return;
         }
+        if alignment == ExplorerNodeAlignment::Middle {
+            self.align_selected_middle(&rows, selected_index);
+            return;
+        }
         let body_height = self.body_height_for_scroll(&rows, self.scroll);
         let screen_row = match alignment {
             ExplorerNodeAlignment::Top => 0,
@@ -1618,6 +1622,48 @@ impl ExplorerTreeState {
             rows.len()
                 .saturating_sub(self.viewport_height.min(rows.len())),
         );
+    }
+
+    fn align_selected_middle(&mut self, rows: &[VisibleExplorerNode], selected_index: usize) {
+        let max_scroll = rows.len().saturating_sub(1);
+        let mut candidates = HashSet::from([
+            0,
+            max_scroll,
+            selected_index.saturating_sub(self.viewport_height.saturating_sub(1) / 2),
+        ]);
+        let indexes = rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.id.clone(), index))
+            .collect::<HashMap<_, _>>();
+        for ancestor in self.selected_ancestors() {
+            let Some(index) = indexes.get(&ancestor).copied() else {
+                continue;
+            };
+            for scroll in [index.saturating_sub(1), index, index.saturating_add(1)] {
+                let body_height = self.body_height_for_scroll(rows, scroll);
+                candidates
+                    .insert(selected_index.saturating_sub((body_height.saturating_sub(1)) / 2));
+            }
+        }
+        let mut best = None;
+        let ideal = selected_index.saturating_sub(self.viewport_height.saturating_sub(1) / 2);
+        for scroll in candidates {
+            let scroll = scroll.min(max_scroll);
+            let body_height = self.body_height_for_scroll(rows, scroll);
+            if selected_index < scroll || selected_index >= scroll.saturating_add(body_height) {
+                continue;
+            }
+            let screen_row = selected_index - scroll;
+            let distance = screen_row.abs_diff((body_height - 1) / 2);
+            let candidate = (distance, scroll.abs_diff(ideal), scroll);
+            if best.is_none_or(|current| candidate < current) {
+                best = Some(candidate);
+            }
+        }
+        if let Some((_, _, scroll)) = best {
+            self.scroll = scroll;
+        }
     }
 
     pub fn ensure_selected_visible(&mut self) {
