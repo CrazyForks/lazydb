@@ -14,6 +14,7 @@ pub mod query_bar;
 pub mod record_view;
 pub mod relation;
 mod shortcut_hints;
+pub(crate) mod sql_preview;
 pub mod text_detail;
 pub mod text_selection;
 pub mod theme;

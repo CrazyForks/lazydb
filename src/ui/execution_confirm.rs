@@ -1,3 +1,11 @@
+use crate::{
+    app::App,
+    model::{
+        transaction::{TransactionMode, TransactionState},
+        workspace::ExecutionConfirmFocus,
+    },
+    sql::{ExecutionDraft, SqlDialect, SqlRisk},
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -5,19 +13,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Clear, Paragraph, Wrap},
 };
-use unicode_width::UnicodeWidthChar;
 
-use crate::{
-    app::App,
-    model::{
-        transaction::{TransactionMode, TransactionState},
-        workspace::ExecutionConfirmFocus,
-    },
-    security::sanitize_terminal_text,
-    sql::{ExecutionDraft, HighlightKind, SqlDialect, SqlRisk},
+use super::{
+    HitRegion, HitTarget, UiState, centered, dialog, panel_block, sql_preview, theme::Theme,
 };
-
-use super::{HitRegion, HitTarget, UiState, centered, dialog, panel_block, theme, theme::Theme};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Summary {
@@ -117,102 +116,6 @@ fn summary(draft: &ExecutionDraft, app: &App) -> Summary {
     }
 }
 
-fn preview_lines(sql: &str, dialect: SqlDialect, width: usize, theme: Theme) -> Vec<Line<'static>> {
-    // Normalize the display projection before highlighting so byte ranges use
-    // the same text that is eventually rendered.
-    let text = sanitize_terminal_text(sql)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\t', "    ");
-    let highlights = crate::sql::highlight_sql(&text, dialect);
-    let width = width.max(1);
-    let mut output = Vec::new();
-    let mut source_offset = 0;
-    for (source_line, raw) in text.split('\n').enumerate() {
-        let mut chunk = String::new();
-        let mut used = 0;
-        let mut chunk_offset = source_offset;
-        for ch in raw.chars() {
-            let cw = ch.width().unwrap_or(0);
-            if used > 0 && used + cw > width {
-                output.push(styled_chunk(
-                    &chunk,
-                    source_line,
-                    &highlights,
-                    chunk_offset,
-                    theme,
-                    chunk_offset == source_offset,
-                ));
-                chunk_offset += chunk.len();
-                chunk.clear();
-                used = 0;
-            }
-            chunk.push(ch);
-            used += cw;
-        }
-        output.push(styled_chunk(
-            &chunk,
-            source_line,
-            &highlights,
-            chunk_offset,
-            theme,
-            chunk_offset == source_offset,
-        ));
-        source_offset += raw.len() + 1;
-    }
-    output
-}
-
-fn styled_chunk(
-    chunk: &str,
-    source_line: usize,
-    highlights: &[crate::sql::HighlightSpan],
-    start: usize,
-    theme: Theme,
-    first_chunk: bool,
-) -> Line<'static> {
-    let mut spans = Vec::new();
-    let mut offset = start;
-    if first_chunk {
-        spans.push(Span::styled(
-            format!("{:>3} ", source_line + 1),
-            Style::new().fg(theme.muted),
-        ));
-    } else {
-        spans.push(Span::raw("    "));
-    }
-    for ch in chunk.chars() {
-        let end = offset + ch.len_utf8();
-        let kind = highlights
-            .iter()
-            .find(|span| span.range.start <= offset && span.range.end >= end)
-            .map(|span| span.kind)
-            .unwrap_or(HighlightKind::Plain);
-        let color = match kind {
-            HighlightKind::Keyword => theme::SyntaxColor::Keyword,
-            HighlightKind::Identifier => theme::SyntaxColor::Identifier,
-            HighlightKind::Relation => theme::SyntaxColor::Relation,
-            HighlightKind::RelationAlias => theme::SyntaxColor::RelationAlias,
-            HighlightKind::Column => theme::SyntaxColor::Column,
-            HighlightKind::Type => theme::SyntaxColor::Type,
-            HighlightKind::Function => theme::SyntaxColor::Function,
-            HighlightKind::String => theme::SyntaxColor::String,
-            HighlightKind::Number => theme::SyntaxColor::Number,
-            HighlightKind::Comment => theme::SyntaxColor::Comment,
-            HighlightKind::Operator => theme::SyntaxColor::Operator,
-            HighlightKind::Punctuation => theme::SyntaxColor::Punctuation,
-            HighlightKind::Parameter => theme::SyntaxColor::Parameter,
-            HighlightKind::Plain => theme::SyntaxColor::Plain,
-        };
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::new().fg(theme.syntax_color(color)),
-        ));
-        offset = end;
-    }
-    Line::from(spans)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     frame: &mut Frame<'_>,
@@ -248,7 +151,7 @@ pub(crate) fn render(
             Style::new().fg(theme.warning).add_modifier(Modifier::BOLD),
         )));
     }
-    let preview = preview_lines(
+    let preview = sql_preview::lines(
         &draft.sql,
         draft.dialect,
         inner_width.saturating_sub(7),
@@ -337,7 +240,7 @@ mod tests {
     use super::*;
     #[test]
     fn preview_sanitizes_and_keeps_unicode_boundaries() {
-        let lines = preview_lines(
+        let lines = sql_preview::lines(
             "SELECT '中文';\r\n-- \u{1b}[31m",
             SqlDialect::Sqlite,
             8,

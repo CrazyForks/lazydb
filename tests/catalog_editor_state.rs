@@ -444,13 +444,13 @@ fn table_full_general_navigation_is_reversible() {
 }
 
 #[test]
-fn table_column_focus_is_a_single_stop_and_rows_move_separately() {
+fn table_column_focus_is_continuous_with_the_main_form() {
     let mut draft = TableDraft::new("public");
     draft.begin_add_column_below();
     assert!(draft.confirm_column_details());
     draft.focus = TableEditorFocus::Columns;
     draft.selected_column = 0;
-    draft.move_column(1);
+    draft.focus_next();
     assert_eq!(draft.selected_column, 1);
     assert_eq!(draft.focus, TableEditorFocus::Columns);
     draft.focus_next();
@@ -461,6 +461,15 @@ fn table_column_focus_is_a_single_stop_and_rows_move_separately() {
     draft.focus_previous();
     assert_eq!(draft.focus, TableEditorFocus::Columns);
     assert_eq!(draft.selected_column, 1);
+
+    draft.focus_previous();
+    assert_eq!(draft.selected_column, 0);
+    assert_eq!(draft.focus, TableEditorFocus::Columns);
+    draft.focus_previous();
+    assert_eq!(
+        draft.focus,
+        TableEditorFocus::General(TableGeneralField::Comment)
+    );
 }
 
 #[test]
@@ -469,10 +478,8 @@ fn table_columns_move_between_existing_columns_before_general_or_add() {
     draft.begin_add_column_below();
     assert!(draft.confirm_column_details());
     draft.focus = TableEditorFocus::Columns;
+    draft.selected_column = 0;
 
-    draft.move_column(-1);
-    assert_eq!(draft.selected_column, 0);
-    assert_eq!(draft.focus, TableEditorFocus::Columns);
     draft.focus_previous();
     assert_eq!(
         draft.focus,
@@ -481,7 +488,7 @@ fn table_columns_move_between_existing_columns_before_general_or_add() {
 
     draft.focus = TableEditorFocus::Columns;
     draft.selected_column = 0;
-    draft.move_column(1);
+    draft.focus_next();
     assert_eq!(draft.selected_column, 1);
     assert_eq!(draft.focus, TableEditorFocus::Columns);
     draft.focus_next();
