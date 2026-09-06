@@ -3125,6 +3125,37 @@ fn confirmed_explorer_find_keeps_navigation_keys_available() {
 }
 
 #[test]
+fn editing_explorer_find_treats_n_and_shift_n_as_query_text() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    app.explorer.open_find();
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('n')), &app),
+        Some(Action::ExplorerFindInsert('n'))
+    );
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT), &app),
+        Some(Action::ExplorerFindInsert('N'))
+    );
+}
+
+#[test]
+fn confirmed_explorer_find_maps_shift_n_to_previous_match() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    app.explorer.open_find();
+    app.explorer.confirm_find();
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT), &app),
+        Some(Action::ExplorerFindPrevious)
+    );
+}
+
+#[test]
 fn relation_keys_control_only_the_active_relation_view() {
     let mut app = App::new(Vec::new());
     app.tabs.push(lazydb::model::tab::WorkspaceTab::Relation(

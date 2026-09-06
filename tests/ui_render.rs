@@ -3204,6 +3204,48 @@ fn explorer_find_keeps_group_counts_and_column_metadata_visible() {
 }
 
 #[test]
+fn explorer_find_preserves_profile_row_icon_and_styles() {
+    let mut app = fixture();
+    app.focus = Focus::Explorer;
+    let (normal, _) = render_buffer_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+
+    app.update(Action::ExplorerFindOpen);
+    app.update(Action::ExplorerFindInsert('u'));
+    let (search, _) = render_buffer_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+
+    let (normal_label_x, normal_y) = find_text_cell(&normal, "orbital-lab").unwrap();
+    let (search_label_x, search_y) = find_text_cell(&search, "orbital-lab").unwrap();
+    assert_eq!(normal_label_x, search_label_x);
+
+    for x in 0..normal_label_x {
+        let normal_cell = &normal[(x, normal_y)];
+        let search_cell = &search[(x, search_y)];
+        assert_eq!(normal_cell.symbol(), search_cell.symbol(), "column {x}");
+        assert_eq!(normal_cell.fg, search_cell.fg, "column {x}");
+        assert_eq!(normal_cell.bg, search_cell.bg, "column {x}");
+        assert_eq!(normal_cell.modifier, search_cell.modifier, "column {x}");
+    }
+}
+
+#[test]
+fn explorer_find_shows_phase_specific_navigation_hint() {
+    let mut app = fixture();
+    app.focus = Focus::Explorer;
+    app.update(Action::ExplorerFindOpen);
+    app.update(Action::ExplorerFindInsert('u'));
+    let (editing, _) = render_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+    assert!(editing.contains("Enter confirm  Esc cancel"), "{editing}");
+    assert!(!editing.contains("n/N next/prev"), "{editing}");
+
+    app.update(Action::ExplorerFindConfirm);
+    let (confirmed, _) = render_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+    assert!(
+        confirmed.contains("n/N next/prev  Esc close"),
+        "{confirmed}"
+    );
+}
+
+#[test]
 fn explorer_width_is_adaptive_and_clamped_in_split_layouts() {
     let app = fixture();
     for (width, expected) in [(120, 40), (180, 56), (300, 56)] {
