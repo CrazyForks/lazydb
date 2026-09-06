@@ -1091,7 +1091,7 @@ fn relation_sort_header_mouse_down_maps_to_cycle_action() {
     let mut ui = UiState::new();
     ui.hit_regions.push(HitRegion {
         area: Rect::new(10, 4, 8, 1),
-        target: HitTarget::RelationColumnSort(3),
+        target: HitTarget::GridColumnSort(3),
     });
     assert_eq!(
         map_mouse(
@@ -1099,7 +1099,7 @@ fn relation_sort_header_mouse_down_maps_to_cycle_action() {
             &ui,
             &app,
         ),
-        Some(Action::CycleRelationColumnSort(3))
+        Some(Action::CycleDataColumnSort(3))
     );
     assert_eq!(
         map_mouse(
@@ -1118,7 +1118,7 @@ fn relation_sort_separator_keeps_resize_priority() {
     ui.hit_regions.extend([
         HitRegion {
             area: Rect::new(10, 4, 8, 1),
-            target: HitTarget::RelationColumnSort(3),
+            target: HitTarget::GridColumnSort(3),
         },
         HitRegion {
             area: Rect::new(18, 4, 1, 1),
@@ -1143,7 +1143,7 @@ fn relation_sort_separator_keeps_resize_priority() {
     let mut ui = UiState::new();
     ui.hit_regions.push(HitRegion {
         area: Rect::new(10, 4, 8, 1),
-        target: HitTarget::RelationColumnSort(3),
+        target: HitTarget::GridColumnSort(3),
     });
     assert_eq!(
         map_mouse(
@@ -1151,7 +1151,7 @@ fn relation_sort_separator_keeps_resize_priority() {
             &ui,
             &app,
         ),
-        Some(Action::CycleRelationColumnSort(3))
+        Some(Action::CycleDataColumnSort(3))
     );
 }
 

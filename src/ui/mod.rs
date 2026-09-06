@@ -27,6 +27,7 @@ use ratatui::{
 };
 use std::{
     cell::RefCell,
+    collections::HashSet,
     time::{Duration, Instant},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -116,7 +117,7 @@ pub enum HitTarget {
         column: usize,
         width: u16,
     },
-    RelationColumnSort(usize),
+    GridColumnSort(usize),
     GridScrollbarThumb {
         track_x: u16,
         track_width: u16,
@@ -3213,6 +3214,12 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
                 theme,
                 Block::default().style(Style::new().bg(theme.surface)),
                 state,
+                tab.query.submitted.order_by_clause.as_deref().unwrap_or(""),
+                tab.last_execution
+                    .as_ref()
+                    .map_or(crate::sql::SqlDialect::Sqlite, |last| last.draft.dialect),
+                tab.query_status != QueryStatus::Running
+                    && !tab.derived.as_ref().is_some_and(|derived| derived.running),
             );
         } else {
             frame.render_widget(
@@ -3255,6 +3262,12 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
             theme,
             Block::default().style(Style::new().bg(theme.surface)),
             state,
+            tab.query.submitted.order_by_clause.as_deref().unwrap_or(""),
+            tab.last_execution
+                .as_ref()
+                .map_or(crate::sql::SqlDialect::Sqlite, |last| last.draft.dialect),
+            tab.query_status != QueryStatus::Running
+                && !tab.derived.as_ref().is_some_and(|derived| derived.running),
         );
     } else {
         frame.render_widget(
@@ -3297,13 +3310,44 @@ pub(crate) fn render_result_table(
     theme: Theme,
     block: Block<'_>,
     state: &mut UiState,
+    order_by_clause: &str,
+    dialect: crate::sql::SqlDialect,
+    sort_interactive: bool,
 ) {
     state.result_area = Some(area);
     let overrides = grid.column_widths.clone();
     let icons = state.activity_icons;
+    let column_names = result
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    let sort_projection =
+        crate::sql::relation_column_sort_projection(order_by_clause, &column_names, dialect)
+            .unwrap_or_else(|_| vec![None; column_names.len()]);
+    let sort_interactive = sort_interactive && !tabular_column_names_ambiguous(&column_names);
     data_grid::render(
-        frame, area, tab_id, result, grid, &overrides, theme, block, state, None, icons, None,
+        frame,
+        area,
+        tab_id,
+        result,
+        grid,
+        &overrides,
+        theme,
+        block,
+        state,
+        None,
+        icons,
+        Some(&sort_projection),
+        sort_interactive,
     );
+}
+
+fn tabular_column_names_ambiguous(columns: &[&str]) -> bool {
+    let mut names = HashSet::new();
+    columns
+        .iter()
+        .any(|name| !names.insert(name.to_lowercase()))
 }
 
 fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state: &mut UiState) {
