@@ -507,13 +507,10 @@ impl EditorWorkspace {
         Ok(EditorPosition { line, column })
     }
 
-    /// Set a charwise mouse selection and return its exact source text.
-    ///
-    /// This updates only Modalkit's cursor group. It intentionally does not pass
-    /// through an editing action, so revisions, undo history, and read-only
-    /// capability remain unchanged.
-    pub(crate) fn set_mouse_selection(
-        &mut self,
+    /// Return the exact source text covered by a mouse range without changing
+    /// the editor mode, cursor, selection, revision, or history.
+    pub(crate) fn mouse_range_text(
+        &self,
         id: Uuid,
         start: EditorPosition,
         end: EditorPosition,
@@ -542,26 +539,6 @@ impl EditorWorkspace {
             });
         let selected = text[first_offset..last_end].to_owned();
 
-        let session = self
-            .sessions
-            .get_mut(&id)
-            .ok_or(EditorError::MissingSession(id))?;
-        session.position = end;
-        let mut buffer = session
-            .buffer
-            .write()
-            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
-        buffer.set_group(
-            session.group_id,
-            modalkit::editing::cursor::CursorGroup::new(
-                modalkit::editing::cursor::CursorState::Selection(
-                    modalkit::editing::cursor::Cursor::new(end.line, end.column),
-                    modalkit::editing::cursor::Cursor::new(start.line, start.column),
-                    modalkit::prelude::TargetShape::CharWise,
-                ),
-                Vec::new(),
-            ),
-        );
         Ok(selected)
     }
 

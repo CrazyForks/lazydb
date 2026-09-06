@@ -167,11 +167,13 @@ support OSC 52 and may need its own permission setting; SSH and tmux forwarding
 are environment-dependent and are not established by LazyDB.
 
 Clipboard copy actions are explicit: keyboard commands and view buttons issue a
-copy request, while mouse drag only creates a text selection in supported text
-views. Dragging does not copy grid cells, rows, form fields, or selector text.
+copy request, while mouse drag previews and automatically copies text in
+supported text views when the button is released. The preview then disappears.
+Dragging does not copy grid cells, rows, form fields, or selector text.
 The complete-value paths are the selected grid cell/row commands, Record View's
-cell/row buttons, and the text-detail view's `Copy all` button. `Copy selection`
-copies only the selected text currently displayed in that detail view.
+cell/row buttons, and the text-detail view's `Copy all` button. Visual mode
+selection remains a separate persistent editor state; mouse drag is a one-shot
+copy gesture.
 
 The default `Ctrl-c` quit binding is unchanged. `Ctrl-Shift-s` is the separate
 global command that releases mouse capture for terminal-native selection; it is

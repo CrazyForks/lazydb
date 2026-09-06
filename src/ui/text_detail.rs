@@ -49,8 +49,15 @@ pub(crate) fn render(
     for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
         frame.render_widget(
             Paragraph::new(
-                Line::from(editor_line_spans(line, &snapshot, theme, true, None))
-                    .style(Style::new().bg(theme.surface_raised)),
+                Line::from(editor_line_spans(
+                    line,
+                    &snapshot,
+                    theme,
+                    true,
+                    None,
+                    &super::mouse_selection_cells(state, view.session_id, &snapshot, line),
+                ))
+                .style(Style::new().bg(theme.surface_raised)),
             )
             .scroll((0, snapshot.horizontal_offset as u16)),
             Rect::new(chunks[0].x, chunks[0].y + row as u16, chunks[0].width, 1),
@@ -58,13 +65,11 @@ pub(crate) fn render(
     }
     let button_style = Style::new().fg(theme.action).add_modifier(Modifier::BOLD);
     let footer = Line::from(vec![
-        Span::styled(" Copy selection ", button_style),
-        Span::raw("  "),
         Span::styled(" Copy all ", button_style),
         Span::raw("  "),
         Span::styled(" Close ", button_style),
         Span::styled(
-            "   Drag to select; arrows/page keys scroll; Esc close",
+            "   Drag to copy; arrows/page keys scroll; Esc close",
             Style::new().fg(theme.muted),
         ),
     ]);
@@ -81,23 +86,14 @@ pub(crate) fn render(
     let x = chunks[1].x;
     state.hit_regions.extend([
         HitRegion {
-            area: Rect::new(x, y, 18.min(chunks[1].width), 1),
-            target: HitTarget::TextDetailCopySelection,
-        },
-        HitRegion {
-            area: Rect::new(
-                x.saturating_add(20),
-                y,
-                12.min(chunks[1].width.saturating_sub(20)),
-                1,
-            ),
+            area: Rect::new(x, y, 12.min(chunks[1].width), 1),
             target: HitTarget::TextDetailCopyAll,
         },
         HitRegion {
             area: Rect::new(
-                x.saturating_add(34),
+                x.saturating_add(14),
                 y,
-                8.min(chunks[1].width.saturating_sub(34)),
+                8.min(chunks[1].width.saturating_sub(14)),
                 1,
             ),
             target: HitTarget::TextDetailClose,

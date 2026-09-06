@@ -41,12 +41,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
-                return Some(Action::SetTextDetailSelection {
-                    session_id: target.session_id,
-                    start: editor_position(gesture.start),
-                    end: editor_position(end),
-                    revision: gesture.revision,
-                });
+                return None;
             }
             if app.overlay.is_some() {
                 ui.relation_resize.borrow_mut().take();
@@ -69,12 +64,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 let end = target.source_at(event.column, event.row)?;
                 ui.update_text_gesture(end);
-                return Some(Action::SetEditorMouseSelection {
-                    session_id: target.session_id,
-                    start: editor_position(gesture.start),
-                    end: editor_position(end),
-                    revision: gesture.revision,
-                });
+                return None;
             }
             if let Some(drag) = *ui.pane_resize_drag.borrow() {
                 return pane_resize_action(drag, event.column, ui, app);
@@ -164,12 +154,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
                 if let Some(target) = ui.target_at(event.column, event.row).cloned() {
                     return match target {
-                        HitTarget::TextDetailCopySelection => {
-                            Some(Action::CopyTextDetailSelection {
-                                session_id: view.session_id,
-                                revision: view.revision,
-                            })
-                        }
                         HitTarget::TextDetailCopyAll => Some(Action::CopyTextDetailAll {
                             session_id: view.session_id,
                         }),
@@ -191,10 +175,11 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         revision: view.revision,
                         has_dragged: false,
                     });
-                    Action::SetTextDetailSelection {
+                    // Text detail is read-only; the gesture itself is the preview state.
+                    let _ = position;
+                    Action::SetEditorMouseCursor {
                         session_id: view.session_id,
-                        start: editor_position(position),
-                        end: editor_position(position),
+                        position: editor_position(position),
                         revision: view.revision,
                     }
                 });
@@ -448,7 +433,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     Some(Action::ConfirmTransactionExitChoice(choice))
                 }
                 HitTarget::TransactionExitCancel => Some(Action::CancelTransactionExit),
-                HitTarget::TextDetailCopySelection => None,
                 HitTarget::TextDetailCopyAll => None,
                 HitTarget::TextDetailClose => None,
                 HitTarget::RecordViewCopyCell => Some(Action::CopyRecordViewCell),
@@ -666,8 +650,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::TransactionMenuItem(_)
         | HitTarget::TransactionMenuCancel => None,
         HitTarget::TransactionExitChoice(_) | HitTarget::TransactionExitCancel => None,
-        HitTarget::TextDetailCopySelection
-        | HitTarget::TextDetailCopyAll
+        HitTarget::TextDetailCopyAll
         | HitTarget::TextDetailClose
         | HitTarget::RecordViewCopyCell
         | HitTarget::RecordViewCopyRow

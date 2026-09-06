@@ -147,11 +147,11 @@ fn unicode_positions_are_character_based() {
 }
 
 #[test]
-fn mouse_selection_returns_exact_source_text_for_unicode_and_reverse_drag() {
-    let (mut workspace, id) = fixture("SELECT 数据\n🙂 FROM users");
+fn mouse_range_returns_exact_source_text_without_creating_selection() {
+    let (workspace, id) = fixture("SELECT 数据\n🙂 FROM users");
 
     let selected = workspace
-        .set_mouse_selection(
+        .mouse_range_text(
             id,
             EditorPosition { line: 1, column: 5 },
             EditorPosition { line: 0, column: 7 },
@@ -159,7 +159,7 @@ fn mouse_selection_returns_exact_source_text_for_unicode_and_reverse_drag() {
         .unwrap();
 
     assert_eq!(selected, "数据\n🙂 FROM");
-    assert_eq!(workspace.mouse_selection(id).unwrap(), Some(selected));
+    assert_eq!(workspace.mouse_selection(id).unwrap(), None);
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn mouse_selection_preserves_revision_history_and_read_only_capability() {
 
     assert_eq!(
         workspace
-            .set_mouse_selection(
+            .mouse_range_text(
                 id,
                 EditorPosition { line: 0, column: 0 },
                 EditorPosition { line: 0, column: 4 },

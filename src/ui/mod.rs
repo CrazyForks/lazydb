@@ -172,7 +172,6 @@ pub enum HitTarget {
     TransactionMenuCancel,
     TransactionExitChoice(crate::model::transaction::TransactionExitChoice),
     TransactionExitCancel,
-    TextDetailCopySelection,
     TextDetailCopyAll,
     TextDetailClose,
     RecordViewCopyCell,
@@ -2836,6 +2835,14 @@ fn render_editor(
                 && app.overlay.is_none())
             .then_some(line.statement_background_cells)
             .flatten(),
+            &mouse_selection_cells(
+                state,
+                app.active_console_opt()
+                    .map(|tab| tab.id)
+                    .unwrap_or_default(),
+                &snapshot,
+                line,
+            ),
         );
         frame.render_widget(
             Paragraph::new(Line::from(content))
@@ -2914,6 +2921,7 @@ pub(crate) fn editor_line_spans(
     theme: Theme,
     syntax: bool,
     statement_background_cells: Option<(usize, usize)>,
+    mouse_selection_cells: &[(usize, usize)],
 ) -> Vec<Span<'static>> {
     let selected = snapshot
         .selection_cells
@@ -2934,7 +2942,12 @@ pub(crate) fn editor_line_spans(
             let highlighted = selected.iter().any(|(start, end)| {
                 display_cell < *end && display_cell.saturating_add(width) > *start
             });
-            let style = Style::new().fg(foreground).bg(if highlighted {
+            let mouse_highlighted = mouse_selection_cells.iter().any(|(start, end)| {
+                display_cell < *end && display_cell.saturating_add(width) > *start
+            });
+            let style = Style::new().fg(foreground).bg(if mouse_highlighted {
+                theme.mouse_selection
+            } else if highlighted {
                 theme.selection
             } else if statement_background_cells.is_some_and(|(start, end)| {
                 display_cell < end && display_cell.saturating_add(width) > start
@@ -2954,6 +2967,56 @@ pub(crate) fn editor_line_spans(
         }
     }
     result
+}
+
+pub(crate) fn mouse_selection_cells(
+    state: &UiState,
+    session_id: Uuid,
+    snapshot: &crate::model::editor::EditorRenderSnapshot,
+    line: &crate::model::editor::EditorRenderLine,
+) -> Vec<(usize, usize)> {
+    let Some(gesture) = state.text_gesture.borrow().as_ref().copied() else {
+        return Vec::new();
+    };
+    if !gesture.has_dragged
+        || gesture.session_id != session_id
+        || gesture.revision != snapshot.revision
+    {
+        return Vec::new();
+    }
+    let first = (gesture.start.line, gesture.start.column);
+    let last = (gesture.end.line, gesture.end.column);
+    let ((first_line, first_column), (last_line, last_column)) = if first <= last {
+        (first, last)
+    } else {
+        (last, first)
+    };
+    if line.line < first_line || line.line > last_line {
+        return Vec::new();
+    }
+    let last_source_column = line.source_to_display_cells.len().saturating_sub(1);
+    let start = if line.line == first_line {
+        first_column.min(last_source_column)
+    } else {
+        0
+    };
+    let end = if line.line == last_line {
+        last_column.saturating_add(1).min(last_source_column)
+    } else {
+        last_source_column
+    };
+    if end <= start {
+        return Vec::new();
+    }
+    let start_cell = *line.source_to_display_cells.get(start).unwrap_or(&0);
+    let end_cell = *line
+        .source_to_display_cells
+        .get(end)
+        .unwrap_or_else(|| line.source_to_display_cells.last().unwrap_or(&0));
+    (end_cell > start_cell)
+        .then_some((start_cell, end_cell))
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn render_tab_selectors(
@@ -3253,7 +3316,21 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
     }
     for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
         let y = inner.y.saturating_add(row as u16);
-        let content = editor_line_spans(line, &snapshot, theme, true, None);
+        let content = editor_line_spans(
+            line,
+            &snapshot,
+            theme,
+            true,
+            None,
+            &mouse_selection_cells(
+                state,
+                app.active_console_opt()
+                    .map(|tab| tab.output_editor_id)
+                    .unwrap_or_default(),
+                &snapshot,
+                line,
+            ),
+        );
         frame.render_widget(
             Paragraph::new(Line::from(content))
                 .style(Style::new().bg(theme.surface))

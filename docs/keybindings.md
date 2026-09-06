@@ -572,12 +572,12 @@ The last applied width is retained if the drag is cancelled by focus loss,
 terminal resize, or a modal. Use `Ctrl-w` followed by `=` to restore automatic
 pane sizes.
 
-When mouse capture is enabled, left-button drag selects text in the SQL Editor,
-SQL Output/Plan, Relation DDL, and text-detail views. The selection is
-charwise, can span visible lines, and is copied immediately when the left button
-is released. A click without dragging only positions the cursor and does not
-overwrite the clipboard. The selection remains highlighted and available to the
-view's explicit copy action. Dragging does not replace grid cell selection, grid
+When mouse capture is enabled, left-button drag previews text in the SQL Editor,
+SQL Output/Plan, Relation DDL, and text-detail views. The preview is charwise,
+can span visible lines, uses a distinct mouse-copy style, and is copied
+immediately when the left button is released. The preview disappears when the
+gesture ends. A click without dragging only positions the cursor and does not
+overwrite the clipboard. Dragging does not replace grid cell selection, grid
 scrollbar or column resizing, pane resizing, or form/selector controls. Those
 regions keep their existing mouse behavior.
 

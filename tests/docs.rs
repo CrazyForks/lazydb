@@ -61,7 +61,7 @@ fn keyboard_reference_is_dedicated_and_complete() {
     assert!(keys.contains("Printable `y` and `Y` are text input"));
     assert!(keys.contains("capability-aware"));
     assert!(keys.contains("Ctrl-Shift-s"));
-    assert!(keys.contains("left-button drag selects text"));
+    assert!(keys.contains("left-button drag previews text"));
     assert!(keys.contains("Copy all"));
     assert!(keys.contains("Ctrl-c`\nremains the quit key"));
 
@@ -70,7 +70,7 @@ fn keyboard_reference_is_dedicated_and_complete() {
         "backend = \"osc52\"",
         "max_bytes",
         "SSH and tmux",
-        "drag only creates a text selection",
+        "mouse drag previews and automatically copies text",
         "default `Ctrl-c` quit binding is unchanged",
     ] {
         assert!(
