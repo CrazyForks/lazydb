@@ -10623,7 +10623,14 @@ impl App {
             &insert_text,
             crate::editor::ReplacementCursor::EndOfInsertion,
         );
-        self.apply_editor_effects(CompletionAfterEdit::Suppress)
+        let (text, cursor) = self.active_editor_text_and_cursor();
+        let completion =
+            if crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect()) {
+                CompletionAfterEdit::Schedule
+            } else {
+                CompletionAfterEdit::Suppress
+            };
+        self.apply_editor_effects(completion)
     }
 
     pub(crate) fn sql_dialect(&self) -> SqlDialect {

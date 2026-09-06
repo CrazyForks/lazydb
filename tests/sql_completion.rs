@@ -303,6 +303,331 @@ fn statement_and_expression_keywords_are_contextual() {
 }
 
 #[test]
+fn order_by_clause_completion_without_catalog() {
+    let sql = "select 1 where 1 = 1 orde";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.label == "ORDER BY")
+        .expect("a completed predicate should offer ORDER BY");
+
+    assert_eq!(candidate.insert_text, "ORDER BY");
+    assert_eq!(candidate.kind, CompletionKind::Keyword);
+    assert_eq!(candidate.replace.start, sql.len() - "orde".len());
+    assert_eq!(candidate.replace.end, sql.len());
+}
+
+#[test]
+fn order_by_clause_completion_respects_expression_boundaries() {
+    let index = CompletionIndex::default();
+    for sql in [
+        "select 1 where 1 = 1 orde",
+        "select 1 from users orde",
+        "select 1 from users group by 1 orde",
+        "select 1 from users group by 1 having 1 = 1 orde",
+        "select 1 orde",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == "ORDER BY"),
+            "expected ORDER BY for {sql}: {candidates:?}"
+        );
+    }
+
+    for sql in [
+        "select 1 where 1 = orde",
+        "select 1 where 1 between 1 and orde",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|candidate| candidate.label == "ORDER BY")
+        );
+    }
+}
+
+#[test]
+fn order_by_clause_completion_handles_waiting_for_by() {
+    let index = CompletionIndex::default();
+    for sql in ["select 1 from users order ", "select 1 from users order b"] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            candidates.iter().any(|candidate| candidate.label == "BY"),
+            "expected BY for {sql}: {candidates:?}"
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|candidate| candidate.label == "ORDER BY")
+        );
+    }
+}
+
+#[test]
+fn order_by_clause_completion_replaces_only_the_current_prefix() {
+    for (sql, expected, label) in [
+        ("select 1 from users ord", "ORDER BY", "ORDER BY"),
+        ("select 1 from users order b", "BY", "BY"),
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &CompletionIndex::default(),
+            CompletionContext::default(),
+        );
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.label == label)
+            .expect("expected ORDER BY replacement candidate");
+        let replaced = format!(
+            "{}{}{}",
+            &sql[..candidate.replace.start],
+            expected,
+            &sql[candidate.replace.end..]
+        );
+        assert_eq!(
+            replaced,
+            if label == "ORDER BY" {
+                "select 1 from users ORDER BY"
+            } else {
+                "select 1 from users order BY"
+            }
+        );
+    }
+}
+
+#[test]
+fn order_by_completion_offers_columns_then_direction() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let columns = complete(
+        "select * from users u join roles r on u.id = r.id order by ",
+        "select * from users u join roles r on u.id = r.id order by ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|candidate| candidate.label == "user_name")
+    );
+    assert!(!columns.iter().any(|candidate| candidate.label == "ASC"));
+
+    let directions = complete(
+        "select * from users u join roles r on u.id = r.id order by u.user_name ",
+        "select * from users u join roles r on u.id = r.id order by u.user_name ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(directions.iter().any(|candidate| candidate.label == "ASC"));
+    assert!(directions.iter().any(|candidate| candidate.label == "DESC"));
+}
+
+#[test]
+fn order_by_completion_filters_direction_by_expression_state() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    for sql in [
+        "select * from users u join roles r on u.id = r.id order by u.user_name + ",
+        "select * from users u join roles r on u.id = r.id order by coalesce(u.user_name, ",
+        "select * from users u join roles r on u.id = r.id order by u.user_name, ",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(!candidates.iter().any(|candidate| candidate.label == "ASC"));
+        assert!(!candidates.iter().any(|candidate| candidate.label == "DESC"));
+    }
+}
+
+#[test]
+fn order_by_completion_filters_null_placement_by_dialect() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "select * from users order by user_name ";
+    for (dialect, supports_nulls) in [
+        (SqlDialect::Postgres, true),
+        (SqlDialect::Sqlite, true),
+        (SqlDialect::Generic, true),
+        (SqlDialect::MySql, false),
+        (SqlDialect::SqlServer, false),
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            dialect,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == "NULLS FIRST"),
+            supports_nulls,
+            "unexpected NULLS support for {dialect:?}: {candidates:?}"
+        );
+    }
+}
+
+#[test]
+fn order_by_completion_advances_after_direction_and_null_placement() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let after_direction = complete(
+        "select * from users order by user_name desc ",
+        "select * from users order by user_name desc ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        !after_direction
+            .iter()
+            .any(|candidate| candidate.label == "ASC")
+    );
+    assert!(
+        !after_direction
+            .iter()
+            .any(|candidate| candidate.label == "DESC")
+    );
+    assert!(
+        after_direction
+            .iter()
+            .any(|candidate| candidate.label == "NULLS FIRST")
+    );
+
+    let after_null_placement = complete(
+        "select * from users order by user_name desc nulls last ",
+        "select * from users order by user_name desc nulls last ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        !after_null_placement
+            .iter()
+            .any(|candidate| candidate.label == "ASC" || candidate.label == "NULLS FIRST")
+    );
+}
+
+#[test]
+fn order_by_completion_respects_relation_qualifiers() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "select * from users u join roles r on u.id = r.id order by r.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "role_name")
+    );
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.label == "user_name")
+    );
+    assert!(!candidates.iter().any(|candidate| candidate.label == "ASC"));
+}
+
+#[test]
+fn order_by_completion_dependencies_include_visible_relations() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "select * from users u join roles r on u.id = r.id order by ";
+    let dependencies = completion_dependencies(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(dependencies.relation_children.len(), 2);
+}
+
+#[test]
+fn ordering_completion_trigger_is_limited_to_ordering_positions() {
+    for (sql, expected) in [
+        ("select 1 from users order by user_name ", true),
+        ("select 1 from users order by user_name, ", true),
+        ("select 1 from users where user_name = ", false),
+        ("select 'order by ' ", false),
+        ("select 1 -- order by \n", false),
+    ] {
+        assert_eq!(
+            should_offer_completion(sql, sql.len()),
+            expected,
+            "unexpected trigger result for {sql:?}"
+        );
+    }
+}
+
+#[test]
+fn order_by_completion_keeps_nested_query_scopes_separate() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let outer = "select * from users u where u.id in (select r.id from roles r order by ";
+    let candidates = complete(
+        outer,
+        outer.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "role_name")
+    );
+
+    let inner = "select * from users u where u.id in (select r.id from roles r order by r.";
+    let candidates = complete(
+        inner,
+        inner.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "role_name")
+    );
+}
+
+#[test]
 fn insert_completion_offers_only_into_keyword() {
     let index = CompletionIndex::new(&contextual_fixture());
 
