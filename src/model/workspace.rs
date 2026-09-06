@@ -403,6 +403,7 @@ pub struct ExplorerFindState {
     pub matches: Vec<ExplorerNodeId>,
     pub current: usize,
     pub original_selected: Option<ExplorerNodeId>,
+    pub original_scroll: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -510,6 +511,7 @@ impl ExplorerState {
             matches: Vec::new(),
             current: 0,
             original_selected: self.normalized.selected.clone(),
+            original_scroll: self.normalized.scroll,
         });
     }
 
@@ -538,24 +540,13 @@ impl ExplorerState {
                 .map(|row| row.id.clone())
                 .collect()
         };
-        find.current = if find.matches.is_empty() {
-            0
-        } else {
-            let start = find
-                .original_selected
-                .as_ref()
-                .and_then(|id| find.rows.iter().position(|row| &row.id == id))
-                .unwrap_or(find.rows.len().saturating_sub(1));
-            find.matches
-                .iter()
-                .position(|id| {
-                    find.rows
-                        .iter()
-                        .position(|row| &row.id == id)
-                        .is_some_and(|position| position >= start)
-                })
-                .unwrap_or(0)
-        };
+        find.current = 0;
+        let should_select_match = !find.matches.is_empty();
+        if should_select_match {
+            self.select_find_match();
+        } else if find.query.value().trim().is_empty() {
+            self.restore_find_origin();
+        }
         true
     }
 
@@ -599,9 +590,37 @@ impl ExplorerState {
         let Some(find) = self.find.take() else {
             return;
         };
-        if restore_original && let Some(selected) = find.original_selected {
-            self.normalized.selected = Some(selected);
+        if restore_original {
+            if let Some(selected) = find.original_selected
+                && self
+                    .normalized
+                    .visible()
+                    .iter()
+                    .any(|row| row.id == selected)
+            {
+                self.normalized.selected = Some(selected);
+            }
+            self.normalized.scroll = find.original_scroll;
+            self.normalized.ensure_selected_visible();
+            self.sync_selected_index();
         }
+    }
+
+    fn restore_find_origin(&mut self) {
+        let Some(find) = self.find.as_ref() else {
+            return;
+        };
+        let selected = find.original_selected.clone();
+        let scroll = find.original_scroll;
+        if selected
+            .as_ref()
+            .is_some_and(|id| self.normalized.visible().iter().any(|row| &row.id == id))
+        {
+            self.normalized.selected = selected;
+        }
+        self.normalized.scroll = scroll;
+        self.normalized.ensure_selected_visible();
+        self.sync_selected_index();
     }
 
     fn select_find_match(&mut self) -> bool {
@@ -1181,7 +1200,16 @@ impl ExplorerState {
     }
 
     pub fn set_viewport_height(&mut self, height: usize) {
+        let changed = self.normalized.viewport_height != height;
         self.normalized.set_viewport_height(height);
+        if changed
+            && self
+                .find
+                .as_ref()
+                .is_some_and(|find| find.phase == ExplorerSearchPhase::Editing)
+        {
+            self.select_find_match();
+        }
         self.sync_selected_index();
     }
 
