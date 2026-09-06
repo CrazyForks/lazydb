@@ -3524,7 +3524,7 @@ fn relation_status_row_is_present_only_for_non_ready_snapshots() {
                 .hit_regions
                 .iter()
                 .find_map(|region| match region.target {
-                    HitTarget::RelationColumnSort(0) => Some(region.area.y),
+                    HitTarget::GridColumnSort(0) => Some(region.area.y),
                     _ => None,
                 })
                 .expect("relation sort header"),
@@ -5279,6 +5279,12 @@ fn sql_data_renders_shared_query_bar_above_the_grid() {
         .find(|region| matches!(region.target, HitTarget::ResultCell { .. }))
         .unwrap();
     assert!(cell.area.y > 0);
+    assert!(
+        state
+            .hit_regions
+            .iter()
+            .any(|region| region.target == HitTarget::GridColumnSort(0))
+    );
 }
 
 #[test]

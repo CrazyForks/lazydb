@@ -586,7 +586,7 @@ pub enum Action {
     RelationQueryClear,
     SubmitRelationQuery,
     CancelRelationQueryInput,
-    CycleRelationColumnSort(usize),
+    CycleDataColumnSort(usize),
     ResizeRelationColumn(i16),
     ResetRelationColumnWidth,
     StartRelationColumnResize {

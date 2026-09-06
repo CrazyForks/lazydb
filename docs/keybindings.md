@@ -318,6 +318,19 @@ the application mapper as contextual Help.
 | `$` | Select last column |
 | `/` / `s` | Focus WHERE/ORDER BY when Data Query is available |
 
+When the Result set comes from a successful, read-only, single-query SQL
+execution that supports derived queries, clicking a column header uses the
+same cycle as Relation Data: `DESC`, `ASC`, and unsorted. A new key is appended
+after existing keys, and multi-key indicators show priority. The action updates
+the Result set's ORDER BY draft and reruns the derived query from page one;
+it does not sort only the rows currently visible in memory. The original SQL
+editor text is unchanged.
+
+Header sorting is unavailable while a derived query is running or when the
+source query cannot be safely wrapped. Queries with duplicate output column
+names should use unique aliases before using this shortcut. A source query's
+own `LIMIT` or `TOP` remains part of the source result being sorted.
+
 ## SQL Output and Plan
 
 Output and Plan are read-only Vim text views, not grids.

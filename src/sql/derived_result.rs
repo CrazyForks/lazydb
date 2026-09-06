@@ -58,12 +58,6 @@ pub fn build_derived_query(
         sql.push_str(" WHERE ");
         sql.push_str(&clause);
     }
-    if dialect != SqlDialect::SqlServer
-        && let Some(clause) = options.order_by_clause
-    {
-        sql.push_str(" ORDER BY ");
-        sql.push_str(&clause);
-    }
     Ok(wrap_paginated_source(
         &sql,
         dialect,
@@ -90,12 +84,6 @@ pub fn build_derived_paginated_query(
         sql.push_str(" WHERE ");
         sql.push_str(&clause);
     }
-    if dialect != SqlDialect::SqlServer
-        && let Some(clause) = options.order_by_clause
-    {
-        sql.push_str(" ORDER BY ");
-        sql.push_str(&clause);
-    }
     Ok(wrap_paginated_source(&sql, dialect, page, order_by))
 }
 
@@ -118,9 +106,12 @@ fn wrap_paginated_source(
             count_sql: format!("SELECT COUNT(*) FROM ({source}) AS {count_alias}"),
         };
     }
+    let order_by = order_by
+        .map(|clause| format!(" ORDER BY {clause}"))
+        .unwrap_or_default();
     PaginatedSql {
         page_sql: format!(
-            "SELECT * FROM ({source}) AS __lazydb_page LIMIT {limit} OFFSET {offset}"
+            "SELECT * FROM ({source}) AS __lazydb_page{order_by} LIMIT {limit} OFFSET {offset}"
         ),
         count_sql: format!("SELECT COUNT(*) FROM ({source}) AS __lazydb_count"),
     }
@@ -175,7 +166,7 @@ mod tests {
                 SqlDialect::Sqlite
             )
             .unwrap(),
-            "SELECT * FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1 ORDER BY id DESC) AS __lazydb_page LIMIT 501 OFFSET 0"
+            "SELECT * FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1) AS __lazydb_page ORDER BY id DESC LIMIT 501 OFFSET 0"
         );
     }
 
@@ -262,11 +253,11 @@ mod tests {
 
         assert_eq!(
             query.page_sql,
-            "SELECT * FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1 ORDER BY id DESC) AS __lazydb_page LIMIT 1001 OFFSET 1000"
+            "SELECT * FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1) AS __lazydb_page ORDER BY id DESC LIMIT 1001 OFFSET 1000"
         );
         assert_eq!(
             query.count_sql,
-            "SELECT COUNT(*) FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1 ORDER BY id DESC) AS __lazydb_count"
+            "SELECT COUNT(*) FROM (SELECT * FROM (SELECT id FROM users) AS __lazydb_result WHERE id > 1) AS __lazydb_count"
         );
     }
 

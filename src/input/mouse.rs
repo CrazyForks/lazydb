@@ -356,9 +356,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         Some(crate::ui::text_selection::GestureOwner::RelationColumnResize);
                     Some(Action::GridStartColumnResize { column, width })
                 }
-                HitTarget::RelationColumnSort(column) => {
-                    Some(Action::CycleRelationColumnSort(column))
-                }
+                HitTarget::GridColumnSort(column) => Some(Action::CycleDataColumnSort(column)),
                 HitTarget::GridScrollbarThumb {
                     track_x,
                     track_width,
@@ -633,7 +631,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::RelationView(_)
         | HitTarget::DashboardView(_)
         | HitTarget::RelationRetry
-        | HitTarget::RelationColumnSort(_)
+        | HitTarget::GridColumnSort(_)
         | HitTarget::DataQueryInput(_)
         | HitTarget::RelationColumnResize { .. }
         | HitTarget::GridScrollbarThumb { .. }

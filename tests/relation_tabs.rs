@@ -386,7 +386,7 @@ fn relation_sort_resets_page_without_changing_grid_layout() {
         tab.grid.column_offset = 1;
     }
 
-    let commands = app.update(Action::CycleRelationColumnSort(0));
+    let commands = app.update(Action::CycleDataColumnSort(0));
     assert!(commands.iter().any(|command| matches!(
         command,
         lazydb::action::Command::LoadRelationPreview(request)
@@ -756,11 +756,11 @@ fn relation_query_falls_back_to_preview_columns() {
 fn relation_column_sort_cycles_and_submits() {
     let mut app = app_with_relation_columns(&["id", "name"]);
 
-    app.update(Action::CycleRelationColumnSort(0));
+    app.update(Action::CycleDataColumnSort(0));
     assert_eq!(relation_query(&app).order_by_input.value(), "\"id\" DESC");
-    app.update(Action::CycleRelationColumnSort(0));
+    app.update(Action::CycleDataColumnSort(0));
     assert_eq!(relation_query(&app).order_by_input.value(), "\"id\" ASC");
-    app.update(Action::CycleRelationColumnSort(0));
+    app.update(Action::CycleDataColumnSort(0));
     assert_eq!(relation_query(&app).order_by_input.value(), "");
 }
 
@@ -769,8 +769,8 @@ fn relation_column_sort_appends_and_preserves_where() {
     let mut app = app_with_relation_columns(&["id", "name"]);
     relation_query_mut(&mut app).where_input.set("\"id\" > 10");
 
-    app.update(Action::CycleRelationColumnSort(0));
-    app.update(Action::CycleRelationColumnSort(1));
+    app.update(Action::CycleDataColumnSort(0));
+    app.update(Action::CycleDataColumnSort(1));
 
     assert_eq!(relation_query(&app).where_input.value(), "\"id\" > 10");
     assert_eq!(
@@ -784,7 +784,7 @@ fn relation_column_sort_invalid_draft_is_preserved() {
     let mut app = app_with_relation_columns(&["id"]);
     relation_query_mut(&mut app).order_by_input.set("id DESC,");
 
-    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+    assert!(app.update(Action::CycleDataColumnSort(0)).is_empty());
     assert_eq!(relation_query(&app).order_by_input.value(), "id DESC,");
 }
 
@@ -794,16 +794,16 @@ fn relation_column_sort_wrong_tab_view_and_bounds_are_no_ops() {
     let original = relation_query(&app).order_by_input.value().to_owned();
 
     app.update(Action::SetRelationView(RelationView::Ddl));
-    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+    assert!(app.update(Action::CycleDataColumnSort(0)).is_empty());
     assert_eq!(relation_query(&app).order_by_input.value(), original);
 
     app.update(Action::SetRelationView(RelationView::Data));
-    assert!(app.update(Action::CycleRelationColumnSort(1)).is_empty());
+    assert!(app.update(Action::CycleDataColumnSort(1)).is_empty());
     assert_eq!(relation_query(&app).order_by_input.value(), original);
 
     app.tabs.push(WorkspaceTab::Sql(ConsoleTab::new("sql")));
     app.active_tab = 2;
-    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+    assert!(app.update(Action::CycleDataColumnSort(0)).is_empty());
 }
 
 #[test]

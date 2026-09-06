@@ -2021,7 +2021,7 @@ impl App {
                         | Action::RelationQueryMoveEnd
                         | Action::RelationQueryClear
                         | Action::SubmitRelationQuery
-                        | Action::CycleRelationColumnSort(_)
+                        | Action::CycleDataColumnSort(_)
                         | Action::CancelRelationQueryInput
                         | Action::RelationEditCell
                         | Action::RelationEditInsert(_)
@@ -2172,7 +2172,7 @@ impl App {
                     | Action::GridSelect { .. }
                     | Action::GridResizeColumn(_)
                     | Action::GridResetColumnWidth
-                    | Action::CycleRelationColumnSort(_)
+                    | Action::CycleDataColumnSort(_)
                     | Action::GridStartColumnResize { .. }
                     | Action::GridSetColumnWidth { .. }
                     | Action::GridEndColumnResize
@@ -7126,38 +7126,76 @@ impl App {
             Action::RelationQueryClear => self.update(Action::DataQueryClear),
             Action::CancelRelationQueryInput => self.update(Action::CancelDataQueryInput),
             Action::SubmitRelationQuery => self.update(Action::SubmitDataQuery),
-            Action::CycleRelationColumnSort(column) => {
-                let Some((order_by, columns)) = self.tabs.get(self.active_tab).and_then(|tab| {
-                    let WorkspaceTab::Relation(tab) = tab else {
-                        return None;
-                    };
-                    if tab.view != RelationView::Data {
-                        return None;
-                    }
-                    Some((
-                        tab.query.order_by_input.value().to_owned(),
-                        self.relation_result()?.columns,
-                    ))
-                }) else {
+            Action::CycleDataColumnSort(column) => {
+                let Some((order_by, columns, dialect)) =
+                    self.tabs.get(self.active_tab).and_then(|tab| match tab {
+                        WorkspaceTab::Relation(tab) if tab.view == RelationView::Data => {
+                            if matches!(tab.data, RelationLoad::Loading { .. }) {
+                                return None;
+                            }
+                            Some((
+                                tab.query.order_by_input.value().to_owned(),
+                                self.relation_result()?.columns,
+                                self.sql_dialect(),
+                            ))
+                        }
+                        WorkspaceTab::Sql(tab)
+                            if tab.result_view == ResultView::Data
+                                && matches!(tab.query.capability, DataQueryCapability::Sql) =>
+                        {
+                            if tab.query_status == QueryStatus::Running
+                                || tab.derived.as_ref().is_some_and(|derived| derived.running)
+                            {
+                                return None;
+                            }
+                            let last = tab
+                                .last_execution
+                                .as_ref()
+                                .filter(|last| last.result == ExecutionResult::Succeeded)?;
+                            let result = tab
+                                .derived
+                                .as_ref()
+                                .and_then(|derived| derived.outcome.as_ref())
+                                .or(tab.outcome.as_ref())
+                                .and_then(|outcome| outcome.result_sets.last())?;
+                            if result
+                                .columns
+                                .iter()
+                                .map(|column| column.name.to_lowercase())
+                                .collect::<HashSet<_>>()
+                                .len()
+                                != result.columns.len()
+                            {
+                                return None;
+                            }
+                            Some((
+                                tab.query.order_by_input.value().to_owned(),
+                                result.columns.clone(),
+                                last.draft.dialect,
+                            ))
+                        }
+                        _ => None,
+                    })
+                else {
                     return Vec::new();
                 };
                 let column_names = columns
                     .iter()
                     .map(|column| column.name.as_str())
                     .collect::<Vec<_>>();
-                let Ok(next_order_by) = sql::cycle_relation_column_sort(
-                    &order_by,
-                    &column_names,
-                    column,
-                    self.sql_dialect(),
-                ) else {
+                let Ok(next_order_by) =
+                    sql::cycle_relation_column_sort(&order_by, &column_names, column, dialect)
+                else {
                     return Vec::new();
                 };
-                let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
-                    return Vec::new();
-                };
-                tab.query.order_by_input.set(next_order_by);
-                self.update(Action::SubmitRelationQuery)
+                match self.tabs.get_mut(self.active_tab) {
+                    Some(WorkspaceTab::Relation(tab)) => {
+                        tab.query.order_by_input.set(next_order_by)
+                    }
+                    Some(WorkspaceTab::Sql(tab)) => tab.query.order_by_input.set(next_order_by),
+                    _ => return Vec::new(),
+                }
+                self.update(Action::SubmitDataQuery)
             }
             Action::ResizeRelationColumn(delta) => {
                 self.resize_grid_column(delta);
@@ -14858,7 +14896,7 @@ mod tests {
                 InputValue, MetadataFingerprint, MutationResult, RelationMutation,
                 RelationMutationRequest,
             },
-            query::{QueryOutcome, QueryStats, ResultSet},
+            query::{ColumnMeta, QueryOutcome, QueryStats, ResultSet},
             value::CellValue,
         },
         identity::ConnectionIdentity,
@@ -15185,6 +15223,53 @@ mod tests {
             command => panic!("unexpected command: {command:?}"),
         };
         (app, tab_id, generation)
+    }
+
+    #[test]
+    fn sql_result_header_sort_submits_a_derived_query() {
+        let (mut app, tab_id, generation) = connected_query_app("SELECT id, name FROM users");
+        let connection = app.connection.active_identity().unwrap();
+        app.update(Action::QueryFinished {
+            tab_id,
+            generation,
+            connection,
+            outcome: QueryOutcome {
+                result_sets: vec![ResultSet {
+                    columns: vec![
+                        ColumnMeta {
+                            name: "id".into(),
+                            type_name: "bigint".into(),
+                        },
+                        ColumnMeta {
+                            name: "name".into(),
+                            type_name: "text".into(),
+                        },
+                    ],
+                    rows: vec![vec![CellValue::Integer(1), CellValue::Text("one".into())]],
+                    affected_rows: 0,
+                }],
+                stats: QueryStats::new(Duration::ZERO, Duration::ZERO, 1),
+            },
+        });
+        app.active_console_mut().query.where_input.set("id > 0");
+
+        let commands = app.update(Action::CycleDataColumnSort(0));
+
+        assert_eq!(
+            app.active_console().query.order_by_input.value(),
+            "\"id\" DESC"
+        );
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::RunDerivedQueryPage {
+                where_clause,
+                order_by_clause,
+                page,
+                ..
+            }] if where_clause == "id > 0"
+                && order_by_clause == "\"id\" DESC"
+                && page.offset == 0
+        ));
     }
 
     #[test]

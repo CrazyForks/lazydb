@@ -400,6 +400,7 @@ fn render_relation_result_table(
         edit,
         icons,
         Some(&sort_projection),
+        true,
     );
 }
 

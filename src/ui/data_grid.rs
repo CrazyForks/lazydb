@@ -46,6 +46,7 @@ pub(crate) fn render(
     edit: Option<&crate::model::relation_edit::RelationEditSession>,
     icons: IconSet,
     sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
+    sort_interactive: bool,
 ) {
     if result.columns.is_empty() {
         frame.render_widget(
@@ -105,7 +106,7 @@ pub(crate) fn render(
         visible_rows,
     });
     let row_y = table_area.y.saturating_add(1);
-    if sort_projection.is_some() {
+    if sort_projection.is_some() && sort_interactive {
         let mut header_x = data_start_x(table_area, number_width);
         for column in &visible {
             if header_x >= table_area.right() {
@@ -120,7 +121,7 @@ pub(crate) fn render(
                         .min(table_area.right().saturating_sub(header_x)),
                     1,
                 ),
-                target: HitTarget::RelationColumnSort(column.index),
+                target: HitTarget::GridColumnSort(column.index),
             });
             header_x = header_x
                 .saturating_add(column.rendered_width)
@@ -807,6 +808,7 @@ mod tests {
                     None,
                     IconSet::new(IconMode::Ascii),
                     sort_projection,
+                    sort_projection.is_some(),
                 );
             })
             .unwrap();
@@ -819,7 +821,7 @@ mod tests {
         let state = hit_regions(0, Some(&projection));
 
         assert!(state.hit_regions.iter().any(|region| {
-            region.target == HitTarget::RelationColumnSort(0)
+            region.target == HitTarget::GridColumnSort(0)
                 && region.area.y == 0
                 && region.area.width > 0
         }));
@@ -838,10 +840,7 @@ mod tests {
                 width: 6,
             })
         );
-        assert_eq!(
-            state.target_at(5, 0),
-            Some(&HitTarget::RelationColumnSort(0))
-        );
+        assert_eq!(state.target_at(5, 0), Some(&HitTarget::GridColumnSort(0)));
     }
 
     #[test]
@@ -853,13 +852,13 @@ mod tests {
             state
                 .hit_regions
                 .iter()
-                .any(|region| region.target == HitTarget::RelationColumnSort(1))
+                .any(|region| region.target == HitTarget::GridColumnSort(1))
         );
         assert!(
             !state
                 .hit_regions
                 .iter()
-                .any(|region| region.target == HitTarget::RelationColumnSort(0))
+                .any(|region| region.target == HitTarget::GridColumnSort(0))
         );
     }
 
@@ -870,7 +869,7 @@ mod tests {
             !state
                 .hit_regions
                 .iter()
-                .any(|region| matches!(region.target, HitTarget::RelationColumnSort(_)))
+                .any(|region| matches!(region.target, HitTarget::GridColumnSort(_)))
         );
     }
 
