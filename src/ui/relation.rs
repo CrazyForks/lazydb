@@ -129,8 +129,9 @@ fn render_data(
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(query_height),
-                Constraint::Length(2),
+                Constraint::Length(u16::from(status.is_some())),
                 Constraint::Min(1),
+                Constraint::Length(1),
                 Constraint::Length(1),
             ])
             .split(inner);
@@ -176,12 +177,7 @@ fn render_data(
             app.sql_dialect(),
         );
         let sql = sanitize_terminal_text(&snapshot.value.sql);
-        let footer = Rect::new(
-            body[2].x,
-            body[2].bottom().saturating_sub(1),
-            body[2].width,
-            1,
-        );
+        let footer = body[3];
         let provenance = tab
             .provenance(
                 RelationView::Data,
@@ -210,7 +206,7 @@ fn render_data(
         });
         super::pagination::render(
             frame,
-            body[3],
+            body[4],
             tab.pagination,
             super::pagination::PaginationKind::Relation,
             theme,

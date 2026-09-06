@@ -3125,10 +3125,18 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
     let Some(tab) = app.active_console_opt() else {
         return;
     };
+    let mut query = tab.query.clone();
+    let derived_error = tab
+        .derived
+        .as_ref()
+        .and_then(|derived| derived.error.as_ref());
+    if derived_error.is_some() && query.error.as_ref() == derived_error {
+        query.error = None;
+    }
     let block = panel_block(" RESULT SET ", app.focus == Focus::Results, theme);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let query_height = query_bar::height(&tab.query, inner.width, state.activity_icons);
+    let query_height = query_bar::height(&query, inner.width, state.activity_icons);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -3137,14 +3145,8 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
             Constraint::Length(1),
         ])
         .split(inner);
-    let query_cursor = query_bar::render(
-        frame,
-        chunks[0],
-        &tab.query,
-        theme,
-        state,
-        state.activity_icons,
-    );
+    let query_cursor =
+        query_bar::render(frame, chunks[0], &query, theme, state, state.activity_icons);
     let result_area = chunks[1];
     let loading_identity = if tab.query_status == QueryStatus::Running {
         Some(animation::LoadIdentity::Query {
@@ -3171,6 +3173,19 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
         .and_then(|derived| derived.outcome.as_ref())
         .or(tab.outcome.as_ref())
         .and_then(|outcome| outcome.result_sets.last());
+    let status = if loading_identity.is_none() {
+        tab.derived
+            .as_ref()
+            .and_then(|derived| derived.error.as_deref())
+            .map(|_| "Query failed - showing previous result")
+            .or(match tab.query_status {
+                QueryStatus::Cancelled => Some("Query cancelled - showing previous result"),
+                QueryStatus::Failed => Some("Query failed - showing previous result"),
+                QueryStatus::Idle | QueryStatus::Running => None,
+            })
+    } else {
+        None
+    };
     if let Some(identity) = loading_identity {
         if let Some(result) = result {
             let body = Layout::default()
@@ -3184,7 +3199,7 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
                     elapsed,
                     label: "Executing query",
                     detail: Some("showing previous result"),
-                    cancellable: true,
+                    cancellable: tab.query_status == QueryStatus::Running,
                     style: Style::new().fg(theme.action).bg(theme.surface_raised),
                 },
                 body[0],
@@ -3208,7 +3223,7 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
                     label: "Executing query",
                     helper: animation::show_loading_helper(elapsed)
                         .then_some("Waiting for the first result set..."),
-                    cancellable: true,
+                    cancellable: tab.query_status == QueryStatus::Running,
                     theme,
                     block: Block::default().style(Style::new().bg(theme.surface)),
                 },
@@ -3217,9 +3232,23 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
         }
         let _ = identity;
     } else if let Some(result) = result {
+        let body = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(u16::from(status.is_some())),
+                Constraint::Min(1),
+            ])
+            .split(result_area);
+        if let Some(status) = status {
+            frame.render_widget(
+                Paragraph::new(status)
+                    .style(Style::new().fg(theme.warning).bg(theme.surface_raised)),
+                body[0],
+            );
+        }
         render_result_table(
             frame,
-            result_area,
+            body[1],
             tab.id,
             result,
             tab.grid.clone(),

@@ -3337,7 +3337,123 @@ fn relation_loading_with_previous_snapshot_keeps_data_visible_and_exposes_cancel
 }
 
 #[test]
-fn relation_snapshot_states_keep_grid_header_at_the_same_row() {
+fn relation_footer_does_not_overlap_data_or_pagination_targets() {
+    let mut app = fixture();
+    let mut relation = RelationTab::new("users");
+    relation.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "SELECT id, name, active FROM users".into(),
+                result: app.active_console().outcome.clone().unwrap(),
+                pagination: lazydb::model::pagination::ResultPagination::from_page(
+                    lazydb::model::pagination::PageRequest::first(
+                        lazydb::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+            },
+            lazydb::identity::ConnectionIdentity {
+                profile_id: uuid::Uuid::nil(),
+                generation: 0,
+            },
+            lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(relation));
+    app.active_tab = 1;
+
+    let (_, state) = render_with_state(&app, 120, 36);
+    let footer = state
+        .hit_regions
+        .iter()
+        .find_map(|region| match region.target {
+            HitTarget::OpenTextDetail(_) => Some(region.area),
+            _ => None,
+        })
+        .expect("relation SQL footer");
+    for region in &state.hit_regions {
+        if matches!(region.target, HitTarget::ResultCell { .. })
+            || matches!(
+                region.target,
+                HitTarget::RelationFirstPage
+                    | HitTarget::RelationPreviousPage
+                    | HitTarget::RelationPageSize
+                    | HitTarget::RelationNextPage
+                    | HitTarget::RelationLastPage
+            )
+        {
+            assert!(
+                !footer.intersects(region.area),
+                "{footer:?} intersects {:?}",
+                region.area
+            );
+        }
+    }
+}
+
+#[test]
+fn result_status_sql_refresh_row_is_removed_after_completion() {
+    let mut app = fixture();
+    app.active_console_mut().query_status = QueryStatus::Running;
+
+    let (_, running_state) = render_with_state(&app, 120, 36);
+    let running_cell_y = running_state
+        .hit_regions
+        .iter()
+        .find_map(|region| match region.target {
+            HitTarget::ResultCell { row: 0, .. } => Some(region.area.y),
+            _ => None,
+        })
+        .expect("running result cell");
+
+    app.active_console_mut().query_status = QueryStatus::Idle;
+    let (_, ready_state) = render_with_state(&app, 120, 36);
+    let ready_cell_y = ready_state
+        .hit_regions
+        .iter()
+        .find_map(|region| match region.target {
+            HitTarget::ResultCell { row: 0, .. } => Some(region.area.y),
+            _ => None,
+        })
+        .expect("ready result cell");
+
+    assert_eq!(running_cell_y, ready_cell_y + 1);
+}
+
+#[test]
+fn result_status_sql_cancelled_and_failed_states_keep_previous_result_visible() {
+    let mut app = fixture();
+    app.active_console_mut().result_view = ResultView::Data;
+    app.active_console_mut().query_status = QueryStatus::Cancelled;
+    let (cancelled, cancelled_state) = render_with_state(&app, 120, 36);
+    assert!(
+        cancelled.contains("Query cancelled - showing previous result"),
+        "{cancelled}"
+    );
+    assert!(cancelled.contains("Ada"), "{cancelled}");
+    assert!(
+        cancelled_state
+            .hit_regions
+            .iter()
+            .any(|region| matches!(region.target, HitTarget::ResultCell { .. }))
+    );
+
+    app.active_console_mut().query_status = QueryStatus::Failed;
+    let (failed, failed_state) = render_with_state(&app, 120, 36);
+    assert!(
+        failed.contains("Query failed - showing previous result"),
+        "{failed}"
+    );
+    assert!(failed.contains("Ada"), "{failed}");
+    assert!(
+        failed_state
+            .hit_regions
+            .iter()
+            .any(|region| matches!(region.target, HitTarget::ResultCell { .. }))
+    );
+}
+
+#[test]
+fn relation_status_row_is_present_only_for_non_ready_snapshots() {
     let base = fixture();
     let snapshot = lazydb::model::relation::OwnedSnapshot::new(
         lazydb::db::RelationPreview {
@@ -3412,10 +3528,9 @@ fn relation_snapshot_states_keep_grid_header_at_the_same_row() {
                 .expect("relation sort header"),
         );
     }
-    assert!(
-        header_rows.windows(2).all(|rows| rows[0] == rows[1]),
-        "{header_rows:?}"
-    );
+    assert_eq!(header_rows[1], header_rows[0] + 1, "{header_rows:?}");
+    assert_eq!(header_rows[2], header_rows[0] + 1, "{header_rows:?}");
+    assert_eq!(header_rows[3], header_rows[0] + 1, "{header_rows:?}");
 }
 
 #[test]
