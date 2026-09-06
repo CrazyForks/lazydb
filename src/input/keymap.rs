@@ -1990,6 +1990,7 @@ fn map_table_editor(
     }
     if field == TableEditorFocus::Columns {
         return match event.code {
+            KeyCode::Enter => Some(Action::CatalogEditorPreview),
             KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumn),
             KeyCode::Char('e') if editor_table_has_selected_column(editor) => {
                 Some(Action::CatalogEditorOpenTableColumnDetails)

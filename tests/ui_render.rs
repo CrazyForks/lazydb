@@ -933,9 +933,12 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
         .as_mut()
         .and_then(|editor| editor.draft.as_mut())
     {
+        draft.columns[0].comment = "primary key note".into();
         draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     }
     let (columns, _) = render_with_state(&app, 100, 30);
+    assert!(columns.contains("COMMENT"), "{columns}");
+    assert!(columns.contains("primary key note"), "{columns}");
     assert!(columns.contains("a add below"), "{columns}");
     assert!(columns.contains("e edit column"), "{columns}");
 

@@ -8,8 +8,8 @@ use lazydb::{
             CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
             CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationMode,
             CatalogMutationOption, CatalogMutationPlan, CatalogMutationRequest,
-            CatalogMutationTarget, CatalogObjectDefinitionRequest, CatalogObjectType,
-            CatalogSelectionHint,
+            CatalogMutationTarget, CatalogObjectDefinition, CatalogObjectDefinitionRequest,
+            CatalogObjectType, CatalogSelectionHint, ColumnDefinition, TableDefinition,
         },
     },
     identity::ConnectionIdentity,
@@ -1320,6 +1320,117 @@ fn column(name: &str, existing_name: Option<&str>) -> ColumnDraft {
             id: id(Uuid::nil(), CatalogKind::Column, &[name]),
         }),
     }
+}
+
+fn table_definition(name: &str, columns: Vec<ColumnDefinition>) -> TableDefinition {
+    TableDefinition {
+        database: "app".into(),
+        schema: "public".into(),
+        name: name.into(),
+        owner: "owner".into(),
+        comment: OptionalMetadata::Supported(Some("old table comment".into())),
+        columns,
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "sha256:table".into(),
+    }
+}
+
+fn column_definition(name: &str, ordinal_position: u32, comment: Option<&str>) -> ColumnDefinition {
+    ColumnDefinition {
+        name: name.into(),
+        ordinal_position,
+        native_type: "integer".into(),
+        nullable: false,
+        default_expression: OptionalMetadata::Supported(Some("nextval('seq')".into())),
+        identity: OptionalMetadata::Supported(Some(false)),
+        generated_expression: OptionalMetadata::Supported(None),
+        collation: OptionalMetadata::Supported(None),
+        comment: OptionalMetadata::Supported(comment.map(str::to_owned)),
+    }
+}
+
+fn table_edit_request(profile: Uuid) -> CatalogMutationRequest {
+    let table = id(
+        profile,
+        CatalogKind::Table,
+        &["app", "public", "events", "42"],
+    );
+    CatalogMutationRequest::new(
+        ConnectionIdentity {
+            profile_id: profile,
+            generation: 1,
+        },
+        1,
+        1,
+        CatalogMutationMode::Edit,
+        CatalogMutationAnchor::Catalog(table),
+        CatalogObjectType::Catalog(CatalogKind::Table),
+    )
+    .unwrap()
+}
+
+#[test]
+fn postgres_table_edit_plans_table_and_column_comment_changes_without_trimming() {
+    let profile = Uuid::new_v4();
+    let baseline = table_definition(
+        "events",
+        vec![column_definition("id", 1, Some("old column comment"))],
+    );
+    let mut draft = table_draft("events", vec![column("id", Some("id"))]);
+    if let CatalogDraft::Table(table) = &mut draft {
+        table.comment = " new table comment ".into();
+        table.columns[0].comment = " new column comment ".into();
+    }
+    let plan = lazydb::db::postgres::PostgresAdapter::plan_catalog_mutation(
+        table_edit_request(profile),
+        draft,
+        Some(CatalogObjectDefinition::Table(baseline)),
+    )
+    .unwrap();
+    assert!(
+        plan.sql()
+            .contains("COMMENT ON TABLE \"public\".\"events\" IS ' new table comment '")
+    );
+    assert!(
+        plan.sql()
+            .contains("COMMENT ON COLUMN \"public\".\"events\".\"id\" IS ' new column comment '")
+    );
+}
+
+#[test]
+fn postgres_table_create_plans_comments_for_added_columns() {
+    let profile = Uuid::new_v4();
+    let mut draft = table_draft("events", vec![column("id", None)]);
+    if let CatalogDraft::Table(table) = &mut draft {
+        table.comment = "table note".into();
+        table.columns[0].comment = "column note".into();
+    }
+    let request = CatalogMutationRequest::new(
+        ConnectionIdentity {
+            profile_id: profile,
+            generation: 1,
+        },
+        1,
+        1,
+        CatalogMutationMode::Create,
+        CatalogMutationAnchor::Group {
+            schema: id(profile, CatalogKind::Schema, &["app", "public"]),
+            group: ObjectGroup::Tables,
+        },
+        CatalogObjectType::Catalog(CatalogKind::Table),
+    )
+    .unwrap();
+    let plan =
+        lazydb::db::postgres::PostgresAdapter::plan_catalog_mutation(request, draft, None).unwrap();
+    assert!(
+        plan.sql()
+            .contains("COMMENT ON TABLE \"public\".\"events\" IS 'table note'")
+    );
+    assert!(
+        plan.sql()
+            .contains("COMMENT ON COLUMN \"public\".\"events\".\"id\" IS 'column note'")
+    );
 }
 
 #[test]

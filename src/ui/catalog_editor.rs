@@ -1478,15 +1478,18 @@ fn render_table(
     let list_start = columns_y.saturating_add(2);
     let list_capacity = list_bottom.saturating_sub(list_start);
     if header_y < list_bottom {
-        let (name_width, type_width, nullable_width) = table_column_widths(area.width);
+        let (name_width, type_width, nullable_width, comment_width) =
+            table_column_widths(area.width);
         let header = format!(
-            "  {:<name_width$} {:<type_width$} {:<nullable_width$}",
+            "  {:<name_width$} {:<type_width$} {:<nullable_width$} {:<comment_width$}",
             "NAME",
             "TYPE",
             "NULLABLE",
+            "COMMENT",
             name_width = usize::from(name_width),
             type_width = usize::from(type_width),
             nullable_width = usize::from(nullable_width),
+            comment_width = usize::from(comment_width),
         );
         frame.render_widget(
             Paragraph::new(header).style(
@@ -1538,7 +1541,8 @@ fn render_table(
             } else {
                 theme.surface
             });
-        let (name_width, type_width, nullable_width) = table_column_widths(area.width);
+        let (name_width, type_width, nullable_width, comment_width) =
+            table_column_widths(area.width);
         let name = truncate_cells(
             sanitize_terminal_text(column.name.value()).if_empty("<unnamed>"),
             usize::from(name_width),
@@ -1554,9 +1558,13 @@ fn render_table(
         } else {
             "NOT NULL"
         };
+        let comment = truncate_cells(
+            sanitize_terminal_text(column.comment.value()),
+            usize::from(comment_width),
+        );
         frame.render_widget(
             Paragraph::new(format!(
-                "{}{} {:<name_width$} {:<type_width$} {:<nullable_width$}",
+                "{}{} {:<name_width$} {:<type_width$} {:<nullable_width$} {:<comment_width$}",
                 if active { "›" } else { " " },
                 if removed {
                     "-"
@@ -1568,9 +1576,11 @@ fn render_table(
                 name,
                 native_type,
                 truncate_cells(nullable.to_owned(), usize::from(nullable_width)),
+                comment,
                 name_width = usize::from(name_width),
                 type_width = usize::from(type_width),
                 nullable_width = usize::from(nullable_width),
+                comment_width = usize::from(comment_width),
             ))
             .style(style),
             Rect::new(area.x, y, area.width, 1),
@@ -1729,12 +1739,17 @@ fn render_table(
     );
 }
 
-fn table_column_widths(width: u16) -> (u16, u16, u16) {
+fn table_column_widths(width: u16) -> (u16, u16, u16, u16) {
     let available = width.saturating_sub(4);
+    let nullable = available.min(8);
+    let content = available.saturating_sub(nullable);
+    let name = content.saturating_mul(2) / 5;
+    let type_width = content / 4;
     (
-        available.saturating_mul(2) / 5,
-        available.saturating_mul(2) / 5,
-        available / 5,
+        name,
+        type_width,
+        nullable,
+        content.saturating_sub(name + type_width),
     )
 }
 

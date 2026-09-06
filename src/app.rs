@@ -4236,17 +4236,38 @@ impl App {
                                         &table,
                                     );
                                 if request.object.kind == crate::db::catalog::CatalogKind::Column {
-                                    if let Some(column) = request.object.native_path.get(4) {
-                                        if let Ok(ordinal) = column.parse::<usize>() {
-                                            draft.focus = crate::model::catalog_editor::TableEditorFocus::Columns;
-                                            draft.selected_column = draft
-                                                .columns
-                                                .iter()
-                                                .position(|row| {
-                                                    row.ordinal_position as usize == ordinal
-                                                })
-                                                .unwrap_or(0);
-                                        }
+                                    let selected_column = request
+                                        .object
+                                        .native_path
+                                        .get(4)
+                                        .and_then(|value| value.parse::<u32>().ok())
+                                        .and_then(|ordinal| {
+                                            draft.columns.iter().position(|row| {
+                                                row.ordinal_position == ordinal
+                                            })
+                                        });
+                                    if let (Some(table_path), Some(selected_column)) = (
+                                        request.object.native_path.get(..4),
+                                        selected_column,
+                                    ) {
+                                        let table_id = crate::db::catalog::CatalogId::new(
+                                            request.object.profile_id(),
+                                            crate::db::catalog::CatalogKind::Table,
+                                            table_path.to_vec(),
+                                        );
+                                        editor.anchor = crate::db::catalog_mutation::CatalogMutationAnchor::Catalog(table_id);
+                                        editor.object_type = Some(
+                                            crate::db::catalog_mutation::CatalogObjectType::Catalog(
+                                                crate::db::catalog::CatalogKind::Table,
+                                            ),
+                                        );
+                                        draft.focus = crate::model::catalog_editor::TableEditorFocus::Columns;
+                                        draft.selected_column = selected_column;
+                                    } else {
+                                        editor.error = Some(format!(
+                                            "column definition is missing a valid ordinal: {:?}",
+                                            request.object.native_path
+                                        ));
                                     }
                                 }
                                 crate::model::catalog_editor::CatalogDraft::Table(draft)
