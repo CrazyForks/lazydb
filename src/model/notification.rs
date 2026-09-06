@@ -207,9 +207,32 @@ pub struct NotificationHistoryState {
     pub query: String,
     pub phase: HistorySearchPhase,
     pub selected: usize,
+    pub selected_id: Option<u64>,
+    pub list_offset: usize,
     pub active_match: usize,
     previous_query: String,
     pub clear_confirm: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationDetailState {
+    pub notification_id: u64,
+    pub scroll: usize,
+    pub history: NotificationHistoryState,
+}
+
+impl NotificationDetailState {
+    pub fn new(notification_id: u64, history: NotificationHistoryState) -> Self {
+        Self {
+            notification_id,
+            scroll: 0,
+            history,
+        }
+    }
+
+    pub fn move_scroll(&mut self, delta: isize, max_scroll: usize) {
+        self.scroll = self.scroll.saturating_add_signed(delta).min(max_scroll);
+    }
 }
 
 impl NotificationHistoryState {
@@ -252,7 +275,7 @@ impl NotificationHistoryState {
         self.phase = HistorySearchPhase::Confirmed;
         self.active_match = 0;
         let selected = self.matching_indices(history).next().unwrap_or(0);
-        self.selected = selected;
+        self.select_index(selected, history);
     }
 
     pub fn cancel_search(&mut self) {
@@ -268,6 +291,49 @@ impl NotificationHistoryState {
 
     pub fn move_selection(&mut self, delta: isize, history_len: usize) {
         self.selected = move_bounded(self.selected, delta, history_len);
+    }
+
+    pub fn move_selection_in_history(&mut self, delta: isize, history: &[Notification]) {
+        let selected = move_bounded(self.selected, delta, history.len());
+        self.select_index(selected, history);
+    }
+
+    pub fn select_index(&mut self, selected: usize, history: &[Notification]) {
+        self.selected = selected.min(history.len().saturating_sub(1));
+        self.selected_id = history
+            .get(self.selected)
+            .map(|notification| notification.id);
+    }
+
+    pub fn reconcile_selection(&mut self, history: &[Notification]) {
+        if history.is_empty() {
+            self.selected = 0;
+            self.selected_id = None;
+            self.list_offset = 0;
+            return;
+        }
+        self.selected = self
+            .selected_id
+            .and_then(|id| {
+                history
+                    .iter()
+                    .position(|notification| notification.id == id)
+            })
+            .unwrap_or_else(|| self.selected.min(history.len() - 1));
+        self.selected_id = Some(history[self.selected].id);
+    }
+
+    pub fn ensure_selected_visible(&mut self, height: usize) {
+        if height == 0 {
+            self.list_offset = 0;
+        } else if self.selected < self.list_offset {
+            self.list_offset = self.selected;
+        } else {
+            self.list_offset = self
+                .selected
+                .saturating_sub(height.saturating_sub(1))
+                .max(self.list_offset);
+        }
     }
 
     pub fn next_match(&mut self, history: &[Notification]) {
@@ -300,7 +366,7 @@ impl NotificationHistoryState {
             return;
         }
         self.active_match = move_wrapped(self.active_match, delta, matches.len());
-        self.selected = matches[self.active_match];
+        self.select_index(matches[self.active_match], history);
     }
 }
 
@@ -405,6 +471,39 @@ mod tests {
         assert_eq!(state.selected, 2);
         state.move_selection(-10, history.len());
         assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn selection_tracks_notification_id_when_new_entries_are_inserted() {
+        let now = Instant::now();
+        let mut center = center();
+        center.push(NotificationLevel::Info, "first", "one", now);
+        let selected_id = center.push(NotificationLevel::Info, "second", "two", now);
+        let mut state = NotificationHistoryState::new();
+        let history: Vec<_> = center.history().cloned().collect();
+        state.select_index(0, &history);
+        assert_eq!(state.selected_id, Some(selected_id));
+
+        center.push(NotificationLevel::Info, "new", "zero", now);
+        let history: Vec<_> = center.history().cloned().collect();
+        state.reconcile_selection(&history);
+        assert_eq!(state.selected_id, Some(selected_id));
+        assert_eq!(history[state.selected].id, selected_id);
+    }
+
+    #[test]
+    fn selection_visibility_is_bounded_by_the_list_height() {
+        let mut state = NotificationHistoryState {
+            selected: 8,
+            list_offset: 0,
+            ..NotificationHistoryState::new()
+        };
+        state.ensure_selected_visible(4);
+        assert_eq!(state.list_offset, 5);
+
+        state.selected = 2;
+        state.ensure_selected_visible(4);
+        assert_eq!(state.list_offset, 2);
     }
 
     #[test]

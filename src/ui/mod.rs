@@ -171,6 +171,7 @@ pub enum HitTarget {
     ProfileScopeRow(String),
     ProfileButton(ProfileButton),
     DismissNotification(u64),
+    NotificationHistoryRow(usize),
     RelationFirstPage,
     RelationPreviousPage,
     RelationPageSize,
@@ -474,6 +475,7 @@ fn overlay_key(overlay: &Overlay) -> u8 {
     match overlay {
         Overlay::Help(_) => 1,
         Overlay::NotificationHistory(_) => 17,
+        Overlay::NotificationDetail(_) => 18,
         Overlay::RecordView(_) => 2,
         Overlay::ProfileManager => 3,
         Overlay::ProfileAccess { .. } => 4,
@@ -2364,6 +2366,9 @@ fn render_overlay(
         Overlay::Help(help) => render_help(frame, area, help, state, theme),
         Overlay::NotificationHistory(history) => {
             notifications::render_history(frame, area, app, history, theme, state)
+        }
+        Overlay::NotificationDetail(detail) => {
+            notifications::render_detail(frame, area, app, detail, theme)
         }
         Overlay::RecordView(view) => record_view::render(frame, area, app, view, theme, state),
         Overlay::ProfileManager => {

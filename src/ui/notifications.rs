@@ -11,7 +11,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     app::App,
     model::notification::{
-        HistorySearchPhase, Notification, NotificationHistoryState, NotificationLevel,
+        HistorySearchPhase, Notification, NotificationDetailState, NotificationHistoryState,
+        NotificationLevel,
     },
     security::sanitize_terminal_text,
     ui::{HitRegion, HitTarget, UiState, icons::IconSet, theme::Theme},
@@ -72,6 +73,67 @@ pub(crate) fn render(
     }
 }
 
+pub(crate) fn render_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    detail: &NotificationDetailState,
+    theme: Theme,
+) {
+    let popup = centered_history(area, area.width < 72);
+    frame.render_widget(ratatui::widgets::Clear, popup);
+    let block = Block::default()
+        .title(" NOTIFICATION DETAIL ")
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(theme.border))
+        .style(Style::new().bg(theme.surface_raised));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let Some(notification) = app.notifications.get(detail.notification_id) else {
+        return;
+    };
+    if inner.height < 2 {
+        return;
+    }
+    let mut lines = vec![
+        Line::from(Span::styled(&notification.title, theme.title(true))),
+        Line::raw(format!(
+            "{}  {}  source: {}",
+            notification.level,
+            notification.created_at.format("%Y-%m-%d %H:%M:%S"),
+            notification
+                .source
+                .map_or("unknown".to_owned(), |source| source.to_string())
+        )),
+        Line::raw(""),
+    ];
+    lines.extend(
+        notification
+            .body
+            .lines()
+            .map(|line| Line::raw(sanitize_terminal_text(line))),
+    );
+    let footer = "j/k scroll  y copy  Esc/q back";
+    let content_height = usize::from(inner.height.saturating_sub(1));
+    let visible = lines
+        .into_iter()
+        .skip(detail.scroll)
+        .take(content_height)
+        .collect::<Vec<_>>();
+    let content = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(visible).wrap(Wrap { trim: false }),
+        content[0],
+    );
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::new().fg(theme.muted)),
+        content[1],
+    );
+}
+
 pub(crate) fn render_history(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -121,7 +183,25 @@ pub(crate) fn render_history(
         Paragraph::new(format!("{search}{}", history.query)).style(Style::new().fg(theme.action)),
         chunks[0],
     );
-    let selected = history.selected.min(entries.len().saturating_sub(1));
+    let selected = history
+        .selected_id
+        .and_then(|id| {
+            entries
+                .iter()
+                .position(|notification| notification.id == id)
+        })
+        .unwrap_or_else(|| history.selected.min(entries.len().saturating_sub(1)));
+    let visible_height = usize::from(body[0].height);
+    let mut start = history
+        .list_offset
+        .min(entries.len().saturating_sub(visible_height));
+    if visible_height > 0 {
+        if selected < start {
+            start = selected;
+        } else if selected >= start + visible_height {
+            start = selected.saturating_sub(visible_height - 1);
+        }
+    }
     let mut lines = Vec::new();
     if entries.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -129,7 +209,7 @@ pub(crate) fn render_history(
             Style::new().fg(theme.muted),
         )));
     } else {
-        for (index, notification) in entries.iter().enumerate().take(usize::from(body[0].height)) {
+        for (index, notification) in entries.iter().enumerate().skip(start).take(visible_height) {
             let marker = if index == selected { ">" } else { " " };
             let style = if index == selected {
                 Style::new().fg(theme.text).bg(theme.selection)
@@ -148,6 +228,14 @@ pub(crate) fn render_history(
         }
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), body[0]);
+    if !entries.is_empty() {
+        for row in 0..visible_height.min(entries.len().saturating_sub(start)) {
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(body[0].x, body[0].y + row as u16, body[0].width, 1),
+                target: HitTarget::NotificationHistoryRow(start + row),
+            });
+        }
+    }
     if !narrow && let Some(notification) = entries.get(selected) {
         frame.render_widget(
             Paragraph::new(vec![

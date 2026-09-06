@@ -1903,9 +1903,10 @@ impl App {
                 Vec::new()
             }
             Action::OpenNotificationHistory => {
-                self.overlay = Some(Overlay::NotificationHistory(
-                    crate::model::notification::NotificationHistoryState::new(),
-                ));
+                let history = self.notifications.history().cloned().collect::<Vec<_>>();
+                let mut state = crate::model::notification::NotificationHistoryState::new();
+                state.select_index(0, &history);
+                self.overlay = Some(Overlay::NotificationHistory(state));
                 Vec::new()
             }
             Action::NotificationHistorySearchOpen => {
@@ -1939,6 +1940,12 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::NotificationHistorySearchCancel => {
+                if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
+                    state.cancel_search();
+                }
+                Vec::new()
+            }
             Action::NotificationHistoryNext | Action::NotificationHistoryPrevious => {
                 let history = self.notifications.history().cloned().collect::<Vec<_>>();
                 if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
@@ -1951,9 +1958,103 @@ impl App {
                 Vec::new()
             }
             Action::NotificationHistoryMove(delta) => {
-                let count = self.notifications.history().count();
+                let history = self.notifications.history().cloned().collect::<Vec<_>>();
                 if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
-                    state.move_selection(delta, count);
+                    state.reconcile_selection(&history);
+                    state.move_selection_in_history(delta, &history);
+                }
+                Vec::new()
+            }
+            Action::NotificationHistoryPage(delta) => {
+                let history = self.notifications.history().cloned().collect::<Vec<_>>();
+                if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
+                    state.reconcile_selection(&history);
+                    let amount = 5;
+                    state.move_selection_in_history(delta.saturating_mul(amount), &history);
+                }
+                Vec::new()
+            }
+            Action::NotificationHistoryJump(oldest) => {
+                let history = self.notifications.history().cloned().collect::<Vec<_>>();
+                if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
+                    state.select_index(
+                        if oldest {
+                            history.len().saturating_sub(1)
+                        } else {
+                            0
+                        },
+                        &history,
+                    );
+                }
+                Vec::new()
+            }
+            Action::NotificationHistorySelect(index) => {
+                let history = self.notifications.history().cloned().collect::<Vec<_>>();
+                if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
+                    state.select_index(index, &history);
+                }
+                Vec::new()
+            }
+            Action::NotificationHistoryOpenDetail => {
+                let Some(Overlay::NotificationHistory(history)) = self.overlay.take() else {
+                    return Vec::new();
+                };
+                let Some(notification_id) = history.selected_id else {
+                    self.overlay = Some(Overlay::NotificationHistory(history));
+                    return Vec::new();
+                };
+                self.overlay = Some(Overlay::NotificationDetail(
+                    crate::model::notification::NotificationDetailState::new(
+                        notification_id,
+                        history,
+                    ),
+                ));
+                Vec::new()
+            }
+            Action::NotificationHistoryCopy => {
+                let Some(Overlay::NotificationHistory(history)) = self.overlay.as_ref() else {
+                    return Vec::new();
+                };
+                let Some(notification) = history
+                    .selected_id
+                    .and_then(|id| self.notifications.get(id))
+                else {
+                    return Vec::new();
+                };
+                vec![Command::WriteClipboard(ClipboardPayload {
+                    description: format!("notification: {}", notification.title),
+                    text: notification.body.clone(),
+                    sensitive: false,
+                })]
+            }
+            Action::NotificationDetailMove(delta) => {
+                if let Some(Overlay::NotificationDetail(detail)) = self.overlay.as_mut() {
+                    let max_scroll = self
+                        .notifications
+                        .get(detail.notification_id)
+                        .map_or(0, |notification| {
+                            notification.body.lines().count().saturating_sub(1)
+                        });
+                    detail.move_scroll(delta, max_scroll);
+                }
+                Vec::new()
+            }
+            Action::NotificationDetailCopy => {
+                let Some(Overlay::NotificationDetail(detail)) = self.overlay.as_ref() else {
+                    return Vec::new();
+                };
+                let Some(notification) = self.notifications.get(detail.notification_id) else {
+                    return Vec::new();
+                };
+                vec![Command::WriteClipboard(ClipboardPayload {
+                    description: format!("notification: {}", notification.title),
+                    text: format!("{}\n\n{}", notification.title, notification.body),
+                    sensitive: false,
+                })]
+            }
+            Action::NotificationDetailClose => {
+                if let Some(Overlay::NotificationDetail(detail)) = self.overlay.take() {
+                    self.overlay = Some(Overlay::NotificationHistory(detail.history));
                 }
                 Vec::new()
             }
@@ -1968,6 +2069,8 @@ impl App {
                 if let Some(Overlay::NotificationHistory(state)) = self.overlay.as_mut() {
                     state.clear_confirm = false;
                     state.selected = 0;
+                    state.selected_id = None;
+                    state.list_offset = 0;
                     state.active_match = 0;
                 }
                 Vec::new()

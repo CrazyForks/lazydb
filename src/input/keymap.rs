@@ -264,7 +264,7 @@ impl Keymap {
             }
             if history.phase == crate::model::notification::HistorySearchPhase::Editing {
                 return match event.code {
-                    KeyCode::Esc | KeyCode::Char('q') => Some(Action::DismissOverlay),
+                    KeyCode::Esc => Some(Action::NotificationHistorySearchCancel),
                     KeyCode::Enter => Some(Action::NotificationHistorySearchConfirm),
                     KeyCode::Backspace => Some(Action::NotificationHistorySearchBackspace),
                     KeyCode::Char('u') if event.modifiers == KeyModifiers::CONTROL => {
@@ -278,12 +278,32 @@ impl Keymap {
             }
             return match event.code {
                 KeyCode::Esc | KeyCode::Char('q') => Some(Action::DismissOverlay),
+                KeyCode::Enter => Some(Action::NotificationHistoryOpenDetail),
+                KeyCode::Char('y') => Some(Action::NotificationHistoryCopy),
                 KeyCode::Char('/') => Some(Action::NotificationHistorySearchOpen),
                 KeyCode::Char('n') => Some(Action::NotificationHistoryNext),
                 KeyCode::Char('N') => Some(Action::NotificationHistoryPrevious),
                 KeyCode::Char('c') => Some(Action::NotificationHistoryClear),
                 KeyCode::Up | KeyCode::Char('k') => Some(Action::NotificationHistoryMove(-1)),
                 KeyCode::Down | KeyCode::Char('j') => Some(Action::NotificationHistoryMove(1)),
+                KeyCode::PageUp => Some(Action::NotificationHistoryPage(-1)),
+                KeyCode::PageDown => Some(Action::NotificationHistoryPage(1)),
+                KeyCode::Home => Some(Action::NotificationHistoryJump(false)),
+                KeyCode::End => Some(Action::NotificationHistoryJump(true)),
+                _ => None,
+            };
+        }
+        if matches!(app.overlay, Some(Overlay::NotificationDetail(_))) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Esc | KeyCode::Char('q') => Some(Action::NotificationDetailClose),
+                KeyCode::Char('y') => Some(Action::NotificationDetailCopy),
+                KeyCode::Up | KeyCode::Char('k') => Some(Action::NotificationDetailMove(-1)),
+                KeyCode::Down | KeyCode::Char('j') => Some(Action::NotificationDetailMove(1)),
+                KeyCode::PageUp => Some(Action::NotificationDetailMove(-10)),
+                KeyCode::PageDown => Some(Action::NotificationDetailMove(10)),
+                KeyCode::Home => Some(Action::NotificationDetailMove(isize::MIN)),
+                KeyCode::End => Some(Action::NotificationDetailMove(isize::MAX)),
                 _ => None,
             };
         }

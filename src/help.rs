@@ -129,6 +129,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
                 Overlay::NotificationHistory(_) => ShortcutContext::NotificationHistory,
+                Overlay::NotificationDetail(_) => ShortcutContext::NotificationHistory,
             };
         }
     }

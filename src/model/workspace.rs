@@ -103,6 +103,7 @@ pub fn pane_resize(focus: Focus, operator: char, count: u32) -> Option<PaneResiz
 pub enum Overlay {
     Help(HelpState),
     NotificationHistory(crate::model::notification::NotificationHistoryState),
+    NotificationDetail(crate::model::notification::NotificationDetailState),
     RecordView(crate::model::record_view::RecordViewState),
     ProfileManager,
     ProfileAccess {
