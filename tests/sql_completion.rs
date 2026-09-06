@@ -98,6 +98,47 @@ fn compact_match_fixture() -> Vec<CatalogEntry> {
     entries
 }
 
+#[test]
+fn completion_keeps_all_matching_candidates() {
+    let mut entries = fixture();
+    let connection = entries[0].id.profile_id();
+    let schema = entries[1].id.clone();
+    for index in 0..25 {
+        let name = format!("candidate_{index:02}");
+        entries.push(
+            CatalogEntry::relation(
+                CatalogId::new(connection, CatalogKind::Table, ["app", "public", &name]),
+                schema.clone(),
+                qualified("app", Some("public"), &name),
+                "table",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+    }
+    let index = CompletionIndex::new(&entries);
+    let candidates = complete(
+        "select * from candidate_",
+        "select * from candidate_".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext {
+            database: Some("app"),
+            schema: Some("public"),
+        },
+    );
+    let labels = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == CompletionKind::Table)
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(labels.len(), 25);
+    assert!(labels.contains(&"candidate_10"));
+    assert!(labels.contains(&"candidate_24"));
+}
+
 fn contextual_fixture() -> Vec<CatalogEntry> {
     let connection = Uuid::new_v4();
     let schema = CatalogId::new(connection, CatalogKind::Schema, ["app", "public"]);

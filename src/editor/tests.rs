@@ -417,6 +417,63 @@ fn accepted_completion_stays_in_the_current_insert_transaction() {
 }
 
 #[test]
+fn completion_cursor_uses_the_target_line_length() {
+    for (text, range, replacement, expected) in [
+        (
+            "sel\n",
+            crate::sql::TextRange::new(0, 3),
+            "SELECT",
+            EditorPosition { line: 0, column: 6 },
+        ),
+        (
+            "sel\nx",
+            crate::sql::TextRange::new(0, 3),
+            "SELECT",
+            EditorPosition { line: 0, column: 6 },
+        ),
+        (
+            "-- heading\nsel\n",
+            crate::sql::TextRange::new(11, 14),
+            "SELECT",
+            EditorPosition { line: 1, column: 6 },
+        ),
+    ] {
+        let (mut workspace, id) = fixture(text);
+        workspace
+            .replace_range(
+                id,
+                range,
+                replacement,
+                super::ReplacementCursor::EndOfInsertion,
+            )
+            .unwrap();
+        assert_eq!(workspace.position(id).unwrap(), expected);
+    }
+}
+
+#[test]
+fn completion_noop_replacement_moves_cursor_without_revision() {
+    let (mut workspace, id) = fixture("SELECT");
+    workspace.set_mode(id, EditorMode::Insert).unwrap();
+    workspace
+        .replace_range(
+            id,
+            crate::sql::TextRange::new(0, 6),
+            "SELECT",
+            super::ReplacementCursor::EndOfInsertion,
+        )
+        .unwrap();
+
+    assert_eq!(workspace.text(id).unwrap(), "SELECT");
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 0, column: 6 }
+    );
+    assert_eq!(workspace.revision(id).unwrap(), 0);
+    assert!(workspace.drain_effects().is_empty());
+}
+
+#[test]
 fn new_insert_after_undo_clears_redo() {
     let (mut workspace, id) = fixture("");
     insert_text(&mut workspace, id, "first");

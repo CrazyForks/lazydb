@@ -10647,12 +10647,15 @@ impl App {
         if needs_space {
             insert_text.push(' ');
         }
-        let _ = self.editor.replace_range(
+        if let Err(error) = self.editor.replace_range(
             id,
             candidate.replace,
             &insert_text,
             crate::editor::ReplacementCursor::EndOfInsertion,
-        );
+        ) {
+            self.notify_error("Editor", format!("Could not accept completion: {error}"));
+            return Vec::new();
+        }
         let (text, cursor) = self.active_editor_text_and_cursor();
         let completion =
             if crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect()) {
@@ -11635,32 +11638,20 @@ impl App {
             }
             CatalogTarget::Objects { .. } | CatalogTarget::RelationChildren { .. } => {}
         }
-        if matches!(&request.key.target, CatalogTarget::RelationChildren { .. })
-            && self.active_console_opt().is_some()
-        {
-            let relation = match &request.key.target {
-                CatalogTarget::RelationChildren { relation } => relation,
-                _ => unreachable!(),
-            };
-            if self.completion_request_is_current()
-                && self
-                    .active_console_opt()
-                    .and_then(|tab| tab.completion_request.as_ref())
-                    .is_some_and(|completion| {
-                        completion.catalog_generation <= self.explorer.catalog_generation
-                    })
-                && self.active_console_opt().is_some_and(|tab| {
-                    tab.completion_request
-                        .as_ref()
-                        .is_some_and(|completion| completion.relation_children.contains(relation))
+        if self.active_console_opt().is_some()
+            && self.completion_request_is_current()
+            && self
+                .active_console_opt()
+                .and_then(|tab| tab.completion_request.as_ref())
+                .is_some_and(|completion| {
+                    completion.catalog_generation <= self.explorer.catalog_generation
                 })
-            {
-                let automatic = self
-                    .active_console_opt()
-                    .and_then(|tab| tab.completion_request.as_ref())
-                    .is_some_and(|request| !request.explicit);
-                commands.extend(self.complete_now(automatic));
-            }
+        {
+            let automatic = self
+                .active_console_opt()
+                .and_then(|tab| tab.completion_request.as_ref())
+                .is_some_and(|request| !request.explicit);
+            commands.extend(self.complete_now(automatic));
         }
         commands.extend(self.load_active_relation(false));
         commands

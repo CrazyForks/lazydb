@@ -636,9 +636,10 @@ impl EditorWorkspace {
             .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
         buffer.set_text(encode_editor_text(text));
         let line_count = text.matches('\n').count();
-        let line = text.rsplit('\n').next().unwrap_or_default();
+        let target_line = position.line.min(line_count);
+        let line = text.split('\n').nth(target_line).unwrap_or_default();
         session.position = EditorPosition {
-            line: position.line.min(line_count),
+            line: target_line,
             column: position.column.min(line.chars().count()),
         };
         buffer.set_leader(
@@ -1154,15 +1155,28 @@ impl EditorWorkspace {
         }
         let mut next = old.clone();
         next.replace_range(range.start..range.end, replacement);
-        if next == old {
-            return Ok(());
-        }
         let cursor_offset = match cursor {
             ReplacementCursor::Start => range.start,
             ReplacementCursor::EndOfInsertion => range.start + replacement.len(),
             ReplacementCursor::PreserveRelative => range.start + replacement.len(),
         };
         let position = byte_to_char_position(&next, cursor_offset);
+        if next == old {
+            let session = self
+                .sessions
+                .get_mut(&id)
+                .ok_or(EditorError::MissingSession(id))?;
+            session.position = position;
+            let mut buffer = session
+                .buffer
+                .write()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+            buffer.set_leader(
+                session.group_id,
+                modalkit::editing::cursor::Cursor::new(position.line, position.column),
+            );
+            return Ok(());
+        }
         self.write_text(id, &next, position)?;
         let after = self.snapshot(id)?;
         self.record_edit_history(id, before, &after, mode_before, mode_before)?;
