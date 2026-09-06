@@ -1197,8 +1197,8 @@ LIMIT 2001
                     OptionalMetadata::Supported(value) => value.clone(),
                     OptionalMetadata::Unsupported => None,
                 };
-                let new_comment = (!row.comment.value().trim().is_empty())
-                    .then(|| row.comment.value().trim().to_owned());
+                let new_comment =
+                    (!row.comment.value().is_empty()).then(|| row.comment.value().to_owned());
                 if old_comment != new_comment {
                     statements.push(format!(
                         "COMMENT ON COLUMN {}.{} IS {}",
@@ -2431,8 +2431,8 @@ LIMIT 2001
                 OptionalMetadata::Supported(value) => value.clone(),
                 OptionalMetadata::Unsupported => None,
             };
-            let new_comment = (!draft.comment.value().trim().is_empty())
-                .then(|| draft.comment.value().to_owned());
+            let new_comment =
+                (!draft.comment.value().is_empty()).then(|| draft.comment.value().to_owned());
             if old_comment != new_comment {
                 statements.push(format!(
                     "COMMENT ON TABLE {} IS {}",
@@ -2455,6 +2455,14 @@ LIMIT 2001
                         relation,
                         column_definition_fragment(row)?
                     ));
+                    if !row.comment.value().is_empty() {
+                        statements.push(format!(
+                            "COMMENT ON COLUMN {}.{} IS {}",
+                            relation,
+                            quote_identifier(row.name.value().trim()),
+                            quote_literal(row.comment.value())
+                        ));
+                    }
                     continue;
                 };
                 if old.native_type != row.native_type.value().trim() {
@@ -2531,8 +2539,8 @@ LIMIT 2001
                     OptionalMetadata::Supported(v) => v.clone(),
                     OptionalMetadata::Unsupported => None,
                 };
-                let new_comment = (!row.comment.value().trim().is_empty())
-                    .then(|| row.comment.value().trim().to_owned());
+                let new_comment =
+                    (!row.comment.value().is_empty()).then(|| row.comment.value().to_owned());
                 if old_comment != new_comment {
                     statements.push(format!(
                         "COMMENT ON COLUMN {}.{} IS {}",
@@ -2592,12 +2600,22 @@ LIMIT 2001
                     quote_identifier(owner)
                 ));
             }
-            if !draft.comment.value().trim().is_empty() {
+            if !draft.comment.value().is_empty() {
                 statements.push(format!(
                     "COMMENT ON TABLE {} IS {}",
                     relation(schema, name),
-                    quote_literal(draft.comment.value().trim())
+                    quote_literal(draft.comment.value())
                 ));
+            }
+            for row in &draft.columns {
+                if !row.comment.value().is_empty() {
+                    statements.push(format!(
+                        "COMMENT ON COLUMN {}.{} IS {}",
+                        relation(schema, name),
+                        quote_identifier(row.name.value().trim()),
+                        quote_literal(row.comment.value())
+                    ));
+                }
             }
         }
         if statements.is_empty() {

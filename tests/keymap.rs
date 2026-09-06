@@ -394,6 +394,10 @@ fn table_editor_keymap_dispatches_by_focus_region() {
         Some(Action::CatalogEditorMoveTableColumn(1))
     );
     assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::CatalogEditorPreview)
+    );
+    assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
         Some(Action::CatalogEditorCancel)
     );
@@ -569,7 +573,7 @@ fn table_editor_action_buttons_keep_enter_and_space_semantics() {
 }
 
 #[test]
-fn table_editor_opens_column_details_with_e_but_not_enter() {
+fn table_editor_opens_column_details_with_e_and_reviews_with_enter() {
     let mut app = table_editor_app();
     let mut keymap = Keymap::default();
     let Some(lazydb::model::catalog_editor::CatalogDraft::Table(draft)) = app
@@ -581,7 +585,10 @@ fn table_editor_opens_column_details_with_e_but_not_enter() {
     };
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
 
-    assert_eq!(keymap.map(key(KeyCode::Enter), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::CatalogEditorPreview)
+    );
     assert_eq!(
         keymap.map(key(KeyCode::Char('e')), &app),
         Some(Action::CatalogEditorOpenTableColumnDetails)
