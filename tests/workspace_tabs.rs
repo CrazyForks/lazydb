@@ -262,6 +262,7 @@ fn default_console_can_be_closed_and_deleted() {
             if console_id == id
     ));
 
+    app.update(Action::ToggleDeleteConsoleFocus);
     let commands = app.update(Action::ConfirmDeleteConsole);
     assert!(!app.sql_editors.iter().any(|record| record.id == id));
     assert!(app.tabs.iter().all(|tab| tab.id() != id));
@@ -373,6 +374,7 @@ fn deleting_sql_editor_requires_confirmation_and_removes_record() {
     assert!(app.sql_editors.iter().any(|record| record.id == editor_id));
 
     app.update(Action::RequestDeleteActiveConsole);
+    app.update(Action::ToggleDeleteConsoleFocus);
     app.update(Action::ConfirmDeleteConsole);
     assert!(!app.sql_editors.iter().any(|record| record.id == editor_id));
     assert!(app.tabs.iter().all(|tab| tab.id() != editor_id));

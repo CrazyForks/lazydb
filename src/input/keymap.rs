@@ -458,14 +458,18 @@ impl Keymap {
                 _ => None,
             };
         }
-        if matches!(
-            app.overlay,
-            Some(Overlay::CatalogEditorDiscardConfirm { .. })
-        ) {
+        if let Some(Overlay::CatalogEditorDiscardConfirm { focus }) = app.overlay.as_ref() {
             return match event.code {
                 KeyCode::Up => Some(Action::CatalogEditorDiscardMove(-1)),
                 KeyCode::Down => Some(Action::CatalogEditorDiscardMove(1)),
-                KeyCode::Enter => Some(Action::CatalogEditorDiscardChanges),
+                KeyCode::Enter => Some(match focus {
+                    crate::model::workspace::CatalogEditorDiscardFocus::KeepEditing => {
+                        Action::CatalogEditorDiscardKeepEditing
+                    }
+                    crate::model::workspace::CatalogEditorDiscardFocus::DiscardChanges => {
+                        Action::CatalogEditorDiscardChanges
+                    }
+                }),
                 KeyCode::Esc => Some(Action::CatalogEditorCancel),
                 _ => None,
             };
@@ -720,7 +724,14 @@ impl Keymap {
                     }
                 }
                 SqlEditorListMode::DeleteConfirm { .. } => match event.code {
-                    KeyCode::Enter => Some(Action::SqlEditorListDeleteConfirm),
+                    KeyCode::Enter => Some(match list.delete_focus {
+                        crate::model::sql_editor_list::DeleteFocus::Cancel => {
+                            Action::SqlEditorListDeleteCancel
+                        }
+                        crate::model::sql_editor_list::DeleteFocus::Delete => {
+                            Action::SqlEditorListDeleteConfirm
+                        }
+                    }),
                     KeyCode::Esc => Some(Action::SqlEditorListDeleteCancel),
                     KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
                         Some(Action::SqlEditorListDeleteFocusNext)
@@ -732,10 +743,17 @@ impl Keymap {
                 },
             };
         }
-        if matches!(app.overlay, Some(Overlay::DeleteConsole { .. })) {
+        if let Some(Overlay::DeleteConsole { focus, .. }) = app.overlay.as_ref() {
             self.pending = None;
             return match event.code {
-                KeyCode::Enter => Some(Action::ConfirmDeleteConsole),
+                KeyCode::Enter => Some(match focus {
+                    crate::model::workspace::DeleteConsoleFocus::Cancel => {
+                        Action::CancelDeleteConsole
+                    }
+                    crate::model::workspace::DeleteConsoleFocus::Delete => {
+                        Action::ConfirmDeleteConsole
+                    }
+                }),
                 KeyCode::Esc => Some(Action::CancelDeleteConsole),
                 KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
                     Some(Action::ToggleDeleteConsoleFocus)
@@ -2522,7 +2540,9 @@ fn map_profile_manager(event: KeyEvent, app: &App) -> Option<Action> {
                 .map(Action::ProfileToggleScopeRow),
             _ => None,
         },
-        ProfileManagerPage::ConfirmDelete => map_profile_delete_confirmation(event.code),
+        ProfileManagerPage::ConfirmDelete => {
+            map_profile_delete_confirmation(event.code, manager.delete_focus)
+        }
     }
 }
 
@@ -2605,9 +2625,19 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
     }
 }
 
-fn map_profile_delete_confirmation(code: KeyCode) -> Option<Action> {
+fn map_profile_delete_confirmation(
+    code: KeyCode,
+    focus: crate::model::profile_manager::ProfileDeleteFocus,
+) -> Option<Action> {
     match code {
-        KeyCode::Enter => Some(Action::ProfileConfirmDelete),
+        KeyCode::Enter => Some(match focus {
+            crate::model::profile_manager::ProfileDeleteFocus::Cancel => {
+                Action::ProfileCancelDelete
+            }
+            crate::model::profile_manager::ProfileDeleteFocus::Delete => {
+                Action::ProfileConfirmDelete
+            }
+        }),
         KeyCode::Esc => Some(Action::ProfileCancelDelete),
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
             Some(Action::ToggleProfileDeleteFocus)

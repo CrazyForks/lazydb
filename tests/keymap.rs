@@ -128,11 +128,52 @@ fn console_manager_delete_keys_are_confirmation_aware() {
     );
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::SqlEditorListDeleteCancel)
+    );
+    app.update(Action::SqlEditorListDeleteFocusNext);
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
         Some(Action::SqlEditorListDeleteConfirm)
     );
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
         Some(Action::SqlEditorListDeleteCancel)
+    );
+}
+
+#[test]
+fn standalone_console_delete_enter_activates_the_focused_button() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::RequestDeleteActiveConsole);
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::CancelDeleteConsole)
+    );
+    app.update(Action::ToggleDeleteConsoleFocus);
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::ConfirmDeleteConsole)
+    );
+}
+
+#[test]
+fn catalog_discard_enter_activates_the_focused_button() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditorDiscardConfirm {
+        focus: lazydb::model::workspace::CatalogEditorDiscardFocus::KeepEditing,
+    });
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::CatalogEditorDiscardKeepEditing)
+    );
+    app.update(Action::CatalogEditorDiscardMove(1));
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::CatalogEditorDiscardChanges)
     );
 }
 
@@ -3461,7 +3502,7 @@ fn profile_confirmation_and_paste_are_contextual_and_redacted() {
     let mut keymap = Keymap::default();
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
-        Some(Action::ProfileConfirmDelete)
+        Some(Action::ProfileCancelDelete)
     );
     assert!(app.update(Action::ToggleProfileDeleteFocus).is_empty());
     assert_eq!(
