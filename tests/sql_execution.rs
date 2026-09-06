@@ -120,7 +120,7 @@ fn full_run_is_explicit_and_starts_with_cancel_focused() {
     assert!(app.update(Action::RunAllSql).is_empty());
     assert!(matches!(
         app.overlay,
-        Some(Overlay::ExecutionConfirm { ref draft, focus: lazydb::model::workspace::ExecutionConfirmFocus::Cancel })
+        Some(Overlay::ExecutionConfirm { ref draft, focus: lazydb::model::workspace::ExecutionConfirmFocus::Cancel, .. })
             if draft.scope == ScopeKind::FullBuffer && draft.sql == "SELECT 1; SELECT 2;"
     ));
 }
@@ -222,15 +222,79 @@ fn execution_draft_classifies_and_preserves_exact_sql() {
 }
 
 #[test]
-fn confirmation_keymap_accepts_enter_execute_and_escape_cancel() {
+fn confirmation_defaults_to_cancel_and_enter_does_not_execute() {
     let mut app = connected_app(ConfirmationPolicy::Always);
-    app.update(Action::ReplaceEditor("SELECT 1".into()));
+    app.update(Action::ReplaceEditor(
+        "UPDATE users SET name = 'raw';".into(),
+    ));
+    app.update(Action::RunActiveSql);
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+    assert!(app.overlay.is_some());
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &app),
+        Some(Action::ConfirmExecution)
+    );
+    assert!(app.update(Action::ConfirmExecution).is_empty());
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn confirmation_focus_then_enter_dispatches_exact_snapshot() {
+    let mut app = connected_app(ConfirmationPolicy::Always);
+    let sql = "UPDATE users SET name = 'raw';";
+    app.update(Action::ReplaceEditor(sql.into()));
+    app.update(Action::RunActiveSql);
+    app.update(Action::ToggleExecutionConfirmationFocus);
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &app),
+        Some(Action::ConfirmExecution)
+    );
+    let commands = app.update(Action::ConfirmExecution);
+    assert!(
+        matches!(commands.as_slice(), [Command::RunQuery { sql: source, .. }] if source == sql)
+    );
+}
+
+#[test]
+fn confirmation_e_and_y_are_consumed_without_changing_state() {
+    let mut app = connected_app(ConfirmationPolicy::Always);
+    app.update(Action::ReplaceEditor(
+        "UPDATE users SET name = 'raw';".into(),
+    ));
+    app.update(Action::RunActiveSql);
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+    for key in ['e', 'y'] {
+        assert_eq!(
+            keymap.map(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE), &app),
+            None
+        );
+        assert!(app.overlay.is_some());
+    }
+}
+
+#[test]
+fn confirmation_backtab_and_scroll_only_update_overlay_state() {
+    let mut app = connected_app(ConfirmationPolicy::Always);
+    app.update(Action::ReplaceEditor(
+        "UPDATE users SET name = 'raw';".into(),
+    ));
     app.update(Action::RunActiveSql);
     let mut keymap = lazydb::input::keymap::Keymap::default();
     assert_eq!(
-        keymap.map(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE), &app),
-        Some(Action::ConfirmExecution)
+        keymap.map(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT), &app),
+        Some(Action::ToggleExecutionConfirmationFocus)
     );
+    assert!(
+        keymap
+            .map(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), &app)
+            .is_some()
+    );
+    assert!(
+        app.update(Action::ScrollExecutionConfirmation { rows: 10 })
+            .is_empty()
+    );
+    assert!(app.overlay.is_some());
 }
 
 #[test]

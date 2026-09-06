@@ -3754,7 +3754,10 @@ fn execution_confirmation_preview_is_sanitized_and_shows_scope() {
 
     let output = render(&app, 120, 36);
     assert!(output.contains("EXECUTION CONFIRMATION"));
-    assert!(output.contains("FullBuffer"));
+    assert!(output.contains("Connection: preview-db"));
+    assert!(output.contains("Database: :memory:"));
+    assert!(output.contains("Entire editor (all SQL)"));
+    assert!(output.contains("Execute selected SQL?"));
     assert!(!output.contains('\x1b'));
 }
 

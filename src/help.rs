@@ -442,6 +442,7 @@ pub enum HelpShortcutId {
     ExecutionConfirm,
     ExecutionCancel,
     ExecutionToggle,
+    ExecutionPreviewScroll,
     ManualCancelConfirm,
     ManualCancelKeep,
     ManualCancelToggle,
@@ -2180,8 +2181,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         ExecutionConfirm,
         [ExecutionConfirmation],
-        "Enter/e/y",
-        "execute SQL",
+        "Enter",
+        "activate selected action",
         display
     ),
     row!(
@@ -2194,8 +2195,15 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         ExecutionToggle,
         [ExecutionConfirmation],
-        "Tab/Left/Right",
+        "Tab/Shift-Tab/Left/Right",
         "change choice",
+        display
+    ),
+    row!(
+        ExecutionPreviewScroll,
+        [ExecutionConfirmation],
+        "Up/Down/PageUp/PageDown",
+        "scroll read-only SQL preview",
         display
     ),
     row!(
@@ -4175,7 +4183,7 @@ mod tests {
             ),
             (
                 ShortcutContext::ExecutionConfirmation,
-                vec!["Enter/e/y", "Esc/n/q", "Tab/Left/Right"],
+                vec!["Enter", "Esc/n/q", "Tab/Shift-Tab/Left/Right"],
             ),
             (
                 ShortcutContext::ManualCancelConfirmation,
