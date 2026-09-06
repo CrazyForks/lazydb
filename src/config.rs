@@ -47,6 +47,11 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "results-move-down",
     "results-move-up",
     "results-move-right",
+    "results-first-page",
+    "results-previous-page",
+    "results-next-page",
+    "results-last-page",
+    "results-page-size",
     "results-open-record",
     "results-copy-cell",
     "results-copy-row",
@@ -509,6 +514,10 @@ fn parse_key(value: &str) -> Option<KeyEvent> {
         }
         "tab" => KeyCode::Tab,
         "backspace" => KeyCode::Backspace,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
         _ => {
             let mut chars = key.chars();
             let character = chars.next()?;

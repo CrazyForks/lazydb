@@ -347,6 +347,11 @@ pub enum HelpShortcutId {
     ResultsMoveDown,
     ResultsMoveUp,
     ResultsMoveRight,
+    ResultsFirstPage,
+    ResultsPreviousPage,
+    ResultsNextPage,
+    ResultsLastPage,
+    ResultsPageSize,
     ResultsFirstColumn,
     ResultsLastColumn,
     ResultsFirstRow,
@@ -1124,8 +1129,13 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "Ctrl-u",
         "move up half page"
     ),
-    row!(ExplorerPageDown, [Explorer], "Ctrl-f", "move down one page"),
-    row!(ExplorerPageUp, [Explorer], "Ctrl-b", "move up one page"),
+    row!(
+        ExplorerPageDown,
+        [Explorer],
+        "Ctrl-f",
+        "scroll down one screen"
+    ),
+    row!(ExplorerPageUp, [Explorer], "Ctrl-b", "scroll up one screen"),
     row!(
         ExplorerAlignMiddle,
         [Explorer],
@@ -1380,6 +1390,36 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "move through cells right"
     ),
     row!(
+        ResultsFirstPage,
+        [SqlResultsData, RelationDataBrowse],
+        "Ctrl-Home",
+        "load first data page"
+    ),
+    row!(
+        ResultsPreviousPage,
+        [SqlResultsData, RelationDataBrowse],
+        "PageUp",
+        "load previous data page"
+    ),
+    row!(
+        ResultsNextPage,
+        [SqlResultsData, RelationDataBrowse],
+        "PageDown",
+        "load next data page"
+    ),
+    row!(
+        ResultsLastPage,
+        [SqlResultsData, RelationDataBrowse],
+        "Ctrl-End",
+        "load last data page"
+    ),
+    row!(
+        ResultsPageSize,
+        [SqlResultsData, RelationDataBrowse],
+        "P",
+        "change data page size"
+    ),
+    row!(
         ResultsFirstColumn,
         [SqlResultsData, RelationDataBrowse],
         "0/^",
@@ -1439,13 +1479,13 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         ResultsPageDown,
         [SqlResultsData, RelationDataBrowse],
         "Ctrl-f",
-        "move down one page"
+        "scroll down one screen within the current data page"
     ),
     row!(
         ResultsPageUp,
         [SqlResultsData, RelationDataBrowse],
         "Ctrl-b",
-        "move up one page"
+        "scroll up one screen within the current data page"
     ),
     row!(
         ResultsAlignMiddle,
@@ -2722,6 +2762,11 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::ResultsMoveDown => Some("results-move-down"),
         HelpShortcutId::ResultsMoveUp => Some("results-move-up"),
         HelpShortcutId::ResultsMoveRight => Some("results-move-right"),
+        HelpShortcutId::ResultsFirstPage => Some("results-first-page"),
+        HelpShortcutId::ResultsPreviousPage => Some("results-previous-page"),
+        HelpShortcutId::ResultsNextPage => Some("results-next-page"),
+        HelpShortcutId::ResultsLastPage => Some("results-last-page"),
+        HelpShortcutId::ResultsPageSize => Some("results-page-size"),
         HelpShortcutId::ResultsOpenRecordView => Some("results-open-record"),
         HelpShortcutId::ResultsCopyCell => Some("results-copy-cell"),
         HelpShortcutId::ResultsCopyRow => Some("results-copy-row"),

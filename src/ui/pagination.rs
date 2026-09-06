@@ -31,6 +31,7 @@ pub(crate) fn render(
     kind: PaginationKind,
     theme: Theme,
     state: &mut UiState,
+    interactive: bool,
 ) {
     if area.is_empty() {
         return;
@@ -48,7 +49,7 @@ pub(crate) fn render(
             page_target(
                 kind,
                 PageAction::First,
-                pagination.first_request().is_some(),
+                interactive && pagination.first_request().is_some(),
             ),
         ),
         (
@@ -56,22 +57,30 @@ pub(crate) fn render(
             page_target(
                 kind,
                 PageAction::Previous,
-                pagination.previous_request().is_some(),
+                interactive && pagination.previous_request().is_some(),
             ),
         ),
         (
             format!("{}-{}", format_number(start), format_number(end)),
-            page_target(kind, PageAction::Size, true),
+            page_target(kind, PageAction::Size, interactive),
         ),
         ("of".to_owned(), None),
         (total, None),
         (
             ">".to_owned(),
-            page_target(kind, PageAction::Next, pagination.next_request().is_some()),
+            page_target(
+                kind,
+                PageAction::Next,
+                interactive && pagination.next_request().is_some(),
+            ),
         ),
         (
             ">|".to_owned(),
-            page_target(kind, PageAction::Last, pagination.last_request().is_some()),
+            page_target(
+                kind,
+                PageAction::Last,
+                interactive && pagination.last_request().is_some(),
+            ),
         ),
     ];
     let mut spans = Vec::new();

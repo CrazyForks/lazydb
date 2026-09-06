@@ -1248,6 +1248,9 @@ impl Keymap {
         }
 
         if event.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
+                return Some(action);
+            }
             if event.modifiers == KeyModifiers::CONTROL {
                 match event.code {
                     KeyCode::PageDown => return Some(Action::NextTab),
@@ -1501,6 +1504,9 @@ impl Keymap {
                     event,
                 });
             }
+            if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
+                return Some(action);
+            }
             return map_relation(event.code, app);
         }
         if let Some(crate::model::tab::WorkspaceTab::Sql(tab)) = app.tabs.get(app.active_tab)
@@ -1647,6 +1653,9 @@ fn map_configured_navigation(
         }
     }
     if app.focus == Focus::Results && !app.is_active_relation_tab() {
+        if let Some(action) = map_configured_pagination(event, false, app, bindings) {
+            return Some(action);
+        }
         if bindings.matches("results-open-record", event)
             && app.active_grid_dimensions_for_input().0 > 0
             && app.active_grid_dimensions_for_input().1 > 0
@@ -1699,7 +1708,73 @@ fn map_configured_navigation(
             });
         }
     }
+    if app.focus == Focus::Results
+        && app.is_active_relation_tab()
+        && let Some(action) = map_configured_pagination(event, true, app, bindings)
+    {
+        return Some(action);
+    }
     None
+}
+
+fn map_configured_pagination(
+    event: KeyEvent,
+    relation: bool,
+    app: &App,
+    bindings: &crate::config::KeyBindings,
+) -> Option<Action> {
+    let action = |result: Action, relation_action: Action| {
+        if relation { relation_action } else { result }
+    };
+    [
+        (
+            "results-first-page",
+            Action::ResultFirstPage,
+            Action::RelationFirstPage,
+        ),
+        (
+            "results-previous-page",
+            Action::ResultPreviousPage,
+            Action::RelationPreviousPage,
+        ),
+        (
+            "results-next-page",
+            Action::ResultNextPage,
+            Action::RelationNextPage,
+        ),
+        (
+            "results-last-page",
+            Action::ResultLastPage,
+            Action::RelationLastPage,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(command, result, relation_action)| {
+        bindings
+            .matches(command, event)
+            .then(|| action(result, relation_action))
+    })
+    .or_else(|| {
+        bindings
+            .matches("results-page-size", event)
+            .then_some(Action::OpenPageSizeSelector { relation })
+    })
+    .filter(|_| {
+        if relation {
+            matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::Relation(tab))
+                    if tab.view == crate::model::relation::RelationView::Data
+                        && tab.query.focus.is_none()
+            )
+        } else {
+            matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::Sql(tab))
+                    if tab.result_view == crate::model::tab::ResultView::Data
+            )
+        }
+    })
 }
 
 fn map_catalog_editor(event: KeyEvent, app: &App) -> Option<Action> {
@@ -2839,7 +2914,6 @@ fn is_read_only_editor_key(event: KeyEvent) -> bool {
 
 fn map_results(code: KeyCode, _app: &App) -> Option<Action> {
     match code {
-        KeyCode::Char('P') => Some(Action::OpenPageSizeSelector { relation: false }),
         KeyCode::Char('0' | '^') => Some(Action::GridSelectColumn(
             crate::model::tab::GridColumnTarget::First,
         )),
@@ -2913,7 +2987,6 @@ fn map_results(code: KeyCode, _app: &App) -> Option<Action> {
 
 fn map_relation(code: KeyCode, app: &App) -> Option<Action> {
     match code {
-        KeyCode::Char('P') => Some(Action::OpenPageSizeSelector { relation: true }),
         KeyCode::Char('[') => Some(Action::GridResizeColumn(-1)),
         KeyCode::Char(']') => Some(Action::GridResizeColumn(1)),
         KeyCode::Char('=') => Some(Action::GridResetColumnWidth),

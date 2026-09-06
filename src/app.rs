@@ -6557,7 +6557,9 @@ impl App {
                     .get(self.active_tab)
                     .and_then(|tab| match (relation, tab) {
                         (true, WorkspaceTab::Relation(tab)) => Some(tab.pagination.page_size),
-                        (false, WorkspaceTab::Sql(tab)) => Some(tab.pagination.page_size),
+                        (false, WorkspaceTab::Sql(tab)) => tab
+                            .displayed_result_page()
+                            .map(|(_, pagination)| pagination.page_size),
                         _ => None,
                     })
                     .and_then(|size| {
@@ -7701,6 +7703,8 @@ impl App {
                 {
                     let previous_total = tab.pagination.total;
                     tab.pagination = pagination;
+                    tab.grid.selected_row = 0;
+                    tab.grid.row_offset = 0;
                     if let crate::model::pagination::TotalRows::Exact(total) = previous_total {
                         tab.pagination.total = crate::model::pagination::TotalRows::Exact(total);
                     }
@@ -7806,6 +7810,8 @@ impl App {
                             crate::model::pagination::TotalRows::Exact(total);
                     }
                 }
+                tab.grid.selected_row = 0;
+                tab.grid.row_offset = 0;
                 tab.query.error = None;
                 tab.result_view = ResultView::Data;
                 Vec::new()
@@ -7981,6 +7987,8 @@ impl App {
                     {
                         let previous_total = tab.pagination.total;
                         tab.pagination = pagination;
+                        tab.grid.selected_row = 0;
+                        tab.grid.row_offset = 0;
                         if let crate::model::pagination::TotalRows::Exact(total) = previous_total {
                             tab.pagination.total =
                                 crate::model::pagination::TotalRows::Exact(total);
@@ -11062,6 +11070,9 @@ impl App {
         let Some(WorkspaceTab::Sql(tab)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
+        if tab.query_status == QueryStatus::Running {
+            return Vec::new();
+        }
         if let Some(derived) = tab.derived.as_ref() {
             if derived.running || derived.outcome.is_none() {
                 return Vec::new();
@@ -11094,8 +11105,6 @@ impl App {
             let order_by_clause = derived.query.order_by_clause.clone().unwrap_or_default();
             let tab = self.active_console_mut();
             tab.derived.as_mut().unwrap().running = true;
-            tab.grid.selected_row = 0;
-            tab.grid.row_offset = 0;
             return vec![Command::RunDerivedQueryPage {
                 connection,
                 target,
@@ -11146,10 +11155,6 @@ impl App {
             let tab = self.active_console_mut();
             tab.generation = query_generation;
             tab.query_status = QueryStatus::Running;
-            tab.pagination.page_size = page.size;
-            tab.pagination.offset = page.offset;
-            tab.grid.selected_row = 0;
-            tab.grid.row_offset = 0;
             return vec![Command::ManualExecutePage {
                 connection,
                 target,
@@ -11197,10 +11202,6 @@ impl App {
         };
         tab.generation = generation;
         tab.query_status = QueryStatus::Running;
-        tab.pagination.page_size = page.size;
-        tab.pagination.offset = page.offset;
-        tab.grid.selected_row = 0;
-        tab.grid.row_offset = 0;
         vec![Command::RunQueryPage {
             connection,
             target,
@@ -14243,6 +14244,9 @@ impl App {
             if tab.view != RelationView::Data {
                 return Vec::new();
             }
+            if matches!(tab.data, RelationLoad::Loading { .. }) {
+                return Vec::new();
+            }
             if relation_has_pending_edits(tab)
                 || tab.transaction_state != TransactionState::Idle
                 || tab.transaction_snapshot.is_some()
@@ -14267,13 +14271,6 @@ impl App {
         let Some(page) = page else {
             return Vec::new();
         };
-        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
-            return Vec::new();
-        };
-        tab.pagination.page_size = page.size;
-        tab.pagination.offset = page.offset;
-        tab.grid.selected_row = 0;
-        tab.grid.row_offset = 0;
         self.load_active_relation_with_page(true, Some(page))
     }
 

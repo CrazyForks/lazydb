@@ -3181,12 +3181,12 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
         .as_ref()
         .and_then(|identity| state.animations.elapsed(identity))
         .unwrap_or_default();
-    let result = tab
-        .derived
-        .as_ref()
-        .and_then(|derived| derived.outcome.as_ref())
-        .or(tab.outcome.as_ref())
-        .and_then(|outcome| outcome.result_sets.last());
+    let (displayed_outcome, pagination) = tab
+        .displayed_result_page()
+        .map_or((None, tab.pagination), |(outcome, pagination)| {
+            (Some(outcome), pagination)
+        });
+    let result = displayed_outcome.and_then(|outcome| outcome.result_sets.last());
     let status = if loading_identity.is_none() {
         tab.derived
             .as_ref()
@@ -3293,10 +3293,13 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
     pagination::render(
         frame,
         chunks[2],
-        tab.pagination,
+        pagination,
         pagination::PaginationKind::Result,
         theme,
         state,
+        tab.query_status != QueryStatus::Running
+            && !tab.derived.as_ref().is_some_and(|derived| derived.running)
+            && displayed_outcome.is_some(),
     );
     if let (Some(completion), Some(cursor)) = (&tab.query.completion, query_cursor) {
         render_data_query_completion_popup(

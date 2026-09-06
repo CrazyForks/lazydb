@@ -426,8 +426,73 @@ fn page_size_change_requests_a_new_page_without_recounting_exact_total() {
     let commands = app.update(Action::SetResultPageSize(
         lazydb::model::pagination::PageSize::Ten,
     ));
+    assert_eq!(
+        app.active_console().pagination.page_size,
+        lazydb::model::pagination::PageSize::FiveHundred
+    );
+    assert_eq!(app.active_console().pagination.offset, 0);
     assert!(matches!(
         commands.as_slice(),
         [Command::RunQueryPage { page, .. }] if page.size == lazydb::model::pagination::PageSize::Ten && !page.resolve_total
     ));
+}
+
+#[test]
+fn failed_page_request_keeps_the_displayed_page() {
+    let mut app = connected_app(ConfirmationPolicy::RiskyOnly);
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+    let commands = app.update(Action::RunActiveSql);
+    let (tab_id, generation, connection) = match commands.as_slice() {
+        [
+            Command::RunQueryPage {
+                tab_id,
+                generation,
+                connection,
+                ..
+            },
+        ] => (*tab_id, *generation, *connection),
+        other => panic!("unexpected commands: {other:?}"),
+    };
+    let first_page = lazydb::model::pagination::ResultPagination {
+        page_size: lazydb::model::pagination::PageSize::Ten,
+        offset: 10,
+        visible_rows: 10,
+        has_next: true,
+        total: lazydb::model::pagination::TotalRows::LowerBound(21),
+    };
+    app.update(Action::QueryPageFinished {
+        tab_id,
+        generation,
+        connection,
+        outcome: lazydb::db::query::QueryOutcome {
+            result_sets: Vec::new(),
+            stats: lazydb::db::query::QueryStats::new(
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+                0,
+            ),
+        },
+        pagination: first_page,
+    });
+
+    let before = app.active_console().pagination;
+    app.active_console_mut().grid.selected_row = 3;
+    app.active_console_mut().grid.row_offset = 2;
+    let before_grid = app.active_console().grid.clone();
+    let commands = app.update(Action::ResultNextPage);
+
+    assert!(
+        matches!(commands.as_slice(), [Command::RunQueryPage { page, .. }] if page.offset == 20)
+    );
+    assert_eq!(app.active_console().pagination, before);
+    assert_eq!(app.active_console().grid, before_grid);
+
+    app.update(Action::QueryPageFailed {
+        tab_id,
+        generation: app.active_console().generation,
+        connection,
+        message: "page failed".into(),
+    });
+    assert_eq!(app.active_console().pagination, before);
+    assert_eq!(app.active_console().grid, before_grid);
 }

@@ -211,6 +211,7 @@ fn render_data(
             super::pagination::PaginationKind::Relation,
             theme,
             state,
+            matches!(tab.data, RelationLoad::Ready(_)),
         );
         if let (Some(completion), Some(cursor)) = (&tab.query.completion, query_cursor) {
             super::render_data_query_completion_popup(
@@ -293,6 +294,7 @@ fn render_data(
             super::pagination::PaginationKind::Relation,
             theme,
             state,
+            false,
         );
     }
 }
