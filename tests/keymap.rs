@@ -9,6 +9,7 @@ use lazydb::{
         data_query::{DataQueryCandidate, DataQueryCompletion, DataQueryInput},
         editor::EditorMode,
         explorer::ExplorerNodeId,
+        notification::NotificationLevel,
         profile_manager::ProfileField,
         relation::RelationTab,
         tab::{CompletionPopup, WorkspaceTab},
@@ -1780,6 +1781,23 @@ fn editor_space_tt_reaches_editor_transaction_toggle_binding() {
 }
 
 #[test]
+fn editor_space_m_opens_notification_history_through_editor_effects() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Editor;
+    app.update(Action::EditorKey(key(KeyCode::Esc)));
+    let mut keymap = Keymap::default();
+
+    for character in [' ', 'm'] {
+        let action = keymap
+            .map(key(KeyCode::Char(character)), &app)
+            .expect("editor key action");
+        app.update(action);
+    }
+
+    assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
+}
+
+#[test]
 fn editor_leader_followups_stay_on_the_editor_modalkit_path() {
     let mut app = App::new(Vec::new());
     app.focus = Focus::Editor;
@@ -3163,6 +3181,83 @@ fn ddl_view_maps_navigation_without_using_grid_move() {
             "code={code:?}"
         );
     }
+}
+
+#[test]
+fn read_only_normal_panes_open_notification_history_from_space_m() {
+    let mut ddl_app = App::new(Vec::new());
+    ddl_app
+        .tabs
+        .push(WorkspaceTab::Relation(RelationTab::new("users")));
+    ddl_app.active_tab = 1;
+    ddl_app.focus = Focus::Results;
+    ddl_app.update(Action::SetRelationView(
+        lazydb::model::relation::RelationView::Ddl,
+    ));
+
+    let mut output_app = App::new(Vec::new());
+    output_app.focus = Focus::Results;
+    output_app.active_console_mut().result_view = lazydb::model::tab::ResultView::Output;
+
+    let mut plan_app = App::new(Vec::new());
+    plan_app.focus = Focus::Results;
+    plan_app.active_console_mut().result_view = lazydb::model::tab::ResultView::Plan;
+
+    for mut app in [ddl_app, output_app, plan_app] {
+        let mut keymap = Keymap::default();
+        assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
+        let action = keymap
+            .map(key(KeyCode::Char('m')), &app)
+            .expect("notification history action");
+        app.update(action);
+        assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
+    }
+}
+
+#[test]
+fn empty_notification_history_supports_search_and_close() {
+    let mut app = App::new(Vec::new());
+    app.tabs.clear();
+    app.focus = Focus::Explorer;
+    let mut keymap = Keymap::default();
+
+    for code in [KeyCode::Char(' '), KeyCode::Char('m')] {
+        if let Some(action) = keymap.map(key(code), &app) {
+            app.update(action);
+        }
+    }
+    assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
+
+    for code in [KeyCode::Char('/'), KeyCode::Char('x'), KeyCode::Esc] {
+        let action = keymap.map(key(code), &app).expect("history action");
+        app.update(action);
+    }
+    assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
+
+    let action = keymap
+        .map(key(KeyCode::Char('q')), &app)
+        .expect("close action");
+    app.update(action);
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn clearing_notification_history_keeps_empty_history_reopenable() {
+    let mut app = App::new(Vec::new());
+    app.notifications.push(
+        NotificationLevel::Info,
+        "Title",
+        "Body",
+        std::time::Instant::now(),
+    );
+    app.update(Action::OpenNotificationHistory);
+    app.update(Action::NotificationHistoryClear);
+    app.update(Action::NotificationHistoryClearConfirm);
+    assert!(app.notifications.history().next().is_none());
+
+    app.update(Action::DismissOverlay);
+    app.update(Action::OpenNotificationHistory);
+    assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
 }
 
 #[test]

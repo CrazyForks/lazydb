@@ -134,6 +134,22 @@ fn editor_space_s_opens_manager_without_new_or_search_aliases() {
 }
 
 #[test]
+fn editor_space_m_opens_notification_history_in_normal_mode() {
+    let (mut workspace, id) = fixture("SELECT 1;");
+    workspace.press(id, EditorKey::Escape).unwrap();
+
+    workspace.press(id, EditorKey::Character(' ')).unwrap();
+    workspace.press(id, EditorKey::Character('m')).unwrap();
+
+    assert_eq!(
+        workspace.drain_effects(),
+        vec![EditorEffect::OpenNotificationHistory]
+    );
+    assert_eq!(workspace.text(id).unwrap(), "SELECT 1;");
+    assert_eq!(workspace.mode(id).unwrap(), EditorMode::Normal);
+}
+
+#[test]
 fn unicode_positions_are_character_based() {
     let (mut workspace, id) = fixture("数据🙂");
     workspace.move_cursor_to_end(id).unwrap();

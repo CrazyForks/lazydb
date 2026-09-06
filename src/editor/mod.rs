@@ -48,6 +48,7 @@ pub(crate) enum EditorEffect {
     CloseConsole,
     DeleteConsole,
     OpenSqlEditorList,
+    OpenNotificationHistory,
     FocusPane(Focus),
     FocusNext,
     ResizePane(PaneResize),
@@ -1734,6 +1735,9 @@ impl EditorWorkspace {
                 (PendingBinding::Leader, 's' | 'q' | 'x' | '?' | 'd' | 't')
                     if mode_before != EditorMode::Normal => {}
                 (PendingBinding::Leader, 's') => self.effects.push(EditorEffect::OpenSqlEditorList),
+                (PendingBinding::Leader, 'm') if mode_before == EditorMode::Normal => {
+                    self.effects.push(EditorEffect::OpenNotificationHistory)
+                }
                 (PendingBinding::Leader, 'q') => self.effects.push(EditorEffect::CloseConsole),
                 (PendingBinding::Leader, 'x') => self.effects.push(EditorEffect::DeleteConsole),
                 (PendingBinding::Leader, '?') => self.effects.push(EditorEffect::ShowHelp),

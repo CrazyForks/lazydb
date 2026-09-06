@@ -1041,6 +1041,10 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         OpenNotificationHistory,
         [
             Explorer,
+            EditorNormal,
+            EditorInsert,
+            EditorVisual,
+            DataQueryInput,
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
@@ -1054,6 +1058,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         OpenNotificationHistoryLeader,
         [
             Explorer,
+            EditorNormal,
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
@@ -2700,6 +2705,7 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::Help => Some("help"),
         HelpShortcutId::TerminalSelection => Some("terminal-selection"),
         HelpShortcutId::OpenDashboard => Some("open-dashboard"),
+        HelpShortcutId::OpenNotificationHistory => Some("notification-history"),
         HelpShortcutId::FocusExplorerLeader => Some("open-explorer"),
         HelpShortcutId::OpenSqlEditors => Some("open-editors"),
         HelpShortcutId::RunSql => Some("run-leader-statement"),
@@ -2755,8 +2761,14 @@ pub(crate) fn prefix_shortcuts(
                     || context == ShortcutContext::RelationDataBrowse
                         && prefix == ShortcutPrefix::EditorLeader
                         && shortcut.prefix == Some(ShortcutPrefix::Leader)
+                    || context == ShortcutContext::EditorNormal
+                        && prefix == ShortcutPrefix::EditorLeader
+                        && shortcut.id == HelpShortcutId::OpenNotificationHistoryLeader
                     || matches!(prefix, ShortcutPrefix::WindowCount(_))
                         && shortcut.prefix == Some(ShortcutPrefix::Window))
+                && !(context == ShortcutContext::EditorNormal
+                    && prefix == ShortcutPrefix::Leader
+                    && shortcut.id == HelpShortcutId::OpenNotificationHistoryLeader)
                 && available(shortcut, capabilities)
         })
         .collect::<Vec<_>>();
@@ -4441,8 +4453,38 @@ mod tests {
                 HelpShortcutId::OpenTargetSelector,
                 HelpShortcutId::ToggleTransaction,
                 HelpShortcutId::TransactionControl,
+                HelpShortcutId::OpenNotificationHistoryLeader,
             ]
         );
+
+        assert!(
+            shortcuts(
+                ShortcutContext::EditorNormal,
+                ShortcutCapabilities::default()
+            )
+            .iter()
+            .any(|shortcut| shortcut.id == HelpShortcutId::OpenNotificationHistoryLeader)
+        );
+        assert!(
+            !shortcuts(
+                ShortcutContext::EditorInsert,
+                ShortcutCapabilities::default()
+            )
+            .iter()
+            .any(|shortcut| shortcut.id == HelpShortcutId::OpenNotificationHistoryLeader)
+        );
+
+        let mut config = crate::config::AppConfig::default();
+        config
+            .keybindings
+            .global
+            .insert("notification-history".into(), vec!["F10".into()]);
+        let bindings = config.keybindings.key_bindings().unwrap();
+        let notification = shortcut_catalog()
+            .iter()
+            .find(|shortcut| shortcut.id == HelpShortcutId::OpenNotificationHistory)
+            .expect("notification history shortcut");
+        assert_eq!(configured_sequence(notification, Some(&bindings)), "F10");
 
         let sql_editor = prefix_ids(
             ShortcutContext::EditorNormal,

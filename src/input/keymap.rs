@@ -1093,6 +1093,16 @@ impl Keymap {
         }
 
         if is_relation_ddl_focus(app)
+            && event.modifiers.is_empty()
+            && event.code == KeyCode::Char(' ')
+            && app
+                .active_read_only_editor_mode()
+                .is_none_or(|mode| mode == EditorMode::Normal)
+        {
+            self.set_pending(Pending::Leader, app);
+            return None;
+        }
+        if is_relation_ddl_focus(app)
             && is_read_only_editor_key(event)
             && let Some(crate::model::tab::WorkspaceTab::Relation(tab)) =
                 app.tabs.get(app.active_tab)
@@ -1112,6 +1122,21 @@ impl Keymap {
             )
         {
             return Some(Action::ToggleResultView);
+        }
+        if let Some(crate::model::tab::WorkspaceTab::Sql(tab)) = app.tabs.get(app.active_tab)
+            && app.focus == Focus::Results
+            && matches!(
+                tab.result_view,
+                crate::model::tab::ResultView::Output | crate::model::tab::ResultView::Plan
+            )
+            && event.modifiers.is_empty()
+            && event.code == KeyCode::Char(' ')
+            && app
+                .active_read_only_editor_mode()
+                .is_none_or(|mode| mode == EditorMode::Normal)
+        {
+            self.set_pending(Pending::Leader, app);
+            return None;
         }
         if let Some(crate::model::tab::WorkspaceTab::Sql(tab)) = app.tabs.get(app.active_tab)
             && app.focus == Focus::Results

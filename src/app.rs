@@ -1029,6 +1029,11 @@ impl App {
         }
     }
 
+    pub(crate) fn active_read_only_editor_mode(&self) -> Option<EditorMode> {
+        self.active_read_only_session_id()
+            .and_then(|session_id| self.editor.mode(session_id).ok())
+    }
+
     fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
         match self.tabs.get(self.active_tab) {
             Some(WorkspaceTab::Sql(tab)) if session_id == tab.id => Some(Focus::Editor),
@@ -2090,7 +2095,6 @@ impl App {
                         | Action::RequestDeleteActiveConsole
                         | Action::ConfirmDeleteConsole
                         | Action::CancelDeleteConsole
-                        | Action::OpenNotificationHistory
                         | Action::NotificationHistorySearchInsert(_)
                         | Action::NotificationHistorySearchBackspace
                         | Action::NotificationHistorySearchClear
@@ -2220,7 +2224,6 @@ impl App {
                     | Action::RequestDeleteActiveConsole
                     | Action::ConfirmDeleteConsole
                     | Action::CancelDeleteConsole
-                    | Action::OpenNotificationHistory
             )
         {
             return Vec::new();
@@ -10389,6 +10392,7 @@ impl App {
                 EditorEffect::CloseConsole => Action::CloseActiveTab,
                 EditorEffect::DeleteConsole => Action::RequestDeleteActiveConsole,
                 EditorEffect::OpenSqlEditorList => Action::OpenSqlEditorList,
+                EditorEffect::OpenNotificationHistory => Action::OpenNotificationHistory,
                 EditorEffect::FocusPane(focus) => Action::Focus(focus),
                 EditorEffect::FocusNext => Action::FocusNext,
                 EditorEffect::NextTab => Action::NextTab,
@@ -14957,6 +14961,17 @@ mod tests {
             [Command::Quit]
         ));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn notification_history_opens_without_an_active_console() {
+        let mut app = App::new(Vec::new());
+        app.tabs.clear();
+
+        assert!(app.active_console_opt().is_none());
+        assert!(app.notifications.history().next().is_none());
+        assert!(app.update(Action::OpenNotificationHistory).is_empty());
+        assert!(matches!(app.overlay, Some(Overlay::NotificationHistory(_))));
     }
 
     #[test]
