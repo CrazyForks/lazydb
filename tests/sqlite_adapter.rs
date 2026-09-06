@@ -170,6 +170,56 @@ async fn relation_preview_preserves_metadata_limits_quotes_and_rejects_forged_id
 }
 
 #[tokio::test]
+async fn relation_preview_orders_multiple_columns_across_pages() {
+    let imported = import_connection_url("sqlite://:memory:", Some("relation-sort-pages")).unwrap();
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    database
+        .execute(
+            "CREATE TABLE records (id INTEGER PRIMARY KEY, team TEXT, score INTEGER); \
+             INSERT INTO records VALUES (1, 'b', 2), (2, 'a', 3), (3, 'a', 1), (4, 'b', 1), (5, 'a', 2);",
+        )
+        .await
+        .unwrap();
+    let relation = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        [":memory:", "main", "records"],
+    );
+    let options = lazydb::model::relation::RelationPreviewOptions {
+        order_by_clause: Some("team ASC, score DESC".into()),
+        ..Default::default()
+    };
+
+    let first = database
+        .preview_relation(&relation, &options, PageRequest::at(PageSize::Ten, 0))
+        .await
+        .unwrap();
+    let second = database
+        .preview_relation(&relation, &options, PageRequest::at(PageSize::Ten, 3))
+        .await
+        .unwrap();
+    let rows = |preview: &lazydb::db::RelationPreview| {
+        preview.result.result_sets[0]
+            .rows
+            .iter()
+            .map(|row| format!("{:?}", row))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&first).len(), 5);
+    assert!(first.sql.contains("ORDER BY team ASC, score DESC"));
+    assert_eq!(rows(&second).len(), 2);
+    assert!(rows(&first)[0].contains("a"));
+    assert!(rows(&first)[1].contains("a"));
+    assert!(rows(&first)[2].contains("a"));
+    assert!(rows(&first)[3].contains("b"));
+    assert!(rows(&second)[0].contains("b"));
+    database.close().await;
+}
+
+#[tokio::test]
 async fn relation_ddl_with_only_the_relation_uses_native_catalog_provenance() {
     let imported = import_connection_url("sqlite://:memory:", Some("relation-ddl")).unwrap();
     let profile_id = imported.profile.id;

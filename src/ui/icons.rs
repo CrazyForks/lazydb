@@ -118,6 +118,27 @@ impl IconSet {
         }
     }
 
+    pub const fn sort_default(self) -> &'static str {
+        match self.mode {
+            IconMode::Ascii => "S",
+            IconMode::NerdFont | IconMode::Unicode => "↕",
+        }
+    }
+
+    pub const fn sort_ascending(self) -> &'static str {
+        match self.mode {
+            IconMode::Ascii => "^",
+            IconMode::NerdFont | IconMode::Unicode => "↑",
+        }
+    }
+
+    pub const fn sort_descending(self) -> &'static str {
+        match self.mode {
+            IconMode::Ascii => "v",
+            IconMode::NerdFont | IconMode::Unicode => "↓",
+        }
+    }
+
     pub const fn query_underline(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "-",

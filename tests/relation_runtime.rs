@@ -205,6 +205,100 @@ fn stale_failure_also_preserves_pending_and_previous_snapshot() {
 }
 
 #[test]
+fn rapid_relation_requests_accept_only_the_latest_success() {
+    let first = request();
+    let mut app = relation_app(&first);
+    let tab_id = app.tabs[1].id();
+    let first = RelationRequest { tab_id, ..first };
+    let mut profile = import_profile(first.connection.profile_id);
+    profile.catalog_scope = first.scope.clone();
+    app.profiles.push(profile);
+    let second = RelationRequest {
+        request_id: first.request_id + 1,
+        ..first.clone()
+    };
+    if let lazydb::model::tab::WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.data = RelationLoad::Loading {
+            request: second.clone(),
+            previous: None,
+        };
+    }
+
+    app.update(Action::RelationSucceeded {
+        request: first,
+        snapshot: Box::new(RelationSnapshot::Preview(lazydb::db::RelationPreview {
+            sql: "stale".into(),
+            result: empty_outcome(),
+            pagination: default_pagination(),
+        })),
+    });
+    assert!(matches!(
+        &app.tabs[1],
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if matches!(&tab.data, RelationLoad::Loading { request, .. } if request == &second)
+    ));
+
+    app.update(Action::RelationSucceeded {
+        request: second,
+        snapshot: Box::new(RelationSnapshot::Preview(lazydb::db::RelationPreview {
+            sql: "latest".into(),
+            result: empty_outcome(),
+            pagination: default_pagination(),
+        })),
+    });
+    assert!(matches!(
+        &app.tabs[1],
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if matches!(&tab.data, RelationLoad::Ready(snapshot) if snapshot.value.sql == "latest")
+    ));
+}
+
+#[test]
+fn stale_failure_and_cancelled_request_are_ignored() {
+    let first = request();
+    let mut app = relation_app(&first);
+    let second = RelationRequest {
+        request_id: first.request_id + 1,
+        ..first.clone()
+    };
+    if let lazydb::model::tab::WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.data = RelationLoad::Loading {
+            request: second.clone(),
+            previous: None,
+        };
+    }
+    app.update(Action::RelationFailed {
+        request: first,
+        message: "stale".into(),
+    });
+    assert!(matches!(
+        &app.tabs[1],
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if matches!(&tab.data, RelationLoad::Loading { request, .. } if request == &second)
+    ));
+
+    app.update(Action::CancelActiveRelationRequest);
+    assert!(matches!(
+        &app.tabs[1],
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if matches!(tab.data, RelationLoad::Cancelled { .. })
+    ));
+    app.update(Action::RelationSucceeded {
+        request: second,
+        snapshot: Box::new(RelationSnapshot::Preview(lazydb::db::RelationPreview {
+            sql: "cancelled stale".into(),
+            result: empty_outcome(),
+            pagination: default_pagination(),
+        })),
+    });
+    assert!(matches!(
+        &app.tabs[1],
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if matches!(tab.data, RelationLoad::Cancelled { .. })
+    ));
+}
+
+#[test]
 fn relation_event_cannot_mutate_a_cached_inactive_workspace() {
     let first = import_profile(Uuid::new_v4());
     let second = import_profile(Uuid::new_v4());

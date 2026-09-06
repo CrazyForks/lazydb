@@ -341,6 +341,20 @@ editing commands remain disabled. Output hints describe text, never cells.
 The catalog contexts are `RelationDataBrowse`, `RelationDataEdit`,
 `RelationDataVisual`, and `RelationDataBusy`.
 
+### Header Sorting
+
+In Relation Data, click a column header to cycle that column through `DESC`,
+`ASC`, and unsorted. A newly sorted column is appended after existing sort
+columns; the numbers shown with multiple sort indicators identify priority,
+with `1` applied first. The header action updates the `ORDER BY` input and
+submits the preview as if `Enter` were pressed.
+
+Typing in WHERE or ORDER BY creates a draft. Draft text does not reload the
+preview until `Enter`; `Esc` restores the last submitted clauses. Invalid
+clauses remain visible as drafts with an error, while the last valid snapshot
+stays on screen. Header sorting is ignored while the current ORDER BY draft
+cannot be parsed.
+
 ### Browse
 
 | Keys | Behavior |
@@ -549,6 +563,8 @@ Left click focuses panels, activates tabs, selects Explorer rows and grid cells,
 and toggles view selectors. Wheel scrolling affects the panel under the pointer.
 Relation DDL scrolls vertically; Relation Data scrolls the grid. Mouse/paste/
 resize/focus events clear pending key sequences; plain pointer movement does not.
+In Relation Data, clicking a column header applies the Header Sorting cycle
+described above; clicking a separator resizes the column instead.
 When the Explorer and a main pane are both visible, drag the Explorer's right
 border to change its width. The existing minimum Explorer and right-pane widths
 still apply, and a click without moving the pointer does not save a new width.

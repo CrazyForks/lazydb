@@ -3337,6 +3337,88 @@ fn relation_loading_with_previous_snapshot_keeps_data_visible_and_exposes_cancel
 }
 
 #[test]
+fn relation_snapshot_states_keep_grid_header_at_the_same_row() {
+    let base = fixture();
+    let snapshot = lazydb::model::relation::OwnedSnapshot::new(
+        lazydb::db::RelationPreview {
+            sql: "SELECT id, name, active FROM users".into(),
+            result: base.active_console().outcome.clone().unwrap(),
+            pagination: lazydb::model::pagination::ResultPagination::from_page(
+                lazydb::model::pagination::PageRequest::first(
+                    lazydb::model::pagination::PageSize::default(),
+                ),
+                0,
+            ),
+        },
+        lazydb::identity::ConnectionIdentity {
+            profile_id: uuid::Uuid::nil(),
+            generation: 0,
+        },
+        lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+    );
+    let request = |tab: &RelationTab| lazydb::model::relation::RelationRequest {
+        tab_id: tab.id,
+        tab_generation: tab.generation,
+        request_id: 1,
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id: uuid::Uuid::nil(),
+            generation: 0,
+        },
+        relation: tab.descriptor.key.clone(),
+        kind: lazydb::model::relation::RelationRequestKind::Preview,
+        scope: lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        options: lazydb::model::relation::RelationPreviewOptions::default(),
+        page: lazydb::model::pagination::PageRequest::first(
+            lazydb::model::pagination::PageSize::default(),
+        ),
+    };
+    let mut header_rows = Vec::new();
+    for load in [
+        lazydb::model::relation::RelationLoad::Ready(snapshot.clone()),
+        lazydb::model::relation::RelationLoad::Loading {
+            request: request(&RelationTab::new("users")),
+            previous: Some(snapshot.clone()),
+        },
+        lazydb::model::relation::RelationLoad::Failed {
+            message: "failed".into(),
+            previous: Some(snapshot.clone()),
+        },
+        lazydb::model::relation::RelationLoad::Cancelled {
+            previous: Some(snapshot.clone()),
+        },
+    ] {
+        let mut app = fixture();
+        let mut relation = RelationTab::new("users");
+        if let lazydb::model::relation::RelationLoad::Loading { .. } = load {
+            let request = request(&relation);
+            relation.data = lazydb::model::relation::RelationLoad::Loading {
+                request,
+                previous: Some(snapshot.clone()),
+            };
+        } else {
+            relation.data = load;
+        }
+        app.tabs.push(WorkspaceTab::Relation(relation));
+        app.active_tab = 1;
+        let (_, state) = render_with_state(&app, 120, 36);
+        header_rows.push(
+            state
+                .hit_regions
+                .iter()
+                .find_map(|region| match region.target {
+                    HitTarget::RelationColumnSort(0) => Some(region.area.y),
+                    _ => None,
+                })
+                .expect("relation sort header"),
+        );
+    }
+    assert!(
+        header_rows.windows(2).all(|rows| rows[0] == rows[1]),
+        "{header_rows:?}"
+    );
+}
+
+#[test]
 fn relation_first_load_uses_quiet_status_without_dense_skeleton() {
     let mut app = fixture();
     let mut relation = RelationTab::new("users");

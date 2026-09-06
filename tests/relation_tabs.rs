@@ -364,6 +364,46 @@ fn relation_refresh_returns_to_first_page_and_forgets_exact_total() {
 }
 
 #[test]
+fn relation_sort_resets_page_without_changing_grid_layout() {
+    let mut app = app_with_relation_columns(&["id", "name"]);
+    let mut profile = lazydb::profile::import_connection_url("sqlite::memory:", Some("test"))
+        .unwrap()
+        .profile;
+    profile.id = uuid::Uuid::nil();
+    app.profiles.push(profile);
+    app.connection.profile_id = Some(uuid::Uuid::nil());
+    app.connection.generation = 1;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    app.connection.target = Some(lazydb::model::execution_target::ExecutionTarget {
+        profile_id: uuid::Uuid::nil(),
+        database: ":memory:".into(),
+        schema: None,
+    });
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.pagination.page_size = lazydb::model::pagination::PageSize::Ten;
+        tab.pagination.offset = 20;
+        tab.grid.column_widths = vec![Some(17), Some(23)];
+        tab.grid.column_offset = 1;
+    }
+
+    let commands = app.update(Action::CycleRelationColumnSort(0));
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        lazydb::action::Command::LoadRelationPreview(request)
+            if request.page.size == lazydb::model::pagination::PageSize::Ten
+                && request.page.offset == 0
+    )));
+    let tab = relation_tab(&app);
+    assert_eq!(
+        tab.pagination.page_size,
+        lazydb::model::pagination::PageSize::Ten
+    );
+    assert_eq!(tab.pagination.offset, 0);
+    assert_eq!(tab.grid.column_widths, vec![Some(17), Some(23)]);
+    assert_eq!(tab.grid.column_offset, 1);
+}
+
+#[test]
 fn relation_dirty_edits_block_refresh_and_all_navigation() {
     let mut app = app_with_relation(RelationView::Data);
     let WorkspaceTab::Relation(tab) = &mut app.tabs[1] else {
@@ -456,10 +496,20 @@ fn shared_query_actions_preserve_relation_editing_and_submission() {
     app.update(Action::DataQueryInsert('i'));
     assert_eq!(relation_query(&app).where_input.value(), "i");
     assert!(app.update(Action::SubmitDataQuery).is_empty());
-    assert_eq!(
-        relation_query(&app).submitted.where_clause.as_deref(),
-        Some("i")
-    );
+    assert_eq!(relation_query(&app).submitted, Default::default());
+}
+
+#[test]
+fn rejected_relation_query_refresh_preserves_submitted_state() {
+    let mut app = app_with_relation(RelationView::Data);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.query.submitted.where_clause = Some("old".into());
+        tab.query.where_input.set("new");
+    }
+    let before = relation_query(&app).submitted.clone();
+
+    assert!(app.update(Action::SubmitDataQuery).is_empty());
+    assert_eq!(relation_query(&app).submitted, before);
 }
 
 #[test]
@@ -703,6 +753,60 @@ fn relation_query_falls_back_to_preview_columns() {
 }
 
 #[test]
+fn relation_column_sort_cycles_and_submits() {
+    let mut app = app_with_relation_columns(&["id", "name"]);
+
+    app.update(Action::CycleRelationColumnSort(0));
+    assert_eq!(relation_query(&app).order_by_input.value(), "\"id\" DESC");
+    app.update(Action::CycleRelationColumnSort(0));
+    assert_eq!(relation_query(&app).order_by_input.value(), "\"id\" ASC");
+    app.update(Action::CycleRelationColumnSort(0));
+    assert_eq!(relation_query(&app).order_by_input.value(), "");
+}
+
+#[test]
+fn relation_column_sort_appends_and_preserves_where() {
+    let mut app = app_with_relation_columns(&["id", "name"]);
+    relation_query_mut(&mut app).where_input.set("\"id\" > 10");
+
+    app.update(Action::CycleRelationColumnSort(0));
+    app.update(Action::CycleRelationColumnSort(1));
+
+    assert_eq!(relation_query(&app).where_input.value(), "\"id\" > 10");
+    assert_eq!(
+        relation_query(&app).order_by_input.value(),
+        "\"id\" DESC, \"name\" DESC"
+    );
+}
+
+#[test]
+fn relation_column_sort_invalid_draft_is_preserved() {
+    let mut app = app_with_relation_columns(&["id"]);
+    relation_query_mut(&mut app).order_by_input.set("id DESC,");
+
+    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+    assert_eq!(relation_query(&app).order_by_input.value(), "id DESC,");
+}
+
+#[test]
+fn relation_column_sort_wrong_tab_view_and_bounds_are_no_ops() {
+    let mut app = app_with_relation_columns(&["id"]);
+    let original = relation_query(&app).order_by_input.value().to_owned();
+
+    app.update(Action::SetRelationView(RelationView::Ddl));
+    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+    assert_eq!(relation_query(&app).order_by_input.value(), original);
+
+    app.update(Action::SetRelationView(RelationView::Data));
+    assert!(app.update(Action::CycleRelationColumnSort(1)).is_empty());
+    assert_eq!(relation_query(&app).order_by_input.value(), original);
+
+    app.tabs.push(WorkspaceTab::Sql(ConsoleTab::new("sql")));
+    app.active_tab = 2;
+    assert!(app.update(Action::CycleRelationColumnSort(0)).is_empty());
+}
+
+#[test]
 fn relation_focus_cycles_only_explorer_and_results() {
     let mut app = lazydb::app::App::new(Vec::new());
     app.tabs
@@ -810,6 +914,56 @@ fn relation_query(app: &lazydb::app::App) -> &lazydb::model::data_query::DataQue
         WorkspaceTab::Sql(_) => panic!("expected relation tab"),
         WorkspaceTab::Dashboard(_) => panic!("expected relation tab"),
     }
+}
+
+fn relation_query_mut(
+    app: &mut lazydb::app::App,
+) -> &mut lazydb::model::data_query::DataQueryState {
+    match &mut app.tabs[app.active_tab] {
+        WorkspaceTab::Relation(tab) => &mut tab.query,
+        WorkspaceTab::Sql(_) => panic!("expected relation tab"),
+        WorkspaceTab::Dashboard(_) => panic!("expected relation tab"),
+    }
+}
+
+fn app_with_relation_columns(columns: &[&str]) -> lazydb::app::App {
+    let mut app = app_with_relation(RelationView::Data);
+    let mut tab = match app.tabs.pop().unwrap() {
+        WorkspaceTab::Relation(tab) => tab,
+        _ => unreachable!(),
+    };
+    tab.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "select".into(),
+                result: QueryOutcome {
+                    result_sets: vec![ResultSet {
+                        columns: columns
+                            .iter()
+                            .map(|name| ColumnMeta {
+                                name: (*name).into(),
+                                type_name: "text".into(),
+                            })
+                            .collect(),
+                        rows: Vec::new(),
+                        affected_rows: 0,
+                    }],
+                    stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 0),
+                },
+                pagination: default_pagination(0),
+            },
+            lazydb::identity::ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 0,
+            },
+            lazydb::profile::CatalogScope::for_profile(
+                lazydb::profile::DatabaseKind::Sqlite,
+                "db",
+                None,
+            ),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(tab));
+    app
 }
 
 fn app_with_relation(view: RelationView) -> lazydb::app::App {

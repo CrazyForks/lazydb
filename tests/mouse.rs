@@ -1089,6 +1089,76 @@ fn relation_result_cell_mouse_action_updates_relation_grid() {
 }
 
 #[test]
+fn relation_sort_header_mouse_down_maps_to_cycle_action() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(10, 4, 8, 1),
+        target: HitTarget::RelationColumnSort(3),
+    });
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 12, 4),
+            &ui,
+            &app,
+        ),
+        Some(Action::CycleRelationColumnSort(3))
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 12, 4),
+            &ui,
+            &app,
+        ),
+        None
+    );
+}
+
+#[test]
+fn relation_sort_separator_keeps_resize_priority() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    ui.hit_regions.extend([
+        HitRegion {
+            area: Rect::new(10, 4, 8, 1),
+            target: HitTarget::RelationColumnSort(3),
+        },
+        HitRegion {
+            area: Rect::new(18, 4, 1, 1),
+            target: HitTarget::RelationColumnResize {
+                column: 3,
+                width: 8,
+            },
+        },
+    ]);
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 18, 4),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridStartColumnResize {
+            column: 3,
+            width: 8,
+        })
+    );
+    let mut ui = UiState::new();
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(10, 4, 8, 1),
+        target: HitTarget::RelationColumnSort(3),
+    });
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 12, 4),
+            &ui,
+            &app,
+        ),
+        Some(Action::CycleRelationColumnSort(3))
+    );
+}
+
+#[test]
 fn relation_pane_background_click_focuses_results() {
     let mut app = App::new(Vec::new());
     app.tabs.push(lazydb::model::tab::WorkspaceTab::Relation(
