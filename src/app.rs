@@ -1286,10 +1286,21 @@ impl App {
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
             return Err(EditorError::MissingSession(Uuid::nil()));
         };
+        let dialect = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == tab.descriptor.key.profile_id)
+            .map(|profile| match profile.kind {
+                DatabaseKind::Postgres => SqlDialect::Postgres,
+                DatabaseKind::MySql => SqlDialect::MySql,
+                DatabaseKind::Sqlite => SqlDialect::Sqlite,
+                DatabaseKind::SqlServer => SqlDialect::SqlServer,
+            })
+            .unwrap_or_else(|| self.sql_dialect());
         self.editor.render_snapshot_with_dialect_and_statement(
             tab.ddl_editor_id,
             viewport,
-            self.sql_dialect(),
+            dialect,
             None,
         )
     }

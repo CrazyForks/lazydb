@@ -290,6 +290,134 @@ fn dml_relations_aliases_and_target_columns_are_semantic() {
 }
 
 #[test]
+fn ddl_column_declarations_match_query_columns() {
+    let text = r#"CREATE TABLE "test_schema"."test_tb" (
+        "id" bigint DEFAULT nextval('test_schema.test_tb_id_seq'::regclass) NOT NULL,
+        "name" text
+    ); SELECT "id", "name" FROM "test_schema"."test_tb";"#;
+    let spans = highlight_sql(text, SqlDialect::Postgres);
+
+    assert_eq!(
+        kinds_for(text, &spans, "\"id\""),
+        vec![HighlightKind::Column, HighlightKind::Column]
+    );
+    assert_eq!(
+        kinds_for(text, &spans, "\"name\""),
+        vec![HighlightKind::Column, HighlightKind::Column]
+    );
+    assert_eq!(
+        kinds_for(text, &spans, "nextval"),
+        vec![HighlightKind::Function]
+    );
+    assert_eq!(kinds_for(text, &spans, "bigint"), vec![HighlightKind::Type]);
+    assert_eq!(kinds_for(text, &spans, "text"), vec![HighlightKind::Type]);
+    assert_eq!(
+        kinds_for(text, &spans, "'test_schema.test_tb_id_seq'"),
+        vec![HighlightKind::String]
+    );
+}
+
+#[test]
+fn ddl_table_alter_view_and_index_roles_are_semantic() {
+    let alter = "ALTER TABLE users ADD COLUMN email text";
+    let alter_spans = highlight_sql(alter, SqlDialect::Postgres);
+    assert_eq!(
+        kinds_for(alter, &alter_spans, "users"),
+        vec![HighlightKind::Relation]
+    );
+    assert_eq!(
+        kinds_for(alter, &alter_spans, "email"),
+        vec![HighlightKind::Column]
+    );
+
+    let view = "CREATE VIEW active_users (user_id) AS SELECT id FROM users";
+    let view_spans = highlight_sql(view, SqlDialect::Postgres);
+    assert_eq!(
+        kinds_for(view, &view_spans, "active_users"),
+        vec![HighlightKind::Relation]
+    );
+    assert_eq!(
+        kinds_for(view, &view_spans, "user_id"),
+        vec![HighlightKind::Column]
+    );
+    assert_eq!(
+        kinds_for(view, &view_spans, "id"),
+        vec![HighlightKind::Column]
+    );
+
+    let index = "CREATE INDEX users_email_idx ON users (email)";
+    let index_spans = highlight_sql(index, SqlDialect::Postgres);
+    assert_eq!(
+        kinds_for(index, &index_spans, "users"),
+        vec![HighlightKind::Relation]
+    );
+    assert_eq!(
+        kinds_for(index, &index_spans, "email"),
+        vec![HighlightKind::Column]
+    );
+}
+
+#[test]
+fn incomplete_create_table_preserves_completed_column_roles() {
+    let text = "CREATE TABLE users (id bigint, name text";
+    let spans = highlight_sql(text, SqlDialect::Postgres);
+    assert_eq!(
+        kinds_for(text, &spans, "users"),
+        vec![HighlightKind::Relation]
+    );
+    assert_eq!(kinds_for(text, &spans, "id"), vec![HighlightKind::Column]);
+    assert_eq!(kinds_for(text, &spans, "name"), vec![HighlightKind::Column]);
+    assert_eq!(kinds_for(text, &spans, "bigint"), vec![HighlightKind::Type]);
+    assert_eq!(kinds_for(text, &spans, "text"), vec![HighlightKind::Type]);
+}
+
+#[test]
+fn ddl_column_roles_are_stable_across_supported_dialects() {
+    for (dialect, text, table, column, data_type) in [
+        (
+            SqlDialect::Postgres,
+            "CREATE TABLE \"users\" (\"id\" bigint)",
+            "\"users\"",
+            "\"id\"",
+            "bigint",
+        ),
+        (
+            SqlDialect::MySql,
+            "CREATE TABLE `users` (`id` bigint)",
+            "`users`",
+            "`id`",
+            "bigint",
+        ),
+        (
+            SqlDialect::SqlServer,
+            "CREATE TABLE [users] ([id] bigint)",
+            "[users]",
+            "[id]",
+            "bigint",
+        ),
+        (
+            SqlDialect::Sqlite,
+            "CREATE TABLE users (id INTEGER)",
+            "users",
+            "id",
+            "INTEGER",
+        ),
+    ] {
+        let spans = highlight_sql(text, dialect);
+        assert_eq!(
+            kinds_for(text, &spans, table),
+            vec![HighlightKind::Relation]
+        );
+        assert_eq!(kinds_for(text, &spans, column), vec![HighlightKind::Column]);
+        assert_eq!(
+            kinds_for(text, &spans, data_type),
+            vec![HighlightKind::Type]
+        );
+        assert!(spans.iter().all(|span| span.range.end <= text.len()));
+    }
+}
+
+#[test]
 fn quoted_identifiers_keep_semantic_roles_across_dialects() {
     let postgres = "SELECT \"u\".\"name\" FROM \"users\" AS \"u\"";
     let postgres_spans = highlight_sql(postgres, SqlDialect::Postgres);

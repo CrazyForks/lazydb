@@ -2206,6 +2206,7 @@ fn map_highlight(kind: sql::HighlightKind) -> EditorHighlightKind {
         sql::HighlightKind::Relation => EditorHighlightKind::Relation,
         sql::HighlightKind::RelationAlias => EditorHighlightKind::RelationAlias,
         sql::HighlightKind::Column => EditorHighlightKind::Column,
+        sql::HighlightKind::Type => EditorHighlightKind::Type,
         sql::HighlightKind::Function => EditorHighlightKind::Function,
         sql::HighlightKind::String => EditorHighlightKind::String,
         sql::HighlightKind::Number => EditorHighlightKind::Number,

@@ -2918,6 +2918,7 @@ pub(crate) fn editor_syntax_color(kind: EditorHighlightKind) -> theme::SyntaxCol
         EditorHighlightKind::Relation => theme::SyntaxColor::Relation,
         EditorHighlightKind::RelationAlias => theme::SyntaxColor::RelationAlias,
         EditorHighlightKind::Column => theme::SyntaxColor::Column,
+        EditorHighlightKind::Type => theme::SyntaxColor::Type,
         EditorHighlightKind::Function => theme::SyntaxColor::Function,
         EditorHighlightKind::String => theme::SyntaxColor::String,
         EditorHighlightKind::Number => theme::SyntaxColor::Number,

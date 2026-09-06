@@ -68,6 +68,46 @@ fn rendering_replaces_old_revision_highlights() {
 }
 
 #[test]
+fn ddl_preview_and_sql_editor_share_highlight_kinds() {
+    let text = r#"CREATE TABLE users (id bigint, name text);
+SELECT id, name FROM users;"#;
+    let (mut workspace, ddl_id) = fixture(text);
+    let editor_id = Uuid::new_v4();
+    workspace.open_console(editor_id, text);
+    let viewport = EditorViewport {
+        width: 120,
+        height: 10,
+    };
+    let ddl = workspace
+        .render_snapshot_with_dialect_and_statement(
+            ddl_id,
+            viewport,
+            crate::sql::SqlDialect::Postgres,
+            None,
+        )
+        .unwrap();
+    let editor = workspace
+        .render_snapshot_with_dialect_and_statement(
+            editor_id,
+            viewport,
+            crate::sql::SqlDialect::Postgres,
+            Some(crate::sql::TextRange::new(0, text.len())),
+        )
+        .unwrap();
+    let ddl_spans = ddl
+        .lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| (&span.text, span.kind)))
+        .collect::<Vec<_>>();
+    let editor_spans = editor
+        .lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| (&span.text, span.kind)))
+        .collect::<Vec<_>>();
+    assert_eq!(ddl_spans, editor_spans);
+}
+
+#[test]
 fn closing_console_releases_its_highlight_cache() {
     let (mut workspace, id) = fixture("select 1");
     let other_id = Uuid::new_v4();

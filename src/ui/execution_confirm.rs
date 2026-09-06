@@ -194,6 +194,7 @@ fn styled_chunk(
             HighlightKind::Relation => theme::SyntaxColor::Relation,
             HighlightKind::RelationAlias => theme::SyntaxColor::RelationAlias,
             HighlightKind::Column => theme::SyntaxColor::Column,
+            HighlightKind::Type => theme::SyntaxColor::Type,
             HighlightKind::Function => theme::SyntaxColor::Function,
             HighlightKind::String => theme::SyntaxColor::String,
             HighlightKind::Number => theme::SyntaxColor::Number,
