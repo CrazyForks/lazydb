@@ -1729,8 +1729,22 @@ impl TableDraft {
             TableEditorFocus::General(TableGeneralField::Owner) => {
                 TableEditorFocus::General(TableGeneralField::Comment)
             }
-            TableEditorFocus::General(TableGeneralField::Comment) => TableEditorFocus::Columns,
-            TableEditorFocus::Columns => TableEditorFocus::Action(TableActionField::AddColumn),
+            TableEditorFocus::General(TableGeneralField::Comment) => {
+                if self.columns.is_empty() {
+                    TableEditorFocus::Action(TableActionField::AddColumn)
+                } else {
+                    self.selected_column = self.selected_column.min(self.columns.len() - 1);
+                    TableEditorFocus::Columns
+                }
+            }
+            TableEditorFocus::Columns => {
+                if self.selected_column + 1 < self.columns.len() {
+                    self.selected_column += 1;
+                    TableEditorFocus::Columns
+                } else {
+                    TableEditorFocus::Action(TableActionField::AddColumn)
+                }
+            }
             TableEditorFocus::ColumnDetails(TableColumnField::Name) => {
                 TableEditorFocus::ColumnDetails(TableColumnField::Type)
             }
@@ -1778,7 +1792,14 @@ impl TableDraft {
             TableEditorFocus::General(TableGeneralField::Comment) => {
                 TableEditorFocus::General(TableGeneralField::Owner)
             }
-            TableEditorFocus::Columns => TableEditorFocus::General(TableGeneralField::Comment),
+            TableEditorFocus::Columns => {
+                if self.selected_column > 0 {
+                    self.selected_column -= 1;
+                    TableEditorFocus::Columns
+                } else {
+                    TableEditorFocus::General(TableGeneralField::Comment)
+                }
+            }
             TableEditorFocus::ColumnDetails(TableColumnField::Name) => {
                 if self.column_editor.is_some() {
                     TableEditorFocus::ColumnDetails(TableColumnField::Identity)
@@ -1801,7 +1822,14 @@ impl TableDraft {
             TableEditorFocus::ColumnDetails(TableColumnField::Identity) => {
                 TableEditorFocus::ColumnDetails(TableColumnField::Nullable)
             }
-            TableEditorFocus::Action(TableActionField::AddColumn) => TableEditorFocus::Columns,
+            TableEditorFocus::Action(TableActionField::AddColumn) => {
+                if self.columns.is_empty() {
+                    TableEditorFocus::General(TableGeneralField::Comment)
+                } else {
+                    self.selected_column = self.columns.len() - 1;
+                    TableEditorFocus::Columns
+                }
+            }
             TableEditorFocus::Action(TableActionField::RemoveColumn) => {
                 TableEditorFocus::Action(TableActionField::AddColumn)
             }

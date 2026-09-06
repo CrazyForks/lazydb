@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Cell, Clear, Paragraph, Row, Table, TableState, Wrap},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -18,6 +18,7 @@ use crate::{
     },
     model::text_input::TextInput,
     security::sanitize_terminal_text,
+    sql::SqlDialect,
 };
 
 use super::{
@@ -48,7 +49,7 @@ pub fn render(
         CatalogEditorPage::ObjectPicker => picker(frame, inner, editor, theme, icons),
         CatalogEditorPage::Loading => loading(frame, inner, editor, theme),
         CatalogEditorPage::Form => form(frame, inner, app, editor, ui, theme),
-        CatalogEditorPage::SqlPreview => preview(frame, inner, editor, theme),
+        CatalogEditorPage::SqlPreview => preview(frame, inner, app, editor, theme),
     }
     if editor.page == CatalogEditorPage::Form
         && let Some(CatalogDraft::Table(draft)) = editor.draft.as_ref()
@@ -1438,12 +1439,34 @@ fn render_table(
         }
     }
     if compact {
+        let (field, label, input) = match draft.focus {
+            TableEditorFocus::General(TableGeneralField::Schema) => (
+                TableEditorFocus::General(TableGeneralField::Schema),
+                "Schema",
+                &draft.schema,
+            ),
+            TableEditorFocus::General(TableGeneralField::Owner) => (
+                TableEditorFocus::General(TableGeneralField::Owner),
+                "Owner",
+                &draft.owner,
+            ),
+            TableEditorFocus::General(TableGeneralField::Comment) => (
+                TableEditorFocus::General(TableGeneralField::Comment),
+                "Comment",
+                &draft.comment,
+            ),
+            _ => (
+                TableEditorFocus::General(TableGeneralField::Name),
+                "Name",
+                &draft.name,
+            ),
+        };
         render_table_text_field(
             frame,
             Rect::new(area.x, area.y + 1, area.width, 1),
-            TableEditorFocus::General(TableGeneralField::Name),
-            "Name",
-            &draft.name,
+            field,
+            label,
+            input,
             draft.focus,
             ui,
             theme,
@@ -1477,30 +1500,7 @@ fn render_table(
     let header_y = columns_y.saturating_add(1);
     let list_start = columns_y.saturating_add(2);
     let list_capacity = list_bottom.saturating_sub(list_start);
-    if header_y < list_bottom {
-        let (name_width, type_width, nullable_width, comment_width) =
-            table_column_widths(area.width);
-        let header = format!(
-            "  {:<name_width$} {:<type_width$} {:<nullable_width$} {:<comment_width$}",
-            "NAME",
-            "TYPE",
-            "NULLABLE",
-            "COMMENT",
-            name_width = usize::from(name_width),
-            type_width = usize::from(type_width),
-            nullable_width = usize::from(nullable_width),
-            comment_width = usize::from(comment_width),
-        );
-        frame.render_widget(
-            Paragraph::new(header).style(
-                Style::new()
-                    .fg(theme.muted)
-                    .bg(theme.surface)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Rect::new(area.x, header_y, area.width, 1),
-        );
-    }
+    let (name_width, type_width, nullable_width, comment_width) = table_column_widths(area.width);
     let visible_start = if list_capacity == 0 {
         0
     } else {
@@ -1509,86 +1509,137 @@ fn render_table(
             .min(draft.columns.len().saturating_sub(1))
             .saturating_sub(usize::from(list_capacity).saturating_sub(1))
     };
-    for (index, column) in draft
+    let rows = draft
         .columns
         .iter()
         .enumerate()
         .skip(visible_start)
         .take(usize::from(list_capacity))
-    {
-        let y = columns_y.saturating_add(2 + (index - visible_start) as u16);
-        let active = index == draft.selected_column
-            && matches!(
-                draft.focus,
-                TableEditorFocus::Columns | TableEditorFocus::ColumnDetails(_)
+        .map(|(index, column)| {
+            let active = index == draft.selected_column
+                && matches!(
+                    draft.focus,
+                    TableEditorFocus::Columns | TableEditorFocus::ColumnDetails(_)
+                );
+            let removed = matches!(
+                &column.state,
+                crate::model::catalog_editor::DraftRowState::Removed { .. }
             );
-        let removed = matches!(
-            &column.state,
-            crate::model::catalog_editor::DraftRowState::Removed { .. }
-        );
-        let added = matches!(
-            &column.state,
-            crate::model::catalog_editor::DraftRowState::Added
-        );
-        let style = Style::new()
-            .fg(if removed {
-                theme.row_deleted
-            } else {
-                theme.text
-            })
-            .bg(if active {
-                theme.selection
-            } else {
-                theme.surface
-            });
-        let (name_width, type_width, nullable_width, comment_width) =
-            table_column_widths(area.width);
-        let name = truncate_cells(
-            sanitize_terminal_text(column.name.value()).if_empty("<unnamed>"),
-            usize::from(name_width),
-        );
-        let native_type = truncate_cells(
-            sanitize_terminal_text(column.native_type.value()),
-            usize::from(type_width),
-        );
-        let nullable = if removed {
-            "REMOVED"
-        } else if column.nullable {
-            "NULL"
-        } else {
-            "NOT NULL"
-        };
-        let comment = truncate_cells(
-            sanitize_terminal_text(column.comment.value()),
-            usize::from(comment_width),
-        );
-        frame.render_widget(
-            Paragraph::new(format!(
-                "{}{} {:<name_width$} {:<type_width$} {:<nullable_width$} {:<comment_width$}",
-                if active { "›" } else { " " },
-                if removed {
-                    "-"
-                } else if added {
-                    "+"
+            let row_style = Style::new()
+                .fg(if removed {
+                    theme.row_deleted
                 } else {
-                    " "
-                },
-                name,
-                native_type,
-                truncate_cells(nullable.to_owned(), usize::from(nullable_width)),
-                comment,
-                name_width = usize::from(name_width),
-                type_width = usize::from(type_width),
-                nullable_width = usize::from(nullable_width),
-                comment_width = usize::from(comment_width),
-            ))
-            .style(style),
-            Rect::new(area.x, y, area.width, 1),
+                    theme.text
+                })
+                .bg(if active {
+                    theme.selection
+                } else {
+                    theme.surface
+                });
+            let name = truncate_cells(
+                sanitize_terminal_text(column.name.value()).if_empty("<unnamed>"),
+                usize::from(name_width),
+            );
+            let native_type = truncate_cells(
+                sanitize_terminal_text(column.native_type.value()),
+                usize::from(type_width),
+            );
+            let nullable = if removed {
+                "REMOVED"
+            } else if column.nullable {
+                "NULL"
+            } else {
+                "NOT NULL"
+            };
+            let comment = truncate_cells(
+                sanitize_terminal_text(column.comment.value()),
+                usize::from(comment_width),
+            );
+            let state_marker = if removed {
+                '-'
+            } else if matches!(
+                &column.state,
+                crate::model::catalog_editor::DraftRowState::Added
+            ) {
+                '+'
+            } else {
+                ' '
+            };
+            let focus_marker = if active { '▌' } else { ' ' };
+            let row_number = format!("{focus_marker}{state_marker}{:>1}", index + 1);
+            let separator =
+                Cell::from("│").style(Style::new().fg(theme.grid_border).bg(theme.surface));
+            (
+                index,
+                Row::new([
+                    Cell::from(row_number),
+                    separator.clone(),
+                    Cell::from(name),
+                    separator.clone(),
+                    Cell::from(native_type),
+                    separator.clone(),
+                    Cell::from(truncate_cells(
+                        nullable.to_owned(),
+                        usize::from(nullable_width),
+                    )),
+                    separator,
+                    Cell::from(comment),
+                ])
+                .style(row_style),
+            )
+        })
+        .collect::<Vec<_>>();
+    if header_y < list_bottom {
+        let header_style = Style::new()
+            .fg(theme.grid_header_text)
+            .bg(theme.grid_header)
+            .add_modifier(Modifier::BOLD);
+        let header_separator = Cell::from("│").style(
+            Style::new()
+                .fg(theme.grid_border)
+                .bg(theme.grid_header)
+                .add_modifier(Modifier::BOLD),
         );
-        ui.hit_regions.push(HitRegion {
-            area: Rect::new(area.x, y, area.width, 1),
-            target: HitTarget::CatalogEditorTableColumn(index),
-        });
+        let header = Row::new([
+            Cell::from("#").style(header_style),
+            header_separator.clone(),
+            Cell::from("NAME").style(header_style),
+            header_separator.clone(),
+            Cell::from("TYPE").style(header_style),
+            header_separator.clone(),
+            Cell::from("NULLABLE").style(header_style),
+            header_separator,
+            Cell::from("COMMENT").style(header_style),
+        ]);
+        let constraints =
+            table_column_constraints(name_width, type_width, nullable_width, comment_width);
+        let mut table_state = TableState::default();
+        if columns_focus && !rows.is_empty() {
+            table_state.select(Some(draft.selected_column.saturating_sub(visible_start)));
+        }
+        frame.render_stateful_widget(
+            Table::new(
+                rows.iter().enumerate().map(|(offset, (index, row))| {
+                    ui.hit_regions.push(HitRegion {
+                        area: Rect::new(area.x, list_start + offset as u16, area.width, 1),
+                        target: HitTarget::CatalogEditorTableColumn(*index),
+                    });
+                    row.clone()
+                }),
+                constraints,
+            )
+            .header(header)
+            .column_spacing(0)
+            .row_highlight_style(Style::new().bg(theme.selection))
+            .highlight_symbol(""),
+            Rect::new(
+                area.x,
+                header_y,
+                area.width,
+                list_capacity.saturating_add(1),
+            ),
+            &mut table_state,
+        );
     }
     if show_summary {
         let summary_text = if summary.is_dirty() {
@@ -1740,17 +1791,36 @@ fn render_table(
 }
 
 fn table_column_widths(width: u16) -> (u16, u16, u16, u16) {
-    let available = width.saturating_sub(4);
+    let available = width.saturating_sub(7);
     let nullable = available.min(8);
     let content = available.saturating_sub(nullable);
-    let name = content.saturating_mul(2) / 5;
-    let type_width = content / 4;
+    let name = content / 2;
+    let type_width = content / 5;
     (
         name,
         type_width,
         nullable,
         content.saturating_sub(name + type_width),
     )
+}
+
+fn table_column_constraints(
+    name_width: u16,
+    type_width: u16,
+    nullable_width: u16,
+    comment_width: u16,
+) -> [Constraint; 9] {
+    [
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(name_width),
+        Constraint::Length(1),
+        Constraint::Length(type_width),
+        Constraint::Length(1),
+        Constraint::Length(nullable_width),
+        Constraint::Length(1),
+        Constraint::Length(comment_width),
+    ]
 }
 
 fn truncate_cells(value: String, width: usize) -> String {
@@ -2187,7 +2257,13 @@ fn section_style(selected: bool, theme: Theme) -> Style {
     }
 }
 
-fn preview(frame: &mut Frame<'_>, area: Rect, editor: &CatalogEditorState, theme: Theme) {
+fn preview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    editor: &CatalogEditorState,
+    theme: Theme,
+) {
     let sql = editor
         .plan
         .as_ref()
@@ -2237,7 +2313,29 @@ fn preview(frame: &mut Frame<'_>, area: Rect, editor: &CatalogEditorState, theme
     if editor.is_busy() {
         lines.push(Line::styled("Applying changes...", theme.warning));
     }
-    lines.extend([Line::raw(""), Line::raw(sql), Line::raw("")]);
+    let dialect = editor
+        .plan
+        .as_ref()
+        .and_then(|plan| {
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == plan.request.connection.profile_id)
+        })
+        .map(|profile| match profile.kind {
+            crate::profile::DatabaseKind::Postgres => SqlDialect::Postgres,
+            crate::profile::DatabaseKind::MySql => SqlDialect::MySql,
+            crate::profile::DatabaseKind::Sqlite => SqlDialect::Sqlite,
+            crate::profile::DatabaseKind::SqlServer => SqlDialect::SqlServer,
+        })
+        .unwrap_or(SqlDialect::Generic);
+    lines.push(Line::raw(""));
+    lines.extend(crate::ui::sql_preview::lines(
+        &sql,
+        dialect,
+        area.width.saturating_sub(4) as usize,
+        theme,
+    ));
+    lines.push(Line::raw(""));
     if let Some(error) = editor.error.as_deref() {
         lines.push(Line::styled(
             format!("× {}", sanitize_terminal_text(error)),
@@ -2249,9 +2347,7 @@ fn preview(frame: &mut Frame<'_>, area: Rect, editor: &CatalogEditorState, theme
     let max_scroll = lines.len().saturating_sub(usize::from(body_area.height));
     let scroll = editor.preview_scroll.min(max_scroll);
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .scroll((scroll as u16, 0)),
+        Paragraph::new(lines).scroll((scroll.min(usize::from(u16::MAX)) as u16, 0)),
         body_area,
     );
     frame.render_widget(Paragraph::new(footer), footer_area);

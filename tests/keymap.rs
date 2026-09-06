@@ -409,11 +409,11 @@ fn table_editor_keymap_dispatches_by_focus_region() {
     );
     assert_eq!(
         keymap.map(key(KeyCode::Up), &app),
-        Some(Action::CatalogEditorMoveTableColumn(-1))
+        Some(Action::CatalogEditorFieldPrevious)
     );
     assert_eq!(
         keymap.map(key(KeyCode::Down), &app),
-        Some(Action::CatalogEditorMoveTableColumn(1))
+        Some(Action::CatalogEditorFieldNext)
     );
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
@@ -705,9 +705,9 @@ fn table_editor_columns_keymap_keeps_parent_navigation() {
 
     assert_eq!(
         keymap.map(key(KeyCode::Up), &app),
-        Some(Action::CatalogEditorMoveTableColumn(-1))
+        Some(Action::CatalogEditorFieldPrevious)
     );
-    app.update(Action::CatalogEditorMoveTableColumn(-1));
+    app.update(Action::CatalogEditorFieldPrevious);
     let Some(lazydb::model::catalog_editor::CatalogDraft::Table(draft)) = app
         .catalog_editor
         .as_ref()
@@ -719,9 +719,9 @@ fn table_editor_columns_keymap_keeps_parent_navigation() {
 
     assert_eq!(
         keymap.map(key(KeyCode::Down), &app),
-        Some(Action::CatalogEditorMoveTableColumn(1))
+        Some(Action::CatalogEditorFieldNext)
     );
-    app.update(Action::CatalogEditorMoveTableColumn(1));
+    app.update(Action::CatalogEditorFieldNext);
     assert_eq!(
         keymap.map(key(KeyCode::Tab), &app),
         Some(Action::CatalogEditorFieldNext)
@@ -743,7 +743,7 @@ fn table_editor_columns_keymap_keeps_parent_navigation() {
 }
 
 #[test]
-fn table_editor_tab_leaves_columns_without_visiting_each_row() {
+fn table_editor_tab_visits_each_column_row() {
     let mut app = table_editor_app();
     let mut keymap = Keymap::default();
     let Some(lazydb::model::catalog_editor::CatalogDraft::Table(draft)) = app
@@ -760,7 +760,7 @@ fn table_editor_tab_leaves_columns_without_visiting_each_row() {
             column
         })
         .collect();
-    draft.selected_column = 99;
+    draft.selected_column = 0;
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
 
     assert_eq!(
@@ -777,11 +777,9 @@ fn table_editor_tab_leaves_columns_without_visiting_each_row() {
     };
     assert_eq!(
         draft.focus,
-        lazydb::model::catalog_editor::TableEditorFocus::Action(
-            lazydb::model::catalog_editor::TableActionField::AddColumn
-        )
+        lazydb::model::catalog_editor::TableEditorFocus::Columns
     );
-    assert_eq!(draft.selected_column, 99);
+    assert_eq!(draft.selected_column, 1);
 }
 
 #[test]

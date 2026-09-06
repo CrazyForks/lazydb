@@ -2007,8 +2007,8 @@ fn map_table_editor(
             }
             KeyCode::Tab => Some(Action::CatalogEditorFieldNext),
             KeyCode::BackTab => Some(Action::CatalogEditorFieldPrevious),
-            KeyCode::Up => Some(Action::CatalogEditorMoveTableColumn(-1)),
-            KeyCode::Down => Some(Action::CatalogEditorMoveTableColumn(1)),
+            KeyCode::Up => Some(Action::CatalogEditorFieldPrevious),
+            KeyCode::Down => Some(Action::CatalogEditorFieldNext),
             _ => None,
         };
     }
