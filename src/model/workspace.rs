@@ -108,6 +108,7 @@ pub enum Overlay {
     Update(crate::model::update::UpdateOverlayState),
     Help(HelpState),
     NotificationHistory(crate::model::notification::NotificationHistoryState),
+    NotificationDetail(crate::model::notification::NotificationDetailState),
     RecordView(crate::model::record_view::RecordViewState),
     TextDetail(crate::model::text_detail::TextDetailState),
     ProfileManager,

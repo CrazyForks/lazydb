@@ -208,6 +208,10 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return Some(Action::CatalogEditorSetCursor { target, cursor });
             }
             if let Some(overlay) = &app.overlay
+                && !matches!(
+                    overlay,
+                    Overlay::NotificationHistory(_) | Overlay::NotificationDetail(_)
+                )
                 && (overlay != &Overlay::ProfileManager
                     && overlay != &Overlay::CatalogEditor
                     && !matches!(overlay, Overlay::TargetSelector { .. })
@@ -300,6 +304,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::CloseTab(id) => Some(Action::CloseTab(id)),
                 HitTarget::DismissNotification(id) => Some(Action::DismissNotification(id)),
                 HitTarget::OpenTextDetail(request) => Some(Action::OpenTextDetail(request)),
+                HitTarget::NotificationHistoryRow(index) => {
+                    Some(Action::NotificationHistorySelect(index))
+                }
                 HitTarget::ExplorerRow(id) => {
                     if ui.track_explorer_click(&id, Instant::now()) {
                         Some(Action::ExplorerPrimary)
@@ -488,6 +495,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     columns: 0,
                 });
             }
+            if matches!(app.overlay, Some(Overlay::NotificationDetail(_))) {
+                return Some(Action::NotificationDetailMove(3));
+            }
+            if matches!(app.overlay, Some(Overlay::NotificationHistory(_))) {
+                return Some(Action::NotificationHistoryMove(3));
+            }
             if app.overlay.is_some() {
                 return None;
             }
@@ -514,6 +527,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     rows: -3,
                     columns: 0,
                 });
+            }
+            if matches!(app.overlay, Some(Overlay::NotificationDetail(_))) {
+                return Some(Action::NotificationDetailMove(-3));
+            }
+            if matches!(app.overlay, Some(Overlay::NotificationHistory(_))) {
+                return Some(Action::NotificationHistoryMove(-3));
             }
             if app.overlay.is_some() {
                 return None;
@@ -628,6 +647,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::CloseTab(_)
         | HitTarget::DismissNotification(_)
         | HitTarget::OpenTextDetail(_)
+        | HitTarget::NotificationHistoryRow(_)
         | HitTarget::Help
         | HitTarget::UpdateCenter
         | HitTarget::UpdateButton { .. }

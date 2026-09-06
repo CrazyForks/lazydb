@@ -155,6 +155,7 @@ pub enum HitTarget {
     CatalogOwnerChoice(String),
     DismissNotification(u64),
     OpenTextDetail(crate::model::text_detail::TextDetailRequest),
+    NotificationHistoryRow(usize),
     RelationFirstPage,
     RelationPreviousPage,
     RelationPageSize,
@@ -948,6 +949,7 @@ fn overlay_key(overlay: &Overlay) -> u8 {
         Overlay::Help(_) => 1,
         Overlay::Update(_) => 21,
         Overlay::NotificationHistory(_) => 17,
+        Overlay::NotificationDetail(_) => 18,
         Overlay::RecordView(_) => 2,
         Overlay::TextDetail(_) => 23,
         Overlay::ProfileManager => 3,
@@ -3472,6 +3474,9 @@ fn render_overlay(
         Overlay::Update(_) => render_update_overlay(frame, area, app, state, theme),
         Overlay::NotificationHistory(history) => {
             notifications::render_history(frame, area, app, history, theme, state)
+        }
+        Overlay::NotificationDetail(detail) => {
+            notifications::render_detail(frame, area, app, detail, theme)
         }
         Overlay::RecordView(view) => record_view::render(frame, area, app, view, theme, state),
         Overlay::TextDetail(view) => text_detail::render(frame, area, app, view, theme, state),

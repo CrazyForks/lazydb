@@ -202,6 +202,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 }
                 Overlay::CatalogEditorDiscardConfirm { .. } => ShortcutContext::CatalogEditorForm,
                 Overlay::NotificationHistory(_) => ShortcutContext::NotificationHistory,
+                Overlay::NotificationDetail(_) => ShortcutContext::NotificationHistory,
                 Overlay::Update(_) => ShortcutContext::Message,
             };
         }
