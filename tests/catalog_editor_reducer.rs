@@ -774,13 +774,34 @@ fn dirty_table_cancel_opens_discard_confirmation_and_keeps_or_discards_draft() {
         app.overlay,
         Some(lazydb::model::workspace::Overlay::CatalogEditor)
     );
-    assert!(app.catalog_editor.is_some());
+    assert_eq!(
+        app.catalog_editor
+            .as_ref()
+            .and_then(|editor| editor.draft.as_ref())
+            .and_then(|draft| match draft {
+                lazydb::model::catalog_editor::CatalogDraft::Table(draft) => {
+                    Some(draft.name.value())
+                }
+                _ => None,
+            }),
+        Some("events")
+    );
 
     app.update(Action::CatalogEditorCancel);
-    app.update(Action::CatalogEditorDiscardMove(1));
     app.update(Action::CatalogEditorDiscardChanges);
     assert!(app.catalog_editor.is_none());
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn discard_changes_action_is_ignored_outside_discard_confirmation() {
+    let mut app = table_editor_for_paste();
+    app.overlay = Some(Overlay::CatalogEditor);
+
+    app.update(Action::CatalogEditorDiscardChanges);
+
+    assert!(app.catalog_editor.is_some());
+    assert_eq!(app.overlay, Some(Overlay::CatalogEditor));
 }
 
 #[test]

@@ -460,8 +460,12 @@ impl Keymap {
         }
         if let Some(Overlay::CatalogEditorDiscardConfirm { focus }) = app.overlay.as_ref() {
             return match event.code {
-                KeyCode::Up => Some(Action::CatalogEditorDiscardMove(-1)),
-                KeyCode::Down => Some(Action::CatalogEditorDiscardMove(1)),
+                KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                    Some(Action::CatalogEditorDiscardMove(1))
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                    Some(Action::CatalogEditorDiscardMove(-1))
+                }
                 KeyCode::Enter => Some(match focus {
                     crate::model::workspace::CatalogEditorDiscardFocus::KeepEditing => {
                         Action::CatalogEditorDiscardKeepEditing

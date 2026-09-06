@@ -73,6 +73,7 @@ use crate::{
 };
 
 use self::{
+    dialog::{DialogButton, DialogTone},
     layout::{AppLayout, LayoutMode},
     shortcut_hints::ShortcutHint,
     theme::Theme,
@@ -3886,50 +3887,93 @@ fn render_overlay(
         }
         Overlay::CatalogEditorDiscardConfirm { focus } => {
             use crate::model::workspace::CatalogEditorDiscardFocus;
-            let popup = centered(area, 72.min(area.width), 9.min(area.height));
-            frame.render_widget(Clear, popup);
-            let selected = |candidate| {
-                if *focus == candidate {
-                    theme.base().bg(theme.selection)
-                } else {
-                    theme.base()
-                }
+            let popup_width = area.width.saturating_sub(4).min(64);
+            let compact = popup_width < 54;
+            let popup_height = if compact { 12 } else { 11 };
+            let popup = centered(area, popup_width, popup_height);
+            let inner = dialog::render_frame(frame, popup, " DISCARD TABLE CHANGES ", theme);
+            let action_height = u16::from(compact).saturating_add(1);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(2),
+                    Constraint::Min(0),
+                    Constraint::Length(action_height),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
+            frame.render_widget(
+                Paragraph::new("Discard unsaved table changes?")
+                    .style(
+                        Style::new()
+                            .fg(theme.text)
+                            .bg(theme.surface_raised)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .alignment(Alignment::Center),
+                chunks[0],
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::raw("Your draft changes will be lost."),
+                    Line::raw("The database will remain unchanged."),
+                ])
+                .style(Style::new().fg(theme.muted).bg(theme.surface_raised))
+                .alignment(Alignment::Center),
+                chunks[2],
+            );
+            let action_area = if compact {
+                let width = chunks[4].width.min(39);
+                Rect::new(
+                    chunks[4]
+                        .x
+                        .saturating_add(chunks[4].width.saturating_sub(width) / 2),
+                    chunks[4].y,
+                    width,
+                    chunks[4].height,
+                )
+            } else {
+                chunks[4]
             };
-            let lines = vec![
-                Line::from(Span::styled(
-                    "Discard unsaved table changes?",
-                    theme.title(true),
-                )),
-                Line::raw("Your draft has not been applied to the database."),
-                Line::styled(
-                    "Keep Editing",
-                    selected(CatalogEditorDiscardFocus::KeepEditing),
-                ),
-                Line::styled(
-                    "Discard Changes",
-                    selected(CatalogEditorDiscardFocus::DiscardChanges),
-                ),
-                Line::raw("Up/Down select  Enter confirm  Esc keep editing"),
-            ];
-            for (offset, target) in [
-                (2, HitTarget::CatalogEditorDiscardKeepEditing),
-                (3, HitTarget::CatalogEditorDiscardChanges),
-            ] {
+            let actions = dialog::render_actions(
+                frame,
+                action_area,
+                &[
+                    DialogButton {
+                        label: "Keep Editing",
+                        tone: DialogTone::Normal,
+                        enabled: true,
+                    },
+                    DialogButton {
+                        label: "Discard Changes",
+                        tone: DialogTone::Danger,
+                        enabled: true,
+                    },
+                ],
+                usize::from(*focus == CatalogEditorDiscardFocus::DiscardChanges),
+                theme,
+            );
+            for action in actions {
                 state.hit_regions.push(HitRegion {
-                    area: Rect::new(
-                        popup.x + 1,
-                        popup.y + 1 + offset,
-                        popup.width.saturating_sub(2),
-                        1,
-                    ),
-                    target,
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::CatalogEditorDiscardKeepEditing
+                    } else {
+                        HitTarget::CatalogEditorDiscardChanges
+                    },
                 });
             }
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(panel_block(" TABLE EDITOR ", true, theme))
-                    .style(Style::new().bg(theme.surface_raised)),
-                popup,
+            dialog::render_hint(
+                frame,
+                chunks[5],
+                if compact {
+                    "Tab move  Enter confirm  Esc back"
+                } else {
+                    "Tab / Left / Right switch   Enter confirm   Esc back"
+                },
+                theme,
             );
         }
         Overlay::ProfileGroup(group) => {

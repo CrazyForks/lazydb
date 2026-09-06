@@ -4099,9 +4099,7 @@ impl App {
             Action::CatalogEditorDiscardChanges => {
                 if matches!(
                     self.overlay,
-                    Some(Overlay::CatalogEditorDiscardConfirm {
-                        focus: crate::model::workspace::CatalogEditorDiscardFocus::DiscardChanges,
-                    })
+                    Some(Overlay::CatalogEditorDiscardConfirm { .. })
                 ) {
                     self.catalog_editor = None;
                     self.overlay = None;

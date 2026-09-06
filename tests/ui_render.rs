@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use lazydb::model::profile_group::ProfileGroupOverlay;
 use lazydb::{
     action::Action,
@@ -21,6 +21,7 @@ use lazydb::{
         value::CellValue,
     },
     identity::ConnectionIdentity,
+    input::mouse::map_mouse,
     model::{
         catalog_editor::{
             CatalogEditorOperation, CatalogEditorPage, CatalogEditorState, CatalogMutationOption,
@@ -741,8 +742,13 @@ fn table_editor_discard_confirmation_renders_both_choices_and_hit_regions() {
         for x in 0..buffer.area.width {
             output.push_str(buffer[(x, y)].symbol());
         }
+        output.push('\n');
     }
     assert!(output.contains("Discard unsaved table changes?"));
+    assert!(output.contains("DISCARD TABLE CHANGES"));
+    assert!(output.contains("Your draft changes will be lost."));
+    assert!(output.contains("The database will remain unchanged."));
+    assert!(output.contains("[ > Keep Editing ]"));
     assert!(output.contains("Keep Editing"));
     assert!(output.contains("Discard Changes"));
     assert!(
@@ -756,6 +762,103 @@ fn table_editor_discard_confirmation_renders_both_choices_and_hit_regions() {
             .hit_regions
             .iter()
             .any(|region| { region.target == HitTarget::CatalogEditorDiscardChanges })
+    );
+    let keep = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardKeepEditing)
+        .expect("keep editing hit region");
+    let discard = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardChanges)
+        .expect("discard changes hit region");
+    assert_eq!(keep.area.y, discard.area.y);
+    assert!(keep.area.right() < discard.area.x);
+}
+
+#[test]
+fn table_editor_discard_confirmation_switches_to_vertical_actions_when_narrow() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditorDiscardConfirm {
+        focus: lazydb::model::workspace::CatalogEditorDiscardFocus::KeepEditing,
+    });
+
+    let (buffer, state) = render_buffer_with_icons(&app, 56, 16, IconSet::default());
+    let mut output = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            output.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    assert!(output.contains("Keep Editing"));
+    assert!(output.contains("Discard Changes"));
+    let keep = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardKeepEditing)
+        .expect("keep editing hit region");
+    let discard = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardChanges)
+        .expect("discard changes hit region");
+    assert!(discard.area.y > keep.area.y);
+}
+
+#[test]
+fn table_editor_discard_confirmation_is_safe_at_tiny_sizes() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditorDiscardConfirm {
+        focus: lazydb::model::workspace::CatalogEditorDiscardFocus::KeepEditing,
+    });
+
+    for (width, height) in [(20, 6), (10, 4), (1, 1), (0, 0)] {
+        let _ = render_buffer_with_icons(&app, width, height, IconSet::default());
+    }
+}
+
+#[test]
+fn table_editor_discard_buttons_map_to_actions_and_ignore_the_gap() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditorDiscardConfirm {
+        focus: lazydb::model::workspace::CatalogEditorDiscardFocus::KeepEditing,
+    });
+    let (_, state) = render_buffer_with_icons(&app, 80, 24, IconSet::default());
+    let keep = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardKeepEditing)
+        .expect("keep editing hit region");
+    let discard = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorDiscardChanges)
+        .expect("discard changes hit region");
+    let click = |column: u16, row: u16| {
+        map_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &state,
+            &app,
+        )
+    };
+    assert_eq!(
+        click(keep.area.x, keep.area.y),
+        Some(Action::CatalogEditorDiscardKeepEditing)
+    );
+    assert_eq!(
+        click(discard.area.x, discard.area.y),
+        Some(Action::CatalogEditorDiscardChanges)
+    );
+    assert_eq!(
+        click(keep.area.right(), keep.area.y),
+        None,
+        "the gap after the first button must not activate it"
     );
 }
 
