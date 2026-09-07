@@ -1936,6 +1936,67 @@ fn pane_border_drag_uses_original_pointer_and_size_as_anchor() {
 }
 
 #[test]
+fn editor_border_drag_uses_original_row_and_size_as_anchor() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
+        explorer_width: Some(40),
+        editor_height: Some(10),
+    }));
+    let mut ui = UiState::new();
+    ui.pane_layout = PaneLayoutMetrics {
+        explorer_width: Some(40),
+        editor_height: Some(10),
+    };
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(41, 12, 50, 1),
+        target: HitTarget::PaneResize(PaneSplit::EditorHeight),
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 80, 12),
+            &ui,
+            &app,
+        ),
+        None
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 20, 17),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetPaneSize {
+            split: PaneSplit::EditorHeight,
+            size: 15,
+        })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 90, 9),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetPaneSize {
+            split: PaneSplit::EditorHeight,
+            size: 7,
+        })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 90, 9),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetPaneSize {
+            split: PaneSplit::EditorHeight,
+            size: 7,
+        })
+    );
+    assert!(ui.pane_resize_drag.borrow().is_none());
+}
+
+#[test]
 fn pane_border_click_without_movement_preserves_automatic_size() {
     let app = App::new(Vec::new());
     let mut ui = UiState::new();

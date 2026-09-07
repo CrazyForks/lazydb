@@ -9,7 +9,7 @@ const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 const WORKSPACE_TABS_HEIGHT: u16 = 2;
 const RESULT_TABS_HEIGHT: u16 = 2;
-const MIN_EDITOR_HEIGHT: u16 = 1;
+const MIN_EDITOR_HEIGHT: u16 = 5;
 const MIN_RESULTS_HEIGHT: u16 = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,20 +189,35 @@ impl AppLayout {
     }
 
     pub fn pane_resize_region(&self, split: PaneSplit) -> Option<Rect> {
-        if !matches!(split, PaneSplit::ExplorerWidth)
-            || !matches!(self.mode, LayoutMode::Standard | LayoutMode::Wide)
-        {
+        if !matches!(self.mode, LayoutMode::Standard | LayoutMode::Wide) {
             return None;
         }
-        let explorer = self.explorer?;
-        (explorer.height >= 3 && self.tabs.is_some()).then(|| {
-            Rect::new(
-                explorer.right().saturating_sub(1),
-                explorer.y.saturating_add(1),
-                1,
-                explorer.height.saturating_sub(2),
-            )
-        })
+        match split {
+            PaneSplit::ExplorerWidth => {
+                let explorer = self.explorer?;
+                (explorer.height >= 3 && self.tabs.is_some()).then(|| {
+                    Rect::new(
+                        explorer.right().saturating_sub(1),
+                        explorer.y.saturating_add(1),
+                        1,
+                        explorer.height.saturating_sub(2),
+                    )
+                })
+            }
+            PaneSplit::EditorHeight => {
+                let editor = self.editor?;
+                (editor.width >= 3 && self.result_tabs.is_some() && self.results.is_some()).then(
+                    || {
+                        Rect::new(
+                            editor.x.saturating_add(1),
+                            editor.bottom().saturating_sub(1),
+                            editor.width.saturating_sub(2),
+                            1,
+                        )
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -341,7 +356,69 @@ mod tests {
             PaneSizePreferences::default(),
             false,
         );
-        assert_eq!(layout.pane_resize_region(PaneSplit::EditorHeight), None);
+        assert!(layout.pane_resize_region(PaneSplit::EditorHeight).is_some());
+
+        for (area, focus, relation, maximized) in [
+            (Rect::new(0, 0, 99, 36), Focus::Editor, false, false),
+            (Rect::new(0, 0, 120, 36), Focus::Results, true, false),
+            (Rect::new(0, 0, 120, 36), Focus::Editor, false, true),
+        ] {
+            let layout = AppLayout::calculate(
+                area,
+                focus,
+                relation,
+                PaneSizePreferences::default(),
+                maximized,
+            );
+            assert_eq!(layout.pane_resize_region(PaneSplit::EditorHeight), None);
+        }
+    }
+
+    #[test]
+    fn pane_resize_region_tracks_editor_bottom_border() {
+        let layout = AppLayout::calculate(
+            Rect::new(7, 3, 120, 36),
+            Focus::Editor,
+            false,
+            PaneSizePreferences::default(),
+            false,
+        );
+        let editor = layout.editor.unwrap();
+
+        assert_eq!(
+            layout.pane_resize_region(PaneSplit::EditorHeight),
+            Some(Rect::new(
+                editor.x + 1,
+                editor.bottom() - 1,
+                editor.width - 2,
+                1
+            ))
+        );
+    }
+
+    #[test]
+    fn editor_height_keeps_results_and_respects_available_space() {
+        for (area, expected_minimum) in
+            [(Rect::new(0, 0, 120, 36), 5), (Rect::new(0, 0, 120, 16), 3)]
+        {
+            let layout = AppLayout::calculate(
+                area,
+                Focus::Editor,
+                false,
+                PaneSizePreferences {
+                    editor_height: Some(1),
+                    ..PaneSizePreferences::default()
+                },
+                false,
+            );
+            let editor = layout.editor.unwrap();
+            assert!(editor.height >= expected_minimum);
+            assert!(layout.results.unwrap().height >= 7);
+            assert_eq!(
+                editor.height + layout.result_tabs.unwrap().height + layout.results.unwrap().height,
+                layout.body.height - layout.tabs.unwrap().height
+            );
+        }
     }
 
     #[test]

@@ -728,12 +728,22 @@ pub fn render_with_state_using_icons_sequence_and_theme(
         app.pane_sizes,
         app.pane_maximized,
     );
-    if app.overlay.is_some()
-        || layout
-            .pane_resize_region(PaneSplit::ExplorerWidth)
-            .is_none()
-    {
+    let editor_rendered = !is_relation
+        && !is_dashboard
+        && DisconnectedWorkspace::for_app(app).is_none()
+        && layout.editor.is_some();
+    let pane_drag_invalid = app.overlay.is_some()
+        || state
+            .pane_resize_drag
+            .borrow()
+            .is_some_and(|drag| layout.pane_resize_region(drag.split).is_none());
+    if pane_drag_invalid {
         state.pane_resize_drag.borrow_mut().take();
+        if *state.mouse_gesture.borrow()
+            == Some(crate::ui::text_selection::GestureOwner::PaneResize)
+        {
+            state.mouse_gesture.borrow_mut().take();
+        }
     }
     state.pane_layout = layout.pane_metrics;
     state.hit_regions.clear();
@@ -837,25 +847,32 @@ pub fn render_with_state_using_icons_sequence_and_theme(
         });
     }
 
-    if app.overlay.is_none()
-        && let Some(area) = layout.pane_resize_region(PaneSplit::ExplorerWidth)
-    {
-        state.hit_regions.push(HitRegion {
-            area,
-            target: HitTarget::PaneResize(PaneSplit::ExplorerWidth),
-        });
+    if app.overlay.is_none() {
+        for split in [PaneSplit::ExplorerWidth, PaneSplit::EditorHeight] {
+            if split == PaneSplit::EditorHeight && !editor_rendered {
+                continue;
+            }
+            if let Some(area) = layout.pane_resize_region(split) {
+                state.hit_regions.push(HitRegion {
+                    area,
+                    target: HitTarget::PaneResize(split),
+                });
+            }
+        }
     }
 
     if app.overlay.is_none()
-        && state.pane_resize_drag.borrow().is_some()
-        && let Some(area) = layout.pane_resize_region(PaneSplit::ExplorerWidth)
+        && let Some(split) = state.pane_resize_drag.borrow().map(|drag| drag.split)
+        && let Some(area) = layout.pane_resize_region(split)
     {
         let buffer = frame.buffer_mut();
-        for y in area.y..area.bottom() {
-            let cell = &mut buffer[(area.x, y)];
-            cell.set_fg(theme.accent);
-            cell.set_bg(theme.surface_raised);
-            cell.set_style(Style::new().add_modifier(Modifier::BOLD));
+        for x in area.x..area.right() {
+            for y in area.y..area.bottom() {
+                let cell = &mut buffer[(x, y)];
+                cell.set_fg(theme.accent);
+                cell.set_bg(theme.surface_raised);
+                cell.set_style(Style::new().add_modifier(Modifier::BOLD));
+            }
         }
     }
 
@@ -2682,14 +2699,36 @@ fn render_editor(
         .map(|line_count| line_count.to_string().len().max(2))
         .unwrap_or(2);
     let gutter = number_width.saturating_add(4);
-    let viewport = EditorViewport {
-        width: inner.width.saturating_sub(gutter as u16) as usize,
+    let text_width = inner.width.saturating_sub(gutter as u16);
+    let preliminary_viewport = EditorViewport {
+        width: text_width as usize,
         height: inner.height as usize,
     };
-    state.editor_viewport = Some(viewport);
-    let Ok(snapshot) = app.active_editor_render_snapshot(viewport) else {
+    let Ok(preliminary_snapshot) = app.active_editor_render_snapshot(preliminary_viewport) else {
         return None;
     };
+    let has_horizontal_scrollbar =
+        preliminary_snapshot.max_line_width > preliminary_viewport.width.max(1);
+    let footer_rows =
+        usize::from(preliminary_snapshot.prompt.is_some()) + usize::from(has_horizontal_scrollbar);
+    let viewport = EditorViewport {
+        width: preliminary_viewport.width,
+        height: (inner.height as usize).saturating_sub(footer_rows).max(1),
+    };
+    state.editor_viewport = Some(viewport);
+    let Ok(snapshot) = (if viewport == preliminary_viewport {
+        Ok(preliminary_snapshot)
+    } else {
+        app.active_editor_render_snapshot(viewport)
+    }) else {
+        return None;
+    };
+    let text_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        viewport.height.min(u16::MAX as usize) as u16,
+    );
     let text_viewport = Rect::new(
         inner.x.saturating_add(gutter as u16),
         inner.y,
@@ -2714,7 +2753,7 @@ fn render_editor(
         .then_some(snapshot.cursor_screen_cell)
         .flatten()
         .map(|(x, y)| CompletionAnchor {
-            viewport: inner,
+            viewport: text_area,
             cursor: Position::new(
                 text_viewport.x.saturating_add(x),
                 text_viewport.y.saturating_add(y),
@@ -2924,6 +2963,14 @@ fn render_editor(
             ),
         );
     }
+    let horizontal_track = has_horizontal_scrollbar.then(|| {
+        Rect::new(
+            inner.x.saturating_add(1),
+            inner.bottom().saturating_sub(1),
+            inner.width.saturating_sub(2),
+            1,
+        )
+    });
     render_editor_scrollbars(
         frame,
         area,
@@ -2931,6 +2978,7 @@ fn render_editor(
         &snapshot,
         theme,
         state,
+        horizontal_track,
     );
 
     if app.overlay.is_none()
@@ -2941,7 +2989,11 @@ fn render_editor(
             Some(error) => format!("{}{}  [{}]", prompt.prefix, prompt.text, error),
             None => format!("{}{}", prompt.prefix, prompt.text),
         };
-        let prompt_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+        let prompt_y = inner
+            .bottom()
+            .saturating_sub(u16::from(has_horizontal_scrollbar))
+            .saturating_sub(1);
+        let prompt_area = Rect::new(inner.x, prompt_y, inner.width, 1);
         frame.render_widget(
             Paragraph::new(prompt_text).style(Style::new().fg(theme.accent).bg(theme.surface)),
             prompt_area,
@@ -2986,6 +3038,7 @@ pub(crate) fn render_editor_scrollbars(
     snapshot: &crate::model::editor::EditorRenderSnapshot,
     theme: Theme,
     state: &mut UiState,
+    horizontal_track: Option<Rect>,
 ) {
     let Some(session_id) = session_id else { return };
     let vertical_max = snapshot
@@ -3051,13 +3104,9 @@ pub(crate) fn render_editor_scrollbars(
         });
     }
 
-    if horizontal_max > 0 && area.width > 3 {
-        let track = Rect::new(
-            area.x.saturating_add(1),
-            area.bottom().saturating_sub(1),
-            area.width.saturating_sub(2),
-            1,
-        );
+    if horizontal_max > 0
+        && let Some(track) = horizontal_track.filter(|track| track.width > 3)
+    {
         let (thumb, offset) = scrollbar_geometry(
             track.width,
             snapshot.viewport.width,

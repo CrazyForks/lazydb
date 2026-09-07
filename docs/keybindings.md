@@ -645,6 +645,13 @@ described above; clicking a separator resizes the column instead.
 When the Explorer and a main pane are both visible, drag the Explorer's right
 border to change its width. The existing minimum Explorer and right-pane widths
 still apply, and a click without moving the pointer does not save a new width.
+In the SQL workspace, drag the SQL Editor's bottom border to change its height.
+The Editor keeps a usable minimum height while the result tabs and Results pane
+retain their minimum space. The horizontal SQL scrollbar is inside the Editor,
+above the resize border, so the two controls do not compete for mouse input.
+The Editor height drag is available only in the split Standard/Wide SQL layout;
+it is not shown when a pane is maximized, the terminal is too narrow, or a
+relation/dashboard/disconnected view replaces the SQL Editor.
 The last applied width is retained if the drag is cancelled by focus loss,
 terminal resize, or a modal. Use `Ctrl-w` followed by `=` to restore automatic
 pane sizes.
