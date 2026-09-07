@@ -142,9 +142,11 @@ pub(crate) fn render(
             .query_bar_highlights
             .highlights(input, value, dialect)
             .to_vec();
-        let offset = active
-            .then(|| text_input_horizontal_offset(field, &prefix, text_input))
-            .unwrap_or(0);
+        let offset = if active {
+            text_input_horizontal_offset(field, &prefix, text_input)
+        } else {
+            0
+        };
         if enabled {
             register_data_query_input(state, input, field, &prefix, text_input, offset);
         }
@@ -184,6 +186,7 @@ pub(crate) fn render(
     cursor
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_query_field(
     frame: &mut Frame<'_>,
     area: Rect,
