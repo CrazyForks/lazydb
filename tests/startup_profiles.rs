@@ -133,6 +133,189 @@ fn profile_root_startup_preserves_registry_order_and_provenance() {
 }
 
 #[test]
+fn startup_selection_uses_first_visible_row_before_first_frame() {
+    use lazydb::model::explorer::ProfilePlacement;
+
+    let hidden = import_connection_url(":memory:", Some("hidden"))
+        .unwrap()
+        .profile;
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url(":memory:", Some("second"))
+        .unwrap()
+        .profile;
+    let hidden_id = hidden.id;
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![hidden, first, second]);
+    for (id, placement) in [
+        (hidden_id, ProfilePlacement::OtherProject),
+        (first_id, ProfilePlacement::Global),
+        (second_id, ProfilePlacement::Global),
+    ] {
+        app.explorer
+            .normalized
+            .profiles
+            .get_mut(&id)
+            .unwrap()
+            .placement = placement;
+    }
+    app.explorer.normalized.sync_organization(
+        Vec::new(),
+        vec![hidden_id, first_id, second_id],
+        &Default::default(),
+    );
+    assert_eq!(app.explorer.normalized.viewport_height, 0);
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(hidden_id))
+    );
+
+    app.reveal_startup_profile(None);
+
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(first_id))
+    );
+    assert_eq!(app.explorer.selected, 0);
+    assert_eq!(app.explorer.scroll, 0);
+    assert_eq!(app.explorer.normalized.scroll, 0);
+    assert!(
+        !app.explorer
+            .normalized
+            .expanded
+            .contains(&ExplorerNodeId::Others)
+    );
+    assert!(app.connection.profile_id.is_none());
+    assert_eq!(
+        app.explorer.normalized.visible()[0].id,
+        ExplorerNodeId::Profile(first_id)
+    );
+    assert_eq!(
+        app.explorer.normalized.visible()[1].id,
+        ExplorerNodeId::Profile(second_id)
+    );
+}
+
+#[test]
+fn startup_selection_moves_through_visible_rows_with_explorer_keymap() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use lazydb::model::explorer::ProfilePlacement;
+
+    let hidden = import_connection_url(":memory:", Some("hidden"))
+        .unwrap()
+        .profile;
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url(":memory:", Some("second"))
+        .unwrap()
+        .profile;
+    let hidden_id = hidden.id;
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![hidden, first, second]);
+    for (id, placement) in [
+        (hidden_id, ProfilePlacement::OtherProject),
+        (first_id, ProfilePlacement::Global),
+        (second_id, ProfilePlacement::Global),
+    ] {
+        app.explorer
+            .normalized
+            .profiles
+            .get_mut(&id)
+            .unwrap()
+            .placement = placement;
+    }
+    app.reveal_startup_profile(None);
+    app.focus = lazydb::model::workspace::Focus::Explorer;
+
+    let mut keymap = Keymap::default();
+    let action = keymap
+        .map(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), &app)
+        .expect("j should move the Explorer selection");
+    assert_eq!(action, Action::ExplorerMove(1));
+    app.update(action);
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(second_id))
+    );
+
+    let action = keymap
+        .map(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), &app)
+        .expect("k should move the Explorer selection");
+    assert_eq!(action, Action::ExplorerMove(-1));
+    app.update(action);
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(first_id))
+    );
+}
+
+#[test]
+fn explicit_startup_profile_stays_selected_and_revealed() {
+    use lazydb::model::explorer::ProfilePlacement;
+
+    let hidden = import_connection_url(":memory:", Some("hidden"))
+        .unwrap()
+        .profile;
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let hidden_id = hidden.id;
+    let first_id = first.id;
+    let mut app = App::new(vec![hidden, first]);
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&hidden_id)
+        .unwrap()
+        .placement = ProfilePlacement::OtherProject;
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&first_id)
+        .unwrap()
+        .placement = ProfilePlacement::Global;
+
+    app.reveal_startup_profile(Some(hidden_id));
+
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(hidden_id))
+    );
+    assert!(
+        app.explorer
+            .normalized
+            .expanded
+            .contains(&ExplorerNodeId::Others)
+    );
+    assert_eq!(app.explorer.selected, 2);
+    assert_eq!(
+        app.explorer.normalized.visible()[2].id,
+        ExplorerNodeId::Profile(hidden_id)
+    );
+}
+
+#[test]
+fn invalid_explicit_startup_profile_falls_back_to_first_visible_row() {
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let first_id = first.id;
+    let mut app = App::new(vec![first]);
+
+    app.reveal_startup_profile(Some(uuid::Uuid::new_v4()));
+
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(first_id))
+    );
+    assert_eq!(app.explorer.selected, 0);
+}
+
+#[test]
 fn normal_startup_with_profiles_does_not_select_an_implicit_connection() {
     let temp = TempDir::new().unwrap();
     let first = import_connection_url(":memory:", Some("first"))

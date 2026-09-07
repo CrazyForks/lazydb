@@ -1576,13 +1576,22 @@ impl App {
     }
 
     pub fn reveal_startup_profile(&mut self, profile_id: Option<Uuid>) {
-        let Some(profile_id) = profile_id else {
+        if let Some(profile_id) = profile_id
+            && self
+                .explorer
+                .normalized
+                .reveal_node(ExplorerNodeId::Profile(profile_id))
+        {
+            self.explorer.normalized.ensure_selected_visible();
+            self.explorer.sync_selected_index();
             return;
-        };
-        let _ = self
-            .explorer
-            .normalized
-            .reveal_node(ExplorerNodeId::Profile(profile_id));
+        }
+
+        self.explorer.normalized.scroll = 0;
+        self.explorer.scroll = 0;
+        if let Some(first) = self.explorer.normalized.visible().first() {
+            self.explorer.select_id(first.id.clone());
+        }
     }
 
     fn restore_profile_workspace(

@@ -2881,6 +2881,62 @@ fn other_profiles_group_is_rendered_as_muted_secondary_content_without_an_icon()
 }
 
 #[test]
+fn startup_selection_is_visible_on_the_first_explorer_row() {
+    let hidden = import_connection_url("sqlite::memory:", Some("hidden"))
+        .unwrap()
+        .profile;
+    let first = import_connection_url("sqlite::memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url("sqlite::memory:", Some("second"))
+        .unwrap()
+        .profile;
+    let hidden_id = hidden.id;
+    let first_id = first.id;
+    let mut app = App::new(vec![hidden, first, second]);
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&hidden_id)
+        .unwrap()
+        .placement = ProfilePlacement::OtherProject;
+    app.reveal_startup_profile(None);
+
+    let (buffer, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    let (first_x, first_y) = find_text_cell(&buffer, "first").expect("first profile");
+    let (second_x, second_y) = find_text_cell(&buffer, "second").expect("second profile");
+
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::Profile(first_id))
+    );
+    assert!(buffer[(first_x, first_y)].modifier.contains(Modifier::BOLD));
+    assert!(
+        !buffer[(second_x, second_y)]
+            .modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_ne!(first_y, second_y);
+}
+
+#[test]
+fn empty_startup_row_remains_selected_and_clickable() {
+    let mut app = App::new(Vec::new());
+    app.reveal_startup_profile(None);
+    let (_, state) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+
+    assert_eq!(
+        app.explorer.selected_id(),
+        Some(&ExplorerNodeId::EmptyProfiles)
+    );
+    assert!(
+        state.hit_regions.iter().any(|region| {
+            region.target == HitTarget::ExplorerRow(ExplorerNodeId::EmptyProfiles)
+        })
+    );
+}
+
+#[test]
 fn pending_prefix_opens_floating_shortcut_window() {
     let mut app = fixture();
     app.focus = Focus::Explorer;
