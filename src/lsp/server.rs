@@ -77,7 +77,10 @@ impl LanguageServer for LanguageServerState {
                 let index = match &self.catalog_provider {
                     Some(provider) => match provider.load_index().await {
                         Ok(index) => {
-                            eprintln!("lazydb lsp: catalog index loaded with {} entries", index.entries().len());
+                            eprintln!(
+                                "lazydb lsp: catalog index loaded with {} entries",
+                                index.entries().len()
+                            );
                             index
                         }
                         Err(error) => {
