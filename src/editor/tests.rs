@@ -1012,6 +1012,23 @@ fn read_only_sessions_support_visual_yank_without_mutation() {
 }
 
 #[test]
+fn read_only_multiline_sql_yank_preserves_whitespace() {
+    let text = "SELECT\n\t'a  b';";
+    let (mut workspace, id) = read_only_fixture(text);
+    let revision = workspace.revision(id).unwrap();
+
+    press_keys(&mut workspace, id, "ggVGy");
+
+    assert_eq!(workspace.text(id).unwrap(), text);
+    assert_eq!(workspace.revision(id).unwrap(), revision);
+    assert_eq!(workspace.register('"'), Some("SELECT\n\t'a  b';\n"));
+    assert_eq!(
+        workspace.drain_effects(),
+        vec![EditorEffect::Yanked("SELECT\n\t'a  b';\n".into())]
+    );
+}
+
+#[test]
 fn read_only_sessions_enter_visual_line_mode() {
     let (mut workspace, id) = read_only_fixture("alpha\nbeta");
 
