@@ -9,6 +9,7 @@ pub(crate) mod editor;
 pub mod help;
 pub mod identity;
 pub mod input;
+pub mod lsp;
 pub mod model;
 pub mod persistence;
 pub mod profile;
