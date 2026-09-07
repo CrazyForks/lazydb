@@ -34,6 +34,10 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub color: Option<ColorMode>,
 
+    /// Load a theme-file-v1 JSON theme and watch it for changes.
+    #[arg(long, global = true)]
+    pub theme_file: Option<PathBuf>,
+
     #[arg(long, global = true, value_enum)]
     pub icons: Option<IconMode>,
 
@@ -240,7 +244,7 @@ pub struct VersionInfo<'a> {
 pub struct Capabilities<'a> {
     pub version: &'a str,
     pub cli_api: u16,
-    pub features: [&'a str; 5],
+    pub features: [&'a str; 6],
     pub drivers: [&'a str; 3],
 }
 
@@ -285,6 +289,7 @@ pub fn capabilities() -> Capabilities<'static> {
             "context-help",
             "profile-manager",
             "system-keyring",
+            "theme-file-v1",
         ],
         drivers: ["postgres", "mysql", "sqlite"],
     }
@@ -338,7 +343,7 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
         Command::Version { json: false } => Ok(format!("lazydb {}", env!("CARGO_PKG_VERSION"))),
         Command::Capabilities { json: true } => serde_json::to_string(&capabilities()),
         Command::Capabilities { json: false } => Ok(format!(
-            "lazydb {} (cli api {})\ndrivers: postgres, mysql, sqlite\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring",
+            "lazydb {} (cli api {})\ndrivers: postgres, mysql, sqlite\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring, theme-file-v1",
             env!("CARGO_PKG_VERSION"),
             CLI_API_VERSION
         )),
@@ -383,6 +388,16 @@ mod tests {
 
         assert_eq!(cli.url.as_deref(), Some("sqlite://demo.db"));
         assert!(cli.read_only);
+    }
+
+    #[test]
+    fn parses_theme_file() {
+        let cli = Cli::try_parse_from(["lazydb", "--theme-file", "/tmp/theme.json"]).unwrap();
+
+        assert_eq!(
+            cli.theme_file,
+            Some(std::path::PathBuf::from("/tmp/theme.json"))
+        );
     }
 
     #[test]
@@ -457,7 +472,8 @@ mod tests {
                 "read-only",
                 "context-help",
                 "profile-manager",
-                "system-keyring"
+                "system-keyring",
+                "theme-file-v1"
             ])
         );
     }

@@ -116,6 +116,13 @@ Ensure `$HOME/.local/bin` is in `PATH`. To upgrade an offline installation,
   mouse drag selection in rendered text views. Explicit copy commands/buttons
   copy complete cell, row, SQL, or detail values where documented; drag alone
   never writes to the clipboard.
+- **External themes:** Pass `--theme-file path/to/theme.json` to load and watch
+  a `theme-file-v1` JSON theme. Invalid or unavailable files keep the built-in
+  theme, and `--color never` always takes precedence.
+
+See the [configuration guide](docs/configuration.md#external-theme-file) for
+the complete theme-file protocol, limits, fallback behavior, and Neovim
+plugin configuration.
 
 ## Supported Databases
 

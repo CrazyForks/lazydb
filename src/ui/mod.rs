@@ -849,6 +849,46 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     }
 }
 
+#[cfg(test)]
+mod theme_render_tests {
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+
+    use super::{UiState, icons::IconSet, render_with_state_using_icons_sequence_and_theme};
+    use crate::{app::App, ui::theme::Theme};
+
+    #[test]
+    fn custom_theme_reaches_the_render_surface() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = App::new(Vec::new());
+        let mut state = UiState::new();
+        let mut theme = Theme::deep_space();
+        theme.background = ratatui::style::Color::Rgb(1, 2, 3);
+
+        terminal
+            .draw(|frame| {
+                render_with_state_using_icons_sequence_and_theme(
+                    frame,
+                    &app,
+                    &mut state,
+                    IconSet::default(),
+                    None,
+                    theme,
+                );
+            })
+            .unwrap();
+
+        let buffer: &Buffer = terminal.backend().buffer();
+        assert!(
+            (0..buffer.area().height).any(|y| {
+                (0..buffer.area().width)
+                    .any(|x| buffer.cell((x, y)).unwrap().bg == theme.background)
+            }),
+            "custom theme background was not rendered"
+        );
+    }
+}
+
 fn render_key_sequence_popup(
     frame: &mut Frame<'_>,
     area: Rect,

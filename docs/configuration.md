@@ -146,8 +146,34 @@ A key sequence remains active for 750 milliseconds by default, and
 | `--mouse MODE` | `auto`, `on`, `off` | `auto` | Enable mouse input automatically, force it on, or disable it. |
 | `--color MODE` | `auto`, `always`, `never` | `auto` | Select automatic, forced, or disabled terminal color output. |
 | `--icons MODE` | `nerd-font`, `unicode`, `ascii` | `nerd-font` | Select branded Nerd Font glyphs, standard Unicode fallbacks, or ASCII-only output. |
+| `--theme-file PATH` | Theme-file-v1 JSON path | None | Load a complete external theme and watch it for changes. Ignored when color is `never`. |
 | `--motion MODE` | `full`, `reduced`, `off` | `full` | Select full loading animation, reduced animation, or no animation. |
 | `--confirm-execution POLICY` | `risky`, `always` | `risky` | Confirm only risky SQL statements, or confirm every execution. |
+
+## External Theme File
+
+`--theme-file PATH` loads a `theme-file-v1` JSON document at startup and polls
+for replacements while LazyDB runs. It must contain `"version": 1` and a
+`"colors"` object with all semantic UI and SQL syntax color keys. Values are
+`"default"` or six-digit `#rrggbb` colors. Unknown or missing fields,
+unsupported versions, invalid colors, unreadable or non-regular paths, and
+input larger than 16 KiB are rejected.
+
+Invalid or unavailable files preserve the last valid theme, or the built-in
+theme if none has loaded. `--color never` takes precedence and uses the plain
+built-in theme without reading or watching the file. A valid replacement is
+applied without restarting the TUI; polling means it is not necessarily
+visible immediately.
+
+The standalone `lazydb.nvim` plugin follows this protocol by default. With
+`theme.follow = true`, it probes `lazydb capabilities --json`, publishes a
+private owner-only snapshot atomically, and passes `--theme-file` to LazyDB.
+`theme.follow = false` skips the probe. `:LazyDBRefreshTheme` and
+`require("lazydb").refresh_theme()` publish current Neovim highlights
+immediately; ColorScheme and background changes are coalesced automatically.
+Probe, permission, publication, and unsupported-CLI failures fall back to the
+built-in theme and leave the session running. The result remains limited by
+Neovim highlight groups and terminal color support.
 
 Clipboard output uses the system clipboard by default. To explicitly send copy
 operations as OSC 52 to the terminal, or disable clipboard writes, set:

@@ -2,6 +2,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::sql::HighlightKind;
 
+pub(crate) mod external;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SyntaxColor {
     Keyword,
@@ -39,7 +41,7 @@ pub(crate) const fn syntax_color_for_highlight(kind: HighlightKind) -> SyntaxCol
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Theme {
     pub background: Color,
     pub surface: Color,
@@ -52,10 +54,19 @@ pub struct Theme {
     pub muted: Color,
     pub accent: Color,
     pub action: Color,
+    pub syntax_keyword: Color,
+    pub syntax_identifier: Color,
     pub syntax_relation: Color,
     pub syntax_relation_alias: Color,
     pub syntax_column: Color,
     pub syntax_function: Color,
+    pub syntax_number: Color,
+    pub syntax_parameter: Color,
+    pub syntax_type: Color,
+    pub syntax_string: Color,
+    pub syntax_comment: Color,
+    pub syntax_operator: Color,
+    pub syntax_punctuation: Color,
     pub success: Color,
     pub warning: Color,
     pub error: Color,
@@ -94,10 +105,19 @@ impl Theme {
             muted: Color::Reset,
             accent: Color::Reset,
             action: Color::Reset,
+            syntax_keyword: Color::Reset,
+            syntax_identifier: Color::Reset,
             syntax_relation: Color::Reset,
             syntax_relation_alias: Color::Reset,
             syntax_column: Color::Reset,
             syntax_function: Color::Reset,
+            syntax_number: Color::Reset,
+            syntax_parameter: Color::Reset,
+            syntax_type: Color::Reset,
+            syntax_string: Color::Reset,
+            syntax_comment: Color::Reset,
+            syntax_operator: Color::Reset,
+            syntax_punctuation: Color::Reset,
             success: Color::Reset,
             warning: Color::Reset,
             error: Color::Reset,
@@ -123,10 +143,19 @@ impl Theme {
             muted: Color::Rgb(105, 126, 146),
             accent: Color::Rgb(99, 230, 216),
             action: Color::Rgb(101, 167, 255),
+            syntax_keyword: Color::Rgb(99, 230, 216),
+            syntax_identifier: Color::Rgb(215, 226, 237),
             syntax_relation: Color::Rgb(101, 167, 255),
             syntax_relation_alias: Color::Rgb(215, 226, 237),
             syntax_column: Color::Rgb(199, 146, 234),
             syntax_function: Color::Rgb(130, 170, 255),
+            syntax_number: Color::Rgb(101, 167, 255),
+            syntax_parameter: Color::Rgb(101, 167, 255),
+            syntax_type: Color::Rgb(99, 230, 216),
+            syntax_string: Color::Rgb(92, 200, 150),
+            syntax_comment: Color::Rgb(105, 126, 146),
+            syntax_operator: Color::Rgb(215, 226, 237),
+            syntax_punctuation: Color::Rgb(215, 226, 237),
             success: Color::Rgb(92, 200, 150),
             warning: Color::Rgb(244, 184, 96),
             error: Color::Rgb(255, 107, 122),
@@ -152,17 +181,20 @@ impl Theme {
 
     pub(crate) const fn syntax_color(self, kind: SyntaxColor) -> Color {
         match kind {
-            SyntaxColor::Keyword => self.accent,
-            SyntaxColor::Identifier => self.text,
-            SyntaxColor::Number | SyntaxColor::Parameter => self.action,
+            SyntaxColor::Keyword => self.syntax_keyword,
+            SyntaxColor::Identifier => self.syntax_identifier,
+            SyntaxColor::Number => self.syntax_number,
+            SyntaxColor::Parameter => self.syntax_parameter,
             SyntaxColor::Relation => self.syntax_relation,
             SyntaxColor::RelationAlias => self.syntax_relation_alias,
             SyntaxColor::Column => self.syntax_column,
-            SyntaxColor::Type => self.accent,
+            SyntaxColor::Type => self.syntax_type,
             SyntaxColor::Function => self.syntax_function,
-            SyntaxColor::String => self.success,
-            SyntaxColor::Comment => self.muted,
-            SyntaxColor::Operator | SyntaxColor::Punctuation | SyntaxColor::Plain => self.text,
+            SyntaxColor::String => self.syntax_string,
+            SyntaxColor::Comment => self.syntax_comment,
+            SyntaxColor::Operator => self.syntax_operator,
+            SyntaxColor::Punctuation => self.syntax_punctuation,
+            SyntaxColor::Plain => self.text,
         }
     }
 }
@@ -217,11 +249,20 @@ mod tests {
     fn syntax_categories_match_the_editor_palette() {
         let theme = Theme::deep_space();
 
-        assert_eq!(theme.syntax_color(SyntaxColor::Keyword), theme.accent);
-        assert_eq!(theme.syntax_color(SyntaxColor::Identifier), theme.text);
-        assert_eq!(theme.syntax_color(SyntaxColor::Type), theme.accent);
-        assert_eq!(theme.syntax_color(SyntaxColor::String), theme.success);
-        assert_eq!(theme.syntax_color(SyntaxColor::Comment), theme.muted);
+        assert_eq!(
+            theme.syntax_color(SyntaxColor::Keyword),
+            theme.syntax_keyword
+        );
+        assert_eq!(
+            theme.syntax_color(SyntaxColor::Identifier),
+            theme.syntax_identifier
+        );
+        assert_eq!(theme.syntax_color(SyntaxColor::Type), theme.syntax_type);
+        assert_eq!(theme.syntax_color(SyntaxColor::String), theme.syntax_string);
+        assert_eq!(
+            theme.syntax_color(SyntaxColor::Comment),
+            theme.syntax_comment
+        );
         assert_eq!(theme.syntax_color(SyntaxColor::Plain), theme.text);
         assert_eq!(
             theme.syntax_color(SyntaxColor::Relation),
@@ -248,6 +289,16 @@ mod tests {
             theme.syntax_color(SyntaxColor::RelationAlias),
             theme.syntax_color(SyntaxColor::Column)
         );
+    }
+
+    #[test]
+    fn syntax_categories_can_differ_from_related_ui_colors() {
+        let mut theme = Theme::deep_space();
+        theme.syntax_keyword = Color::Rgb(1, 2, 3);
+        theme.syntax_string = Color::Rgb(4, 5, 6);
+
+        assert_ne!(theme.syntax_color(SyntaxColor::Keyword), theme.accent);
+        assert_ne!(theme.syntax_color(SyntaxColor::String), theme.success);
     }
 
     #[test]
