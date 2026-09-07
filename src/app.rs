@@ -44,7 +44,7 @@ use crate::{
         notification::{NotificationCenter, NotificationLevel, NotificationSource},
         profile_manager::{
             ProfileCatalogDiscovery, ProfileField, ProfileManagerPage, ProfileManagerState,
-            ProfileOperation,
+            ProfileMessageLevel, ProfileOperation,
         },
         relation::{
             RelationDescriptor, RelationKey, RelationLoad, RelationRequest, RelationRequestKind,
@@ -5910,15 +5910,25 @@ impl App {
                             discovery,
                         })
                     });
-                    manager.message = Some(if !applied {
-                        "Connection test result ignored because the draft changed".into()
+                    let (level, message) = if !applied {
+                        (
+                            ProfileMessageLevel::Warning,
+                            "Connection test result ignored because the draft changed".to_owned(),
+                        )
                     } else if let Some(warning) = warning {
-                        format!(
-                            "Connection verified: {version} ({database}); catalog discovery warning: {warning}"
+                        (
+                            ProfileMessageLevel::Warning,
+                            format!(
+                                "Connection verified: {version} ({database}); catalog discovery warning: {warning}"
+                            ),
                         )
                     } else {
-                        format!("Connection verified: {version} ({database})")
-                    });
+                        (
+                            ProfileMessageLevel::Success,
+                            format!("Connection verified: {version} ({database})"),
+                        )
+                    };
+                    manager.set_message(level, message);
                 }
                 Vec::new()
             }
@@ -5930,7 +5940,7 @@ impl App {
                     self.matching_profile_operation(request_id, &[ProfileOperation::Testing])
                 {
                     manager.operation = None;
-                    manager.message = Some(message);
+                    manager.set_message(ProfileMessageLevel::Error, message);
                 }
                 Vec::new()
             }
@@ -5987,7 +5997,7 @@ impl App {
                     ],
                 ) {
                     manager.operation = None;
-                    manager.message = Some(message);
+                    manager.set_message(ProfileMessageLevel::Error, message);
                 }
                 Vec::new()
             }
@@ -6041,7 +6051,7 @@ impl App {
                     self.matching_profile_operation(request_id, &[ProfileOperation::Deleting])
                 {
                     manager.operation = None;
-                    manager.message = Some(message);
+                    manager.set_message(ProfileMessageLevel::Error, message);
                 }
                 Vec::new()
             }
@@ -6150,7 +6160,7 @@ impl App {
                         .operation
                         .is_some_and(|operation| operation != ProfileOperation::Connecting)
                 {
-                    manager.message = Some(message);
+                    manager.set_message(ProfileMessageLevel::Error, message);
                     return Vec::new();
                 }
                 let has_stored_credential = profile.credential_policy.has_persisted_credential();
@@ -6158,7 +6168,7 @@ impl App {
                 manager.start_edit(&profile, has_stored_credential);
                 manager.set_system_credential_availability(self.system_credential_availability);
                 manager.selected_field = ProfileField::Password;
-                manager.message = Some(message);
+                manager.set_message(ProfileMessageLevel::Error, message);
                 self.profile_manager = Some(manager);
                 self.overlay = Some(Overlay::ProfileManager);
                 Vec::new()
@@ -7492,7 +7502,7 @@ impl App {
                     && manager.operation == Some(ProfileOperation::Connecting)
                 {
                     manager.operation = None;
-                    manager.message = Some("Connected".to_owned());
+                    manager.set_message(ProfileMessageLevel::Success, "Connected");
                 }
                 let commands_for_catalog = if editor_target_switch.is_none() {
                     self.start_catalog_request(
@@ -7569,7 +7579,7 @@ impl App {
                         && manager.operation == Some(ProfileOperation::Connecting)
                     {
                         manager.operation = None;
-                        manager.message = Some(message);
+                        manager.set_message(ProfileMessageLevel::Error, message);
                     }
                 }
                 Vec::new()
@@ -9571,7 +9581,10 @@ impl App {
             ..ProfileManagerState::default()
         };
         if blocked {
-            manager.message = Some("Cancel the running query before deleting this profile".into());
+            manager.set_message(
+                ProfileMessageLevel::Warning,
+                "Cancel the running query before deleting this profile",
+            );
         }
         self.profile_manager = Some(manager);
         self.overlay = Some(Overlay::ProfileManager);
@@ -9599,13 +9612,16 @@ impl App {
         if let Some(check) = exit_check {
             match check {
                 WorkspaceExitCheck::Running => {
-                    manager.message =
-                        Some("Cancel the running query before deleting this profile".into());
+                    manager.set_message(
+                        ProfileMessageLevel::Warning,
+                        "Cancel the running query before deleting this profile",
+                    );
                     return Vec::new();
                 }
                 WorkspaceExitCheck::RelationTransaction => {
-                    manager.message = Some(
-                        "Commit or roll back relation edits before deleting this profile".into(),
+                    manager.set_message(
+                        ProfileMessageLevel::Warning,
+                        "Commit or roll back relation edits before deleting this profile",
                     );
                     return Vec::new();
                 }
@@ -9646,7 +9662,7 @@ impl App {
             Ok(submission) => submission,
             Err(error) => {
                 manager.selected_field = error.field;
-                manager.message = Some(error.message);
+                manager.set_message(ProfileMessageLevel::Error, error.message);
                 return Vec::new();
             }
         };
@@ -9655,7 +9671,7 @@ impl App {
             draft.begin_catalog_discovery(submission.discovery_fingerprint);
         }
         manager.operation = Some(ProfileOperation::Testing);
-        manager.message = Some("Testing connection...".into());
+        manager.set_message(ProfileMessageLevel::Info, "Testing connection...");
         vec![Command::TestProfile {
             request_id,
             submission,
@@ -9686,7 +9702,7 @@ impl App {
             Err(error) => {
                 manager.close_scope_picker();
                 manager.selected_field = error.field;
-                manager.message = Some(error.message);
+                manager.set_message(ProfileMessageLevel::Error, error.message);
                 return Vec::new();
             }
         };
@@ -9717,8 +9733,9 @@ impl App {
             .is_some_and(|profile_id| connect || self.connection.profile_id == Some(profile_id));
         if requires_idle_connection && self.has_running_query() {
             if let Some(manager) = self.editable_profile_manager_mut() {
-                manager.message = Some(
-                    "Cancel the running query before saving or connecting this profile".into(),
+                manager.set_message(
+                    ProfileMessageLevel::Warning,
+                    "Cancel the running query before saving or connecting this profile",
                 );
             }
             return Vec::new();
@@ -9740,7 +9757,7 @@ impl App {
             Ok(submission) => submission,
             Err(error) => {
                 manager.selected_field = error.field;
-                manager.message = Some(error.message);
+                manager.set_message(ProfileMessageLevel::Error, error.message);
                 return Vec::new();
             }
         };
@@ -9762,7 +9779,7 @@ impl App {
         } else {
             ProfileOperation::Saving
         });
-        manager.message = Some("Saving profile...".into());
+        manager.set_message(ProfileMessageLevel::Info, "Saving profile...");
         vec![Command::SaveProfile {
             request_id,
             submission,
@@ -9819,11 +9836,8 @@ impl App {
         } else {
             self.profiles.push(profile);
         }
-        if let Some(manager) = self.profile_manager.as_mut() {
-            manager.draft = None;
-            manager.selected_field = ProfileField::Kind;
-            manager.operation = None;
-            manager.message = warning.or_else(|| Some("Profile saved".into()));
+        if let Some(warning) = warning.as_deref() {
+            self.notify_warning("Profile", warning);
         }
         self.notify_success("Profile", "Saved successfully");
         if !connect
@@ -9859,8 +9873,10 @@ impl App {
         if !connect {
             if self.connection.profile_id == Some(profile_id) && self.has_running_query() {
                 if let Some(manager) = self.profile_manager.as_mut() {
-                    manager.message =
-                        Some("Profile saved; cancel the running query before reconnecting".into());
+                    manager.set_message(
+                        ProfileMessageLevel::Warning,
+                        "Profile saved; cancel the running query before reconnecting",
+                    );
                 }
                 return Vec::new();
             }
@@ -9871,17 +9887,18 @@ impl App {
         }
         if self.has_running_query() {
             if let Some(manager) = self.profile_manager.as_mut() {
-                manager.message =
-                    Some("Profile saved; cancel the running query before connecting".into());
+                manager.set_message(
+                    ProfileMessageLevel::Warning,
+                    "Profile saved; cancel the running query before connecting",
+                );
             }
             return Vec::new();
         }
-        commands.extend(self.request_connection(profile_id));
-        if !commands.is_empty()
-            && let Some(manager) = self.profile_manager.as_mut()
-        {
-            manager.operation = Some(ProfileOperation::Connecting);
+        self.profile_manager = None;
+        if self.overlay == Some(Overlay::ProfileManager) {
+            self.overlay = None;
         }
+        commands.extend(self.request_connection(profile_id));
         commands
     }
 

@@ -33,7 +33,9 @@ use lazydb::{
         explorer::{
             CatalogGroupState, ExplorerLoadState, ExplorerNodeId, ExplorerOwnerId, ProfilePlacement,
         },
-        profile_manager::{ProfileField, ProfileManagerPage, ProfileOperation},
+        profile_manager::{
+            ProfileField, ProfileManagerPage, ProfileMessage, ProfileMessageLevel, ProfileOperation,
+        },
         relation::RelationTab,
         tab::WorkspaceTab,
         tab::{CompletionPopup, ResultView},
@@ -6230,7 +6232,51 @@ fn profile_form_remains_actionable_in_compact_layout() {
     assert!(output.contains("Password"));
     assert!(output.contains("URL") || output.contains("CONNECTION URL"));
     assert!(output.contains("Save & Connect"));
-    assert!(output.contains("Esc cancel") || output.contains("Esc Close"));
+    assert!(output.contains("^T Test") || output.contains("Ctrl+T test"));
+    assert!(output.contains("^Enter Save+Connect") || output.contains("Ctrl+Enter save"));
+}
+
+#[test]
+fn profile_form_only_highlights_the_focused_action_and_colors_test_errors_red() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    app.update(Action::ProfileFocusField(ProfileField::Name));
+    app.profile_manager.as_mut().unwrap().set_message(
+        lazydb::model::profile_manager::ProfileMessageLevel::Error,
+        "authentication unavailable",
+    );
+
+    let (buffer, state) = render_buffer_with_icons(&app, 120, 36, IconSet::default());
+    let save_connect = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::ProfileButton(ProfileButton::SaveAndConnect))
+        .expect("save and connect hit region");
+    let test_button = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::ProfileButton(ProfileButton::Test))
+        .expect("test hit region");
+
+    assert_eq!(
+        buffer[(save_connect.area.x, save_connect.area.y)].bg,
+        buffer[(test_button.area.x, test_button.area.y)].bg
+    );
+    let output = (0..36)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(output.contains("authentication unavailable"));
+    let error_cell = buffer
+        .content()
+        .iter()
+        .find(|cell| cell.symbol() == "×")
+        .expect("error marker");
+    assert_eq!(error_cell.fg, Color::Rgb(255, 107, 122));
 }
 
 #[test]
@@ -6356,8 +6402,10 @@ fn profile_manager_renders_confirmation_busy_errors_and_warnings() {
     let invalid_output = render(&invalid, 100, 30);
     assert!(invalid_output.contains("profile name is required"));
 
-    invalid.profile_manager.as_mut().unwrap().message =
-        Some("Native password store is unavailable; the password is session-only".into());
+    invalid.profile_manager.as_mut().unwrap().message = Some(ProfileMessage::new(
+        ProfileMessageLevel::Warning,
+        "Native password store is unavailable; the password is session-only",
+    ));
     let warning_output = render(&invalid, 100, 30);
     assert!(warning_output.contains("Native password store is unavailable"));
     assert!(warning_output.contains("session-only"));
