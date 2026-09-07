@@ -3818,6 +3818,7 @@ fn relation_loading_with_previous_snapshot_keeps_data_visible_and_exposes_cancel
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             lazydb::identity::ConnectionIdentity {
                 profile_id: uuid::Uuid::nil(),
@@ -3851,6 +3852,7 @@ fn relation_footer_does_not_overlap_data_or_pagination_targets() {
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             lazydb::identity::ConnectionIdentity {
                 profile_id: uuid::Uuid::nil(),
@@ -3965,6 +3967,7 @@ fn relation_status_row_is_present_only_for_non_ready_snapshots() {
                 ),
                 0,
             ),
+            row_versions: None,
         },
         lazydb::identity::ConnectionIdentity {
             profile_id: uuid::Uuid::nil(),
@@ -4091,6 +4094,7 @@ fn empty_relation_preview_renders_clean_empty_state() {
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             connection,
             lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
@@ -4151,6 +4155,7 @@ fn relation_query_completion_is_anchored_to_active_input() {
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             lazydb::identity::ConnectionIdentity {
                 profile_id: uuid::Uuid::nil(),
@@ -5931,6 +5936,7 @@ fn relation_query_bar_uses_sql_syntax_colors() {
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             app.connection.active_identity().unwrap(),
             lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),

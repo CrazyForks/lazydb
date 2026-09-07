@@ -705,6 +705,7 @@ pub enum Action {
     RelationMutationFailed {
         request: crate::db::mutation::RelationMutationRequest,
         message: String,
+        diagnostic: Option<crate::db::transaction::RelationMutationDiagnostic>,
     },
     RelationCommitted {
         tab_id: Uuid,

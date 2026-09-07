@@ -2473,6 +2473,7 @@ impl Runtime {
                 request,
                 message: "Relation transaction outcome is unknown; reconnect before mutating"
                     .into(),
+                diagnostic: None,
             });
             return;
         }
@@ -2497,7 +2498,11 @@ impl Runtime {
                 Ok(Err(error)) => {
                     let _ = sender.send(Action::RelationMutationFailed {
                         request,
-                        message: error.0,
+                        message: error.relation_diagnostic().as_ref().map_or_else(
+                            || error.0.clone(),
+                            crate::db::transaction::RelationMutationDiagnostic::safe_message,
+                        ),
+                        diagnostic: error.relation_diagnostic(),
                     });
                 }
                 Err(_) => {
@@ -2507,6 +2512,7 @@ impl Runtime {
                     let _ = sender.send(Action::RelationMutationFailed {
                         request,
                         message: "Relation mutation acknowledgement was lost".into(),
+                        diagnostic: None,
                     });
                 }
             }
@@ -2697,6 +2703,7 @@ impl Runtime {
                 let _ = sender.send(Action::RelationMutationFailed {
                     request: worker_request.clone(),
                     message: "No active database connection".into(),
+                    diagnostic: None,
                 });
                 return crate::db::transaction::WorkerDisposition::Quarantine;
             };
@@ -2716,6 +2723,7 @@ impl Runtime {
                     let _ = sender.send(Action::RelationMutationFailed {
                         request: worker_request.clone(),
                         message: error.to_string(),
+                        diagnostic: None,
                     });
                     return crate::db::transaction::WorkerDisposition::Quarantine;
                 }
@@ -2742,6 +2750,7 @@ impl Runtime {
                 let _ = sender.send(Action::RelationMutationFailed {
                     request: worker_request.clone(),
                     message: "Relation transaction could not be started".into(),
+                    diagnostic: None,
                 });
                 return crate::db::transaction::WorkerDisposition::Quarantine;
             }

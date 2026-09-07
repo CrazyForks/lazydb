@@ -1690,6 +1690,7 @@ impl MsSqlAdapter {
             sql,
             result: QueryOutcome::from_result_set(result, started.elapsed(), Duration::ZERO),
             pagination: relation_pagination(page, fetched_len, total),
+            row_versions: None,
         })
     }
 
@@ -2401,6 +2402,7 @@ impl TransactionBackend for MsSqlTransactionBackend {
                  */
                 Ok(MutationResult::Inserted {
                     row: decode_row(row),
+                    version: None,
                 })
             }
             RelationMutation::UpdateCell(update) => {
@@ -2527,6 +2529,7 @@ impl TransactionBackend for MsSqlTransactionBackend {
                 let row = result.pop().expect("checked exactly one updated row");
                 Ok(MutationResult::Updated {
                     row: decode_row(row),
+                    version: None,
                 })
             }
         }

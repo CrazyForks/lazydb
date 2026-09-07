@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use crate::db::mutation::RelationMutationRequest;
+use crate::db::mutation::RowVersion;
 use crate::db::value::CellValue;
 use crate::model::cell_editor::CellEditorBuffer;
 
@@ -43,6 +44,7 @@ pub struct EditableRow {
     pub current: Vec<CellValue>,
     pub state: EditableRowState,
     pub supplied_columns: BTreeSet<usize>,
+    pub version: Option<RowVersion>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +67,7 @@ impl EditableRow {
             current: values,
             state: EditableRowState::Clean,
             supplied_columns: BTreeSet::new(),
+            version: None,
         }
     }
 
@@ -105,11 +108,12 @@ impl EditableRow {
         true
     }
 
-    pub fn mark_inserted(&mut self, values: Vec<CellValue>) {
+    pub fn mark_inserted(&mut self, values: Vec<CellValue>, version: Option<RowVersion>) {
         self.current = values.clone();
         self.original = values;
         self.state = EditableRowState::Inserted;
         self.supplied_columns.clear();
+        self.version = version;
     }
 
     pub fn mark_conflict(&mut self, message: impl Into<String>) {
@@ -138,15 +142,36 @@ pub struct RelationEditSession {
 
 impl RelationEditSession {
     pub fn from_rows(rows: Vec<Vec<CellValue>>) -> Self {
+        Self::from_rows_with_versions(rows, None).expect("unversioned rows have matching metadata")
+    }
+
+    pub fn from_rows_with_versions(
+        rows: Vec<Vec<CellValue>>,
+        versions: Option<Vec<RowVersion>>,
+    ) -> Result<Self, String> {
+        if let Some(versions) = &versions
+            && versions.len() != rows.len()
+        {
+            return Err(format!(
+                "row version count {} does not match row count {}",
+                versions.len(),
+                rows.len()
+            ));
+        }
         let mut session = Self::default();
         session.rows = rows
             .into_iter()
-            .map(|values| {
+            .enumerate()
+            .map(|(index, values)| {
                 let id = session.allocate_id();
-                EditableRow::new(id, values)
+                let mut row = EditableRow::new(id, values);
+                row.version = versions
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied());
+                row
             })
             .collect();
-        session
+        Ok(session)
     }
 
     pub fn allocate_id(&mut self) -> EditableRowId {
@@ -322,7 +347,7 @@ impl RelationEditSession {
 mod tests {
     use super::{
         CellEditorState, EditableRow, EditableRowId, EditableRowState, PendingMutationHistory,
-        RelationEditSession, RelationGridMode, RelationMutationHistory,
+        RelationEditSession, RelationGridMode, RelationMutationHistory, RowVersion,
     };
     use crate::db::value::CellValue;
     use crate::model::cell_editor::CellEditorBuffer;
@@ -332,6 +357,48 @@ mod tests {
             EditableRowId(1),
             vec![CellValue::Integer(1), CellValue::Text("old".into())],
         )
+    }
+
+    #[test]
+    fn versioned_rows_preserve_order_and_reject_mismatched_versions() {
+        let rows = vec![vec![CellValue::Integer(1)], vec![CellValue::Integer(2)]];
+        let versions = vec![RowVersion::PostgresXmin(11), RowVersion::PostgresXmin(22)];
+        let session = RelationEditSession::from_rows_with_versions(rows, Some(versions)).unwrap();
+        assert_eq!(session.rows[0].id, EditableRowId(1));
+        assert_eq!(session.rows[1].id, EditableRowId(2));
+        assert_eq!(session.rows[0].version, Some(RowVersion::PostgresXmin(11)));
+        assert_eq!(session.rows[1].version, Some(RowVersion::PostgresXmin(22)));
+
+        let error = RelationEditSession::from_rows_with_versions(
+            vec![vec![CellValue::Integer(1)]],
+            Some(Vec::new()),
+        )
+        .unwrap_err();
+        assert!(error.contains("version count 0 does not match row count 1"));
+    }
+
+    #[test]
+    fn row_versions_survive_history_discard_and_snapshot_clone() {
+        let mut session = RelationEditSession::from_rows_with_versions(
+            vec![vec![CellValue::Integer(1)]],
+            Some(vec![RowVersion::PostgresXmin(7)]),
+        )
+        .unwrap();
+        let snapshot = session.clone();
+        session.update_cell(0, 0, CellValue::Integer(2));
+        assert!(session.undo());
+        assert_eq!(session.rows[0].version, snapshot.rows[0].version);
+        assert!(session.redo());
+        assert_eq!(session.rows[0].version, snapshot.rows[0].version);
+        session.discard_changes();
+        assert_eq!(session.rows[0].version, Some(RowVersion::PostgresXmin(7)));
+        assert_eq!(snapshot.rows[0].version, Some(RowVersion::PostgresXmin(7)));
+
+        let inserted = session.insert_row(1, vec![CellValue::Integer(3)]);
+        let inserted_row = session.rows.iter().find(|row| row.id == inserted).unwrap();
+        assert_eq!(inserted_row.version, None);
+        assert!(session.yank_row(0));
+        assert_eq!(session.yank, Some(vec![CellValue::Integer(1)]));
     }
 
     #[test]

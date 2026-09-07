@@ -336,6 +336,7 @@ impl SqliteAdapter {
             sql,
             result: QueryOutcome::from_result_set(result_set, execution, Duration::ZERO),
             pagination: relation_pagination(page, fetched_len, total),
+            row_versions: None,
         })
     }
 
@@ -2246,6 +2247,7 @@ impl TransactionBackend for SqliteTransactionBackend {
                 .map_err(|e| TransactionError(e.to_string()))?;
                 return Ok(MutationResult::Inserted {
                     row: decode_row(&row),
+                    version: None,
                 });
             }
             RelationMutation::UpdateCell(update) => {
@@ -2347,6 +2349,7 @@ impl TransactionBackend for SqliteTransactionBackend {
                     .map_err(|error| TransactionError(error.to_string()))?;
                 Ok(MutationResult::Updated {
                     row: decode_row(&row),
+                    version: None,
                 })
             }
         }
@@ -2578,7 +2581,8 @@ mod tests {
         assert_eq!(
             result,
             super::MutationResult::Updated {
-                row: vec![CellValue::Integer(1), CellValue::Text("updated".into())]
+                row: vec![CellValue::Integer(1), CellValue::Text("updated".into())],
+                version: None,
             }
         );
         backend.rollback().await.unwrap();
@@ -2649,18 +2653,22 @@ mod tests {
         backend.begin().await.unwrap();
         let request = mutation_request(RelationMutation::DeleteRows(vec![
             DeleteRowMutation {
+                row_id: crate::model::relation_edit::EditableRowId(1),
                 row: RowLocator {
                     columns: vec![0],
                     values: vec![CellValue::Integer(1)],
                 },
                 original: vec![CellValue::Integer(1), CellValue::Null],
+                version: None,
             },
             DeleteRowMutation {
+                row_id: crate::model::relation_edit::EditableRowId(2),
                 row: RowLocator {
                     columns: vec![0],
                     values: vec![CellValue::Integer(2)],
                 },
                 original: vec![CellValue::Integer(2), CellValue::Text("two".into())],
+                version: None,
             },
         ]));
         assert_eq!(
@@ -2696,18 +2704,22 @@ mod tests {
         backend.begin().await.unwrap();
         let request = mutation_request(RelationMutation::DeleteRows(vec![
             DeleteRowMutation {
+                row_id: crate::model::relation_edit::EditableRowId(1),
                 row: RowLocator {
                     columns: vec![0],
                     values: vec![CellValue::Integer(1)],
                 },
                 original: vec![CellValue::Integer(1), CellValue::Text("one".into())],
+                version: None,
             },
             DeleteRowMutation {
+                row_id: crate::model::relation_edit::EditableRowId(2),
                 row: RowLocator {
                     columns: vec![0],
                     values: vec![CellValue::Integer(2)],
                 },
                 original: vec![CellValue::Integer(2), CellValue::Text("stale".into())],
+                version: None,
             },
         ]));
         assert!(backend.relation_mutation(request).await.is_err());
@@ -2748,7 +2760,8 @@ mod tests {
                     CellValue::Integer(7),
                     CellValue::Text("default".into()),
                     CellValue::Integer(14)
-                ]
+                ],
+                version: None,
             }
         );
         let request = mutation_request(RelationMutation::InsertRow(InsertRowMutation {
@@ -2762,7 +2775,8 @@ mod tests {
                     CellValue::Integer(8),
                     CellValue::Null,
                     CellValue::Integer(16)
-                ]
+                ],
+                version: None,
             }
         );
         backend.rollback().await.unwrap();

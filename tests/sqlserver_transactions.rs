@@ -183,6 +183,7 @@ async fn sql_server_relation_mutations_use_output_and_atomic_optimistic_batches(
     let deleted = backend
         .relation_mutation(request(RelationMutation::DeleteRows(vec![
             DeleteRowMutation {
+                row_id: lazydb::model::relation_edit::EditableRowId(1),
                 row: RowLocator {
                     columns: vec![0],
                     values: vec![CellValue::Integer(id)],
@@ -192,6 +193,7 @@ async fn sql_server_relation_mutations_use_output_and_atomic_optimistic_batches(
                     CellValue::Text("after".into()),
                     updated_row_value(&updated, 2),
                 ],
+                version: None,
             },
         ])))
         .await
@@ -207,14 +209,14 @@ async fn sql_server_relation_mutations_use_output_and_atomic_optimistic_batches(
 
 fn inserted_row_value(result: &MutationResult, index: usize) -> CellValue {
     match result {
-        MutationResult::Inserted { row } => row[index].clone(),
+        MutationResult::Inserted { row, .. } => row[index].clone(),
         _ => panic!("expected inserted row"),
     }
 }
 
 fn updated_row_value(result: &MutationResult, index: usize) -> CellValue {
     match result {
-        MutationResult::Updated { row } => row[index].clone(),
+        MutationResult::Updated { row, .. } => row[index].clone(),
         _ => panic!("expected updated row"),
     }
 }
