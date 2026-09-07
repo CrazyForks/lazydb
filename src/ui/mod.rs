@@ -1698,7 +1698,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
         main_area,
     );
     let version_x = area.x.saturating_add(8);
-    let version_width = running_version.cell_width() as u16;
+    let version_width = running_version.cell_width();
     if version_width > 0 && version_x < main_area.right() {
         state.hit_regions.push(HitRegion {
             area: Rect::new(
@@ -1751,9 +1751,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
             target: HitTarget::UpdateCenter,
         });
     }
-    let profile_x = area
-        .x
-        .saturating_add(10 + running_version.cell_width() as u16 + 2);
+    let profile_x = area.x.saturating_add(10 + running_version.cell_width() + 2);
     let profile_width = profile_width.min(main_area.right().saturating_sub(profile_x));
     if profile_width > 0 {
         state.hit_regions.push(HitRegion {
@@ -2870,20 +2868,15 @@ fn render_editor(
     }
     context.push(Span::raw(&transaction_segment));
     let context_right = area.right().saturating_sub(1);
-    let transaction_x = context_right.saturating_sub(transaction_segment.cell_width() as u16);
+    let transaction_x = context_right.saturating_sub(transaction_segment.cell_width());
     state.hit_regions.push(HitRegion {
-        area: Rect::new(
-            transaction_x,
-            area.y,
-            transaction_segment.cell_width() as u16,
-            1,
-        ),
+        area: Rect::new(transaction_x, area.y, transaction_segment.cell_width(), 1),
         target: HitTarget::EditorTransactionMenu,
     });
     if show_target {
-        let target_x = transaction_x.saturating_sub(target_segment.cell_width() as u16);
+        let target_x = transaction_x.saturating_sub(target_segment.cell_width());
         state.hit_regions.push(HitRegion {
-            area: Rect::new(target_x, area.y, target_segment.cell_width() as u16, 1),
+            area: Rect::new(target_x, area.y, target_segment.cell_width(), 1),
             target: HitTarget::EditorExecutionTarget,
         });
     }
@@ -3350,7 +3343,7 @@ pub(crate) fn render_tab_selectors(
     let mut x = area.x;
     for (index, label) in labels.iter().enumerate() {
         let text = format!(" {label} ");
-        let width = text.cell_width() as u16;
+        let width = text.cell_width();
         spans.push(Span::styled(
             text,
             Style::new()

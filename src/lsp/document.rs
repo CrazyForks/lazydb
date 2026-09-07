@@ -56,6 +56,40 @@ pub struct Documents {
     entries: HashMap<Uri, Document>,
 }
 
+impl Documents {
+    pub fn open(&mut self, params: DidOpenTextDocumentParams) -> Document {
+        let document = Document::from_open(params);
+        self.entries.insert(document.uri.clone(), document.clone());
+        document
+    }
+
+    pub fn change(&mut self, params: DidChangeTextDocumentParams) -> Option<Document> {
+        let uri = params.text_document.uri;
+        let document = self.entries.get_mut(&uri)?;
+        if params.text_document.version <= document.version {
+            return None;
+        }
+        for change in &params.content_changes {
+            if !document.apply_change(params.text_document.version, change) {
+                return None;
+            }
+        }
+        Some(document.clone())
+    }
+
+    pub fn save(&mut self, params: DidSaveTextDocumentParams) -> Option<Document> {
+        self.entries.get(&params.text_document.uri).cloned()
+    }
+
+    pub fn close(&mut self, uri: &Uri) -> Option<Document> {
+        self.entries.remove(uri)
+    }
+
+    pub fn get(&self, uri: &Uri) -> Option<&Document> {
+        self.entries.get(uri)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,39 +170,5 @@ mod tests {
         documents.open(opened(1, "select 1"));
         assert!(documents.close(&uri()).is_some());
         assert!(documents.get(&uri()).is_none());
-    }
-}
-
-impl Documents {
-    pub fn open(&mut self, params: DidOpenTextDocumentParams) -> Document {
-        let document = Document::from_open(params);
-        self.entries.insert(document.uri.clone(), document.clone());
-        document
-    }
-
-    pub fn change(&mut self, params: DidChangeTextDocumentParams) -> Option<Document> {
-        let uri = params.text_document.uri;
-        let document = self.entries.get_mut(&uri)?;
-        if params.text_document.version <= document.version {
-            return None;
-        }
-        for change in &params.content_changes {
-            if !document.apply_change(params.text_document.version, change) {
-                return None;
-            }
-        }
-        Some(document.clone())
-    }
-
-    pub fn save(&mut self, params: DidSaveTextDocumentParams) -> Option<Document> {
-        self.entries.get(&params.text_document.uri).cloned()
-    }
-
-    pub fn close(&mut self, uri: &Uri) -> Option<Document> {
-        self.entries.remove(uri)
-    }
-
-    pub fn get(&self, uri: &Uri) -> Option<&Document> {
-        self.entries.get(uri)
     }
 }
