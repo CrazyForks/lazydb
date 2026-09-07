@@ -14313,12 +14313,12 @@ impl App {
             crate::model::cell_editor::CellEditorBuffer::from_value(value, description)
         };
         if let Some(edit) = tab.edit.as_mut() {
-            edit.mode = RelationGridMode::EditCell(CellEditorState {
+            edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row,
                 column,
                 input,
                 error: None,
-            });
+            }));
         }
     }
 
@@ -15247,12 +15247,12 @@ impl App {
         edit.insert_row(row, vec![crate::db::value::CellValue::Null; columns]);
         tab.grid.selected_row = row;
         tab.grid.selected_column = 0;
-        edit.mode = RelationGridMode::EditCell(CellEditorState {
+        edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
             row,
             column: 0,
             input: crate::model::cell_editor::CellEditorBuffer::unprovided(),
             error: None,
-        });
+        }));
         Vec::new()
     }
     fn relation_undo(&mut self) -> Vec<Command> {

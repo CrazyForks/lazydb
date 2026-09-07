@@ -1162,7 +1162,7 @@ mod tests {
                 RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
                     "x".into(),
                 )]]);
-            edit.mode = RelationGridMode::EditCell(CellEditorState {
+            edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
                 input: CellEditorBuffer::Typed {
@@ -1170,7 +1170,7 @@ mod tests {
                     draft: TypedDraft::Json(JsonBuffer::new(value)),
                 },
                 error: None,
-            });
+            }));
             tab.edit = Some(edit);
         }
         app
@@ -1195,7 +1195,7 @@ mod tests {
                 RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Date(
                     NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
                 )]]);
-            edit.mode = RelationGridMode::EditCell(CellEditorState {
+            edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
                 input: CellEditorBuffer::Typed {
@@ -1205,7 +1205,7 @@ mod tests {
                     )),
                 },
                 error: None,
-            });
+            }));
             tab.edit = Some(edit);
         }
         app
@@ -1257,12 +1257,12 @@ mod tests {
                 RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
                     "hello".into(),
                 )]]);
-            edit.mode = RelationGridMode::EditCell(CellEditorState {
+            edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
                 input: CellEditorBuffer::Text(TextInput::from("hello")),
                 error: None,
-            });
+            }));
             tab.edit = Some(edit);
         }
         let mut state = super::super::UiState::new();
@@ -1492,12 +1492,12 @@ mod tests {
                     RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
                         "x".into(),
                     )]]);
-                edit.mode = RelationGridMode::EditCell(CellEditorState {
+                edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                     row: 0,
                     column: 0,
                     input,
                     error: None,
-                });
+                }));
                 tab.edit = Some(edit);
             }
 

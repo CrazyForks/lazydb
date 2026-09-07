@@ -510,7 +510,7 @@ fn temporal_relation_editor_uses_segmented_input_and_preserves_fraction() {
     app.update(Action::RelationEditCell);
     if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
         tab.edit.as_mut().unwrap().mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
-            lazydb::model::relation_edit::CellEditorState {
+            Box::new(lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
@@ -523,7 +523,7 @@ fn temporal_relation_editor_uses_segmented_input_and_preserves_fraction() {
                     ),
                 },
                 error: None,
-            },
+            }),
         );
     }
     assert!(matches!(
@@ -549,7 +549,7 @@ fn boolean_relation_editor_actions_stay_local_until_confirmed() {
         );
         tab.grid.selected_column = 0;
         tab.edit.as_mut().unwrap().mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
-            lazydb::model::relation_edit::CellEditorState {
+            Box::new(lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
@@ -559,7 +559,7 @@ fn boolean_relation_editor_actions_stay_local_until_confirmed() {
                     ),
                 },
                 error: None,
-            },
+            }),
         );
     }
 

@@ -3898,12 +3898,12 @@ mod tests {
             unreachable!()
         };
         tab.edit.as_mut().unwrap().mode =
-            RelationGridMode::EditCell(crate::model::relation_edit::CellEditorState {
+            RelationGridMode::EditCell(Box::new(crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
-            });
+            }));
         let edit = shortcuts(
             ShortcutContext::RelationDataEdit,
             shortcut_capabilities(&app),
@@ -4010,14 +4010,14 @@ mod tests {
             );
         }
 
-        let edit = relation_app(RelationGridMode::EditCell(
+        let edit = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let edit_rows = shortcuts(
             ShortcutContext::RelationDataEdit,
             shortcut_capabilities(&edit),

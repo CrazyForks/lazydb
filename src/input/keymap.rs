@@ -2496,19 +2496,15 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
         return None;
     }
     if let Some(RelationGridMode::EditCell(_)) = mode {
-        let json = matches!(
-            mode,
-            Some(RelationGridMode::EditCell(
-                crate::model::relation_edit::CellEditorState {
-                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
-                        kind: crate::model::cell_editor::CellEditorKind::Json,
-                        draft: crate::model::cell_editor::TypedDraft::Json(_),
-                        ..
-                    },
-                    ..
-                }
-            ))
-        );
+        let json = matches!(mode, Some(RelationGridMode::EditCell(state))
+        if matches!(
+            state.input,
+            crate::model::cell_editor::CellEditorBuffer::Typed {
+                kind: crate::model::cell_editor::CellEditorKind::Json,
+                draft: crate::model::cell_editor::TypedDraft::Json(_),
+                ..
+            }
+        ));
         if json {
             return match (event.modifiers, event.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('s')) => Some(Action::RelationEditConfirm),
@@ -2534,19 +2530,15 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
                 }),
             };
         }
-        let boolean = matches!(
-            mode,
-            Some(RelationGridMode::EditCell(
-                crate::model::relation_edit::CellEditorState {
-                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
-                        kind: crate::model::cell_editor::CellEditorKind::Boolean,
-                        draft: crate::model::cell_editor::TypedDraft::Boolean(_),
-                        ..
-                    },
-                    ..
-                }
-            ))
-        );
+        let boolean = matches!(mode, Some(RelationGridMode::EditCell(state))
+        if matches!(
+            state.input,
+            crate::model::cell_editor::CellEditorBuffer::Typed {
+                kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                draft: crate::model::cell_editor::TypedDraft::Boolean(_),
+                ..
+            }
+        ));
         if boolean {
             return match (event.modifiers, event.code) {
                 (KeyModifiers::NONE, KeyCode::Left) => Some(Action::RelationEditBooleanMove(-1)),
@@ -2563,18 +2555,14 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
                 _ => None,
             };
         }
-        let temporal = matches!(
-            mode,
-            Some(RelationGridMode::EditCell(
-                crate::model::relation_edit::CellEditorState {
-                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
-                        draft: crate::model::cell_editor::TypedDraft::Temporal(_),
-                        ..
-                    },
-                    ..
-                }
-            ))
-        );
+        let temporal = matches!(mode, Some(RelationGridMode::EditCell(state))
+        if matches!(
+            state.input,
+            crate::model::cell_editor::CellEditorBuffer::Typed {
+                draft: crate::model::cell_editor::TypedDraft::Temporal(_),
+                ..
+            }
+        ));
         if temporal {
             return match (event.modifiers, event.code) {
                 (KeyModifiers::NONE, KeyCode::Left) => Some(Action::RelationEditTemporalMove(-1)),
@@ -3325,14 +3313,14 @@ mod tests {
 
     #[test]
     fn cell_editor_history_keys_are_owned_by_cell_input() {
-        let app = relation_app(RelationGridMode::EditCell(
+        let app = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let mut keymap = Keymap::default();
         assert_eq!(
             keymap.map(
@@ -3864,28 +3852,28 @@ mod tests {
         assert_eq!(
             keymap.map(
                 key(KeyCode::Char('x')),
-                &relation_app(RelationGridMode::EditCell(
+                &relation_app(RelationGridMode::EditCell(Box::new(
                     crate::model::relation_edit::CellEditorState {
                         row: 0,
                         column: 0,
                         input: crate::model::cell_editor::CellEditorBuffer::Text(Default::default()),
                         error: None,
                     },
-                ))
+                )))
             ),
             Some(Action::RelationEditInsert('x'))
         );
         assert_eq!(
             keymap.map(
                 key(KeyCode::Esc),
-                &relation_app(RelationGridMode::EditCell(
+                &relation_app(RelationGridMode::EditCell(Box::new(
                     crate::model::relation_edit::CellEditorState {
                         row: 0,
                         column: 0,
                         input: Default::default(),
                         error: None,
                     },
-                )),
+                )))
             ),
             Some(Action::RelationEditCancel)
         );
@@ -3893,14 +3881,14 @@ mod tests {
 
     #[test]
     fn cell_editor_maps_digits_and_enter_before_global_count_prefixes() {
-        let app = relation_app(RelationGridMode::EditCell(
+        let app = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let mut keymap = Keymap::default();
 
         for digit in ['0', '1', '9'] {
@@ -3918,14 +3906,14 @@ mod tests {
 
     #[test]
     fn cell_editor_maps_line_editing_controls_before_global_bindings() {
-        let app = relation_app(RelationGridMode::EditCell(
+        let app = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let mut keymap = Keymap::default();
 
         assert_eq!(
@@ -4002,14 +3990,14 @@ mod tests {
 
     #[test]
     fn grid_column_targets_do_not_steal_relation_cell_input() {
-        let app = relation_app(RelationGridMode::EditCell(
+        let app = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let mut keymap = Keymap::default();
 
         assert_eq!(
@@ -4063,14 +4051,14 @@ mod tests {
 
     #[test]
     fn grid_navigation_does_not_steal_relation_cell_input() {
-        let app = relation_app(RelationGridMode::EditCell(
+        let app = relation_app(RelationGridMode::EditCell(Box::new(
             crate::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
                 input: Default::default(),
                 error: None,
             },
-        ));
+        )));
         let mut keymap = Keymap::default();
 
         assert_eq!(

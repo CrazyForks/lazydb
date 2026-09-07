@@ -12,7 +12,7 @@ pub struct EditableRowId(pub u64);
 pub enum RelationGridMode {
     #[default]
     Browse,
-    EditCell(CellEditorState),
+    EditCell(Box<CellEditorState>),
     VisualLine {
         anchor: usize,
     },
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn cell_editor_state_can_hold_a_typed_boolean_without_changing_relation_mode() {
         let mut session = RelationEditSession::from_rows(vec![vec![CellValue::Boolean(true)]]);
-        session.mode = RelationGridMode::EditCell(CellEditorState {
+        session.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
             row: 0,
             column: 0,
             input: CellEditorBuffer::Typed {
@@ -533,7 +533,7 @@ mod tests {
                 ),
             },
             error: None,
-        });
+        }));
         assert!(matches!(session.mode, RelationGridMode::EditCell(_)));
     }
 }

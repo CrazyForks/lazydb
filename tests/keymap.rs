@@ -150,7 +150,7 @@ fn temporal_editor_owns_field_and_month_navigation() {
                 chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
             ),
         ]]);
-        edit.mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
+        edit.mode = lazydb::model::relation_edit::RelationGridMode::EditCell(Box::new(
             lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
@@ -164,7 +164,7 @@ fn temporal_editor_owns_field_and_month_navigation() {
                 },
                 error: None,
             },
-        );
+        ));
         tab.edit = Some(edit);
     }
     let mut keymap = Keymap::default();

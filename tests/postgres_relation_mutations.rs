@@ -119,9 +119,10 @@ async fn preview_relation_versions_align_with_supported_rows_and_pagination() {
         assert_eq!(large_page.result.result_sets[0].rows.len(), 500);
         assert_eq!(large_page.row_versions.as_ref().unwrap().len(), 500);
         assert!(large_page.pagination.has_next);
-        let mut options = RelationPreviewOptions::default();
-        options.where_clause = Some(format!("{}.id > 500", quote_identifier("ordinary")));
-        options.order_by_clause = Some(format!("{}.id DESC", quote_identifier("ordinary")));
+        let options = RelationPreviewOptions {
+            where_clause: Some(format!("{}.id > 500", quote_identifier("ordinary"))),
+            order_by_clause: Some(format!("{}.id DESC", quote_identifier("ordinary"))),
+        };
         let page = database.preview_relation(&ordinary, &options, PageRequest { size: PageSize::Ten, offset: 0, resolve_total: true }).await.unwrap();
         assert_eq!(page.result.result_sets[0].rows.len(), 1);
         assert_eq!(page.row_versions.as_ref().unwrap().len(), 1);
@@ -800,7 +801,7 @@ async fn type_roundtrip_uses_native_assignment_bindings() {
             panic!("expected updated row");
         };
         assert!(matches!(row[2], CellValue::Text(_)));
-        let version = updated_version.or(Some(version)).unwrap();
+        let version = updated_version.unwrap_or(version);
         backend
             .relation_mutation(request(RelationMutation::DeleteRows(vec![
                 DeleteRowMutation {
