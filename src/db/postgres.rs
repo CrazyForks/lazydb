@@ -5461,7 +5461,7 @@ impl TransactionBackend for PostgresTransactionBackend {
                     if matches!(value, InputValue::Default) {
                         expressions.push("DEFAULT".into());
                     } else {
-                        expressions.push(format!("${bind_count}"));
+                        expressions.push(postgres_placeholder(bind_count, &columns[*index].1));
                         bind_count += 1;
                     }
                 }
@@ -5537,7 +5537,7 @@ impl TransactionBackend for PostgresTransactionBackend {
                 match update.value {
                     InputValue::Default => sql.push_str("DEFAULT"),
                     InputValue::Null | InputValue::Value(_) => {
-                        sql.push_str(&format!("${bind_count}"));
+                        sql.push_str(&postgres_placeholder(bind_count, &columns[update.column].1));
                         bind_count += 1;
                     }
                 }
@@ -5560,6 +5560,7 @@ impl TransactionBackend for PostgresTransactionBackend {
                     "{quoted_column} IS NOT DISTINCT FROM {}",
                     postgres_placeholder(bind_count, &columns[update.column].1)
                 ));
+                sql.push_str(" RETURNING *");
 
                 let mut query = sqlx::query(AssertSqlSafe(sql));
                 match &update.value {
@@ -5571,47 +5572,7 @@ impl TransactionBackend for PostgresTransactionBackend {
                     query = bind_cell(query, value)?;
                 }
                 query = bind_cell(query, &update.original)?;
-                let affected = query
-                    .execute(&mut *self.connection)
-                    .await
-                    .map_err(|error| TransactionError(error.to_string()))?
-                    .rows_affected();
-                if affected != 1 {
-                    return Err(TransactionError(
-                        "PostgreSQL relation mutation conflict".into(),
-                    ));
-                }
-
-                let mut select = format!("SELECT * FROM {quoted_table} WHERE ");
-                for (position, column_index) in update.row.columns.iter().enumerate() {
-                    if position > 0 {
-                        select.push_str(" AND ");
-                    }
-                    select.push_str(&format!(
-                        "{} IS NOT DISTINCT FROM {}",
-                        quote_identifier(&columns[*column_index].0),
-                        postgres_placeholder(position + 1, &columns[*column_index].1)
-                    ));
-                }
-                let mut select_query = sqlx::query(AssertSqlSafe(select));
-                for (column_index, value) in update.row.columns.iter().zip(&update.row.values) {
-                    let value = if *column_index == update.column {
-                        match &update.value {
-                            InputValue::Value(value) => value,
-                            InputValue::Null => &CellValue::Null,
-                            InputValue::Default => {
-                                return Err(TransactionError(
-                                    "PostgreSQL cannot fetch an update that resets a primary key to DEFAULT"
-                                        .into(),
-                                ));
-                            }
-                        }
-                    } else {
-                        value
-                    };
-                    select_query = bind_cell(select_query, value)?;
-                }
-                let row = select_query
+                let row = query
                     .fetch_optional(&mut *self.connection)
                     .await
                     .map_err(|error| TransactionError(error.to_string()))?
@@ -5709,10 +5670,15 @@ fn postgres_delete_sql(
 
 fn postgres_placeholder(index: usize, type_name: &str) -> String {
     let normalized = type_name.trim().to_ascii_lowercase();
-    let base_type = normalized
+    let type_without_typmod = normalized
         .split_once('(')
-        .map_or(normalized.as_str(), |(base, _)| base.trim());
-    let cast = match normalized.as_str() {
+        .and_then(|(base, suffix)| {
+            suffix
+                .split_once(')')
+                .map(|(_, suffix)| format!("{}{}", base.trim(), suffix))
+        })
+        .unwrap_or_else(|| normalized.clone());
+    let cast = match type_without_typmod.trim() {
         "bool" | "boolean" => Some("boolean"),
         "int2" | "smallint" => Some("smallint"),
         "int4" | "integer" | "serial" => Some("integer"),
@@ -5734,7 +5700,7 @@ fn postgres_placeholder(index: usize, type_name: &str) -> String {
         "bytea" => Some("bytea"),
         _ => None,
     };
-    let cast = cast.or(match base_type {
+    let cast = cast.or(match type_without_typmod.trim() {
         "varchar" | "character varying" => Some("varchar"),
         "char" | "character" => Some("char"),
         _ => None,
@@ -6651,10 +6617,33 @@ fn monitor_timestamp(row: &PgRow, name: &str) -> Result<u64, DatabaseError> {
 mod tests {
     use super::{
         PgDdlColumn, PgDdlRelation, assemble_relation_ddl, column_definition, format_pg_array,
-        format_pg_interval, parse_pg_interval, postgres_delete_sql, quote_identifier,
-        quote_literal,
+        format_pg_interval, parse_pg_interval, postgres_delete_sql, postgres_placeholder,
+        quote_identifier, quote_literal,
     };
     use sqlx::postgres::types::PgInterval;
+
+    #[test]
+    fn postgres_placeholder_handles_numeric_typmods() {
+        for type_name in [
+            "numeric",
+            "numeric(18,2)",
+            "decimal(38,10)",
+            " NUMERIC(18, 2) ",
+        ] {
+            assert_eq!(postgres_placeholder(2, type_name), "$2::numeric");
+        }
+    }
+
+    #[test]
+    fn postgres_placeholder_handles_typmods_and_keeps_parameter_numbers() {
+        assert_eq!(postgres_placeholder(7, "timestamp(6)"), "$7::timestamp");
+        assert_eq!(
+            postgres_placeholder(8, "timestamp(6) with time zone"),
+            "$8::timestamptz"
+        );
+        assert_eq!(postgres_placeholder(9, "varchar(32)"), "$9::varchar");
+        assert_eq!(postgres_placeholder(10, "custom_type(1)"), "$10");
+    }
 
     #[test]
     fn ddl_quoting_escapes_postgres_identifiers_and_literals() {
@@ -6750,6 +6739,19 @@ mod tests {
         assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $1::bigint"));
         assert!(sql.contains("\"dept_id\" IS NOT DISTINCT FROM $3::bigint"));
         assert!(sql.contains("\"manager\" IS NOT DISTINCT FROM $4"));
+    }
+
+    #[test]
+    fn delete_sql_casts_numeric_typmod_snapshot_parameters() {
+        let columns = vec![
+            ("id".to_owned(), "bigint".to_owned(), false),
+            ("amount".to_owned(), "numeric(18,2)".to_owned(), true),
+        ];
+        let sql = postgres_delete_sql("\"public\".\"payments\"", &columns, &[0]).unwrap();
+
+        assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $1::bigint"));
+        assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $2::bigint"));
+        assert!(sql.contains("\"amount\" IS NOT DISTINCT FROM $3::numeric"));
     }
 
     #[test]
