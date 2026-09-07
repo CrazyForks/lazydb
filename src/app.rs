@@ -2663,6 +2663,7 @@ impl App {
                 };
                 let id = tab.id;
                 if self.is_default_console(id) {
+                    self.notify_warning("Console", "Default console cannot be deleted");
                     return Vec::new();
                 }
                 if self.transaction_needs_exit(id) {
@@ -2769,6 +2770,10 @@ impl App {
                     return Vec::new();
                 }
                 if self.is_default_console(id) {
+                    if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut() {
+                        list.mode = crate::model::sql_editor_list::SqlEditorListMode::Browse;
+                    }
+                    self.notify_warning("Console", "Default console cannot be deleted");
                     return Vec::new();
                 }
                 if self.transaction_needs_exit(id) {
@@ -2834,6 +2839,13 @@ impl App {
                 if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_ref()
                     && list.delete_focus != crate::model::sql_editor_list::DeleteFocus::Delete
                 {
+                    return Vec::new();
+                }
+                if self.is_default_console(id) {
+                    if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut() {
+                        list.mode = crate::model::sql_editor_list::SqlEditorListMode::Browse;
+                    }
+                    self.notify_warning("Console", "Default console cannot be deleted");
                     return Vec::new();
                 }
                 self.overlay = None;
@@ -9447,6 +9459,7 @@ impl App {
             return Vec::new();
         }
         if self.is_default_console(id) {
+            self.notify_warning("Console", "Default console cannot be closed");
             return Vec::new();
         }
         if self.transaction_needs_exit(id) {

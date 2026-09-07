@@ -23,6 +23,24 @@ fn editor_position(
 }
 
 pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
+    // Toasts own their visible cells, even above modal inputs and selection targets.
+    if let Some(
+        target @ (HitTarget::DismissNotification(_) | HitTarget::OpenNotificationHistoryAt(_)),
+    ) = ui.target_at(event.column, event.row)
+    {
+        ui.cancel_mouse_gesture();
+        return if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            match target {
+                HitTarget::DismissNotification(id) => Some(Action::DismissNotification(*id)),
+                HitTarget::OpenNotificationHistoryAt(id) if app.overlay.is_none() => {
+                    Some(Action::OpenNotificationHistoryAt(*id))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+    }
     match event.kind {
         MouseEventKind::Drag(MouseButton::Left) => {
             if matches!(app.overlay, Some(Overlay::TextDetail(_)))

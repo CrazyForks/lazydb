@@ -899,7 +899,10 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     if let Some(sequence) = sequence {
         render_key_sequence_popup(frame, area, app, theme, sequence);
     }
-    if app.overlay.is_none() {
+    if !matches!(
+        app.overlay,
+        Some(Overlay::NotificationHistory(_) | Overlay::NotificationDetail(_))
+    ) {
         notifications::render(frame, area, app, theme, state, icons);
     }
     if let Some(cursor) = state.cursor {
@@ -5140,7 +5143,11 @@ fn render_console_manager(
                 let name_width = usize::from(inner.width).saturating_sub(4 + status_width);
                 lines.extend(records.iter().map(|record| {
                     let selected = list.selected_id == Some(record.id);
-                    let name = truncate_to_cells(&record.name, name_width);
+                    let is_default = app.is_default_console(record.id);
+                    let default_label = if is_default { " [DEFAULT]" } else { "" };
+                    let default_label_width = usize::from(default_label.cell_width());
+                    let name_budget = name_width.saturating_sub(default_label_width);
+                    let name = truncate_to_cells(&record.name, name_budget);
                     let status = if record.open { "OPEN" } else { "CLOSED" };
                     let background = if selected {
                         theme.selection
@@ -5148,8 +5155,9 @@ fn render_console_manager(
                         theme.surface
                     };
                     let prefix = if selected { "> " } else { "  " };
-                    let padding =
-                        status_width + name_width.saturating_sub(usize::from(name.cell_width()));
+                    let padding = status_width
+                        + name_width
+                            .saturating_sub(usize::from(name.cell_width()) + default_label_width);
                     Line::from(vec![
                         Span::styled(
                             format!("{prefix}{name}"),
@@ -5158,6 +5166,16 @@ fn render_console_manager(
                             } else {
                                 Modifier::empty()
                             }),
+                        ),
+                        Span::styled(
+                            default_label,
+                            theme.base().fg(theme.accent).bg(background).add_modifier(
+                                if selected {
+                                    Modifier::BOLD
+                                } else {
+                                    Modifier::empty()
+                                },
+                            ),
                         ),
                         Span::styled(
                             format!("{:>padding$}", status),

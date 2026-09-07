@@ -542,6 +542,7 @@ mod tests {
             (area.right() - 2, area.y + 2),
             (area.right() - 1, area.bottom() - 1),
         ] {
+            app.overlay = None;
             let action = map_mouse(
                 MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
@@ -561,6 +562,59 @@ mod tests {
             assert_eq!(history.selected_id, Some(id));
             assert_eq!(history.selected, 2);
         }
+    }
+
+    #[test]
+    fn console_warning_is_visible_above_manager_without_replacing_it() {
+        use crate::{action::Action, input::mouse::map_mouse, model::workspace::Overlay};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = App::new(Vec::new());
+        app.update(Action::OpenSqlEditorList);
+        let overlay = app.overlay.clone();
+        app.update(Action::SqlEditorListDeleteRequest);
+        let mut ui = UiState::new();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render_with_state(frame, &app, &mut ui))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Default console cannot be deleted"));
+        assert!(matches!(app.overlay, Some(Overlay::SqlEditorList(_))));
+        for region in &ui.hit_regions {
+            if !matches!(
+                region.target,
+                HitTarget::DismissNotification(_) | HitTarget::OpenNotificationHistoryAt(_)
+            ) {
+                continue;
+            }
+            let action = map_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: region.area.x,
+                    row: region.area.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &ui,
+                &app,
+            );
+            match region.target {
+                HitTarget::DismissNotification(id) => {
+                    assert_eq!(action, Some(Action::DismissNotification(id)));
+                    app.update(action.unwrap());
+                }
+                _ => assert_eq!(action, None),
+            }
+        }
+        assert_eq!(app.overlay, overlay);
+        assert!(app.notifications.live().is_empty());
     }
 
     #[test]
