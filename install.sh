@@ -7,14 +7,16 @@ CHANNEL=${LAZYDB_CHANNEL:-$DEFAULT_CHANNEL}
 VERSION=${LAZYDB_VERSION:-}
 INSTALL_DIR=${LAZYDB_INSTALL_DIR:-"$HOME/.local/bin"}
 BASE_URL=${LAZYDB_CHANNEL_BASE_URL:-https://lazydb.yelog.org/channels}
+MODIFY_PATH=1
 
-usage() { printf '%s\n' 'Usage: install.sh [--channel stable|beta] [--version VERSION] [--install-dir PATH]'; }
+usage() { printf '%s\n' 'Usage: install.sh [--channel stable|beta] [--version VERSION] [--install-dir PATH] [--no-modify-path]'; }
 die() { printf 'lazydb installer: %s\n' "$*" >&2; exit 1; }
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --channel) [ "$#" -gt 1 ] || die '--channel needs a value'; CHANNEL=$2; shift 2 ;;
         --version) [ "$#" -gt 1 ] || die '--version needs a value'; VERSION=$2; shift 2 ;;
         --install-dir) [ "$#" -gt 1 ] || die '--install-dir needs a value'; INSTALL_DIR=$2; shift 2 ;;
+        --no-modify-path) MODIFY_PATH=0; shift ;;
         --help) usage; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
@@ -33,6 +35,7 @@ esac
 
 for tool in curl tar awk cat cp mkdir mv ln chmod; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 command -v python3 >/dev/null 2>&1 || die 'python3 is required'
+INSTALL_DIR=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$INSTALL_DIR")
 if command -v sha256sum >/dev/null 2>&1; then HASH=sha256sum; else command -v shasum >/dev/null 2>&1 || die 'sha256sum or shasum is required'; HASH='shasum -a 256'; fi
 
 DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}/lazydb
@@ -122,10 +125,24 @@ if version != sys.argv[2]: raise SystemExit('binary reported version %r' % versi
 PY
 DEST="$RELEASES/$RELEASE_VERSION"
 if [ ! -e "$DEST" ]; then mkdir -p "$RELEASES"; mv "$STAGED" "$DEST"; fi
-ln -sfn "$DEST" "$TMP/current.new"
-mv -f "$TMP/current.new" "$DATA_HOME/current"
+python3 - "$DEST" "$DATA_HOME/current" <<'PY'
+import os, sys
+temporary = sys.argv[2] + '.new.' + str(os.getpid())
+try:
+    os.symlink(sys.argv[1], temporary)
+    os.replace(temporary, sys.argv[2])
+finally:
+    if os.path.lexists(temporary):
+        os.unlink(temporary)
+PY
 mkdir -p "$INSTALL_DIR"
 ln -sfn "$DATA_HOME/current/lazydb" "$INSTALL_DIR/lazydb"
+"$INSTALL_DIR/lazydb" version --json > "$TMP/version.json" || die 'installed executable failed version check'
+python3 - "$TMP/version.json" "$RELEASE_VERSION" <<'PY'
+import json, sys
+if json.load(open(sys.argv[1], encoding='utf-8')).get('version') != sys.argv[2]:
+    raise SystemExit('installed executable reported an unexpected version')
+PY
 STATE="$DATA_HOME/install.json"
 python3 - "$STATE" "$TMP/state" "$CHANNEL" "$RELEASE_VERSION" "$TARGET" "$INSTALL_DIR/lazydb" <<'PY'
 import json, os, sys, tempfile
@@ -135,4 +152,78 @@ with os.fdopen(fd, 'w', encoding='utf-8') as stream: json.dump(state, stream, in
 os.replace(path, sys.argv[1])
 PY
 printf 'lazydb %s installed (%s)\n' "$RELEASE_VERSION" "$CHANNEL"
+# This child process can configure future shells, but cannot change the caller's PATH.
+python3 - "$INSTALL_DIR" "$OS" "$MODIFY_PATH" <<'PY'
+import os, shlex, shutil, sys
+from pathlib import Path
+
+directory, system, modify = sys.argv[1:]
+shell = Path(os.environ.get('SHELL', '')).name
+home = Path.home()
+profile = None
+if shell == 'bash':
+    profile = home / ('.bash_profile' if system == 'Darwin' else '.bashrc')
+elif shell == 'zsh':
+    profile = Path(os.environ.get('ZDOTDIR') or home) / '.zshrc'
+elif shell == 'fish':
+    profile = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config') / 'fish/config.fish'
+elif shell in ('sh', 'dash', 'ash'):
+    profile = home / '.profile'
+
+quoted = shlex.quote(directory)
+activate = 'export PATH=' + quoted + ':"$PATH"'
+body = 'case ":$PATH:" in\n    *:' + quoted + ':*) ;;\n    *) ' + activate + ' ;;\nesac\n'
+if shell == 'fish':
+    quoted = "'" + directory.replace('\\', '\\\\').replace("'", "\\'") + "'"
+    activate = 'fish_add_path --path -- ' + quoted
+    body = activate + '\n'
+
+visible = shutil.which('lazydb')
+executable = str(Path(directory) / 'lazydb')
+ready = bool(visible and os.path.samefile(visible, executable))
+print('Executable: ' + executable)
+if visible and not ready:
+    print('WARNING: another LazyDB takes precedence on PATH: ' + visible)
+
+configured = False
+if modify == '1' and profile is not None:
+    begin, end = '# >>> LazyDB installer >>>', '# <<< LazyDB installer <<<'
+    block = begin + '\n' + body + end + '\n'
+    try:
+        # Follow dotfile symlinks and write in place to preserve their permissions.
+        target = profile.resolve()
+        old = target.read_text() if target.exists() else ''
+        lines = old.splitlines(keepends=True)
+        starts = [i for i, line in enumerate(lines) if line.rstrip('\r\n') == begin]
+        ends = [i for i, line in enumerate(lines) if line.rstrip('\r\n') == end]
+        if starts or ends:
+            if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+                raise ValueError('incomplete or duplicate LazyDB PATH block; left unchanged')
+            new = ''.join(lines[:starts[0]]) + block + ''.join(lines[ends[0] + 1:])
+        else:
+            new = old + ('\n' if old else '') + block
+        if new != old:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open('w') as stream:
+                stream.write(new)
+        configured = True
+        print('PATH configured in: ' + str(profile))
+    except (OSError, ValueError) as error:
+        print('WARNING: PATH setup needs attention: ' + str(error), file=sys.stderr)
+elif modify != '1':
+    print('Shell configuration unchanged (--no-modify-path).')
+else:
+    print('WARNING: unknown shell; configure PATH manually.')
+
+if ready:
+    print('Ready to use in this terminal: lazydb')
+elif profile is not None:
+    print('Run in your current terminal:\n  ' + activate + '\n  lazydb')
+else:
+    print('Run the executable directly: ' + shlex.quote(executable))
+if configured:
+    print('Future shells that load this file will include the installation directory on PATH.')
+elif not ready:
+    print('Add the installation directory to your shell startup configuration for future sessions.')
+PY
 printf '%s\n' 'To configure database access for Claude Code, Codex, or OpenCode, run `lazydb mcp setup` inside your project.'

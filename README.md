@@ -49,6 +49,16 @@ Run the following on Mac or Linux to install LazyDB
 curl -fsSL https://lazydb.yelog.org/install.sh | sh
 ```
 
+The installer places the command in `~/.local/bin` and configures PATH in your
+supported shell's startup file. If the directory is not on your current PATH,
+run the activation command printed by the installer before running `lazydb`.
+The installer cannot change the environment of your current terminal.
+Use `--no-modify-path` to leave shell configuration unchanged:
+
+```bash
+curl -fsSL https://lazydb.yelog.org/install.sh | sh -s -- --no-modify-path
+```
+
 Run the following on Windows to install LazyDB:
 
 ```powershell
