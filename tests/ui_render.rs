@@ -2582,6 +2582,109 @@ fn sql_editor_marks_statement_when_cursor_is_on_internal_space() {
 }
 
 #[test]
+fn sql_editor_visual_char_highlights_only_selected_cells() {
+    let mut app = fixture();
+    app.focus = Focus::Editor;
+    app.update(Action::ReplaceEditor("abcdef".into()));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Char('0'),
+        KeyModifiers::NONE,
+    )));
+    for key in ['v', 'l', 'l'] {
+        app.update(Action::EditorKey(KeyEvent::new(
+            KeyCode::Char(key),
+            KeyModifiers::NONE,
+        )));
+    }
+
+    let (buffer, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    let (start, y) = find_text_cell(&buffer, "abcdef").expect("editor text");
+
+    for offset in 0..3 {
+        assert_eq!(buffer[(start + offset, y)].bg, Color::Rgb(26, 55, 70));
+    }
+    for offset in 3..6 {
+        assert_eq!(buffer[(start + offset, y)].bg, Color::Rgb(12, 19, 30));
+    }
+    assert_eq!(buffer[(start + 6, y)].bg, Color::Rgb(12, 19, 30));
+}
+
+#[test]
+fn sql_editor_visual_block_does_not_fill_unselected_row_cells() {
+    let mut app = fixture();
+    app.focus = Focus::Editor;
+    app.update(Action::ReplaceEditor("abcdef\nghijkl".into()));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Char('g'),
+        KeyModifiers::NONE,
+    )));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Char('g'),
+        KeyModifiers::NONE,
+    )));
+    for key in ['v', 'l', 'j'] {
+        let event = if key == 'v' {
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)
+        } else {
+            KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)
+        };
+        app.update(Action::EditorKey(event));
+    }
+
+    let (buffer, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    let (first, first_y) = find_text_cell(&buffer, "abcdef").expect("first editor line");
+    let (second, second_y) = find_text_cell(&buffer, "ghijkl").expect("second editor line");
+    assert_eq!(buffer[(first, first_y)].bg, Color::Rgb(26, 55, 70));
+    assert_eq!(buffer[(first + 2, first_y)].bg, Color::Rgb(12, 19, 30));
+    assert_eq!(buffer[(second, second_y)].bg, Color::Rgb(26, 55, 70));
+    assert_eq!(buffer[(second + 2, second_y)].bg, Color::Rgb(12, 19, 30));
+}
+
+#[test]
+fn sql_editor_current_line_is_identified_by_the_line_number() {
+    let mut app = fixture();
+    app.focus = Focus::Editor;
+    app.update(Action::ReplaceEditor("SELECT 1;\nSELECT 2;".into()));
+
+    let (buffer, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    let (text_x, first_y) = find_text_cell(&buffer, "SELECT 1;").expect("first editor line");
+    let (second_x, second_y) = find_text_cell(&buffer, "SELECT 2;").expect("second editor line");
+    let first_number_x = (0..text_x)
+        .find(|x| buffer[(*x, first_y)].symbol() == "1")
+        .expect("current line number");
+    let second_number_x = (0..second_x)
+        .find(|x| buffer[(*x, second_y)].symbol() == "2")
+        .expect("second line number");
+
+    assert_eq!(
+        buffer[(first_number_x, first_y)].fg,
+        Color::Rgb(99, 230, 216)
+    );
+    assert!(
+        buffer[(first_number_x, first_y)]
+            .modifier
+            .contains(Modifier::BOLD)
+    );
+    assert_eq!(
+        buffer[(second_number_x, second_y)].fg,
+        Color::Rgb(43, 66, 86)
+    );
+    assert!(
+        !buffer[(second_number_x, second_y)]
+            .modifier
+            .contains(Modifier::BOLD)
+    );
+}
+
+#[test]
 fn sql_editor_statement_indicator_preserves_text_style() {
     let mut app = fixture();
     app.update(Action::ReplaceEditor(

@@ -819,6 +819,77 @@ fn current_scope_includes_visual_char_endpoint() {
 }
 
 #[test]
+fn visual_char_selection_cells_are_direction_independent() {
+    let viewport = EditorViewport {
+        width: 80,
+        height: 10,
+    };
+
+    let (mut forward, forward_id) = normal_fixture("abcdef");
+    press_keys(&mut forward, forward_id, "vll");
+    let forward_snapshot = forward
+        .render_snapshot_with_dialect(forward_id, viewport, crate::sql::SqlDialect::Generic)
+        .unwrap();
+
+    let (mut reverse, reverse_id) = normal_fixture("abcdef");
+    press_keys(&mut reverse, reverse_id, "llvhh");
+    let reverse_snapshot = reverse
+        .render_snapshot_with_dialect(reverse_id, viewport, crate::sql::SqlDialect::Generic)
+        .unwrap();
+
+    assert_eq!(forward_snapshot.selection_cells, vec![(0, 0, 3)]);
+    assert_eq!(
+        reverse_snapshot.selection_cells,
+        forward_snapshot.selection_cells
+    );
+}
+
+#[test]
+fn visual_char_selection_marks_only_crossed_newlines() {
+    let (mut workspace, id) = normal_fixture("first\nsecond\nthird");
+    press_keys(&mut workspace, id, "vj");
+
+    let snapshot = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Generic,
+        )
+        .unwrap();
+
+    assert_eq!(
+        snapshot
+            .lines
+            .iter()
+            .map(|line| line.selection_newline)
+            .collect::<Vec<_>>(),
+        vec![true, false, false]
+    );
+}
+
+#[test]
+fn visual_char_selection_cells_use_display_width_for_unicode_text() {
+    let (mut workspace, id) = normal_fixture("界🙂ab");
+    press_keys(&mut workspace, id, "vll");
+
+    let snapshot = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Generic,
+        )
+        .unwrap();
+
+    assert_eq!(snapshot.selection_cells, vec![(0, 0, 5)]);
+}
+
+#[test]
 fn current_scope_visual_line_uses_complete_selected_lines() {
     let (mut workspace, id) = normal_fixture("SELECT 1;\nSELECT 2;\nSELECT 3;");
     press_keys(&mut workspace, id, "Vj");

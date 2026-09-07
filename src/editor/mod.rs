@@ -913,7 +913,7 @@ impl EditorWorkspace {
             })
             .clone();
         let statements = statement.map(|_| sql::scan_statements(&full_text, dialect));
-        let lines = buffer
+        let mut lines = buffer
             .lines(first_line)
             .take(viewport.height.saturating_add(overscan))
             .enumerate()
@@ -994,6 +994,7 @@ impl EditorWorkspace {
                     source_to_display_cells: projection.source_to_display_cells,
                     current_statement,
                     statement_background_cells,
+                    selection_newline: false,
                 }
             })
             .collect::<Vec<_>>();
@@ -1016,6 +1017,21 @@ impl EditorWorkspace {
                     },
                 });
         let selections = selection.into_iter().collect::<Vec<_>>();
+        let selection_newlines = selections
+            .iter()
+            .filter(|selection| {
+                selection.shape == EditorSelectionShape::Char
+                    && selection.start.line != selection.end.line
+            })
+            .flat_map(|selection| {
+                let first_line = selection.start.line.min(selection.end.line);
+                let last_line = selection.start.line.max(selection.end.line);
+                (first_line..last_line).collect::<Vec<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
+        for line in &mut lines {
+            line.selection_newline = selection_newlines.contains(&line.line);
+        }
         let selection_cells = selections
             .iter()
             .flat_map(|selection| {
@@ -1048,13 +1064,17 @@ impl EditorWorkspace {
                                 )
                             }
                             EditorSelectionShape::Char => {
-                                let start = if line == selection.start.line {
-                                    selection.start.column
-                                } else {
-                                    0
-                                };
-                                let end = if line == selection.end.line {
-                                    selection.end.column.saturating_add(1)
+                                let (first, last) =
+                                    if (selection.start.line, selection.start.column)
+                                        <= (selection.end.line, selection.end.column)
+                                    {
+                                        (selection.start, selection.end)
+                                    } else {
+                                        (selection.end, selection.start)
+                                    };
+                                let start = if line == first.line { first.column } else { 0 };
+                                let end = if line == last.line {
+                                    last.column.saturating_add(1)
                                 } else {
                                     line_data.source_to_display_cells.len().saturating_sub(1)
                                 };
