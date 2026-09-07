@@ -15908,6 +15908,18 @@ fn apply_transaction_snapshot(tab: &mut ConsoleTab, snapshot: transaction::Trans
     tab.transaction_generation = snapshot.generation;
 }
 
+fn format_sql_output_entry(
+    kind: OutputKind,
+    timestamp: &str,
+    target: &str,
+    sql: &str,
+) -> OutputEntry {
+    let normalized_sql = sql.replace("\r\n", "\n");
+    let sql = crate::security::sanitize_terminal_text(&normalized_sql);
+    let separator = if sql.contains('\n') { "\n" } else { " " };
+    OutputEntry::sql(kind, format!("[{timestamp}] {target}>{separator}"), sql)
+}
+
 fn append_failed_execution_output(
     editor: &mut EditorWorkspace,
     tab: &mut ConsoleTab,
@@ -15929,10 +15941,6 @@ fn append_failed_execution_output(
                 .as_deref()
                 .map_or(String::new(), |schema| format!(".{schema}"))
         ));
-        let sql = crate::security::sanitize_terminal_text(&last.draft.sql)
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
         let elapsed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
@@ -15941,7 +15949,7 @@ fn append_failed_execution_output(
         append_console_output_to_editor(
             editor,
             tab,
-            OutputEntry::sql(OutputKind::Info, format!("[{timestamp}] {target}> "), sql),
+            format_sql_output_entry(OutputKind::Info, &timestamp, &target, &last.draft.sql),
         );
     }
     append_console_output_to_editor(editor, tab, OutputEntry::plain(OutputKind::Error, message));
@@ -15962,15 +15970,8 @@ fn format_execution_log(
             .as_deref()
             .map_or(String::new(), |schema| format!(".{schema}"))
     ));
-    let sql = crate::security::sanitize_terminal_text(&last.draft.sql)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let context = OutputEntry::sql(
-        OutputKind::Success,
-        format!("[{timestamp}] {target}> "),
-        sql,
-    );
+    let context =
+        format_sql_output_entry(OutputKind::Success, &timestamp, &target, &last.draft.sql);
     let stats = &outcome.stats;
     let total_ms = stats.total().as_millis();
     let truncation = if stats.truncated {
@@ -16157,7 +16158,7 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{App, output_sql_ranges, output_text};
+    use super::{App, format_sql_output_entry, output_sql_ranges, output_text};
     use crate::{
         action::{Action, Command},
         db::{
@@ -16203,6 +16204,57 @@ mod tests {
             result_sets: vec![ResultSet::default()],
             stats: QueryStats::new(Duration::from_millis(2), Duration::from_millis(3), 0),
         }
+    }
+
+    #[test]
+    fn sql_output_entry_preserves_single_line_whitespace() {
+        let entry = format_sql_output_entry(
+            OutputKind::Success,
+            "2026-09-07 12:00:00:000",
+            "database.schema",
+            "SELECT  'a  b';",
+        );
+
+        assert_eq!(
+            entry.message,
+            "[2026-09-07 12:00:00:000] database.schema> SELECT  'a  b';"
+        );
+        assert_eq!(
+            entry.sql_range.unwrap().get(&entry.message),
+            Some("SELECT  'a  b';")
+        );
+    }
+
+    #[test]
+    fn sql_output_entry_preserves_multiline_whitespace() {
+        let sql = "\nSELECT\n\t'a  b';\n\n";
+        let entry = format_sql_output_entry(
+            OutputKind::Info,
+            "2026-09-07 12:00:00:000",
+            "database.schema",
+            sql,
+        );
+
+        assert_eq!(
+            entry.message,
+            format!("[2026-09-07 12:00:00:000] database.schema>\n{sql}")
+        );
+        assert_eq!(entry.sql_range.unwrap().get(&entry.message), Some(sql));
+    }
+
+    #[test]
+    fn sql_output_entry_normalizes_crlf_but_sanitizes_other_control_characters() {
+        let entry = format_sql_output_entry(
+            OutputKind::Info,
+            "2026-09-07 12:00:00:000",
+            "database.schema",
+            "SELECT\r\n\t'line\rvalue'\u{1b}\u{07};",
+        );
+
+        assert_eq!(
+            entry.sql_range.unwrap().get(&entry.message),
+            Some("SELECT\n\t'line<CR>value'<ESC><0x07>;")
+        );
     }
 
     fn quit_revision(app: &mut App) -> u64 {
@@ -16400,6 +16452,41 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].get(&text), Some("SELECT 'Ada'"));
         assert!(!ranges[0].get(&text).unwrap().contains("2026"));
+    }
+
+    #[test]
+    fn output_document_ranges_preserve_multiline_sql_entry_boundaries() {
+        let first_sql = "-- first\nSELECT\n\t'a  b';\n";
+        let second_sql = "UPDATE items\nSET name = 'second'\nWHERE id = 1;";
+        let mut tab = ConsoleTab::new("SQL 1");
+        tab.output.push(OutputEntry::sql(
+            OutputKind::Success,
+            "[2026-08-31] database>\n",
+            first_sql,
+        ));
+        tab.output.push(OutputEntry::plain(
+            OutputKind::Success,
+            "[2026-08-31] 1 row retrieved",
+        ));
+        tab.output.push(OutputEntry::sql(
+            OutputKind::Info,
+            "[2026-08-31] database>\n",
+            second_sql,
+        ));
+        tab.output
+            .push(OutputEntry::plain(OutputKind::Error, "statement failed"));
+
+        let text = output_text(&tab);
+        let ranges = output_sql_ranges(&tab);
+
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].get(&text), Some(first_sql));
+        assert_eq!(ranges[1].get(&text), Some(second_sql));
+        assert!(!ranges.iter().any(|range| {
+            range
+                .get(&text)
+                .is_some_and(|value| value.contains("2026") || value.contains("statement failed"))
+        }));
     }
 
     #[test]
@@ -16791,6 +16878,27 @@ mod tests {
     }
 
     #[test]
+    fn multiline_output_failure_preserves_sql() {
+        let sql = "SELECT\n\t'a  b' AS value\n\nFROM missing_table;";
+        let (mut app, tab_id, generation) = connected_query_app(sql);
+        app.update(Action::QueryFailed {
+            tab_id,
+            generation,
+            connection: app.connection.active_identity().unwrap(),
+            message: "table does not exist".into(),
+        });
+
+        let tab = app.active_console();
+        assert_eq!(tab.result_view, ResultView::Output);
+        assert_eq!(tab.output.len(), 2);
+        let entry = &tab.output[0];
+        let range = entry.sql_range.expect("failed SQL output has a range");
+        assert_eq!(range.get(&entry.message), Some(sql));
+        assert!(entry.message.contains(">\nSELECT\n\t'a  b'"));
+        assert_eq!(tab.output[1].message, "table does not exist");
+    }
+
+    #[test]
     fn starting_sql_execution_does_not_add_placeholder_output() {
         let (app, _, _) = connected_query_app("SELECT 1");
         assert!(
@@ -16854,6 +16962,71 @@ mod tests {
             entry.message.contains("3 row(s) affected in 9 ms")
                 && entry.message.contains("execution: 9 ms")
                 && entry.message.contains("fetching: 0 ms")
+        }));
+    }
+
+    #[test]
+    fn multiline_output_success_preserves_sql() {
+        let sql = "UPDATE tools.sys_user\nSET name = 'a  b'\nWHERE id = 1;";
+        let (mut app, tab_id, generation) = connected_query_app(sql);
+        let connection = app.connection.active_identity().unwrap();
+        let outcome = QueryOutcome {
+            result_sets: vec![ResultSet {
+                affected_rows: 3,
+                ..ResultSet::default()
+            }],
+            stats: QueryStats::new(Duration::from_millis(9), Duration::ZERO, 0),
+        };
+
+        app.update(Action::QueryFinished {
+            tab_id,
+            generation,
+            connection,
+            outcome,
+        });
+
+        let tab = app.active_console();
+        assert_eq!(tab.result_view, ResultView::Output);
+        assert_eq!(tab.output.len(), 2);
+        let entry = &tab.output[0];
+        let range = entry.sql_range.expect("successful SQL output has a range");
+        assert_eq!(range.get(&entry.message), Some(sql));
+        assert!(entry.message.contains(">\nUPDATE tools.sys_user\nSET"));
+        assert!(tab.output[1].message.contains("3 row(s) affected in 9 ms"));
+    }
+
+    #[test]
+    fn multiline_output_snapshot_keeps_comment_and_sql_highlighting_separate() {
+        let sql = "-- update note\nUPDATE tools.sys_user\nSET name = 'a  b'\nWHERE id = 1;";
+        let (mut app, _, _) = connected_query_app("SELECT 1;");
+        let tab_id = app.active_console().id;
+        let entry = format_sql_output_entry(OutputKind::Success, "timestamp", "database", sql);
+        app.active_console_mut().output.push(entry);
+        app.sync_output_editor(tab_id, true);
+
+        let snapshot = app
+            .active_output_editor_snapshot(crate::model::editor::EditorViewport {
+                width: 120,
+                height: 20,
+            })
+            .unwrap();
+        assert!(snapshot.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.text == "-- update note"
+                    && span.kind == crate::model::editor::EditorHighlightKind::Comment
+            })
+        }));
+        assert!(snapshot.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.text == "UPDATE"
+                    && span.kind == crate::model::editor::EditorHighlightKind::Keyword
+            })
+        }));
+        assert!(snapshot.lines.iter().any(|line| {
+            line.spans.iter().any(|span| {
+                span.text == "'a  b'"
+                    && span.kind == crate::model::editor::EditorHighlightKind::String
+            })
         }));
     }
 
