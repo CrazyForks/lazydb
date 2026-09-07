@@ -67,7 +67,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return None;
             }
             if let Some(drag) = *ui.pane_resize_drag.borrow() {
-                return pane_resize_action(drag, event.column, ui, app);
+                return pane_resize_action(drag, pane_resize_pointer(drag.split, event), ui, app);
             }
             if let Some(drag) = *ui.grid_scrollbar_drag.borrow() {
                 let travel = drag.track_width.saturating_sub(drag.thumb_width);
@@ -155,7 +155,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             if let Some(drag) = ui.pane_resize_drag.borrow_mut().take() {
                 ui.mouse_gesture.borrow_mut().take();
-                return pane_resize_action(drag, event.column, ui, app);
+                return pane_resize_action(drag, pane_resize_pointer(drag.split, event), ui, app);
             }
             let was_column_resize = ui.relation_resize.borrow_mut().take().is_some();
             let was_scrollbar_drag = ui.grid_scrollbar_drag.borrow_mut().take().is_some();
@@ -373,7 +373,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     }?;
                     *ui.pane_resize_drag.borrow_mut() = Some(PaneResizeDrag {
                         split,
-                        start_pointer: event.column,
+                        start_pointer: pane_resize_pointer(split, event),
                         start_size,
                     });
                     *ui.mouse_gesture.borrow_mut() =
@@ -678,6 +678,13 @@ fn pane_resize_action(
         split: drag.split,
         size,
     })
+}
+
+fn pane_resize_pointer(split: crate::model::workspace::PaneSplit, event: MouseEvent) -> u16 {
+    match split {
+        crate::model::workspace::PaneSplit::ExplorerWidth => event.column,
+        crate::model::workspace::PaneSplit::EditorHeight => event.row,
+    }
 }
 
 fn profile_button_action(button: ProfileButton) -> Action {
