@@ -241,8 +241,32 @@ fn closing_final_sql_console_creates_a_replacement_editor() {
 }
 
 #[test]
-fn default_console_can_be_closed_and_deleted() {
+fn default_console_cannot_be_closed_or_deleted() {
     let mut app = App::new(Vec::new());
+    let id = app.active_console().id;
+
+    let close_commands = app.update(Action::CloseActiveTab);
+    assert!(close_commands.is_empty());
+    assert!(app.tabs.iter().any(|tab| tab.id() == id));
+    assert!(
+        app.sql_editors
+            .iter()
+            .any(|record| record.id == id && record.open)
+    );
+    assert!(app.overlay.is_none());
+
+    app.update(Action::RequestDeleteActiveConsole);
+    assert!(app.overlay.is_none());
+    let commands = app.update(Action::CloseTab(id));
+    assert!(commands.is_empty());
+    assert!(app.sql_editors.iter().any(|record| record.id == id));
+    assert!(app.active_console_opt().is_some());
+}
+
+#[test]
+fn non_default_console_can_still_be_closed_and_deleted() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::NewConsole);
     let id = app.active_console().id;
 
     app.update(Action::CloseActiveTab);
@@ -252,7 +276,6 @@ fn default_console_can_be_closed_and_deleted() {
             .iter()
             .any(|record| record.id == id && !record.open)
     );
-    assert!(app.active_console_opt().is_some());
 
     app.update(Action::ActivateSqlEditor(id));
     app.update(Action::RequestDeleteActiveConsole);
@@ -265,14 +288,50 @@ fn default_console_can_be_closed_and_deleted() {
     app.update(Action::ToggleDeleteConsoleFocus);
     let commands = app.update(Action::ConfirmDeleteConsole);
     assert!(!app.sql_editors.iter().any(|record| record.id == id));
-    assert!(app.tabs.iter().all(|tab| tab.id() != id));
     assert!(
         commands.iter().any(
             |command| matches!(command, Command::DeleteSqlFile(console_id) if *console_id == id)
         )
     );
-    assert!(app.active_console_opt().is_some());
-    assert_eq!(app.active_console().name, "console");
+}
+
+#[test]
+fn closing_other_tabs_always_keeps_the_default_console() {
+    let mut app = App::new(Vec::new());
+    let default_id = app.active_console().id;
+    app.update(Action::NewConsole);
+    let second_id = app.active_console().id;
+
+    let commands = app.update(Action::CloseOtherTabs);
+
+    assert!(commands.is_empty());
+    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
+    assert!(app.tabs.iter().any(|tab| tab.id() == second_id));
+    assert_eq!(app.active_console().id, second_id);
+}
+
+#[test]
+fn closing_other_tabs_from_the_default_removes_only_non_default_tabs() {
+    let mut app = App::new(Vec::new());
+    let default_id = app.active_console().id;
+    app.update(Action::NewConsole);
+    let second_id = app.active_console().id;
+    app.update(Action::ActivateSqlEditor(default_id));
+
+    app.update(Action::CloseOtherTabs);
+
+    assert_eq!(
+        app.tabs.iter().map(|tab| tab.id()).collect::<Vec<_>>(),
+        vec![default_id]
+    );
+    assert!(
+        !app.sql_editors
+            .iter()
+            .find(|record| record.id == second_id)
+            .unwrap()
+            .open
+    );
+    assert_eq!(app.active_console().id, default_id);
 }
 
 #[test]
@@ -358,6 +417,63 @@ fn workspace_snapshot_restores_open_and_closed_consoles_with_sql_and_names() {
 }
 
 #[test]
+fn workspace_restore_reopens_a_closed_default_with_its_original_identity() {
+    let profile = import_connection_url(":memory:", Some("saved"))
+        .unwrap()
+        .profile;
+    let default_id = Uuid::from_u128(101);
+    let other_id = Uuid::from_u128(102);
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(other_id),
+            consoles: vec![
+                PersistedConsole {
+                    id: default_id,
+                    name: "renamed default".into(),
+                    sql_file: format!("{default_id}.sql").into(),
+                    target: None,
+                    transaction_mode: TransactionMode::Auto,
+                    open: false,
+                },
+                PersistedConsole {
+                    id: other_id,
+                    name: "other".into(),
+                    sql_file: format!("{other_id}.sql").into(),
+                    target: None,
+                    transaction_mode: TransactionMode::Auto,
+                    open: true,
+                },
+            ],
+            tabs: vec![PersistedTab::Console {
+                console_id: other_id,
+            }],
+        }],
+        sql: vec![
+            (default_id, "select default;".into()),
+            (other_id, "select other;".into()),
+        ],
+        active_console: other_id,
+        consoles: Vec::new(),
+    };
+    let mut app = App::new(vec![profile.clone()]);
+    app.connection.profile_id = Some(profile.id);
+    app.restore_workspace(snapshot, Some(profile.id));
+
+    assert!(app.is_default_console(default_id));
+    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
+    assert!(
+        app.sql_editors
+            .iter()
+            .find(|record| record.id == default_id)
+            .unwrap()
+            .open
+    );
+    assert_eq!(app.editor_text(default_id).unwrap(), "select default;");
+}
+
+#[test]
 fn deleting_sql_editor_requires_confirmation_and_removes_record() {
     let mut app = App::new(Vec::new());
     app.update(Action::NewConsole);
@@ -398,20 +514,34 @@ fn sql_editor_list_reopens_a_hidden_editor() {
 
 #[test]
 fn workspace_restore_keeps_hidden_editors_hidden() {
+    let default_id = Uuid::new_v4();
     let id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
         active_profile: None,
         profiles: Vec::new(),
         active_console: Uuid::nil(),
-        consoles: vec![PersistedConsole {
-            id,
-            name: "closed".into(),
-            sql_file: format!("{id}.sql").into(),
-            target: None,
-            transaction_mode: TransactionMode::Auto,
-            open: false,
-        }],
-        sql: vec![(id, "select 9".into())],
+        consoles: vec![
+            PersistedConsole {
+                id: default_id,
+                name: "default".into(),
+                sql_file: format!("{default_id}.sql").into(),
+                target: None,
+                transaction_mode: TransactionMode::Auto,
+                open: false,
+            },
+            PersistedConsole {
+                id,
+                name: "closed".into(),
+                sql_file: format!("{id}.sql").into(),
+                target: None,
+                transaction_mode: TransactionMode::Auto,
+                open: false,
+            },
+        ],
+        sql: vec![
+            (default_id, "select default".into()),
+            (id, "select 9".into()),
+        ],
     };
     let mut app = App::new(Vec::new());
     app.restore_workspace(snapshot, None);
@@ -421,6 +551,7 @@ fn workspace_restore_keeps_hidden_editors_hidden() {
             .iter()
             .any(|record| record.id == id && !record.open)
     );
+    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
     assert!(app.tabs.iter().all(|tab| tab.id() != id));
 }
 

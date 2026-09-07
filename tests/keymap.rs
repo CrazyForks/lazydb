@@ -269,6 +269,7 @@ fn transaction_menu_does_not_open_without_a_sql_console() {
 #[test]
 fn console_manager_delete_keys_are_confirmation_aware() {
     let mut app = App::new(Vec::new());
+    app.update(Action::NewConsole);
     app.update(Action::OpenSqlEditorList);
     let mut keymap = Keymap::default();
 
@@ -300,6 +301,7 @@ fn console_manager_delete_keys_are_confirmation_aware() {
 #[test]
 fn standalone_console_delete_enter_activates_the_focused_button() {
     let mut app = App::new(Vec::new());
+    app.update(Action::NewConsole);
     app.update(Action::RequestDeleteActiveConsole);
     let mut keymap = Keymap::default();
 

@@ -193,8 +193,8 @@ fn append_console_output_to_editor(
     let _ = editor.set_read_only_text(tab.output_editor_id, &text, true);
 }
 
-fn console_status_rank(record: &ConsoleRecord) -> u8 {
-    if record.name == "console" {
+fn console_status_rank(record: &ConsoleRecord, default_id: Option<Uuid>) -> u8 {
+    if default_id == Some(record.id) {
         0
     } else if record.open {
         1
@@ -676,6 +676,12 @@ impl App {
         self.active_workspace_profile.is_some() || self.profiles.is_empty()
     }
 
+    pub fn is_default_console(&self, id: Uuid) -> bool {
+        self.sql_editors
+            .first()
+            .is_some_and(|record| record.id == id)
+    }
+
     pub fn dashboard_supported(&self) -> bool {
         self.active_profile().map_or_else(
             || {
@@ -703,14 +709,15 @@ impl App {
     /// Returns the console records in the order used by the console manager.
     pub fn visible_console_records(&self, query: &str) -> Vec<&ConsoleRecord> {
         let query = query.to_lowercase();
+        let default_id = self.sql_editors.first().map(|record| record.id);
         let mut records = self
             .sql_editors
             .iter()
             .filter(|record| record.name.to_lowercase().contains(&query))
             .collect::<Vec<_>>();
         records.sort_by(|left, right| {
-            console_status_rank(left)
-                .cmp(&console_status_rank(right))
+            console_status_rank(left, default_id)
+                .cmp(&console_status_rank(right, default_id))
                 .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
                 .then_with(|| left.name.cmp(&right.name))
                 .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
@@ -1518,8 +1525,8 @@ impl App {
         self.tabs.clear();
         self.sql_editors.clear();
         self.editor = EditorWorkspace::new();
-        for persisted in consoles {
-            let open = persisted.open;
+        for (index, persisted) in consoles.into_iter().enumerate() {
+            let open = persisted.open || index == 0;
             let mut tab = ConsoleTab::new(persisted.name);
             tab.id = persisted.id;
             tab.transaction_mode = persisted.transaction_mode;
@@ -1604,8 +1611,19 @@ impl App {
             .iter()
             .find(|item| item.id == profile.profile_id);
         let mut records = profile.consoles.clone();
+        if let Some(default) = records.first_mut() {
+            default.open = true;
+        }
         let mut tabs = Vec::new();
-        for persisted in &profile.tabs {
+        let mut persisted_tabs = profile.tabs.clone();
+        if let Some(default) = records.first()
+            && !persisted_tabs.iter().any(|tab| {
+                matches!(tab, PersistedTab::Console { console_id } if *console_id == default.id)
+            })
+        {
+            persisted_tabs.insert(0, PersistedTab::Console { console_id: default.id });
+        }
+        for persisted in &persisted_tabs {
             match persisted {
                 PersistedTab::Console { console_id } => {
                     if let Some(console) =
@@ -2619,7 +2637,7 @@ impl App {
                 let ids = self
                     .tabs
                     .iter()
-                    .filter(|tab| tab.id() != active_id)
+                    .filter(|tab| tab.id() != active_id && !self.is_default_console(tab.id()))
                     .map(WorkspaceTab::id)
                     .collect::<Vec<_>>();
                 let transaction_ids = ids
@@ -2644,6 +2662,9 @@ impl App {
                     return Vec::new();
                 };
                 let id = tab.id;
+                if self.is_default_console(id) {
+                    return Vec::new();
+                }
                 if self.transaction_needs_exit(id) {
                     return self.defer_intent(
                         DeferredIntent::DeleteConsole {
@@ -2745,6 +2766,9 @@ impl App {
                     return Vec::new();
                 };
                 if !self.sql_editors.iter().any(|record| record.id == id) {
+                    return Vec::new();
+                }
+                if self.is_default_console(id) {
                     return Vec::new();
                 }
                 if self.transaction_needs_exit(id) {
@@ -9369,7 +9393,7 @@ impl App {
                 let ids = self
                     .tabs
                     .iter()
-                    .filter(|tab| tab.id() != active_id)
+                    .filter(|tab| tab.id() != active_id && !self.is_default_console(tab.id()))
                     .map(WorkspaceTab::id)
                     .collect::<Vec<_>>();
                 ids.into_iter()
@@ -9412,11 +9436,17 @@ impl App {
     }
 
     fn close_console(&mut self, id: Uuid) -> Vec<Command> {
+        if self.is_default_console(id) {
+            return Vec::new();
+        }
         self.close_tab(id)
     }
 
     fn request_close_tab(&mut self, id: Uuid) -> Vec<Command> {
         if !self.has_active_workspace() || !self.tabs.iter().any(|tab| tab.id() == id) {
+            return Vec::new();
+        }
+        if self.is_default_console(id) {
             return Vec::new();
         }
         if self.transaction_needs_exit(id) {
@@ -9426,6 +9456,9 @@ impl App {
     }
 
     fn close_tab(&mut self, id: Uuid) -> Vec<Command> {
+        if self.is_default_console(id) {
+            return Vec::new();
+        }
         let Some(index) = self.tabs.iter().position(|tab| tab.id() == id) else {
             return Vec::new();
         };
@@ -9613,6 +9646,9 @@ impl App {
     }
 
     fn delete_console(&mut self, id: Uuid) -> Vec<Command> {
+        if self.is_default_console(id) {
+            return Vec::new();
+        }
         if !self.has_active_workspace() || !self.sql_editors.iter().any(|record| record.id == id) {
             return Vec::new();
         }
@@ -16911,6 +16947,7 @@ mod tests {
     #[test]
     fn cancelling_console_manager_delete_restores_browse_with_same_selection() {
         let mut app = App::new(Vec::new());
+        app.update(Action::NewConsole);
         let id = app.active_console().id;
         app.update(Action::OpenSqlEditorList);
         if let Some(Overlay::SqlEditorList(list)) = app.overlay.as_mut() {
@@ -16926,12 +16963,13 @@ mod tests {
                 if list.selected_id == Some(id)
                     && matches!(list.mode, crate::model::sql_editor_list::SqlEditorListMode::Browse)
         ));
-        assert_eq!(app.sql_editors.len(), 1);
+        assert_eq!(app.sql_editors.len(), 2);
     }
 
     #[test]
     fn deleting_last_console_replaces_console_named_console() {
         let mut app = App::new(Vec::new());
+        app.update(Action::NewConsole);
         let id = app.active_console().id;
         app.update(Action::OpenSqlEditorList);
         app.update(Action::SqlEditorListDeleteRequest);
@@ -16946,6 +16984,7 @@ mod tests {
     #[test]
     fn cancelling_transaction_for_manager_delete_restores_browse() {
         let mut app = App::new(Vec::new());
+        app.update(Action::NewConsole);
         let id = app.active_console().id;
         app.active_console_mut().transaction_mode = TransactionMode::Manual;
         app.active_console_mut().transaction_state = TransactionState::Active;
@@ -16970,6 +17009,7 @@ mod tests {
     #[test]
     fn resolving_transaction_for_manager_delete_restores_delete_confirmation() {
         let mut app = App::new(Vec::new());
+        app.update(Action::NewConsole);
         let id = app.active_console().id;
         app.active_console_mut().transaction_mode = TransactionMode::Manual;
         app.active_console_mut().transaction_state = TransactionState::OutcomeUnknown;
@@ -17202,12 +17242,28 @@ mod tests {
         assert_eq!(
             app.visible_console_ids(""),
             [
-                Uuid::from_u128(1),
-                Uuid::from_u128(2),
+                Uuid::from_u128(4),
                 Uuid::from_u128(3),
                 Uuid::from_u128(5),
-                Uuid::from_u128(4)
+                Uuid::from_u128(1),
+                Uuid::from_u128(2)
             ]
+        );
+    }
+
+    #[test]
+    fn default_console_identity_is_the_first_record_not_its_name() {
+        let mut app = App::new(Vec::new());
+        app.sql_editors = vec![
+            console_record(1, "renamed", false),
+            console_record(2, "console", true),
+        ];
+
+        assert!(app.is_default_console(Uuid::from_u128(1)));
+        assert!(!app.is_default_console(Uuid::from_u128(2)));
+        assert_eq!(
+            app.visible_console_ids(""),
+            [Uuid::from_u128(1), Uuid::from_u128(2)]
         );
     }
 
@@ -17242,9 +17298,9 @@ mod tests {
         assert_eq!(
             app.visible_console_ids(""),
             [
+                Uuid::from_u128(3),
                 Uuid::from_u128(2),
                 Uuid::from_u128(1),
-                Uuid::from_u128(3),
                 Uuid::from_u128(4)
             ]
         );
