@@ -2629,6 +2629,84 @@ fn sql_editor_highlights_only_the_current_statement_on_shared_line() {
     assert_eq!(buffer[(second_x, y)].bg, Color::Rgb(12, 19, 30));
 }
 
+#[test]
+fn catalog_drop_dialog_highlights_sql_and_exposes_safe_buttons() {
+    use lazydb::db::catalog_drop::{CatalogDropPlan, CatalogDropRequest};
+    let mut app = fixture();
+    let connection = app.connection.active_identity().unwrap();
+    let entry = CatalogEntry::relation(
+        CatalogId::new(connection.profile_id, CatalogKind::Table, ["users"]),
+        CatalogId::new(connection.profile_id, CatalogKind::Schema, ["main"]),
+        QualifiedName {
+            database: None,
+            schema: Some("main".into()),
+            object: "users".into(),
+        },
+        "table",
+        OptionalMetadata::Unsupported,
+        true,
+    )
+    .unwrap();
+    let plan = CatalogDropPlan::new(
+        CatalogDropRequest::new(connection, entry.id.clone(), 1),
+        &entry,
+        "DROP TABLE users",
+    )
+    .unwrap();
+    app.update(Action::CatalogDropPlanReady(plan));
+    for (width, height) in [(120, 36), (60, 20)] {
+        let (text, state) = render_with_state(&app, width, height);
+        assert!(text.contains("DROP TABLE"));
+        assert!(!text.contains("CATALOG DROP CONFIRMATION"));
+        assert!(!text.contains("lowercase y"));
+        assert!(text.contains("[ > Cancel ]"));
+        for (target, expected) in [
+            (HitTarget::CatalogDropCancel, Action::CatalogDropCancel),
+            (HitTarget::CatalogDropConfirm, Action::ActivateCatalogDrop),
+        ] {
+            let region = state
+                .hit_regions
+                .iter()
+                .find(|region| region.target == target)
+                .unwrap();
+            assert_eq!(
+                map_mouse(
+                    MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column: region.area.x,
+                        row: region.area.y,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    &state,
+                    &app
+                ),
+                Some(expected)
+            );
+        }
+        let (buffer, _) = render_buffer_with_state(
+            &app,
+            width,
+            height,
+            UiState::with_motion(lazydb::cli::MotionMode::Off),
+        );
+        let (x, y) = (0..height)
+            .find_map(|y| find_ascii_cells(&buffer, y, "DROP TABLE users").map(|x| (x, y)))
+            .unwrap();
+        assert_ne!(buffer[(x, y)].fg, buffer[(x + 11, y)].fg);
+    }
+    app.update(Action::ToggleCatalogDropFocus);
+    assert!(render(&app, 120, 36).contains("[ > Drop ]"));
+    if let Some(Overlay::CatalogDropConfirm { busy, .. }) = &mut app.overlay {
+        *busy = true;
+    }
+    let (text, state) = render_with_state(&app, 120, 36);
+    assert!(text.contains("Dropping..."));
+    assert!(!state.hit_regions.iter().any(|region| matches!(
+        region.target,
+        HitTarget::CatalogDropCancel | HitTarget::CatalogDropConfirm
+    )));
+}
+
 fn render(app: &App, width: u16, height: u16) -> String {
     render_with_state(app, width, height).0
 }

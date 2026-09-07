@@ -2140,11 +2140,8 @@ impl App {
                         | Action::SqlEditorListCancel
                         | Action::SqlEditorListMove(_)
                         | Action::ActivateSqlEditor(_)
-                        | Action::CatalogDropInsert(_)
-                        | Action::CatalogDropBackspace
-                        | Action::CatalogDropClear
-                        | Action::CatalogDropUndo
-                        | Action::CatalogDropRedo
+                        | Action::ToggleCatalogDropFocus
+                        | Action::ActivateCatalogDrop
                         | Action::CatalogDropConfirm
                         | Action::CatalogDropCancel
                         | Action::CatalogEditorFocusFormField(_)
@@ -5554,7 +5551,7 @@ impl App {
             Action::CatalogDropPlanReady(plan) => {
                 self.overlay = Some(Overlay::CatalogDropConfirm {
                     plan: Box::new(plan),
-                    input: Default::default(),
+                    delete_selected: false,
                     busy: false,
                     error: None,
                 });
@@ -5564,45 +5561,36 @@ impl App {
                 self.notify_error("Catalog", error.to_string());
                 Vec::new()
             }
-            Action::CatalogDropInsert(character) => {
-                if let Some(Overlay::CatalogDropConfirm { input, busy, .. }) = self.overlay.as_mut()
+            Action::ToggleCatalogDropFocus => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    delete_selected,
+                    busy,
+                    ..
+                }) = self.overlay.as_mut()
                     && !*busy
                 {
-                    input.insert(character);
+                    *delete_selected = !*delete_selected;
                 }
                 Vec::new()
             }
-            Action::CatalogDropBackspace => {
-                if let Some(Overlay::CatalogDropConfirm { input, busy, .. }) = self.overlay.as_mut()
+            Action::ActivateCatalogDrop => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    delete_selected,
+                    busy,
+                    ..
+                }) = self.overlay.as_mut()
                     && !*busy
                 {
-                    input.backspace();
+                    *delete_selected = true;
                 }
-                Vec::new()
-            }
-            Action::CatalogDropClear => {
-                if let Some(Overlay::CatalogDropConfirm { input, busy, .. }) = self.overlay.as_mut()
-                    && !*busy
-                {
-                    input.clear();
-                }
-                Vec::new()
-            }
-            Action::CatalogDropUndo | Action::CatalogDropRedo => {
-                if let Some(Overlay::CatalogDropConfirm { input, busy, .. }) = self.overlay.as_mut()
-                    && !*busy
-                {
-                    if matches!(action, Action::CatalogDropUndo) {
-                        input.undo();
-                    } else {
-                        input.redo();
-                    }
-                }
-                Vec::new()
+                self.update(Action::CatalogDropConfirm)
             }
             Action::CatalogDropConfirm => {
                 let Some(Overlay::CatalogDropConfirm {
-                    plan, input, busy, ..
+                    plan,
+                    delete_selected,
+                    busy,
+                    ..
                 }) = self.overlay.as_mut()
                 else {
                     return Vec::new();
@@ -5610,11 +5598,8 @@ impl App {
                 if *busy {
                     return Vec::new();
                 }
-                if input.value() != "y" {
-                    self.notify_warning(
-                        "Catalog",
-                        "Type exactly lowercase y, then press Enter to confirm",
-                    );
+                if !*delete_selected {
+                    self.overlay = None;
                     return Vec::new();
                 }
                 let current_epoch = self
@@ -5636,7 +5621,10 @@ impl App {
                 vec![Command::ExecuteCatalogDrop((**plan).clone())]
             }
             Action::CatalogDropCancel => {
-                if matches!(self.overlay, Some(Overlay::CatalogDropConfirm { .. })) {
+                if matches!(
+                    self.overlay,
+                    Some(Overlay::CatalogDropConfirm { busy: false, .. })
+                ) {
                     self.overlay = None;
                 }
                 Vec::new()
@@ -5684,7 +5672,7 @@ impl App {
             Action::CatalogDropFailed { plan, message } => {
                 self.overlay = Some(Overlay::CatalogDropConfirm {
                     plan: Box::new(plan),
-                    input: Default::default(),
+                    delete_selected: false,
                     busy: false,
                     error: Some(message.clone()),
                 });

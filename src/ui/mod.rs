@@ -186,6 +186,8 @@ pub enum HitTarget {
     DeleteConsoleConfirm,
     DeleteConsoleCancel,
     SqlEditorListDeleteConfirm,
+    CatalogDropCancel,
+    CatalogDropConfirm,
     SqlEditorListDeleteCancel,
     TextDetailCopyAll,
     TextDetailClose,
@@ -3956,13 +3958,8 @@ fn render_overlay(
         Overlay::SqlEditorList(list) => {
             render_console_manager(frame, area, app, list, state, theme)
         }
-        Overlay::CatalogDropConfirm {
-            plan,
-            input,
-            busy,
-            error,
-        } => {
-            render_catalog_drop_confirm(frame, area, plan, input, *busy, error.as_deref(), theme);
+        Overlay::CatalogDropConfirm { .. } => {
+            render_catalog_drop_confirm(frame, area, app, state, theme);
         }
         Overlay::CatalogEditorDestructiveConfirm { plan, input } => {
             render_catalog_mutation_confirm(frame, area, plan, input, theme);
@@ -5080,48 +5077,86 @@ fn render_catalog_mutation_confirm(
 fn render_catalog_drop_confirm(
     frame: &mut Frame<'_>,
     area: Rect,
-    plan: &crate::db::catalog_drop::CatalogDropPlan,
-    input: &crate::model::text_input::TextInput,
-    busy: bool,
-    error: Option<&str>,
+    app: &App,
+    state: &mut UiState,
     theme: Theme,
 ) {
+    let Some(Overlay::CatalogDropConfirm {
+        plan,
+        delete_selected,
+        busy,
+        error,
+    }) = &app.overlay
+    else {
+        return;
+    };
     let popup = centered(area, 82, 16);
-    frame.render_widget(Clear, popup);
-    let state = if busy { "DROPPING..." } else { "" };
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!(" DROP {:?} {state}", plan.kind).to_uppercase(),
-            theme.title(true),
-        )),
-        Line::raw("This operation will execute:"),
-        Line::raw(""),
-        Line::raw(plan.sql()),
-        Line::raw(""),
-        Line::raw("This action cannot be undone."),
-        Line::raw("Type exactly lowercase y and press Enter to execute:"),
-        Line::from(Span::styled(
-            format!("> {}", input.value()),
-            Style::new().fg(theme.accent),
-        )),
-        Line::raw(if busy {
-            "Execution in progress"
-        } else {
-            "Esc cancel"
-        }),
-    ];
+    let title = match plan.kind {
+        CatalogKind::MaterializedView => " DROP MATERIALIZED VIEW ".to_owned(),
+        CatalogKind::PrimaryKey
+        | CatalogKind::UniqueConstraint
+        | CatalogKind::ForeignKey
+        | CatalogKind::CheckConstraint => " DROP CONSTRAINT ".to_owned(),
+        _ => format!(" DROP {:?} ", plan.kind).to_uppercase(),
+    };
+    let inner = dialog::render_frame(frame, popup, &title, theme);
+    let chunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let mut lines = vec![Line::raw("This operation will execute:"), Line::raw("")];
+    lines.extend(sql_preview::lines(
+        plan.sql(),
+        app.sql_dialect(),
+        usize::from(inner.width.saturating_sub(4)),
+        theme,
+    ));
+    lines.extend([Line::raw(""), Line::raw("This action cannot be undone.")]);
     if let Some(error) = error {
         lines.push(Line::from(Span::styled(
             crate::security::sanitize_terminal_text(error),
             Style::new().fg(theme.error),
         )));
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel_block(" CATALOG DROP CONFIRMATION ", true, theme))
-            .style(Style::new().fg(theme.text).bg(theme.surface_raised))
-            .wrap(Wrap { trim: true }),
-        popup,
+    dialog::render_body(frame, chunks[0], lines, theme);
+    for action in dialog::render_actions(
+        frame,
+        chunks[1],
+        &[
+            dialog::DialogButton {
+                label: "Cancel",
+                tone: dialog::DialogTone::Normal,
+                enabled: !busy,
+            },
+            dialog::DialogButton {
+                label: if *busy { "Dropping..." } else { "Drop" },
+                tone: dialog::DialogTone::Danger,
+                enabled: !busy,
+            },
+        ],
+        usize::from(*delete_selected),
+        theme,
+    ) {
+        state.hit_regions.push(HitRegion {
+            area: action.area,
+            target: if action.index == 0 {
+                HitTarget::CatalogDropCancel
+            } else {
+                HitTarget::CatalogDropConfirm
+            },
+        });
+    }
+    dialog::render_hint(
+        frame,
+        chunks[2],
+        if *busy {
+            "Execution in progress"
+        } else {
+            "Tab / Left / Right switch   Enter activate   Esc cancel"
+        },
+        theme,
     );
 }
 

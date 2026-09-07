@@ -218,6 +218,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     && !matches!(overlay, Overlay::TransactionMenu { .. })
                     && !matches!(overlay, Overlay::TransactionExitConfirm { .. })
                     && !matches!(overlay, Overlay::CatalogEditorDiscardConfirm { .. })
+                    && !matches!(overlay, Overlay::CatalogDropConfirm { .. })
                     && !matches!(overlay, Overlay::Update(_))
                     || !matches!(
                         target,
@@ -240,6 +241,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                             | HitTarget::CatalogEditorCancel
                             | HitTarget::CatalogEditorDiscardKeepEditing
                             | HitTarget::CatalogEditorDiscardChanges
+                            | HitTarget::CatalogDropCancel
+                            | HitTarget::CatalogDropConfirm
                             | HitTarget::CatalogEditorColumnDetailsConfirm
                             | HitTarget::CatalogEditorColumnDetailsCancel
                             | HitTarget::CatalogOwnerChoice(_)
@@ -452,6 +455,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::DeleteConsoleConfirm => Some(Action::ActivateDeleteConsole),
                 HitTarget::DeleteConsoleCancel => Some(Action::CancelDeleteConsole),
                 HitTarget::SqlEditorListDeleteConfirm => Some(Action::SqlEditorListDeleteActivate),
+                HitTarget::CatalogDropCancel => Some(Action::CatalogDropCancel),
+                HitTarget::CatalogDropConfirm => Some(Action::ActivateCatalogDrop),
                 HitTarget::SqlEditorListDeleteCancel => Some(Action::SqlEditorListDeleteCancel),
                 HitTarget::TextDetailCopyAll => None,
                 HitTarget::TextDetailClose => None,
@@ -686,6 +691,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::DeleteConsoleConfirm
         | HitTarget::DeleteConsoleCancel
         | HitTarget::SqlEditorListDeleteConfirm
+        | HitTarget::CatalogDropCancel
+        | HitTarget::CatalogDropConfirm
         | HitTarget::SqlEditorListDeleteCancel => None,
         HitTarget::ManualCancellationKeepRunning | HitTarget::ManualCancellationConfirm => None,
         HitTarget::ExecutionConfirm | HitTarget::ExecutionCancel => None,

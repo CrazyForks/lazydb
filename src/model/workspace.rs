@@ -168,7 +168,7 @@ pub enum Overlay {
     SqlEditorList(crate::model::sql_editor_list::SqlEditorListState),
     CatalogDropConfirm {
         plan: Box<crate::db::catalog_drop::CatalogDropPlan>,
-        input: crate::model::text_input::TextInput,
+        delete_selected: bool,
         busy: bool,
         error: Option<String>,
     },

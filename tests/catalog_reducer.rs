@@ -543,7 +543,7 @@ fn catalog_drop_success_removes_subtree_reselects_parent_and_clears_completion()
     app.explorer.normalized.selected = Some(ExplorerNodeId::Catalog(table.id.clone()));
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(plan.clone()),
-        input: Default::default(),
+        delete_selected: true,
         busy: true,
         error: None,
     });
@@ -566,7 +566,7 @@ fn catalog_drop_success_removes_subtree_reselects_parent_and_clears_completion()
 }
 
 #[test]
-fn catalog_drop_failure_keeps_confirmation_and_clears_input() {
+fn catalog_drop_failure_keeps_confirmation_and_resets_to_cancel() {
     let (mut app, profile) = connected_app();
     let database = install_database(&mut app, &profile);
     let schema = install_schema(&mut app, &profile, &database);
@@ -581,11 +581,7 @@ fn catalog_drop_failure_keeps_confirmation_and_clears_input() {
     let plan = CatalogDropPlan::new(request, &table, "DROP TABLE users").unwrap();
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(plan.clone()),
-        input: {
-            let mut input = lazydb::model::text_input::TextInput::default();
-            input.set("y");
-            input
-        },
+        delete_selected: true,
         busy: true,
         error: None,
     });
@@ -598,11 +594,11 @@ fn catalog_drop_failure_keeps_confirmation_and_clears_input() {
     assert!(matches!(
         app.overlay,
         Some(Overlay::CatalogDropConfirm {
-            ref input,
+            delete_selected: false,
             busy: false,
             ref error,
             ..
-        }) if input.value().is_empty() && error.as_deref() == Some("drop failed")
+        }) if error.as_deref() == Some("drop failed")
     ));
     assert!(app.notifications.history().any(|notification| {
         notification.level == lazydb::model::notification::NotificationLevel::Error
@@ -613,7 +609,7 @@ fn catalog_drop_failure_keeps_confirmation_and_clears_input() {
 }
 
 #[test]
-fn catalog_drop_confirmation_requires_exact_lowercase_y_and_is_single_shot() {
+fn catalog_drop_confirmation_defaults_to_cancel_and_is_single_shot() {
     let (mut app, profile) = connected_app();
     let database = install_database(&mut app, &profile);
     let schema = install_schema(&mut app, &profile, &database);
@@ -629,12 +625,10 @@ fn catalog_drop_confirmation_requires_exact_lowercase_y_and_is_single_shot() {
 
     app.update(Action::CatalogDropPlanReady(plan.clone()));
     assert!(app.update(Action::CatalogDropConfirm).is_empty());
-    assert!(matches!(
-        app.overlay,
-        Some(Overlay::CatalogDropConfirm { busy: false, .. })
-    ));
+    assert!(app.overlay.is_none());
 
-    assert!(app.update(Action::CatalogDropInsert('y')).is_empty());
+    app.update(Action::CatalogDropPlanReady(plan.clone()));
+    assert!(app.update(Action::ToggleCatalogDropFocus).is_empty());
     let commands = app.update(Action::CatalogDropConfirm);
     assert!(matches!(
         commands.as_slice(),
@@ -645,21 +639,32 @@ fn catalog_drop_confirmation_requires_exact_lowercase_y_and_is_single_shot() {
         Some(Overlay::CatalogDropConfirm { busy: true, .. })
     ));
     assert!(app.update(Action::CatalogDropConfirm).is_empty());
+    assert!(app.update(Action::ActivateCatalogDrop).is_empty());
+    app.update(Action::ToggleCatalogDropFocus);
+    app.update(Action::CatalogDropCancel);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::CatalogDropConfirm {
+            busy: true,
+            delete_selected: true,
+            ..
+        })
+    ));
 
-    for input in ["Y", "yes"] {
-        app.update(Action::CatalogDropPlanReady(plan.clone()));
-        for character in input.chars() {
-            app.update(Action::CatalogDropInsert(character));
-        }
-        assert!(app.update(Action::CatalogDropConfirm).is_empty());
-        assert!(matches!(
-            app.overlay,
-            Some(Overlay::CatalogDropConfirm { busy: false, .. })
-        ));
-    }
+    app.update(Action::CatalogDropPlanReady(plan.clone()));
+    app.update(Action::ToggleCatalogDropFocus);
+    app.update(Action::ToggleCatalogDropFocus);
+    assert!(app.update(Action::CatalogDropConfirm).is_empty());
+    assert!(app.overlay.is_none());
 
+    app.update(Action::CatalogDropPlanReady(plan.clone()));
     app.update(Action::CatalogDropCancel);
     assert!(app.overlay.is_none());
+
+    app.update(Action::CatalogDropPlanReady(plan.clone()));
+    assert!(
+        matches!(app.update(Action::ActivateCatalogDrop).as_slice(), [Command::ExecuteCatalogDrop(found)] if found == &plan)
+    );
 }
 
 #[test]

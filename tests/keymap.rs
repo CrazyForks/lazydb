@@ -1183,7 +1183,7 @@ fn help_overlay_accepts_pasted_search_text() {
 }
 
 #[test]
-fn catalog_drop_overlay_maps_only_confirmation_keys_without_bypassing_text_entry() {
+fn catalog_drop_overlay_maps_option_navigation_and_ignores_text() {
     let mut app = App::new(Vec::new());
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(
@@ -1225,7 +1225,7 @@ fn catalog_drop_overlay_maps_only_confirmation_keys_without_bypassing_text_entry
             )
             .unwrap(),
         ),
-        input: Default::default(),
+        delete_selected: false,
         busy: false,
         error: None,
     });
@@ -1235,18 +1235,23 @@ fn catalog_drop_overlay_maps_only_confirmation_keys_without_bypassing_text_entry
         keymap.map(key(KeyCode::Enter), &app),
         Some(Action::CatalogDropConfirm)
     );
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('y')), &app),
-        Some(Action::CatalogDropInsert('y'))
-    );
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('Y')), &app),
-        Some(Action::CatalogDropInsert('Y'))
-    );
+    assert_eq!(keymap.map(key(KeyCode::Char('y')), &app), None);
+    assert_eq!(keymap.map(key(KeyCode::Char('Y')), &app), None);
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
         Some(Action::CatalogDropCancel)
     );
+    for code in [
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Left,
+        KeyCode::Right,
+    ] {
+        assert_eq!(
+            keymap.map(key(code), &app),
+            Some(Action::ToggleCatalogDropFocus)
+        );
+    }
 }
 
 #[test]

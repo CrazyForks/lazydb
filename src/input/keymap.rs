@@ -424,21 +424,11 @@ impl Keymap {
         }
         if matches!(app.overlay, Some(Overlay::CatalogDropConfirm { .. })) {
             self.pending = None;
-            if is_text_redo(event) {
-                return Some(Action::CatalogDropRedo);
-            }
-            if is_text_undo(event) {
-                return Some(Action::CatalogDropUndo);
-            }
             return match event.code {
                 KeyCode::Enter => Some(Action::CatalogDropConfirm),
                 KeyCode::Esc => Some(Action::CatalogDropCancel),
-                KeyCode::Backspace => Some(Action::CatalogDropBackspace),
-                KeyCode::Char('u') if event.modifiers == KeyModifiers::CONTROL => {
-                    Some(Action::CatalogDropClear)
-                }
-                KeyCode::Char(character) if event.modifiers.is_empty() => {
-                    Some(Action::CatalogDropInsert(character))
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::ToggleCatalogDropFocus)
                 }
                 _ => None,
             };

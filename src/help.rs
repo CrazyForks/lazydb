@@ -2369,15 +2369,15 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         CatalogDropEdit,
         [CatalogDropConfirmation],
-        "type / Backspace / Ctrl-u",
-        "edit confirmation text",
+        "Tab / Shift-Tab / Left / Right",
+        "switch confirmation option",
         display
     ),
     row!(
         CatalogDropConfirm,
         [CatalogDropConfirmation],
         "Enter",
-        "confirm catalog drop",
+        "activate selected option",
         display
     ),
     row!(
