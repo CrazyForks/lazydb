@@ -254,6 +254,48 @@ open and input is blocked until the result arrives.
 | `?` | Open contextual Help |
 | `Space ?` | Open editor Help through EditorLeader |
 
+When text exceeds the editor viewport, a vertical scrollbar is drawn on the
+right border and a horizontal scrollbar on the bottom border. Clicking a track
+moves by one viewport; dragging a thumb moves to an absolute offset. Mouse
+scrolling does not move the text cursor. Keyboard navigation and search reveal
+the cursor again when it leaves the visible area.
+
+### Editor Viewport Navigation
+
+| Keys | Behavior |
+| --- | --- |
+| `Ctrl-f` / `PageDown` | Scroll down one page |
+| `Ctrl-b` / `PageUp` | Scroll up one page |
+| `Ctrl-d` | Scroll down half a page |
+| `Ctrl-u` | Scroll up half a page |
+| `/`, `?`, `n`, `N` | Search and reveal matching text |
+
+The same read-only viewport controls apply to SQL Output/Plan and Relation DDL.
+In Insert/Replace mode and editor prompts, `Ctrl-u` keeps its existing
+text-editing meaning. `Ctrl-PageUp` and `Ctrl-PageDown` continue to switch
+workspace tabs.
+
+When text exceeds the editor viewport, a vertical scrollbar is drawn on the
+right border and a horizontal scrollbar on the bottom border. Clicking a track
+moves by one viewport; dragging a thumb moves to an absolute offset. Mouse
+scrolling does not move the text cursor. Keyboard navigation and search reveal
+the cursor again when it leaves the visible area.
+
+### Editor Viewport Navigation
+
+| Keys | Behavior |
+| --- | --- |
+| `Ctrl-f` / `PageDown` | Scroll down one page |
+| `Ctrl-b` / `PageUp` | Scroll up one page |
+| `Ctrl-d` | Scroll down half a page |
+| `Ctrl-u` | Scroll up half a page |
+| `/`, `?`, `n`, `N` | Search and reveal matching text |
+
+The same read-only viewport controls apply to SQL Output/Plan and Relation DDL.
+In Insert/Replace mode and editor prompts, `Ctrl-u` keeps its existing
+text-editing meaning. `Ctrl-PageUp` and `Ctrl-PageDown` continue to switch
+workspace tabs.
+
 ### Insert and Replace
 
 | Keys | Behavior |

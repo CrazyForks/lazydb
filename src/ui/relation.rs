@@ -630,6 +630,7 @@ fn render_ddl_editor(
             Rect::new(inner.x, y, inner.width, 1),
         );
     }
+    super::render_editor_scrollbars(frame, area, ddl_session_id, &snapshot, theme, state);
     if app.focus == Focus::Results
         && app.overlay.is_none()
         && let Some((x, y)) = snapshot.cursor_screen_cell

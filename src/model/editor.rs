@@ -97,6 +97,7 @@ pub struct EditorRenderSnapshot {
     pub total_lines: usize,
     pub viewport: EditorViewport,
     pub horizontal_offset: usize,
+    pub max_line_width: usize,
     pub lines: Vec<EditorRenderLine>,
     pub cursor: EditorPosition,
     pub cursor_screen_cell: Option<(u16, u16)>,

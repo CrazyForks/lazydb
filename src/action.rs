@@ -472,6 +472,16 @@ pub enum Action {
         rows: isize,
         columns: isize,
     },
+    EditorSetScroll {
+        session_id: Uuid,
+        rows: isize,
+        columns: isize,
+    },
+    EditorScrollBy {
+        session_id: Uuid,
+        rows: isize,
+        columns: isize,
+    },
     CompletionDue(crate::sql::CompletionScheduleKey),
     CompletionExplicit,
     CompletionNext,

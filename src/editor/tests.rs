@@ -145,6 +145,144 @@ fn line_count_does_not_require_a_render_snapshot() {
 }
 
 #[test]
+fn cursor_navigation_keeps_the_cursor_inside_the_viewport() {
+    let text = (0..12)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    workspace
+        .set_viewport(
+            id,
+            EditorViewport {
+                width: 12,
+                height: 3,
+            },
+        )
+        .unwrap();
+
+    for _ in 0..10 {
+        workspace.press(id, EditorKey::Character('j')).unwrap();
+    }
+
+    let snapshot = workspace
+        .render_snapshot(
+            id,
+            EditorViewport {
+                width: 12,
+                height: 3,
+            },
+        )
+        .unwrap();
+    assert_eq!(snapshot.cursor.line, 10);
+    assert!(snapshot.cursor_screen_cell.is_some());
+    assert!(snapshot.first_line > 0);
+    assert!(snapshot.first_line + snapshot.viewport.height > snapshot.cursor.line);
+}
+
+#[test]
+fn offscreen_search_repositions_the_viewport_and_horizontal_cursor() {
+    let long_line = format!("{}needle", "x".repeat(80));
+    let text = (0..8)
+        .map(|line| format!("line-{line}"))
+        .chain([long_line])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    let viewport = EditorViewport {
+        width: 10,
+        height: 3,
+    };
+    workspace.set_viewport(id, viewport).unwrap();
+    workspace.press(id, EditorKey::Character('/')).unwrap();
+    press_keys(&mut workspace, id, "needle");
+    workspace.press(id, EditorKey::Enter).unwrap();
+
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.cursor.line, 8);
+    assert!(snapshot.cursor_screen_cell.is_some());
+    assert!(snapshot.horizontal_offset > 0);
+}
+
+#[test]
+fn snapshot_does_not_place_cursor_in_overscan_rows() {
+    let (mut workspace, id) = read_only_fixture("one\ntwo\nthree");
+    workspace
+        .set_viewport(
+            id,
+            EditorViewport {
+                width: 20,
+                height: 1,
+            },
+        )
+        .unwrap();
+    workspace.move_cursor_to_end(id).unwrap();
+
+    let snapshot = workspace
+        .render_snapshot(
+            id,
+            EditorViewport {
+                width: 20,
+                height: 1,
+            },
+        )
+        .unwrap();
+    assert!(snapshot.cursor_screen_cell.is_none());
+}
+
+#[test]
+fn normal_mode_page_keys_scroll_the_editor_without_editing_text() {
+    let text = (0..40)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    let viewport = EditorViewport {
+        width: 20,
+        height: 5,
+    };
+    workspace.set_viewport(id, viewport).unwrap();
+    workspace
+        .key(
+            id,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('f'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+        )
+        .unwrap();
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert!(snapshot.first_line > 0);
+    assert_eq!(workspace.text(id).unwrap(), text);
+
+    workspace
+        .key(
+            id,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('b'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        workspace.render_snapshot(id, viewport).unwrap().first_line,
+        0
+    );
+}
+
+#[test]
+fn forward_search_starts_after_a_unicode_cursor_boundary() {
+    let (mut workspace, id) = read_only_fixture("数据 数据");
+    workspace.move_cursor_to_end(id).unwrap();
+    workspace.press(id, EditorKey::Character('g')).unwrap();
+    workspace.press(id, EditorKey::Character('g')).unwrap();
+    workspace.press(id, EditorKey::Character('/')).unwrap();
+    press_keys(&mut workspace, id, "数据");
+    workspace.press(id, EditorKey::Enter).unwrap();
+    assert_eq!(workspace.position(id).unwrap().column, 3);
+}
+
+#[test]
 fn session_starts_insert_and_transitions_with_escape_and_i() {
     let (mut workspace, id) = fixture("");
     assert_eq!(workspace.mode(id).unwrap(), EditorMode::Insert);
