@@ -6325,6 +6325,26 @@ impl App {
                 let _ = self.editor.scroll(id, rows, columns);
                 Vec::new()
             }
+            Action::EditorSetScroll {
+                session_id,
+                rows,
+                columns,
+            } => {
+                let _ = self.editor.set_scroll_offset(
+                    session_id,
+                    rows.max(0) as usize,
+                    columns.max(0) as usize,
+                );
+                Vec::new()
+            }
+            Action::EditorScrollBy {
+                session_id,
+                rows,
+                columns,
+            } => {
+                let _ = self.editor.scroll(session_id, rows, columns);
+                Vec::new()
+            }
             Action::ReplaceEditor(text) => {
                 let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
                     return Vec::new();

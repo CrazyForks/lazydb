@@ -1310,6 +1310,19 @@ impl Keymap {
                     return action;
                 }
             }
+            if event.modifiers == KeyModifiers::CONTROL
+                && app.focus == Focus::Editor
+                && matches!(
+                    app.active_editor_mode(),
+                    EditorMode::Normal
+                        | EditorMode::VisualChar
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                )
+                && matches!(event.code, KeyCode::Char('b' | 'd' | 'f' | 'u'))
+            {
+                return Some(Action::EditorKey(event));
+            }
             return match event.code {
                 KeyCode::Char('u')
                     if app.focus == Focus::Editor

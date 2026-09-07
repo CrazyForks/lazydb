@@ -83,6 +83,28 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 };
                 return Some(Action::GridSetColumnOffset { offset });
             }
+            if let Some(drag) = *ui.editor_scrollbar_drag.borrow() {
+                let pointer_position = if drag.vertical {
+                    event.row
+                } else {
+                    event.column
+                };
+                let pointer = pointer_position
+                    .saturating_sub(drag.track_start)
+                    .saturating_sub(drag.pointer_offset)
+                    .min(drag.track_length.saturating_sub(drag.thumb_length));
+                let travel = drag.track_length.saturating_sub(drag.thumb_length);
+                let offset = if travel == 0 {
+                    0
+                } else {
+                    (pointer as usize * drag.max_offset + travel as usize / 2) / travel as usize
+                };
+                return Some(Action::EditorSetScroll {
+                    session_id: drag.session_id,
+                    rows: if drag.vertical { offset as isize } else { 0 },
+                    columns: if drag.vertical { 0 } else { offset as isize },
+                });
+            }
             let (column, start_width, start_x) = (*ui.relation_resize.borrow())?;
             Some(Action::GridSetColumnWidth {
                 column,
@@ -137,7 +159,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             let was_column_resize = ui.relation_resize.borrow_mut().take().is_some();
             let was_scrollbar_drag = ui.grid_scrollbar_drag.borrow_mut().take().is_some();
-            if was_column_resize || was_scrollbar_drag {
+            let was_editor_scrollbar_drag = ui.editor_scrollbar_drag.borrow_mut().take().is_some();
+            if was_column_resize || was_scrollbar_drag || was_editor_scrollbar_drag {
                 ui.mouse_gesture.borrow_mut().take();
                 Some(Action::GridEndColumnResize)
             } else {
@@ -150,6 +173,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             ui.relation_resize.borrow_mut().take();
             ui.grid_scrollbar_drag.borrow_mut().take();
+            ui.editor_scrollbar_drag.borrow_mut().take();
             ui.pane_resize_drag.borrow_mut().take();
             if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
                 if let Some(target) = ui.target_at(event.column, event.row).cloned() {
@@ -384,6 +408,45 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 HitTarget::GridScrollbarPage { offset } => {
                     Some(Action::GridSetColumnOffset { offset })
+                }
+                HitTarget::EditorScrollbarPage {
+                    session_id,
+                    rows,
+                    columns,
+                } => Some(Action::EditorScrollBy {
+                    session_id,
+                    rows,
+                    columns,
+                }),
+                HitTarget::EditorScrollbarThumb {
+                    session_id,
+                    vertical,
+                    track_start,
+                    track_length,
+                    thumb_length,
+                    offset,
+                    max_offset,
+                } => {
+                    *ui.editor_scrollbar_drag.borrow_mut() = Some(crate::ui::EditorScrollbarDrag {
+                        session_id,
+                        vertical,
+                        track_start,
+                        track_length,
+                        thumb_length,
+                        pointer_offset: if vertical {
+                            event.row.saturating_sub(track_start)
+                        } else {
+                            event.column.saturating_sub(track_start)
+                        },
+                        max_offset,
+                    });
+                    *ui.mouse_gesture.borrow_mut() =
+                        Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
+                    Some(Action::EditorSetScroll {
+                        session_id,
+                        rows: if vertical { offset as isize } else { 0 },
+                        columns: if vertical { 0 } else { offset as isize },
+                    })
                 }
                 HitTarget::HeaderProfile => app.connection.profile_id.map_or(
                     Some(Action::Focus(Focus::Explorer)),
@@ -644,6 +707,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::RelationColumnResize { .. }
         | HitTarget::GridScrollbarThumb { .. }
         | HitTarget::GridScrollbarPage { .. } => Some(Focus::Results),
+        HitTarget::EditorScrollbarPage { .. } | HitTarget::EditorScrollbarThumb { .. } => {
+            Some(Focus::Editor)
+        }
         HitTarget::PaneResize(PaneSplit::ExplorerWidth) => Some(Focus::Explorer),
         HitTarget::PaneResize(PaneSplit::EditorHeight) => Some(Focus::Editor),
         HitTarget::RelationCancel => Some(Focus::Results),

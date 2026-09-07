@@ -17,6 +17,14 @@ use crate::security::project_editor_line;
 use crate::sql::{self, ScopeKind, ScopeSelection, SqlDialect, TextRange};
 use modalkit::{actions::Editable, keybindings::BindingMachine, prelude::Register};
 
+fn full_line_width(text: &str) -> usize {
+    text.split('\n')
+        .map(project_editor_line)
+        .map(|line| line.source_to_display_cells.last().copied().unwrap_or(0))
+        .max()
+        .unwrap_or(0)
+}
+
 mod prompt;
 mod substitute;
 use prompt::PromptSession;
@@ -158,6 +166,8 @@ pub(crate) enum EditorKey {
     Home,
     End,
     Tab,
+    PageUp,
+    PageDown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,6 +428,8 @@ impl EditorWorkspace {
                 KeyCode::Home => EditorKey::Home,
                 KeyCode::End => EditorKey::End,
                 KeyCode::Tab => EditorKey::Tab,
+                KeyCode::PageUp => EditorKey::PageUp,
+                KeyCode::PageDown => EditorKey::PageDown,
                 _ => return Ok(()),
             }
         };
@@ -430,21 +442,61 @@ impl EditorWorkspace {
         rows: isize,
         columns: isize,
     ) -> Result<(), EditorError> {
+        let text = self.text(id)?;
         let session = self
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
+        let max_line_width = text
+            .split('\n')
+            .map(project_editor_line)
+            .map(|line| line.source_to_display_cells.last().copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        let max_row = text
+            .split('\n')
+            .count()
+            .saturating_sub(session.viewport.get_height().max(1));
+        let max_column = max_line_width.saturating_sub(session.viewport.get_width().max(1));
         let corner = &mut session.viewport.corner;
         if rows.is_negative() {
             corner.set_y(corner.get_y().saturating_sub(rows.unsigned_abs()));
         } else {
-            corner.set_y(corner.get_y().saturating_add(rows as usize));
+            corner.set_y(corner.get_y().saturating_add(rows as usize).min(max_row));
         }
         if columns.is_negative() {
             corner.set_x(corner.get_x().saturating_sub(columns.unsigned_abs()));
         } else {
-            corner.set_x(corner.get_x().saturating_add(columns as usize));
+            corner.set_x(
+                corner
+                    .get_x()
+                    .saturating_add(columns as usize)
+                    .min(max_column),
+            );
         }
+        corner.set_y(corner.get_y().min(max_row));
+        corner.set_x(corner.get_x().min(max_column));
+        Ok(())
+    }
+
+    pub(crate) fn set_scroll_offset(
+        &mut self,
+        id: Uuid,
+        rows: usize,
+        columns: usize,
+    ) -> Result<(), EditorError> {
+        let text = self.text(id)?;
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        let max_row = text
+            .split('\n')
+            .count()
+            .saturating_sub(session.viewport.get_height().max(1));
+        let max_column = full_line_width(&text).saturating_sub(session.viewport.get_width().max(1));
+        session.viewport.corner.set_y(rows.min(max_row));
+        session.viewport.corner.set_x(columns.min(max_column));
         Ok(())
     }
 
@@ -826,13 +878,14 @@ impl EditorWorkspace {
             .write()
             .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
         let total_lines = buffer.get_lines().max(1);
+        let full_text = decode_editor_text(&buffer.get_text())?;
+        let max_line_width = full_line_width(&full_text);
         let first_line = session
             .viewport
             .corner
             .get_y()
-            .min(total_lines.saturating_sub(1));
+            .min(total_lines.saturating_sub(viewport.height.max(1)));
         let overscan = 2;
-        let full_text = decode_editor_text(&buffer.get_text())?;
         let key = sql::AnalysisKey {
             console_id: id,
             document_revision: session.revision,
@@ -1030,7 +1083,7 @@ impl EditorWorkspace {
                     .get(session.position.column)
                     .unwrap_or_else(|| line.source_to_display_cells.last().unwrap_or(&0));
                 cell.checked_sub(session.viewport.corner.get_x())
-                    .filter(|cell| *cell < viewport.width)
+                    .filter(|cell| *cell < viewport.width && row < viewport.height)
                     .map(|cell| (cell as u16, row as u16))
             });
 
@@ -1041,6 +1094,7 @@ impl EditorWorkspace {
             total_lines,
             viewport,
             horizontal_offset: session.viewport.corner.get_x(),
+            max_line_width,
             lines,
             cursor: session.position,
             cursor_screen_cell,
@@ -1189,11 +1243,15 @@ impl EditorWorkspace {
         id: Uuid,
         viewport: EditorViewport,
     ) -> Result<(), EditorError> {
-        let session = self
-            .sessions
-            .get_mut(&id)
-            .ok_or(EditorError::MissingSession(id))?;
-        session.viewport.dimensions = (viewport.width, viewport.height);
+        let position = {
+            let session = self
+                .sessions
+                .get_mut(&id)
+                .ok_or(EditorError::MissingSession(id))?;
+            session.viewport.dimensions = (viewport.width, viewport.height);
+            session.position
+        };
+        self.ensure_cursor_visible_at(id, position, false)?;
         Ok(())
     }
 
@@ -1396,6 +1454,40 @@ impl EditorWorkspace {
             return Ok(());
         }
         match (mode, key) {
+            (
+                EditorMode::Normal
+                | EditorMode::VisualChar
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock,
+                EditorKey::Control('b' | 'd' | 'f' | 'u'),
+            ) => {
+                let viewport = self.viewport(id)?;
+                let amount = match key {
+                    EditorKey::Control('d' | 'u') => (viewport.height / 2).max(1),
+                    _ => viewport.height.saturating_sub(2).max(1),
+                } as isize;
+                let rows = match key {
+                    EditorKey::Control('b' | 'u') => -amount,
+                    _ => amount,
+                };
+                self.scroll(id, rows, 0)
+            }
+            (
+                EditorMode::Normal
+                | EditorMode::VisualChar
+                | EditorMode::VisualLine
+                | EditorMode::VisualBlock,
+                EditorKey::PageUp | EditorKey::PageDown,
+            ) => {
+                let viewport = self.viewport(id)?;
+                let amount = viewport.height.saturating_sub(2).max(1) as isize;
+                let rows = if key == EditorKey::PageUp {
+                    -amount
+                } else {
+                    amount
+                };
+                self.scroll(id, rows, 0)
+            }
             (EditorMode::Insert | EditorMode::Replace, EditorKey::Undo) => {
                 self.undo_preserving_mode(id, mode)
             }
@@ -1851,6 +1943,7 @@ impl EditorWorkspace {
         context: modalkit::editing::context::EditContext,
     ) -> Result<(), EditorError> {
         use modalkit::actions::Action;
+        use modalkit::prelude::{Axis, MoveDir2D, ScrollSize, ScrollStyle};
         match action {
             Action::Editor(editor_action) => {
                 let session = self
@@ -1881,6 +1974,28 @@ impl EditorWorkspace {
                 }
             }
             Action::NoOp | Action::RedrawScreen => {}
+            Action::Scroll(style) => match style {
+                ScrollStyle::Direction2D(direction, size, _) => {
+                    let viewport = self.viewport(id)?;
+                    let amount = match size {
+                        ScrollSize::Cell => 1,
+                        ScrollSize::HalfPage => (viewport.height / 2).max(1),
+                        ScrollSize::Page => viewport.height.saturating_sub(2).max(1),
+                    } as isize;
+                    let (rows, columns) = match direction {
+                        MoveDir2D::Up => (-amount, 0),
+                        MoveDir2D::Down => (amount, 0),
+                        MoveDir2D::Left => (0, -amount),
+                        MoveDir2D::Right => (0, amount),
+                    };
+                    self.scroll(id, rows, columns)?;
+                }
+                ScrollStyle::CursorPos(_, Axis::Vertical) | ScrollStyle::LinePos(_, _) => {
+                    let position = self.position(id)?;
+                    self.ensure_cursor_visible_at(id, position, false)?;
+                }
+                ScrollStyle::CursorPos(_, Axis::Horizontal) => {}
+            },
             Action::Repeat(repeat) => self.effects.push(EditorEffect::Message(format!(
                 "repeat action deferred: {repeat:?}"
             ))),
@@ -1892,20 +2007,83 @@ impl EditorWorkspace {
     }
 
     fn sync_session_from_buffer(&mut self, id: Uuid) -> Result<(), EditorError> {
+        let position = {
+            let session = self
+                .sessions
+                .get_mut(&id)
+                .ok_or(EditorError::MissingSession(id))?;
+            let mut buffer = session
+                .buffer
+                .write()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+            let cursor = buffer.get_leader(session.group_id);
+            session.position = EditorPosition {
+                line: cursor.get_y(),
+                column: cursor.get_x(),
+            };
+            session.mode = mode_from_key_manager(&session.keys);
+            session.position
+        };
+        self.ensure_cursor_visible_at(id, position, false)?;
+        Ok(())
+    }
+
+    fn ensure_cursor_visible_at(
+        &mut self,
+        id: Uuid,
+        position: EditorPosition,
+        center: bool,
+    ) -> Result<(), EditorError> {
+        let text = self.text(id)?;
         let session = self
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
-        let mut buffer = session
-            .buffer
-            .write()
-            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
-        let cursor = buffer.get_leader(session.group_id);
-        session.position = EditorPosition {
-            line: cursor.get_y(),
-            column: cursor.get_x(),
+        let height = session.viewport.get_height();
+        let width = session.viewport.get_width();
+        if height == 0 || width == 0 {
+            return Ok(());
+        }
+        let line_count = text.split('\n').count().max(1);
+        let max_row = line_count.saturating_sub(height);
+        let row = position.line.min(line_count.saturating_sub(1));
+        let scrolloff = 2.min(height.saturating_sub(1) / 2);
+        let row_offset = if center {
+            row.saturating_sub(height.saturating_sub(1) / 2)
+        } else if row < session.viewport.corner.get_y().saturating_add(scrolloff) {
+            row.saturating_sub(scrolloff)
+        } else if row.saturating_add(scrolloff)
+            >= session.viewport.corner.get_y().saturating_add(height)
+        {
+            row.saturating_add(scrolloff + 1).saturating_sub(height)
+        } else {
+            session.viewport.corner.get_y()
         };
-        session.mode = mode_from_key_manager(&session.keys);
+        let row_offset = row_offset.min(max_row);
+        let line = text.split('\n').nth(row).unwrap_or_default();
+        let cell = project_editor_line(line)
+            .source_to_display_cells
+            .get(position.column)
+            .copied()
+            .unwrap_or_else(|| {
+                project_editor_line(line)
+                    .source_to_display_cells
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+            });
+        let column_offset = if center {
+            cell.saturating_sub(width.saturating_sub(1) / 2)
+        } else if cell < session.viewport.corner.get_x() {
+            cell
+        } else if cell >= session.viewport.corner.get_x().saturating_add(width) {
+            cell.saturating_add(1).saturating_sub(width)
+        } else {
+            session.viewport.corner.get_x()
+        };
+        let max_column = full_line_width(&text).saturating_sub(width);
+        session.viewport.corner.set_y(row_offset);
+        session.viewport.corner.set_x(column_offset.min(max_column));
         Ok(())
     }
 
@@ -2096,30 +2274,38 @@ impl EditorWorkspace {
                 .rfind(pattern)
                 .or_else(|| text.rfind(pattern))
         } else {
-            text[cursor.saturating_add((cursor < text.len()) as usize)..]
+            let next = text[cursor..]
+                .char_indices()
+                .nth(1)
+                .map_or(text.len(), |(offset, _)| cursor + offset);
+            text[next..]
                 .find(pattern)
-                .map(|offset| offset + cursor + (cursor < text.len()) as usize)
+                .map(|offset| offset + next)
                 .or_else(|| text.find(pattern))
         };
         let Some(offset) = found else {
             return Ok(false);
         };
-        let session = self
-            .sessions
-            .get_mut(&id)
-            .ok_or(EditorError::MissingSession(id))?;
-        session.position = byte_to_char_position(&text, offset);
-        session
-            .buffer
-            .write()
-            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?
-            .set_leader(
-                session.group_id,
-                modalkit::editing::cursor::Cursor::new(
-                    session.position.line,
-                    session.position.column,
-                ),
-            );
+        let position = {
+            let session = self
+                .sessions
+                .get_mut(&id)
+                .ok_or(EditorError::MissingSession(id))?;
+            session.position = byte_to_char_position(&text, offset);
+            session
+                .buffer
+                .write()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?
+                .set_leader(
+                    session.group_id,
+                    modalkit::editing::cursor::Cursor::new(
+                        session.position.line,
+                        session.position.column,
+                    ),
+                );
+            session.position
+        };
+        self.ensure_cursor_visible_at(id, position, true)?;
         Ok(true)
     }
 
@@ -2340,6 +2526,8 @@ impl EditorKey {
             Self::Home => "<Home>".into(),
             Self::End => "<End>".into(),
             Self::Tab => "<Tab>".into(),
+            Self::PageUp => "<PageUp>".into(),
+            Self::PageDown => "<PageDown>".into(),
         };
         text.parse()
             .map_err(|error| EditorError::Operation(format!("invalid key: {error}")))
