@@ -3563,7 +3563,12 @@ impl App {
                 }
                 if matches!(self.overlay, Some(Overlay::ExecutionConfirm { .. })) {
                     if let Some(Overlay::ExecutionConfirm { draft, .. }) = self.overlay.take() {
-                        self.retain_execution(draft, ExecutionResult::Cancelled);
+                        self.record_confirmation_outcome(
+                            &draft,
+                            ExecutionResult::Cancelled,
+                            OutputKind::Cancelled,
+                            "Query execution cancelled; SQL was not sent to the database",
+                        );
                     }
                     return Vec::new();
                 }
@@ -11199,15 +11204,31 @@ impl App {
             return Vec::new();
         };
         if focus == ExecutionConfirmFocus::Cancel {
-            self.retain_execution(draft, ExecutionResult::Cancelled);
+            self.record_confirmation_outcome(
+                &draft,
+                ExecutionResult::Cancelled,
+                OutputKind::Cancelled,
+                "Query execution cancelled; SQL was not sent to the database",
+            );
             return Vec::new();
         }
         if let Err(message) = self.validate_draft(&draft) {
+            self.append_console_output(
+                draft.console_id,
+                OutputEntry::plain(OutputKind::Error, format!("Execution rejected: {message}")),
+            );
             self.notify_error("Query", &message);
             self.retain_execution(draft, ExecutionResult::Cancelled);
             return Vec::new();
         }
         if draft.has_transaction_control() {
+            self.append_console_output(
+                draft.console_id,
+                OutputEntry::plain(
+                    OutputKind::Error,
+                    "Execution rejected: transaction-control SQL is unavailable",
+                ),
+            );
             self.notify_warning(
                 "Query",
                 "Transaction-control execution is unavailable until Task 16",
@@ -11222,8 +11243,24 @@ impl App {
         let Some(Overlay::ExecutionConfirm { draft, .. }) = self.overlay.take() else {
             return Vec::new();
         };
-        self.retain_execution(draft, ExecutionResult::Cancelled);
+        self.record_confirmation_outcome(
+            &draft,
+            ExecutionResult::Cancelled,
+            OutputKind::Cancelled,
+            "Query execution cancelled; SQL was not sent to the database",
+        );
         Vec::new()
+    }
+
+    fn record_confirmation_outcome(
+        &mut self,
+        draft: &sql::ExecutionDraft,
+        result: ExecutionResult,
+        kind: OutputKind,
+        message: &str,
+    ) {
+        self.append_console_output(draft.console_id, OutputEntry::plain(kind, message));
+        self.retain_execution(draft.clone(), result);
     }
 
     fn validate_draft(&self, draft: &sql::ExecutionDraft) -> Result<(), String> {

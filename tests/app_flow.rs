@@ -806,6 +806,12 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
     let original_sql = app.active_editor_text().unwrap();
     let outcome = app.active_console().outcome.as_ref().unwrap();
     assert_eq!(outcome.stats.row_count, 1);
+    assert!(
+        app.active_console()
+            .output
+            .iter()
+            .any(|entry| entry.kind == lazydb::model::tab::OutputKind::Success)
+    );
     assert_eq!(
         outcome.result_sets.last().unwrap().rows[0][1]
             .preview(20)

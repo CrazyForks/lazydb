@@ -619,6 +619,27 @@ impl EditorWorkspace {
         Ok(())
     }
 
+    fn set_keyboard_cursor(
+        &mut self,
+        id: Uuid,
+        position: EditorPosition,
+    ) -> Result<(), EditorError> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        session.position = position;
+        let mut buffer = session
+            .buffer
+            .write()
+            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+        buffer.set_leader(
+            session.group_id,
+            modalkit::editing::cursor::Cursor::new(position.line, position.column),
+        );
+        Ok(())
+    }
+
     pub(crate) fn mouse_selection(&self, id: Uuid) -> Result<Option<String>, EditorError> {
         let text = self.text(id)?;
         let session = self
@@ -1490,7 +1511,7 @@ impl EditorWorkspace {
                     EditorKey::Control('b' | 'u') => -amount,
                     _ => amount,
                 };
-                self.scroll(id, rows, 0)
+                self.page_cursor(id, rows)
             }
             (
                 EditorMode::Normal
@@ -1506,7 +1527,7 @@ impl EditorWorkspace {
                 } else {
                     amount
                 };
-                self.scroll(id, rows, 0)
+                self.page_cursor(id, rows)
             }
             (EditorMode::Insert | EditorMode::Replace, EditorKey::Undo) => {
                 self.undo_preserving_mode(id, mode)
@@ -2105,6 +2126,31 @@ impl EditorWorkspace {
         session.viewport.corner.set_y(row_offset);
         session.viewport.corner.set_x(column_offset.min(max_column));
         Ok(())
+    }
+
+    fn page_cursor(&mut self, id: Uuid, rows: isize) -> Result<(), EditorError> {
+        let text = self.text(id)?;
+        let position = self.position(id)?;
+        let line_count = text.split('\n').count().max(1);
+        let viewport_height = self.viewport(id)?.height.max(1);
+        let target_line = position
+            .line
+            .saturating_add_signed(rows)
+            .min(line_count.saturating_sub(1));
+        let target_column = text
+            .split('\n')
+            .nth(target_line)
+            .map(|line| position.column.min(line.chars().count()))
+            .unwrap_or(0);
+        self.set_keyboard_cursor(
+            id,
+            EditorPosition {
+                line: target_line,
+                column: target_column,
+            },
+        )?;
+        let center = rows.unsigned_abs() >= viewport_height.saturating_sub(2).max(1);
+        self.ensure_cursor_visible_at(id, self.position(id)?, center)
     }
 
     fn sync_registers(&mut self) {
