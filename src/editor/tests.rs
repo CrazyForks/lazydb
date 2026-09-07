@@ -253,6 +253,20 @@ fn normal_mode_page_keys_scroll_the_editor_without_editing_text() {
         .unwrap();
     let snapshot = workspace.render_snapshot(id, viewport).unwrap();
     assert!(snapshot.first_line > 0);
+    let paged_position = workspace.position(id).unwrap();
+    assert!(paged_position.line >= snapshot.first_line);
+    workspace
+        .key(
+            id,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('j'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        )
+        .unwrap();
+    let after_move = workspace.render_snapshot(id, viewport).unwrap();
+    assert!(after_move.first_line >= snapshot.first_line);
+    assert!(workspace.position(id).unwrap().line > paged_position.line);
     assert_eq!(workspace.text(id).unwrap(), text);
 
     workspace

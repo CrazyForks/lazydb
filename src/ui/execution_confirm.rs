@@ -11,12 +11,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
-use super::{
-    HitRegion, HitTarget, UiState, centered, dialog, panel_block, sql_preview, theme::Theme,
-};
+use super::{HitRegion, HitTarget, UiState, centered, dialog, sql_preview, theme::Theme};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Summary {
@@ -132,8 +130,8 @@ pub(crate) fn render(
         92.min(area.width.saturating_sub(4)),
         area.height.saturating_sub(2).clamp(8, 32),
     );
-    frame.render_widget(Clear, popup);
-    let inner_width = popup.width.saturating_sub(4) as usize;
+    let frame_inner = dialog::render_frame(frame, popup, " EXECUTION CONFIRMATION ", theme);
+    let inner_width = frame_inner.width.saturating_sub(2) as usize;
     let info = summary(draft, app);
     let mut summary_lines = vec![
         Line::from(Span::styled(info.title, theme.title(true))),
@@ -157,7 +155,7 @@ pub(crate) fn render(
         inner_width.saturating_sub(7),
         theme,
     );
-    let inner = popup.inner(ratatui::layout::Margin {
+    let inner = frame_inner.inner(ratatui::layout::Margin {
         vertical: 1,
         horizontal: 1,
     });
@@ -167,7 +165,7 @@ pub(crate) fn render(
         [
             Constraint::Length(summary_height),
             Constraint::Min(1),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ],
     )
     .split(inner);
@@ -195,7 +193,7 @@ pub(crate) fn render(
     );
     let actions = dialog::render_actions(
         frame,
-        Rect::new(sections[2].x, sections[2].y, sections[2].width, 1),
+        Rect::new(sections[2].x, sections[2].y, sections[2].width, 2),
         &[
             dialog::DialogButton {
                 label: "Cancel",
@@ -225,14 +223,13 @@ pub(crate) fn render(
         frame,
         Rect::new(
             sections[2].x,
-            sections[2].y.saturating_add(1),
+            sections[2].y.saturating_add(2),
             sections[2].width,
             1,
         ),
         "Tab / Left / Right switch   Enter activate   Up / Down preview   Esc cancel",
         theme,
     );
-    frame.render_widget(panel_block(" EXECUTION CONFIRMATION ", true, theme), popup);
 }
 
 #[cfg(test)]

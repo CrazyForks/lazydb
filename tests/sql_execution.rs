@@ -239,6 +239,22 @@ fn confirmation_defaults_to_cancel_and_enter_does_not_execute() {
 }
 
 #[test]
+fn cancelling_confirmation_records_a_cancelled_output_entry() {
+    let mut app = connected_app(ConfirmationPolicy::Always);
+    app.update(Action::ReplaceEditor(
+        "CREATE TABLE users (id INTEGER);".into(),
+    ));
+    app.update(Action::RunActiveSql);
+    assert!(app.update(Action::CancelExecution).is_empty());
+    assert_eq!(app.active_console().output.len(), 1);
+    assert_eq!(
+        app.active_console().output[0].kind,
+        lazydb::model::tab::OutputKind::Cancelled
+    );
+    assert!(app.active_console().output[0].message.contains("not sent"));
+}
+
+#[test]
 fn confirmation_focus_then_enter_dispatches_exact_snapshot() {
     let mut app = connected_app(ConfirmationPolicy::Always);
     let sql = "UPDATE users SET name = 'raw';";
@@ -254,6 +270,40 @@ fn confirmation_focus_then_enter_dispatches_exact_snapshot() {
     assert!(
         matches!(commands.as_slice(), [Command::RunQuery { sql: source, .. }] if source == sql)
     );
+}
+
+#[test]
+fn visual_create_table_confirmation_dispatches_selected_sql() {
+    let mut app = connected_app(ConfirmationPolicy::RiskyOnly);
+    let sql = "SELECT 1;\nCREATE TABLE users (id INTEGER);\nSELECT 2;";
+    app.update(Action::ReplaceEditor(sql.into()));
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+
+    for event in [
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('V'), KeyModifiers::NONE),
+    ] {
+        dispatch_editor_key(&mut app, &mut keymap, event);
+    }
+    let run = keymap
+        .map(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE), &app)
+        .expect("R should route to editor");
+    app.update(run);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ExecutionConfirm { .. })
+    ));
+
+    app.update(Action::ToggleExecutionConfirmationFocus);
+    let commands = app.update(Action::ConfirmExecution);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::RunQuery { sql: source, .. }]
+            if source.trim() == "CREATE TABLE users (id INTEGER);"
+    ));
 }
 
 #[test]
