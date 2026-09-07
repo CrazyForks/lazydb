@@ -14,6 +14,13 @@ pub struct CatalogDropRequest {
     pub catalog_epoch: u64,
     pub object: CatalogId,
     pub entry: Option<CatalogEntry>,
+    pub maintenance_database: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogDropExecutionTarget {
+    CurrentConnection,
+    MaintenanceDatabase(String),
 }
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -40,6 +47,8 @@ pub enum CatalogDropError {
     ObjectMismatch,
     #[error("catalog drop object name cannot be empty")]
     EmptyObjectName,
+    #[error("catalog drop metadata is incomplete for {kind:?}: {reason}")]
+    InvalidMetadata { kind: CatalogKind, reason: String },
     #[error("catalog drop for {kind:?} is unsupported: {reason}")]
     Unsupported { kind: CatalogKind, reason: String },
 }
@@ -52,11 +61,17 @@ impl CatalogDropRequest {
             catalog_epoch: 0,
             object,
             entry: None,
+            maintenance_database: None,
         }
     }
 
     pub fn with_entry(mut self, entry: CatalogEntry) -> Self {
         self.entry = Some(entry);
+        self
+    }
+
+    pub fn with_maintenance_database(mut self, database: impl Into<String>) -> Self {
+        self.maintenance_database = Some(database.into());
         self
     }
 
@@ -75,6 +90,7 @@ pub struct CatalogDropPlan {
     pub object: CatalogId,
     pub kind: CatalogKind,
     pub qualified_name: String,
+    pub execution_target: CatalogDropExecutionTarget,
     sql: String,
 }
 
@@ -105,8 +121,14 @@ impl CatalogDropPlan {
             object: entry.id.clone(),
             kind: entry.kind,
             qualified_name: entry.qualified_name.object.clone(),
+            execution_target: CatalogDropExecutionTarget::CurrentConnection,
             sql,
         })
+    }
+
+    pub fn with_execution_target(mut self, target: CatalogDropExecutionTarget) -> Self {
+        self.execution_target = target;
+        self
     }
 
     pub fn sql(&self) -> &str {
@@ -125,6 +147,28 @@ impl CatalogDropPlan {
             });
         }
         if self.qualified_name.is_empty() {
+            return Err(CatalogDropError::EmptyObjectName);
+        }
+        match &self.execution_target {
+            CatalogDropExecutionTarget::CurrentConnection if self.kind == CatalogKind::Database => {
+                return Err(CatalogDropError::Unsupported {
+                    kind: self.kind,
+                    reason: "database drops require a maintenance database".to_owned(),
+                });
+            }
+            CatalogDropExecutionTarget::MaintenanceDatabase(database)
+                if self.kind != CatalogKind::Database || database.trim().is_empty() =>
+            {
+                return Err(CatalogDropError::Unsupported {
+                    kind: self.kind,
+                    reason: "maintenance execution is only valid for database drops".to_owned(),
+                });
+            }
+            _ => {}
+        }
+        if let CatalogDropExecutionTarget::MaintenanceDatabase(database) = &self.execution_target
+            && database.trim().is_empty()
+        {
             return Err(CatalogDropError::EmptyObjectName);
         }
         validate_sql(&self.sql)

@@ -5276,6 +5276,7 @@ fn render_catalog_drop_confirm(
 ) {
     let Some(Overlay::CatalogDropConfirm {
         plan,
+        maintenance_database,
         delete_selected,
         busy,
         error,
@@ -5283,7 +5284,15 @@ fn render_catalog_drop_confirm(
     else {
         return;
     };
-    let popup = centered(area, 82, 16);
+    let popup = centered(
+        area,
+        82,
+        if maintenance_database.is_some() {
+            19
+        } else {
+            16
+        },
+    );
     let title = match plan.kind {
         CatalogKind::MaterializedView => " DROP MATERIALIZED VIEW ".to_owned(),
         CatalogKind::PrimaryKey
@@ -5295,6 +5304,11 @@ fn render_catalog_drop_confirm(
     let inner = dialog::render_frame(frame, popup, &title, theme);
     let chunks = Layout::vertical([
         Constraint::Min(0),
+        if maintenance_database.is_some() {
+            Constraint::Length(2)
+        } else {
+            Constraint::Length(0)
+        },
         Constraint::Length(2),
         Constraint::Length(1),
     ])
@@ -5314,9 +5328,13 @@ fn render_catalog_drop_confirm(
         )));
     }
     dialog::render_body(frame, chunks[0], lines, theme);
+    if let Some(input) = maintenance_database {
+        let label = format!("Maintenance database: {}", input.value());
+        frame.render_widget(Paragraph::new(label), chunks[1]);
+    }
     for action in dialog::render_actions(
         frame,
-        chunks[1],
+        chunks[2],
         &[
             dialog::DialogButton {
                 label: "Cancel",
@@ -5343,7 +5361,7 @@ fn render_catalog_drop_confirm(
     }
     dialog::render_hint(
         frame,
-        chunks[2],
+        chunks[3],
         if *busy {
             "Execution in progress"
         } else {

@@ -430,6 +430,28 @@ impl Keymap {
                 KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
                     Some(Action::ToggleCatalogDropFocus)
                 }
+                KeyCode::Backspace
+                    if matches!(
+                        app.overlay,
+                        Some(Overlay::CatalogDropConfirm {
+                            maintenance_database: Some(_),
+                            ..
+                        })
+                    ) =>
+                {
+                    Some(Action::CatalogDropMaintenanceBackspace)
+                }
+                KeyCode::Char(character)
+                    if matches!(
+                        app.overlay,
+                        Some(Overlay::CatalogDropConfirm {
+                            maintenance_database: Some(_),
+                            ..
+                        })
+                    ) =>
+                {
+                    Some(Action::CatalogDropMaintenanceInsert(character))
+                }
                 _ => None,
             };
         }

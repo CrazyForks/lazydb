@@ -543,6 +543,7 @@ fn catalog_drop_success_removes_subtree_reselects_parent_and_clears_completion()
     app.explorer.normalized.selected = Some(ExplorerNodeId::Catalog(table.id.clone()));
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(plan.clone()),
+        maintenance_database: None,
         delete_selected: true,
         busy: true,
         error: None,
@@ -581,6 +582,7 @@ fn catalog_drop_failure_keeps_confirmation_and_resets_to_cancel() {
     let plan = CatalogDropPlan::new(request, &table, "DROP TABLE users").unwrap();
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(plan.clone()),
+        maintenance_database: None,
         delete_selected: true,
         busy: true,
         error: None,
@@ -606,6 +608,49 @@ fn catalog_drop_failure_keeps_confirmation_and_resets_to_cancel() {
             && notification.body == "drop failed"
     }));
     assert!(catalog(&app, profile.id).get(&table.id).is_some());
+}
+
+#[test]
+fn stale_catalog_drop_result_does_not_mutate_catalog_or_overlay() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let table = install_table(&mut app, &profile, &schema, "users");
+    let mut request = CatalogDropRequest::new(
+        app.connection.active_identity().unwrap(),
+        table.id.clone(),
+        45,
+    )
+    .with_entry(table.clone());
+    request.catalog_epoch = app.explorer.normalized.profiles[&profile.id].catalog_epoch;
+    let plan = CatalogDropPlan::new(request, &table, "DROP TABLE users").unwrap();
+    app.overlay = Some(Overlay::CatalogDropConfirm {
+        plan: Box::new(plan.clone()),
+        maintenance_database: None,
+        delete_selected: true,
+        busy: true,
+        error: None,
+    });
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&profile.id)
+        .unwrap()
+        .catalog_epoch += 1;
+
+    app.update(Action::CatalogDropSucceeded {
+        plan,
+        outcome: QueryOutcome {
+            result_sets: Vec::new(),
+            stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 0),
+        },
+    });
+
+    assert!(catalog(&app, profile.id).get(&table.id).is_some());
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::CatalogDropConfirm { busy: true, .. })
+    ));
 }
 
 #[test]

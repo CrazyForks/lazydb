@@ -1225,6 +1225,7 @@ fn catalog_drop_overlay_maps_option_navigation_and_ignores_text() {
             )
             .unwrap(),
         ),
+        maintenance_database: None,
         delete_selected: false,
         busy: false,
         error: None,

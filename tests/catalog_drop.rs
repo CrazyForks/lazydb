@@ -2,7 +2,9 @@ use lazydb::{
     action::{Action, Command},
     db::{
         catalog::{CatalogEntry, CatalogId, CatalogKind, OptionalMetadata, QualifiedName},
-        catalog_drop::{CatalogDropError, CatalogDropPlan, CatalogDropRequest},
+        catalog_drop::{
+            CatalogDropError, CatalogDropExecutionTarget, CatalogDropPlan, CatalogDropRequest,
+        },
         mssql::MsSqlAdapter,
         mysql::MySqlAdapter,
         postgres::PostgresAdapter,
@@ -265,6 +267,89 @@ fn postgres_planner_quotes_supported_objects_and_relation_children() {
 }
 
 #[test]
+fn postgres_schema_planner_quotes_name_and_requires_restrict() {
+    let profile_id = Uuid::new_v4();
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 8,
+    };
+    let schema = CatalogEntry {
+        id: CatalogId::new(profile_id, CatalogKind::Schema, ["db", "odd\"schema"]),
+        parent_id: Some(CatalogId::new(profile_id, CatalogKind::Database, ["db"])),
+        kind: CatalogKind::Schema,
+        native_kind: "schema".into(),
+        qualified_name: QualifiedName {
+            database: Some("db".into()),
+            schema: Some("odd\"schema".into()),
+            object: "odd\"schema".into(),
+        },
+        comment: OptionalMetadata::Unsupported,
+        metadata: Default::default(),
+        expandable: true,
+        relation_id: None,
+    };
+    let request = CatalogDropRequest::new(connection, schema.id.clone(), 6);
+
+    assert_eq!(
+        PostgresAdapter::plan_catalog_drop(request, &schema)
+            .unwrap()
+            .sql(),
+        "DROP SCHEMA \"odd\"\"schema\" RESTRICT"
+    );
+}
+
+#[test]
+fn postgres_schema_planner_rejects_incomplete_namespace_metadata() {
+    let profile_id = Uuid::new_v4();
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 8,
+    };
+    let mut schema = entry(profile_id, CatalogKind::Schema);
+    schema.id.native_path = vec!["db".into(), "public".into()];
+    schema.parent_id = None;
+    schema.qualified_name.database = None;
+    schema.qualified_name.schema = None;
+    schema.qualified_name.object = "public".into();
+    let request = CatalogDropRequest::new(connection, schema.id.clone(), 7);
+
+    assert!(matches!(
+        PostgresAdapter::plan_catalog_drop(request, &schema),
+        Err(CatalogDropError::InvalidMetadata {
+            kind: CatalogKind::Schema,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn postgres_database_planner_requires_a_different_maintenance_database() {
+    let profile_id = Uuid::new_v4();
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 8,
+    };
+    let database = entry(profile_id, CatalogKind::Database);
+    let request = CatalogDropRequest::new(connection, database.id.clone(), 8);
+    assert!(matches!(
+        PostgresAdapter::plan_catalog_drop(request, &database),
+        Err(CatalogDropError::Unsupported {
+            kind: CatalogKind::Database,
+            ..
+        })
+    ));
+
+    let request = CatalogDropRequest::new(connection, database.id.clone(), 9)
+        .with_maintenance_database("postgres");
+    let plan = PostgresAdapter::plan_catalog_drop(request, &database).unwrap();
+    assert_eq!(plan.sql(), "DROP DATABASE \"users\"");
+    assert_eq!(
+        plan.execution_target,
+        CatalogDropExecutionTarget::MaintenanceDatabase("postgres".into())
+    );
+}
+
+#[test]
 fn postgres_planner_reports_unsupported_and_insufficient_child_metadata() {
     let profile_id = Uuid::new_v4();
     let connection = ConnectionIdentity {
@@ -290,6 +375,27 @@ fn postgres_planner_reports_unsupported_and_insufficient_child_metadata() {
             ..
         })
     ));
+}
+
+#[test]
+fn catalog_drop_errors_distinguish_unsupported_kinds_from_invalid_metadata() {
+    let unsupported = CatalogDropError::Unsupported {
+        kind: CatalogKind::Database,
+        reason: "not implemented".into(),
+    };
+    assert_eq!(
+        unsupported.to_string(),
+        "catalog drop for Database is unsupported: not implemented"
+    );
+
+    let invalid = CatalogDropError::InvalidMetadata {
+        kind: CatalogKind::Schema,
+        reason: "database name is missing".into(),
+    };
+    assert_eq!(
+        invalid.to_string(),
+        "catalog drop metadata is incomplete for Schema: database name is missing"
+    );
 }
 
 #[test]
