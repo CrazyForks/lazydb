@@ -16849,6 +16849,51 @@ mod tests {
     }
 
     #[test]
+    fn relation_rollback_restores_the_transaction_snapshot() {
+        let mut app = App::new(Vec::new());
+        let mut snapshot = RelationEditSession::from_rows(vec![
+            vec![CellValue::Integer(1), CellValue::Text("old".into())],
+            vec![CellValue::Integer(2), CellValue::Text("remove".into())],
+        ]);
+        let mut draft = snapshot.clone();
+        draft.update_cell(0, 1, CellValue::Text("new".into()));
+        assert!(draft.delete_rows(1..=1));
+
+        let mut tab = RelationTab::new("items");
+        tab.transaction_state = TransactionState::RollingBack;
+        tab.transaction_generation = 1;
+        tab.transaction_snapshot = Some(std::mem::take(&mut snapshot));
+        tab.edit = Some(draft);
+        let tab_id = tab.id;
+        app.tabs.push(WorkspaceTab::Relation(tab));
+
+        app.relation_transaction_finished(
+            tab_id,
+            1,
+            ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 1,
+            },
+            true,
+            None,
+        );
+
+        let WorkspaceTab::Relation(tab) = app
+            .tabs
+            .iter()
+            .find(|tab| tab.id() == tab_id)
+            .expect("expected relation tab")
+        else {
+            panic!("expected relation tab")
+        };
+        let edit = tab.edit.as_ref().expect("expected edit session");
+        assert_eq!(edit.rows[0].current[1], CellValue::Text("old".into()));
+        assert!(matches!(edit.rows[1].state, EditableRowState::Clean));
+        assert_eq!(tab.transaction_state, TransactionState::Idle);
+        assert!(tab.transaction_snapshot.is_none());
+    }
+
+    #[test]
     fn names_new_consoles_without_reusing_sequence_numbers() {
         let mut app = App::new(Vec::new());
         assert_eq!(app.active_console().name, "console");
