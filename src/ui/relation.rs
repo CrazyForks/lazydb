@@ -9,7 +9,7 @@ use crate::{
         workspace::Focus,
     },
     security::sanitize_terminal_text,
-    ui::{HitRegion, HitTarget},
+    ui::{CursorSpec, CursorStyle, HitRegion, HitTarget},
 };
 use ratatui::{
     Frame,
@@ -18,7 +18,7 @@ use ratatui::{
     text::Line,
     widgets::Paragraph,
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn render(
     frame: &mut Frame<'_>,
@@ -74,6 +74,7 @@ pub(crate) fn render(
         let block = panel_block(" CELL EDITOR ", true, theme);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
+        state.cursor = None;
         let is_boolean = matches!(
             &editor.input,
             crate::model::cell_editor::CellEditorBuffer::Typed {
@@ -92,25 +93,7 @@ pub(crate) fn render(
             ])
             .split(inner);
         if let Some(json) = json {
-            let lines = json
-                .value()
-                .split('\n')
-                .map(|source| {
-                    let spans = json_line_spans(source);
-                    Line::from(spans)
-                })
-                .collect::<Vec<_>>();
-            frame.render_widget(Paragraph::new(lines), inner);
-            frame.render_widget(
-                Paragraph::new("Enter newline  Ctrl-S apply  Ctrl-F format  Esc cancel")
-                    .style(Style::new().fg(theme.muted)),
-                Rect::new(
-                    inner.x,
-                    inner.y.saturating_add(inner.height.saturating_sub(1)),
-                    inner.width,
-                    1,
-                ),
-            );
+            render_json_editor(frame, inner, json, editor.error.as_deref(), theme, state);
         } else if is_boolean {
             render_boolean_editor(frame, sections[0], editor, theme);
             frame.render_widget(
@@ -159,26 +142,196 @@ pub(crate) fn render(
     }
 }
 
-fn json_line_spans(source: &str) -> Vec<ratatui::text::Span<'static>> {
-    crate::model::cell_editor::tokenize_json(source)
-        .into_iter()
-        .map(|token| {
-            let text = source
-                .get(token.start.min(source.len())..token.end.min(source.len()))
-                .unwrap_or_default();
-            let color = match token.kind {
-                crate::model::cell_editor::JsonTokenKind::String => ratatui::style::Color::Green,
-                crate::model::cell_editor::JsonTokenKind::Number => ratatui::style::Color::Yellow,
-                crate::model::cell_editor::JsonTokenKind::Boolean
-                | crate::model::cell_editor::JsonTokenKind::Null => ratatui::style::Color::Magenta,
-                crate::model::cell_editor::JsonTokenKind::Punctuation => {
-                    ratatui::style::Color::Cyan
-                }
-                _ => ratatui::style::Color::Reset,
-            };
-            ratatui::text::Span::styled(text.to_owned(), Style::new().fg(color))
+fn json_line_spans(source: &str, left: usize, width: usize) -> Vec<ratatui::text::Span<'static>> {
+    let projection = crate::security::project_editor_line(source);
+    let tokens = crate::model::cell_editor::tokenize_json(source);
+    let mut spans = Vec::new();
+    let mut current_kind = crate::model::cell_editor::JsonTokenKind::Whitespace;
+    let mut display_start = 0;
+    let mut display_end = 0;
+    for (index, (byte_start, character)) in source.char_indices().enumerate() {
+        let byte_end = byte_start + character.len_utf8();
+        let kind = tokens
+            .iter()
+            .find(|token| byte_start >= token.start && byte_end <= token.end)
+            .map(|token| token.kind)
+            .unwrap_or(crate::model::cell_editor::JsonTokenKind::Whitespace);
+        let source_start = projection.source_to_display_cells[index];
+        let source_end = projection.source_to_display_cells[index + 1];
+        if index > 0 && kind != current_kind {
+            push_json_span(
+                &mut spans,
+                &projection.text,
+                display_start,
+                display_end,
+                current_kind,
+                left,
+                width,
+            );
+            display_start = source_start;
+        }
+        current_kind = kind;
+        display_end = source_end;
+    }
+    if !source.is_empty() {
+        push_json_span(
+            &mut spans,
+            &projection.text,
+            display_start,
+            display_end,
+            current_kind,
+            left,
+            width,
+        );
+    }
+    spans
+}
+
+fn push_json_span(
+    spans: &mut Vec<ratatui::text::Span<'static>>,
+    projected: &str,
+    display_start: usize,
+    display_end: usize,
+    kind: crate::model::cell_editor::JsonTokenKind,
+    left: usize,
+    width: usize,
+) {
+    let start = display_start.max(left);
+    let end = display_end.min(left.saturating_add(width));
+    if start >= end {
+        return;
+    }
+    let text = display_slice(projected, start, end);
+    if !text.is_empty() {
+        spans.push(ratatui::text::Span::styled(
+            text,
+            Style::new().fg(json_token_color(kind)),
+        ));
+    }
+}
+
+fn display_slice(value: &str, start: usize, end: usize) -> String {
+    let mut cells = 0;
+    let mut output = String::new();
+    for character in value.chars() {
+        let width = character.width().unwrap_or(0);
+        let begin = cells;
+        cells += width;
+        let visible_start = begin.max(start);
+        let visible_end = cells.min(end);
+        if visible_start >= visible_end {
+            continue;
+        }
+        if begin >= start && cells <= end {
+            output.push(character);
+        } else {
+            output.extend(std::iter::repeat_n(' ', visible_end - visible_start));
+        }
+    }
+    output
+}
+
+fn json_token_color(kind: crate::model::cell_editor::JsonTokenKind) -> ratatui::style::Color {
+    match kind {
+        crate::model::cell_editor::JsonTokenKind::String => ratatui::style::Color::Green,
+        crate::model::cell_editor::JsonTokenKind::Number => ratatui::style::Color::Yellow,
+        crate::model::cell_editor::JsonTokenKind::Boolean
+        | crate::model::cell_editor::JsonTokenKind::Null => ratatui::style::Color::Magenta,
+        crate::model::cell_editor::JsonTokenKind::Punctuation => ratatui::style::Color::Cyan,
+        _ => ratatui::style::Color::Reset,
+    }
+}
+
+fn render_json_editor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    json: &crate::model::cell_editor::JsonBuffer,
+    error: Option<&str>,
+    theme: Theme,
+    state: &mut super::UiState,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let footer = "Enter newline  Ctrl-S apply  Ctrl-F format  Esc cancel";
+    let show_footer = error.is_none() || area.height >= 3;
+    let error_height = usize::from(error.is_some() && area.height >= 3);
+    let footer_height = usize::from(show_footer && area.height >= 2);
+    let body_height = usize::from(area.height)
+        .saturating_sub(error_height)
+        .saturating_sub(footer_height);
+    if body_height == 0 {
+        frame.render_widget(
+            Paragraph::new(if let Some(error) = error {
+                error
+            } else {
+                footer
+            })
+            .style(Style::new().fg(if error.is_some() {
+                theme.error
+            } else {
+                theme.muted
+            })),
+            area,
+        );
+        return;
+    }
+
+    let lines = json.value().split('\n').collect::<Vec<_>>();
+    let cursor_line = json.line().min(lines.len().saturating_sub(1));
+    let cursor_column = json.column();
+    let cursor_cells = lines
+        .get(cursor_line)
+        .map(|line| {
+            let projection = crate::security::project_editor_line(line);
+            projection
+                .source_to_display_cells
+                .get(cursor_column)
+                .copied()
+                .unwrap_or_else(|| projection.text.width())
         })
-        .collect()
+        .unwrap_or_default();
+    let body_width = usize::from(area.width);
+    let top = cursor_line.saturating_sub(body_height.saturating_sub(1));
+    let left = cursor_cells.saturating_sub(body_width.saturating_sub(1));
+    let visible_lines = lines
+        .iter()
+        .skip(top)
+        .take(body_height)
+        .map(|source| Line::from(json_line_spans(source, left, body_width)))
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(visible_lines),
+        Rect::new(area.x, area.y, area.width, body_height as u16),
+    );
+
+    let cursor_x = area
+        .x
+        .saturating_add(cursor_cells.saturating_sub(left) as u16)
+        .min(area.right().saturating_sub(1));
+    let cursor_y = area.y.saturating_add((cursor_line - top) as u16);
+    state.cursor = Some(CursorSpec {
+        position: Position::new(cursor_x, cursor_y),
+        style: CursorStyle::Bar,
+    });
+
+    let mut next_row = area.y.saturating_add(body_height as u16);
+    if let Some(error) = error
+        && next_row < area.bottom()
+    {
+        frame.render_widget(
+            Paragraph::new(Line::from(error).style(Style::new().fg(theme.error))),
+            Rect::new(area.x, next_row, area.width, 1),
+        );
+        next_row = next_row.saturating_add(1);
+    }
+    if show_footer && next_row < area.bottom() {
+        frame.render_widget(
+            Paragraph::new(footer).style(Style::new().fg(theme.muted)),
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        );
+    }
 }
 
 fn render_boolean_editor(
@@ -876,6 +1029,206 @@ mod tests {
     };
     use chrono::NaiveDate;
     use ratatui::{Terminal, backend::TestBackend};
+    use unicode_width::UnicodeWidthStr;
+
+    fn json_editor_app(value: &str) -> crate::app::App {
+        let mut app = crate::app::App::new(Vec::new());
+        app.tabs
+            .push(WorkspaceTab::Relation(RelationTab::new("users")));
+        app.active_tab = 1;
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+            let mut edit =
+                RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
+                    "x".into(),
+                )]]);
+            edit.mode = RelationGridMode::EditCell(CellEditorState {
+                row: 0,
+                column: 0,
+                input: CellEditorBuffer::Typed {
+                    kind: CellEditorKind::Json,
+                    draft: TypedDraft::Json(JsonBuffer::new(value)),
+                },
+                error: None,
+            });
+            tab.edit = Some(edit);
+        }
+        app
+    }
+
+    fn render_json_editor(app: &crate::app::App, state: &mut super::super::UiState) {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(frame, frame.area(), app, super::Theme::default(), state);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn json_cell_editor_registers_bar_cursor_at_end() {
+        let app = json_editor_app("{}");
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        assert_eq!(
+            state.cursor,
+            Some(super::super::CursorSpec {
+                position: ratatui::layout::Position::new(7, 5),
+                style: super::super::CursorStyle::Bar,
+            })
+        );
+    }
+
+    #[test]
+    fn json_cell_editor_cursor_tracks_movement() {
+        let mut app = json_editor_app("{\"a\": 1}");
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+        assert_eq!(state.cursor.map(|cursor| cursor.position.x), Some(13));
+
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1]
+            && let Some(edit) = &mut tab.edit
+            && let RelationGridMode::EditCell(editor) = &mut edit.mode
+        {
+            editor.input.json_buffer_mut().unwrap().move_left();
+        }
+        state.cursor = None;
+        render_json_editor(&app, &mut state);
+        assert_eq!(state.cursor.map(|cursor| cursor.position.x), Some(12));
+    }
+
+    #[test]
+    fn json_cell_editor_cursor_uses_display_cell_width() {
+        let app = json_editor_app("\t{}");
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        let cursor = state.cursor.expect("JSON cursor");
+        let projection = crate::security::project_editor_line("\t{}");
+        assert_eq!(cursor.position.x, 5 + projection.text.width() as u16);
+    }
+
+    #[test]
+    fn json_cell_editor_projection_keeps_source_and_display_separate() {
+        let source = "\t{\"名字\": \"猫\"}";
+        let projection = crate::security::project_editor_line(source);
+        let spans = super::json_line_spans(source, 0, 80);
+        let rendered = spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(rendered, projection.text);
+        assert_eq!(projection.source_to_display_cells[1], 4);
+        assert_eq!(source, "\t{\"名字\": \"猫\"}");
+    }
+
+    #[test]
+    fn json_cell_editor_horizontal_slice_preserves_wide_cell_width() {
+        assert_eq!(super::display_slice("a猫b", 1, 3), "猫");
+        assert_eq!(super::display_slice("a猫b", 2, 5), " b");
+        assert_eq!(super::display_slice("a猫b", 3, 6), "b");
+    }
+
+    #[test]
+    fn json_cell_editor_vertical_scroll_keeps_cursor_in_body() {
+        let value = "line 0\nline 1\nline 2\nline 3\nline 4";
+        let app = json_editor_app(value);
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        let cursor = state.cursor.expect("JSON cursor");
+        assert!(cursor.position.y < 21);
+        assert_eq!(cursor.position.y, 9);
+    }
+
+    #[test]
+    fn json_cell_editor_horizontal_scroll_keeps_cursor_in_body() {
+        let value = format!("{}{{}}", "x".repeat(120));
+        let app = json_editor_app(&value);
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        let cursor = state.cursor.expect("JSON cursor");
+        assert_eq!(cursor.position.x, 74);
+        assert!(cursor.position.x < 75);
+    }
+
+    #[test]
+    fn json_cell_editor_empty_trailing_line_keeps_cursor_visible() {
+        let app = json_editor_app("{}\n");
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        let cursor = state.cursor.expect("JSON cursor");
+        assert!(cursor.position.y < 21);
+    }
+
+    #[test]
+    fn json_cell_editor_error_does_not_replace_cursor_or_body() {
+        let mut app = json_editor_app("{}");
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1]
+            && let Some(edit) = &mut tab.edit
+            && let RelationGridMode::EditCell(editor) = &mut edit.mode
+        {
+            editor.error = Some("invalid JSON".into());
+        }
+        let mut state = super::super::UiState::new();
+
+        render_json_editor(&app, &mut state);
+
+        let cursor = state.cursor.expect("JSON cursor");
+        assert!(cursor.position.y < 20);
+    }
+
+    #[test]
+    fn json_cell_editor_tiny_area_does_not_leave_a_stale_cursor() {
+        let app = json_editor_app("{}");
+        let mut state = super::super::UiState::new();
+        state.cursor = Some(super::super::CursorSpec {
+            position: ratatui::layout::Position::new(1, 1),
+            style: super::super::CursorStyle::Bar,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    &app,
+                    super::Theme::default(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+
+        assert_eq!(state.cursor, None);
+    }
+
+    #[test]
+    fn json_cell_editor_editing_operations_update_cursor_position() {
+        let mut app = json_editor_app("{}");
+        let mut state = super::super::UiState::new();
+
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1]
+            && let Some(edit) = &mut tab.edit
+            && let RelationGridMode::EditCell(editor) = &mut edit.mode
+        {
+            let json = editor.input.json_buffer_mut().unwrap();
+            json.move_home();
+            json.insert('x');
+        }
+        render_json_editor(&app, &mut state);
+
+        assert_eq!(state.cursor.map(|cursor| cursor.position.x), Some(6));
+    }
 
     #[test]
     fn cell_editor_value_contains_only_the_cell_content() {
