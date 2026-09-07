@@ -80,6 +80,7 @@ pub(crate) fn render_detail(
     app: &App,
     detail: &NotificationDetailState,
     theme: Theme,
+    icons: IconSet,
 ) {
     let popup = centered_history(area, area.width < 72);
     frame.render_widget(ratatui::widgets::Clear, popup);
@@ -96,16 +97,39 @@ pub(crate) fn render_detail(
     if inner.height < 2 {
         return;
     }
+    let color = level_color(notification.level, theme);
+    let level = notification.level.to_string().to_uppercase();
     let mut lines = vec![
-        Line::from(Span::styled(&notification.title, theme.title(true))),
-        Line::raw(format!(
-            "{}  {}  source: {}",
-            notification.level,
-            notification.created_at.format("%Y-%m-%d %H:%M:%S"),
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", icons.notification(notification.level)),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{level}  "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                sanitize_terminal_text(&notification.title),
+                theme.title(true),
+            ),
+        ]),
+        Line::styled(
             notification
-                .source
-                .map_or("unknown".to_owned(), |source| source.to_string())
-        )),
+                .created_at
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+            Style::new().fg(theme.muted),
+        ),
+        Line::styled(
+            format!(
+                "source: {}",
+                notification
+                    .source
+                    .map_or("unknown".to_owned(), |source| source.to_string())
+            ),
+            Style::new().fg(theme.muted),
+        ),
         Line::raw(""),
     ];
     lines.extend(
@@ -142,6 +166,7 @@ pub(crate) fn render_history(
     history: &NotificationHistoryState,
     theme: Theme,
     state: &mut UiState,
+    icons: IconSet,
 ) {
     let narrow = area.width < 72;
     let popup = centered_history(area, narrow);
@@ -204,32 +229,25 @@ pub(crate) fn render_history(
             start = selected.saturating_sub(visible_height - 1);
         }
     }
-    let mut lines = Vec::new();
     if entries.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No notifications",
-            Style::new().fg(theme.muted),
-        )));
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No notifications",
+                Style::new().fg(theme.muted),
+            )),
+            body[0],
+        );
     } else {
         for (index, notification) in entries.iter().enumerate().skip(start).take(visible_height) {
-            let marker = if index == selected { ">" } else { " " };
-            let style = if index == selected {
-                Style::new().fg(theme.text).bg(theme.selection)
-            } else {
-                Style::new().fg(theme.text)
-            };
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "{marker} {}  {:<7} {}",
-                    notification.created_at.format("%H:%M:%S"),
-                    notification.level,
-                    sanitize_terminal_text(&notification.title)
-                ),
-                style,
-            )));
+            let row = Rect::new(
+                body[0].x,
+                body[0].y + (index - start) as u16,
+                body[0].width,
+                1,
+            );
+            render_history_row(frame, row, notification, index == selected, theme, icons);
         }
     }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), body[0]);
     if narrow && let Some(notification) = entries.get(selected) {
         state.hit_regions.push(HitRegion {
             area: body[0],
@@ -245,20 +263,40 @@ pub(crate) fn render_history(
         }
     }
     if !narrow && let Some(notification) = entries.get(selected) {
+        let color = level_color(notification.level, theme);
+        let level = notification.level.to_string().to_uppercase();
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(Span::styled(&notification.title, theme.title(true))),
-                Line::raw(format!(
-                    "{}  {}",
-                    notification.level,
-                    notification.created_at.format("%Y-%m-%d %H:%M:%S")
-                )),
-                Line::raw(format!(
-                    "source: {}",
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", icons.notification(notification.level)),
+                        Style::new().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{level}  "),
+                        Style::new().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        sanitize_terminal_text(&notification.title),
+                        theme.title(true),
+                    ),
+                ]),
+                Line::styled(
                     notification
-                        .source
-                        .map_or("unknown".to_owned(), |source| source.to_string())
-                )),
+                        .created_at
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                    Style::new().fg(theme.muted),
+                ),
+                Line::styled(
+                    format!(
+                        "source: {}",
+                        notification
+                            .source
+                            .map_or("unknown".to_owned(), |source| source.to_string())
+                    ),
+                    Style::new().fg(theme.muted),
+                ),
                 Line::raw(""),
                 Line::raw(sanitize_terminal_text(&notification.body)),
             ])
@@ -290,6 +328,86 @@ pub(crate) fn render_history(
         });
     }
     let _ = matches;
+}
+
+fn render_history_row(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    notification: &Notification,
+    selected: bool,
+    theme: Theme,
+    icons: IconSet,
+) {
+    let background = if selected {
+        theme.selection
+    } else {
+        theme.surface_raised
+    };
+    frame.render_widget(Paragraph::new("").style(Style::new().bg(background)), area);
+    let icon = icons.notification(notification.level);
+    let icon_width = icon.width().max(1);
+    let severity_width = notification.level.to_string().len().max(7);
+    let fixed_prefix = 1 + 1 + 8 + 2 + icon_width + 1 + severity_width + 1;
+    let show_time = usize::from(area.width) >= fixed_prefix + 8;
+    let prefix_width = if show_time {
+        fixed_prefix
+    } else {
+        fixed_prefix.saturating_sub(10)
+    };
+    let title = truncate_history_title(
+        &sanitize_terminal_text(&notification.title),
+        usize::from(area.width).saturating_sub(prefix_width),
+    );
+    let level = notification.level.to_string().to_uppercase();
+    let color = level_color(notification.level, theme);
+    let marker = if selected { ">" } else { " " };
+    let time = if show_time {
+        format!(" {}  ", notification.created_at.format("%H:%M:%S"))
+    } else {
+        String::new()
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            format!("{marker}{time}"),
+            Style::new().fg(theme.muted).bg(background),
+        ),
+        Span::styled(
+            format!("{icon:<icon_width$} "),
+            Style::new()
+                .fg(color)
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{level:<severity_width$} "),
+            Style::new()
+                .fg(color)
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::new()
+                .fg(theme.text)
+                .bg(background)
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn truncate_history_title(value: &str, width: usize) -> String {
+    if value.width() <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    format!("{}~", truncate_cells(value, width.saturating_sub(1)))
 }
 
 fn notification_detail_request(notification: &Notification) -> TextDetailRequest {
@@ -650,6 +768,7 @@ mod tests {
         let app = App::new(Vec::new());
         let history = NotificationHistoryState::new();
         let mut ui = UiState::new();
+        let icons = IconSet::default();
         let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
             .expect("test terminal");
 
@@ -662,6 +781,7 @@ mod tests {
                     &history,
                     Theme::default(),
                     &mut ui,
+                    icons,
                 );
             })
             .expect("render history");
@@ -669,6 +789,57 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() == "N"));
         assert!(ui.hit_regions.is_empty());
+    }
+
+    #[test]
+    fn history_rows_show_the_configured_notification_icon_for_each_level() {
+        use crate::ui::icons::IconMode;
+
+        let icons = IconSet::new(IconMode::Unicode);
+        let mut app = App::new(Vec::new());
+        for level in [
+            NotificationLevel::Info,
+            NotificationLevel::Success,
+            NotificationLevel::Warning,
+            NotificationLevel::Error,
+        ] {
+            app.notifications
+                .push(level, level.to_string(), "body", Instant::now());
+        }
+        let history = NotificationHistoryState::new();
+        let mut ui = UiState::new();
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24))
+            .expect("test terminal");
+
+        terminal
+            .draw(|frame| {
+                render_history(
+                    frame,
+                    frame.area(),
+                    &app,
+                    &history,
+                    Theme::default(),
+                    &mut ui,
+                    icons,
+                );
+            })
+            .expect("render history");
+
+        let buffer = terminal.backend().buffer();
+        for level in [
+            NotificationLevel::Info,
+            NotificationLevel::Success,
+            NotificationLevel::Warning,
+            NotificationLevel::Error,
+        ] {
+            assert!(
+                buffer
+                    .content()
+                    .iter()
+                    .any(|cell| { cell.symbol() == icons.notification(level) }),
+                "history should render the icon for {level}"
+            );
+        }
     }
 
     #[test]
@@ -711,6 +882,7 @@ mod tests {
                     &history,
                     Theme::default(),
                     &mut ui,
+                    IconSet::default(),
                 );
             })
             .expect("render history");
