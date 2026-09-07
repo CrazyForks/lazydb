@@ -138,6 +138,47 @@ fn result_pagination_keys_map_in_sql_and_relation_data_contexts() {
 }
 
 #[test]
+fn temporal_editor_owns_field_and_month_navigation() {
+    let mut app = App::new(Vec::new());
+    app.tabs
+        .push(WorkspaceTab::Relation(RelationTab::new("users")));
+    app.active_tab = 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        let mut edit = lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+            lazydb::db::value::CellValue::Date(
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+            ),
+        ]]);
+        edit.mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
+            lazydb::model::relation_edit::CellEditorState {
+                row: 0,
+                column: 0,
+                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
+                    kind: lazydb::model::cell_editor::CellEditorKind::Date,
+                    draft: lazydb::model::cell_editor::TypedDraft::Temporal(
+                        lazydb::model::cell_editor::TemporalDraft::date(
+                            chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+                        ),
+                    ),
+                },
+                error: None,
+            },
+        );
+        tab.edit = Some(edit);
+    }
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Right), &app),
+        Some(Action::RelationEditTemporalMove(1))
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char(']')), &app),
+        Some(Action::RelationEditTemporalMonth(1))
+    );
+}
+
+#[test]
 fn normal_mode_ctrl_r_routes_to_editor_redo() {
     let mut app = App::new(Vec::new());
     app.update(Action::EditorKey(key(KeyCode::Esc)));

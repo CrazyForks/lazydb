@@ -59,23 +59,158 @@ pub(crate) fn render(
         ..
     }) = &tab.edit
     {
+        let popup_width = area.width.min(72);
+        let json = editor.input.json_buffer();
+        let popup_height = area.height.min(if json.is_some() { 16 } else { 7 });
         let popup = Rect::new(
-            area.x.saturating_add(4),
-            area.y.saturating_add(3),
-            area.width.saturating_sub(8).min(72),
-            3,
+            area.x
+                .saturating_add(area.width.saturating_sub(popup_width) / 2),
+            area.y
+                .saturating_add(area.height.saturating_sub(popup_height) / 2),
+            popup_width,
+            popup_height,
         );
         frame.render_widget(ratatui::widgets::Clear, popup);
         let block = panel_block(" CELL EDITOR ", true, theme);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        render_text_input(frame, inner, "", &editor.input, theme.base(), state);
+        let is_boolean = matches!(
+            &editor.input,
+            crate::model::cell_editor::CellEditorBuffer::Typed {
+                kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                draft: crate::model::cell_editor::TypedDraft::Boolean(_),
+                ..
+            }
+        );
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+        if let Some(json) = json {
+            let lines = json
+                .value()
+                .split('\n')
+                .map(|source| {
+                    let spans = json_line_spans(source);
+                    Line::from(spans)
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(Paragraph::new(lines), inner);
+            frame.render_widget(
+                Paragraph::new("Enter newline  Ctrl-S apply  Ctrl-F format  Esc cancel")
+                    .style(Style::new().fg(theme.muted)),
+                Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(inner.height.saturating_sub(1)),
+                    inner.width,
+                    1,
+                ),
+            );
+        } else if is_boolean {
+            render_boolean_editor(frame, sections[0], editor, theme);
+            frame.render_widget(
+                Paragraph::new("Left/Right  Space  t/f").style(Style::new().fg(theme.muted)),
+                sections[1],
+            );
+        } else if let crate::model::cell_editor::CellEditorBuffer::Typed {
+            draft: crate::model::cell_editor::TypedDraft::Temporal(draft),
+            ..
+        } = &editor.input
+        {
+            render_text_input(frame, sections[0], "", draft.input(), theme.base(), state);
+            if let Some(label) = draft.calendar_label() {
+                frame.render_widget(
+                    Paragraph::new(label).style(Style::new().fg(theme.muted)),
+                    sections[1],
+                );
+            }
+            frame.render_widget(
+                Paragraph::new("Left/Right field  [/] month  Enter apply")
+                    .style(Style::new().fg(theme.muted)),
+                sections[2],
+            );
+        } else if let Some(input) = editor.input.input() {
+            render_text_input(frame, sections[0], "", input, theme.base(), state);
+        } else if editor.input.is_unprovided() {
+            frame.render_widget(
+                Paragraph::new("DEFAULT (unprovided)").style(Style::new().fg(theme.muted)),
+                sections[0],
+            );
+        } else if matches!(
+            editor.input,
+            crate::model::cell_editor::CellEditorBuffer::Null(_)
+        ) {
+            frame.render_widget(
+                Paragraph::new("NULL (explicit)").style(Style::new().fg(theme.muted)),
+                sections[0],
+            );
+        }
+        if let Some(error) = &editor.error {
+            frame.render_widget(
+                Paragraph::new(Line::from(error.as_str()).style(Style::new().fg(theme.error))),
+                sections[3],
+            );
+        }
     }
+}
+
+fn json_line_spans(source: &str) -> Vec<ratatui::text::Span<'static>> {
+    crate::model::cell_editor::tokenize_json(source)
+        .into_iter()
+        .map(|token| {
+            let text = source
+                .get(token.start.min(source.len())..token.end.min(source.len()))
+                .unwrap_or_default();
+            let color = match token.kind {
+                crate::model::cell_editor::JsonTokenKind::String => ratatui::style::Color::Green,
+                crate::model::cell_editor::JsonTokenKind::Number => ratatui::style::Color::Yellow,
+                crate::model::cell_editor::JsonTokenKind::Boolean
+                | crate::model::cell_editor::JsonTokenKind::Null => ratatui::style::Color::Magenta,
+                crate::model::cell_editor::JsonTokenKind::Punctuation => {
+                    ratatui::style::Color::Cyan
+                }
+                _ => ratatui::style::Color::Reset,
+            };
+            ratatui::text::Span::styled(text.to_owned(), Style::new().fg(color))
+        })
+        .collect()
+}
+
+fn render_boolean_editor(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    editor: &crate::model::relation_edit::CellEditorState,
+    theme: Theme,
+) {
+    let selected = editor.input.boolean_selection();
+    let true_style = if selected == Some(true) {
+        Style::new().fg(theme.background).bg(theme.accent)
+    } else {
+        Style::new().fg(theme.muted)
+    };
+    let false_style = if selected == Some(false) {
+        Style::new().fg(theme.background).bg(theme.accent)
+    } else {
+        Style::new().fg(theme.muted)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            ratatui::text::Span::styled(" true ", true_style),
+            ratatui::text::Span::raw("  "),
+            ratatui::text::Span::styled(" false ", false_style),
+        ])),
+        area,
+    );
 }
 
 #[cfg(test)]
 fn cell_editor_value(editor: &crate::model::relation_edit::CellEditorState) -> String {
-    editor.input.value().to_owned()
+    editor.input.value().unwrap_or_default().to_owned()
 }
 
 fn render_data(
@@ -719,19 +854,81 @@ pub(crate) fn provenance_label(value: RelationSnapshotProvenance) -> &'static st
 #[cfg(test)]
 mod tests {
     use super::cell_editor_value;
-    use crate::model::{relation_edit::CellEditorState, text_input::TextInput};
+    use crate::model::{
+        cell_editor::{CellEditorBuffer, CellEditorKind, JsonBuffer, TemporalDraft, TypedDraft},
+        relation::RelationTab,
+        relation_edit::{CellEditorState, RelationEditSession, RelationGridMode},
+        tab::WorkspaceTab,
+        text_input::TextInput,
+    };
+    use chrono::NaiveDate;
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn cell_editor_value_contains_only_the_cell_content() {
         let editor = CellEditorState {
             row: 5,
             column: 8,
-            input: TextInput::from("failed"),
+            input: CellEditorBuffer::Text(TextInput::from("failed")),
+            error: None,
         };
 
         assert_eq!(cell_editor_value(&editor), "failed");
         assert!(!cell_editor_value(&editor).contains("Edit cell"));
         assert!(!cell_editor_value(&editor).contains("[6, 9]"));
+    }
+
+    #[test]
+    fn typed_cell_editor_rendering_is_safe_in_tiny_areas() {
+        let editors = [
+            CellEditorBuffer::Typed {
+                kind: CellEditorKind::Json,
+                draft: TypedDraft::Json(JsonBuffer::new("{}")),
+            },
+            CellEditorBuffer::Typed {
+                kind: CellEditorKind::Date,
+                draft: TypedDraft::Temporal(TemporalDraft::date(
+                    NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+                )),
+            },
+            CellEditorBuffer::Typed {
+                kind: CellEditorKind::Boolean,
+                draft: TypedDraft::Boolean(TextInput::from("true")),
+            },
+        ];
+
+        for input in editors {
+            let mut app = crate::app::App::new(Vec::new());
+            app.tabs
+                .push(WorkspaceTab::Relation(RelationTab::new("users")));
+            app.active_tab = 1;
+            if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+                let mut edit =
+                    RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
+                        "x".into(),
+                    )]]);
+                edit.mode = RelationGridMode::EditCell(CellEditorState {
+                    row: 0,
+                    column: 0,
+                    input,
+                    error: None,
+                });
+                tab.edit = Some(edit);
+            }
+
+            let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    super::render(
+                        frame,
+                        frame.area(),
+                        &app,
+                        super::Theme::default(),
+                        &mut super::super::UiState::new(),
+                    );
+                })
+                .unwrap();
+        }
     }
 
     #[test]
