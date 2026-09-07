@@ -10,6 +10,33 @@ Oracle MySQL, SQL Server, and SQLite.
 > connection management, SQL execution, and coding-agent interfaces are usable,
 > but LazyDB is not yet a production-ready replacement for DataGrip.
 
+<table>
+  <tr>
+    <th>SQL Editor & Execution</th>
+    <th>Table Data View</th>
+  </tr>
+  <tr>
+    <td>
+      <img alt="sql-query" src="https://github.com/user-attachments/assets/a37348f0-bc37-49ae-b164-034730a5217e" />
+    </td>
+    <td>
+      <img alt="table-view-where-orderby" src="https://github.com/user-attachments/assets/69a60235-8a2f-49cb-8c4c-25392f33797c" />
+    </td>
+  </tr>
+  <tr>
+    <th>Dashboard</th>
+    <th>Mouse Support</th>
+  </tr>
+  <tr>
+    <td>
+      <img alt="lazydb-dashboard" src="https://github.com/user-attachments/assets/439f3d1b-611d-42db-9bc9-039799f9e3d3" />
+    </td>
+    <td>
+      <img alt="mouse-support" src="https://github.com/user-attachments/assets/bf39b262-b7b1-4f21-b1cc-fe8a58be7928" />
+    </td>
+  </tr>
+</table>
+
 ---
 
 ## Quickstart
