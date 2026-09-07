@@ -2471,6 +2471,114 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
         return None;
     }
     if let Some(RelationGridMode::EditCell(_)) = mode {
+        let json = matches!(
+            mode,
+            Some(RelationGridMode::EditCell(
+                crate::model::relation_edit::CellEditorState {
+                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
+                        kind: crate::model::cell_editor::CellEditorKind::Json,
+                        draft: crate::model::cell_editor::TypedDraft::Json(_),
+                        ..
+                    },
+                    ..
+                }
+            ))
+        );
+        if json {
+            return match (event.modifiers, event.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('s')) => Some(Action::RelationEditConfirm),
+                (KeyModifiers::CONTROL, KeyCode::Char('f')) => Some(Action::RelationEditJsonFormat),
+                (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::RelationEditInsert('\n')),
+                (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::RelationEditCancel),
+                (KeyModifiers::NONE, KeyCode::Up) => Some(Action::RelationEditJsonMove(-1)),
+                (KeyModifiers::NONE, KeyCode::Down) => Some(Action::RelationEditJsonMove(1)),
+                _ => map_text_input_edit(event).map(|edit| match edit {
+                    TextInputEdit::Insert(character) => Action::RelationEditInsert(character),
+                    TextInputEdit::Backspace => Action::RelationEditBackspace,
+                    TextInputEdit::DeletePreviousWord => Action::RelationEditDeletePreviousWord,
+                    TextInputEdit::DeleteToStart | TextInputEdit::Clear => {
+                        Action::RelationEditDeleteToStart
+                    }
+                    TextInputEdit::Delete => Action::RelationEditDelete,
+                    TextInputEdit::MoveLeft => Action::RelationEditMoveLeft,
+                    TextInputEdit::MoveRight => Action::RelationEditMoveRight,
+                    TextInputEdit::MoveHome => Action::RelationEditMoveHome,
+                    TextInputEdit::MoveEnd => Action::RelationEditMoveEnd,
+                    TextInputEdit::Undo => Action::RelationEditUndo,
+                    TextInputEdit::Redo => Action::RelationEditRedo,
+                }),
+            };
+        }
+        let boolean = matches!(
+            mode,
+            Some(RelationGridMode::EditCell(
+                crate::model::relation_edit::CellEditorState {
+                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
+                        kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                        draft: crate::model::cell_editor::TypedDraft::Boolean(_),
+                        ..
+                    },
+                    ..
+                }
+            ))
+        );
+        if boolean {
+            return match (event.modifiers, event.code) {
+                (KeyModifiers::NONE, KeyCode::Left) => Some(Action::RelationEditBooleanMove(-1)),
+                (KeyModifiers::NONE, KeyCode::Right) => Some(Action::RelationEditBooleanMove(1)),
+                (KeyModifiers::NONE, KeyCode::Char(' ')) => Some(Action::RelationEditBooleanToggle),
+                (KeyModifiers::NONE, KeyCode::Char('t' | 'T')) => {
+                    Some(Action::RelationEditBooleanSet(true))
+                }
+                (KeyModifiers::NONE, KeyCode::Char('f' | 'F')) => {
+                    Some(Action::RelationEditBooleanSet(false))
+                }
+                (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::RelationEditConfirm),
+                (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::RelationEditCancel),
+                _ => None,
+            };
+        }
+        let temporal = matches!(
+            mode,
+            Some(RelationGridMode::EditCell(
+                crate::model::relation_edit::CellEditorState {
+                    input: crate::model::cell_editor::CellEditorBuffer::Typed {
+                        draft: crate::model::cell_editor::TypedDraft::Temporal(_),
+                        ..
+                    },
+                    ..
+                }
+            ))
+        );
+        if temporal {
+            return match (event.modifiers, event.code) {
+                (KeyModifiers::NONE, KeyCode::Left) => Some(Action::RelationEditTemporalMove(-1)),
+                (KeyModifiers::NONE, KeyCode::Right) => Some(Action::RelationEditTemporalMove(1)),
+                (KeyModifiers::NONE, KeyCode::Char('[')) => {
+                    Some(Action::RelationEditTemporalMonth(-1))
+                }
+                (KeyModifiers::NONE, KeyCode::Char(']')) => {
+                    Some(Action::RelationEditTemporalMonth(1))
+                }
+                (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::RelationEditConfirm),
+                (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::RelationEditCancel),
+                _ => map_text_input_edit(event).map(|edit| match edit {
+                    TextInputEdit::Insert(character) => Action::RelationEditInsert(character),
+                    TextInputEdit::Backspace => Action::RelationEditBackspace,
+                    TextInputEdit::DeletePreviousWord => Action::RelationEditDeletePreviousWord,
+                    TextInputEdit::DeleteToStart | TextInputEdit::Clear => {
+                        Action::RelationEditDeleteToStart
+                    }
+                    TextInputEdit::Delete => Action::RelationEditDelete,
+                    TextInputEdit::MoveLeft => Action::RelationEditTemporalMove(-1),
+                    TextInputEdit::MoveRight => Action::RelationEditTemporalMove(1),
+                    TextInputEdit::MoveHome => Action::RelationEditMoveHome,
+                    TextInputEdit::MoveEnd => Action::RelationEditMoveEnd,
+                    TextInputEdit::Undo => Action::RelationEditUndo,
+                    TextInputEdit::Redo => Action::RelationEditRedo,
+                }),
+            };
+        }
         return match (event.modifiers, event.code) {
             (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::RelationEditConfirm),
             (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::RelationEditCancel),
@@ -3197,6 +3305,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let mut keymap = Keymap::default();
@@ -3734,7 +3843,8 @@ mod tests {
                     crate::model::relation_edit::CellEditorState {
                         row: 0,
                         column: 0,
-                        input: Default::default(),
+                        input: crate::model::cell_editor::CellEditorBuffer::Text(Default::default()),
+                        error: None,
                     },
                 ))
             ),
@@ -3748,6 +3858,7 @@ mod tests {
                         row: 0,
                         column: 0,
                         input: Default::default(),
+                        error: None,
                     },
                 )),
             ),
@@ -3762,6 +3873,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let mut keymap = Keymap::default();
@@ -3786,6 +3898,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let mut keymap = Keymap::default();
@@ -3869,6 +3982,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let mut keymap = Keymap::default();
@@ -3929,6 +4043,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let mut keymap = Keymap::default();

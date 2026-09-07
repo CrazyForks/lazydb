@@ -499,6 +499,9 @@ pub enum HelpShortcutId {
     RelationRedo,
     RelationRollback,
     RelationEditText,
+    RelationEditBoolean,
+    RelationEditTemporal,
+    RelationEditJson,
     RelationEditDeleteWord,
     EditorYank,
     ExplorerFindOpen,
@@ -1678,6 +1681,30 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         [RelationDataEdit],
         "type / Backspace",
         "edit cell value",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditBoolean,
+        [RelationDataEdit],
+        "Left/Right Space t/f",
+        "choose boolean",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditTemporal,
+        [RelationDataEdit],
+        "Left/Right  [/]  type",
+        "edit temporal fields; browse month",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditJson,
+        [RelationDataEdit],
+        "Enter  Ctrl-S  Ctrl-F  Esc",
+        "edit, format, apply, or cancel JSON without running SQL",
         RelationEditAvailable,
         display
     ),
@@ -3030,7 +3057,9 @@ fn footer_rank(
             Id::RelationEditApply => Some(1),
             Id::RelationEditCancel => Some(2),
             Id::RelationEditText => Some(3),
-            Id::RelationEditDeleteWord => Some(4),
+            Id::RelationEditBoolean => Some(4),
+            Id::RelationEditTemporal => Some(5),
+            Id::RelationEditDeleteWord => Some(6),
             _ => None,
         },
         ShortcutContext::RelationDataVisual => match id {
@@ -3873,6 +3902,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             });
         let edit = shortcuts(
             ShortcutContext::RelationDataEdit,
@@ -3985,6 +4015,7 @@ mod tests {
                 row: 0,
                 column: 0,
                 input: Default::default(),
+                error: None,
             },
         ));
         let edit_rows = shortcuts(
@@ -4090,7 +4121,14 @@ mod tests {
         );
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataEdit, editable),
-            vec!["Enter", "Esc", "type / Backspace", "Ctrl-w"]
+            vec![
+                "Enter",
+                "Esc",
+                "type / Backspace",
+                "Left/Right Space t/f",
+                "Left/Right  [/]  type",
+                "Ctrl-w",
+            ]
         );
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataVisual, editable),

@@ -1,4 +1,5 @@
 pub mod catalog_editor;
+pub mod cell_editor;
 pub mod confirmation;
 pub mod dashboard;
 pub mod data_query;

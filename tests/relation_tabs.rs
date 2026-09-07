@@ -1,3 +1,4 @@
+use chrono::Datelike;
 use lazydb::{
     action::Action,
     db::catalog::{
@@ -425,6 +426,222 @@ fn relation_dirty_edits_block_refresh_and_all_navigation() {
     ] {
         assert!(app.update(action).is_empty());
     }
+}
+
+#[test]
+fn relation_cell_edit_open_and_cancel_do_not_emit_write_commands() {
+    let mut app = app_with_relation_columns(&["id", "name"]);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Integer(1),
+                CellValue::Text("old".into()),
+            ]]),
+        );
+        tab.grid.selected_column = 1;
+    }
+
+    assert!(app.update(Action::RelationEditCell).is_empty());
+    assert!(matches!(
+        relation_tab(&app).edit.as_ref().unwrap().mode,
+        lazydb::model::relation_edit::RelationGridMode::EditCell(_)
+    ));
+
+    assert!(app.update(Action::RelationEditCancel).is_empty());
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    assert_eq!(
+        edit.mode,
+        lazydb::model::relation_edit::RelationGridMode::Browse
+    );
+    assert_eq!(edit.rows[0].current[1], CellValue::Text("old".into()));
+    assert!(edit.pending_save.is_empty());
+}
+
+#[test]
+fn relation_cell_edit_confirm_changes_only_the_local_draft() {
+    let mut app = app_with_relation_columns(&["id", "name"]);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Integer(1),
+                CellValue::Text("old".into()),
+            ]]),
+        );
+        tab.grid.selected_column = 1;
+    }
+
+    app.update(Action::RelationEditCell);
+    app.update(Action::RelationEditDeleteToStart);
+    for character in "new".chars() {
+        app.update(Action::RelationEditInsert(character));
+    }
+    assert!(app.update(Action::RelationEditConfirm).is_empty());
+
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    assert_eq!(
+        edit.mode,
+        lazydb::model::relation_edit::RelationGridMode::Browse
+    );
+    assert_eq!(edit.rows[0].original[1], CellValue::Text("old".into()));
+    assert_eq!(edit.rows[0].current[1], CellValue::Text("new".into()));
+    assert!(matches!(
+        edit.rows[0].state,
+        lazydb::model::relation_edit::EditableRowState::Updated { .. }
+    ));
+    assert!(edit.pending_save.is_empty());
+    assert_eq!(
+        relation_tab(&app).transaction_state,
+        lazydb::model::transaction::TransactionState::Idle
+    );
+}
+
+#[test]
+fn temporal_relation_editor_uses_segmented_input_and_preserves_fraction() {
+    let mut app = app_with_relation_columns_with_types(&[("created_at", "timestamp")]);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Timestamp(
+                    chrono::DateTime::parse_from_rfc3339("2026-08-28T10:20:31.1204+05:30").unwrap(),
+                ),
+            ]]),
+        );
+    }
+    app.update(Action::RelationEditCell);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit.as_mut().unwrap().mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
+            lazydb::model::relation_edit::CellEditorState {
+                row: 0,
+                column: 0,
+                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
+                    kind: lazydb::model::cell_editor::CellEditorKind::Timestamp,
+                    draft: lazydb::model::cell_editor::TypedDraft::Temporal(
+                        lazydb::model::cell_editor::TemporalDraft::from_timestamp(
+                            chrono::DateTime::parse_from_rfc3339("2026-08-28T10:20:31.1204+05:30")
+                                .unwrap(),
+                        ),
+                    ),
+                },
+                error: None,
+            },
+        );
+    }
+    assert!(matches!(
+        relation_tab(&app).edit.as_ref().unwrap().mode,
+        lazydb::model::relation_edit::RelationGridMode::EditCell(_)
+    ));
+    app.update(Action::RelationEditTemporalMonth(1));
+    app.update(Action::RelationEditConfirm);
+    assert!(matches!(
+        relation_tab(&app).edit.as_ref().unwrap().rows[0].current[0],
+        CellValue::Timestamp(value) if value.month() == 9
+    ));
+}
+
+#[test]
+fn boolean_relation_editor_actions_stay_local_until_confirmed() {
+    let mut app = app_with_relation_columns_with_types(&[("active", "boolean")]);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Boolean(false),
+            ]]),
+        );
+        tab.grid.selected_column = 0;
+        tab.edit.as_mut().unwrap().mode = lazydb::model::relation_edit::RelationGridMode::EditCell(
+            lazydb::model::relation_edit::CellEditorState {
+                row: 0,
+                column: 0,
+                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
+                    kind: lazydb::model::cell_editor::CellEditorKind::Boolean,
+                    draft: lazydb::model::cell_editor::TypedDraft::Boolean(
+                        lazydb::model::text_input::TextInput::from("false"),
+                    ),
+                },
+                error: None,
+            },
+        );
+    }
+
+    app.update(Action::RelationEditBooleanSet(true));
+    assert!(app.update(Action::RelationEditBooleanToggle).is_empty());
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("boolean action should keep the relation editor open");
+    };
+    assert_eq!(state.input.value(), Some("false"));
+    assert_eq!(edit.rows[0].current[0], CellValue::Boolean(false));
+    assert!(app.update(Action::RelationEditBooleanSet(true)).is_empty());
+    assert!(app.update(Action::RelationEditConfirm).is_empty());
+    assert_eq!(
+        relation_tab(&app).edit.as_ref().unwrap().rows[0].current[0],
+        CellValue::Boolean(true)
+    );
+}
+
+#[test]
+fn invalid_relation_cell_input_stays_in_editor_state() {
+    let mut app = app_with_relation_columns(&["id"]);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Integer(1),
+            ]]),
+        );
+    }
+
+    app.update(Action::RelationEditCell);
+    app.update(Action::RelationEditDeleteToStart);
+    for character in "not-an-integer".chars() {
+        app.update(Action::RelationEditInsert(character));
+    }
+    assert!(app.update(Action::RelationEditConfirm).is_empty());
+
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("invalid input should keep the cell editor open");
+    };
+    assert_eq!(state.input.value(), Some("not-an-integer"));
+    assert_eq!(state.error.as_deref(), Some("invalid integer"));
+    assert_eq!(relation_tab(&app).query.error, None);
+    assert_eq!(edit.rows[0].current[0], CellValue::Integer(1));
+}
+
+#[test]
+fn relation_edit_session_preserves_typed_cell_values() {
+    let values = vec![
+        CellValue::Null,
+        CellValue::Boolean(true),
+        CellValue::Integer(-1),
+        CellValue::Unsigned(2),
+        CellValue::Float(3.5),
+        CellValue::Bytes(vec![1, 2]),
+    ];
+    let session =
+        lazydb::model::relation_edit::RelationEditSession::from_rows(vec![values.clone()]);
+
+    assert_eq!(session.rows[0].original, values);
+    assert_eq!(session.rows[0].current, session.rows[0].original);
+}
+
+#[test]
+fn relation_preview_columns_keep_native_type_metadata_separate_from_values() {
+    let columns = [
+        ColumnMeta {
+            name: "id".into(),
+            type_name: "INTEGER".into(),
+        },
+        ColumnMeta {
+            name: "payload".into(),
+            type_name: "JSON".into(),
+        },
+    ];
+    let values = [CellValue::Integer(1), CellValue::Text("NULL".into())];
+
+    assert_eq!(columns[0].type_name, "INTEGER");
+    assert_eq!(columns[1].type_name, "JSON");
+    assert_eq!(values[1], CellValue::Text("NULL".into()));
+    assert_ne!(values[1], CellValue::Null);
 }
 
 #[test]
@@ -927,6 +1144,15 @@ fn relation_query_mut(
 }
 
 fn app_with_relation_columns(columns: &[&str]) -> lazydb::app::App {
+    app_with_relation_columns_with_types(
+        &columns
+            .iter()
+            .map(|name| (*name, "text"))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn app_with_relation_columns_with_types(columns: &[(&str, &str)]) -> lazydb::app::App {
     let mut app = app_with_relation(RelationView::Data);
     let mut tab = match app.tabs.pop().unwrap() {
         WorkspaceTab::Relation(tab) => tab,
@@ -940,9 +1166,9 @@ fn app_with_relation_columns(columns: &[&str]) -> lazydb::app::App {
                     result_sets: vec![ResultSet {
                         columns: columns
                             .iter()
-                            .map(|name| ColumnMeta {
+                            .map(|(name, type_name)| ColumnMeta {
                                 name: (*name).into(),
-                                type_name: "text".into(),
+                                type_name: (*type_name).into(),
                             })
                             .collect(),
                         rows: Vec::new(),

@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use crate::db::mutation::RelationMutationRequest;
 use crate::db::value::CellValue;
-use crate::model::text_input::TextInput;
+use crate::model::cell_editor::CellEditorBuffer;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct EditableRowId(pub u64);
@@ -22,7 +22,8 @@ pub enum RelationGridMode {
 pub struct CellEditorState {
     pub row: usize,
     pub column: usize,
-    pub input: TextInput,
+    pub input: CellEditorBuffer,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -320,10 +321,11 @@ impl RelationEditSession {
 #[cfg(test)]
 mod tests {
     use super::{
-        EditableRow, EditableRowId, EditableRowState, PendingMutationHistory, RelationEditSession,
-        RelationGridMode, RelationMutationHistory,
+        CellEditorState, EditableRow, EditableRowId, EditableRowState, PendingMutationHistory,
+        RelationEditSession, RelationGridMode, RelationMutationHistory,
     };
     use crate::db::value::CellValue;
+    use crate::model::cell_editor::CellEditorBuffer;
 
     fn row() -> EditableRow {
         EditableRow::new(
@@ -449,5 +451,22 @@ mod tests {
         assert!(session.complete_mutation());
         assert!(session.mutation_undo.is_empty());
         assert_eq!(session.mutation_redo.len(), 1);
+    }
+
+    #[test]
+    fn cell_editor_state_can_hold_a_typed_boolean_without_changing_relation_mode() {
+        let mut session = RelationEditSession::from_rows(vec![vec![CellValue::Boolean(true)]]);
+        session.mode = RelationGridMode::EditCell(CellEditorState {
+            row: 0,
+            column: 0,
+            input: CellEditorBuffer::Typed {
+                kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                draft: crate::model::cell_editor::TypedDraft::Boolean(
+                    crate::model::text_input::TextInput::from("true"),
+                ),
+            },
+            error: None,
+        });
+        assert!(matches!(session.mode, RelationGridMode::EditCell(_)));
     }
 }
