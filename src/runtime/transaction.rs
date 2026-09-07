@@ -395,6 +395,7 @@ mod tests {
         cancel_closes: bool,
         commit_fails: bool,
         rollback_fails: bool,
+        mutation_fails: bool,
     }
 
     #[async_trait]
@@ -434,8 +435,12 @@ mod tests {
             _request: RelationMutationRequest,
         ) -> Result<MutationResult, TransactionError> {
             self.log.lock().unwrap().push("relation_mutation".into());
+            if self.mutation_fails {
+                return Err(TransactionError("mutation".into()));
+            }
             Ok(MutationResult::Updated {
                 row: vec![CellValue::Integer(1), CellValue::Text("new".into())],
+                version: None,
             })
         }
         async fn rollback(&mut self) -> Result<(), TransactionError> {
@@ -577,6 +582,66 @@ mod tests {
         assert_eq!(
             *log.lock().unwrap(),
             vec!["begin", "relation_mutation", "commit"]
+        );
+    }
+
+    #[tokio::test]
+    async fn relation_mutation_failure_stops_before_later_commit() {
+        let fake = Fake {
+            mutation_fails: true,
+            ..Fake::default()
+        };
+        let log = fake.log.clone();
+        let worker = spawn_transaction_worker(fake);
+        let id = uuid::Uuid::nil();
+        let request = RelationMutationRequest {
+            tab_id: id,
+            tab_generation: 1,
+            edit_generation: 1,
+            row_id: crate::model::relation_edit::EditableRowId(1),
+            connection: ConnectionIdentity {
+                profile_id: id,
+                generation: 1,
+            },
+            target: ExecutionTarget {
+                profile_id: id,
+                database: "db".into(),
+                schema: None,
+            },
+            relation: CatalogId::new(id, CatalogKind::Table, ["db", "items"]),
+            relation_key: RelationKey {
+                profile_id: id,
+                object_id: CatalogId::new(id, CatalogKind::Table, ["db", "items"]),
+            },
+            scope: CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+            metadata: MetadataFingerprint {
+                relation: "items".into(),
+                columns: vec![("id".into(), "INTEGER".into(), false)],
+                primary_key: vec!["id".into()],
+            },
+            operation: RelationMutation::DeleteRows(Vec::new()),
+        };
+        let (reply, result) = oneshot::channel();
+        let (_, cancel) = oneshot::channel();
+        worker
+            .requests
+            .send(TransactionRequest::RelationMutation {
+                request,
+                cancel,
+                reply,
+            })
+            .unwrap();
+        assert!(result.await.unwrap().is_err());
+
+        let (reply, result) = oneshot::channel();
+        worker
+            .requests
+            .send(TransactionRequest::Rollback { reply })
+            .unwrap();
+        assert!(result.await.unwrap().is_ok());
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["begin", "relation_mutation", "rollback"]
         );
     }
 

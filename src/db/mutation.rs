@@ -160,6 +160,11 @@ pub struct RowLocator {
     pub values: Vec<CellValue>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RowVersion {
+    PostgresXmin(u32),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpdateCellMutation {
     pub row: RowLocator,
@@ -170,8 +175,10 @@ pub struct UpdateCellMutation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeleteRowMutation {
+    pub row_id: crate::model::relation_edit::EditableRowId,
     pub row: RowLocator,
     pub original: Vec<CellValue>,
+    pub version: Option<RowVersion>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,9 +213,17 @@ pub struct RelationMutationRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MutationResult {
-    Updated { row: Vec<CellValue> },
-    Deleted { rows: usize },
-    Inserted { row: Vec<CellValue> },
+    Updated {
+        row: Vec<CellValue>,
+        version: Option<RowVersion>,
+    },
+    Deleted {
+        rows: usize,
+    },
+    Inserted {
+        row: Vec<CellValue>,
+        version: Option<RowVersion>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

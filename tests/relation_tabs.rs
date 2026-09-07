@@ -670,6 +670,7 @@ fn relation_grid_actions_update_relation_grid_using_preview_dimensions() {
                     stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 1),
                 },
                 pagination: default_pagination(1),
+                row_versions: None,
             },
             lazydb::identity::ConnectionIdentity {
                 profile_id: Uuid::nil(),
@@ -945,6 +946,7 @@ fn relation_query_falls_back_to_preview_columns() {
                     stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 0),
                 },
                 pagination: default_pagination(0),
+                row_versions: None,
             },
             connection,
             lazydb::profile::CatalogScope::for_profile(
@@ -1085,6 +1087,7 @@ fn relation_snapshot_provenance_is_derived_from_current_connection_and_profile()
                     ),
                 },
                 pagination: default_pagination(0),
+                row_versions: None,
             },
             connection,
             lazydb::profile::CatalogScope::for_profile(
@@ -1177,6 +1180,7 @@ fn app_with_relation_columns_with_types(columns: &[(&str, &str)]) -> lazydb::app
                     stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 0),
                 },
                 pagination: default_pagination(0),
+                row_versions: None,
             },
             lazydb::identity::ConnectionIdentity {
                 profile_id: Uuid::nil(),

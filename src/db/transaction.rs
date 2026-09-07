@@ -51,6 +51,56 @@ pub enum WorkerDisposition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransactionError(pub String);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationMutationCategory {
+    Conflict,
+    UnsupportedComparison,
+    TypeMismatch,
+    Constraint,
+    ConnectionUnknown,
+    InvalidRequest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RelationMutationDiagnostic {
+    pub category: RelationMutationCategory,
+    pub sqlstate: Option<String>,
+    pub operation: String,
+    pub relation: String,
+    pub context: Option<String>,
+    pub message: String,
+}
+
+impl RelationMutationDiagnostic {
+    pub fn safe_message(&self) -> String {
+        let mut message = format!("{} on {}: {}", self.operation, self.relation, self.message);
+        if let Some(context) = &self.context {
+            message.push_str(&format!(" ({context})"));
+        }
+        if let Some(sqlstate) = &self.sqlstate {
+            message.push_str(&format!(" (SQLSTATE {sqlstate})"));
+        }
+        message
+    }
+}
+
+const RELATION_DIAGNOSTIC_PREFIX: &str = "[lazydb-relation-diagnostic]";
+
+impl TransactionError {
+    pub fn relation(diagnostic: RelationMutationDiagnostic) -> Self {
+        // This is an internal bridge format. It deliberately contains only the
+        // already-redacted, actionable fields and never server DETAIL/values.
+        let payload =
+            serde_json::to_string(&diagnostic).expect("relation diagnostic is serializable");
+        Self(format!("{RELATION_DIAGNOSTIC_PREFIX}{payload}"))
+    }
+
+    pub fn relation_diagnostic(&self) -> Option<RelationMutationDiagnostic> {
+        serde_json::from_str(self.0.strip_prefix(RELATION_DIAGNOSTIC_PREFIX)?).ok()
+    }
+}
+
 impl std::fmt::Display for TransactionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
@@ -80,4 +130,28 @@ pub trait TransactionBackend: Send + 'static {
     async fn cancel(&mut self) -> Result<(), TransactionError>;
     fn depth(&self) -> usize;
     fn force_close(self) -> BoxFuture<'static, Result<(), TransactionError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relation_diagnostic_round_trips_sqlstate_and_safe_context() {
+        let error = TransactionError::relation(RelationMutationDiagnostic {
+            category: RelationMutationCategory::Constraint,
+            sqlstate: Some("23505".into()),
+            operation: "insert".into(),
+            relation: "public.items".into(),
+            context: Some("row mutation".into()),
+            message: "insert failed".into(),
+        });
+        let diagnostic = error.relation_diagnostic().unwrap();
+        assert_eq!(diagnostic.sqlstate.as_deref(), Some("23505"));
+        assert_eq!(
+            diagnostic.safe_message(),
+            "insert on public.items: insert failed (row mutation) (SQLSTATE 23505)"
+        );
+        assert!(!error.0.contains("DETAIL"));
+    }
 }

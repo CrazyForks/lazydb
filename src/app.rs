@@ -9479,9 +9479,11 @@ impl App {
             Action::RelationMutationSucceeded { request, result } => {
                 self.relation_mutation_result(request, Ok(result))
             }
-            Action::RelationMutationFailed { request, message } => {
-                self.relation_mutation_result(request, Err(message))
-            }
+            Action::RelationMutationFailed {
+                request,
+                message,
+                diagnostic,
+            } => self.relation_mutation_result(request, Err((message, diagnostic))),
             Action::RelationCommitted {
                 tab_id,
                 generation,
@@ -14603,7 +14605,8 @@ impl App {
             .iter()
             .find(|profile| profile.id == connection.profile_id)
             .is_some_and(|profile| profile.kind == crate::profile::DatabaseKind::Postgres);
-        let Some((keyless, has_insert, has_existing_mutation)) =
+        let is_postgres = allow_keyless_insert;
+        let Some((keyless, has_insert, has_existing_mutation, has_unversioned_delete)) =
             self.tabs.get(self.active_tab).and_then(|tab| {
                 let WorkspaceTab::Relation(tab) = tab else {
                     return None;
@@ -14630,6 +14633,13 @@ impl App {
                                 | crate::model::relation_edit::EditableRowState::Deleted
                         )
                     }),
+                    is_postgres
+                        && edit.rows.iter().any(|row| {
+                            matches!(
+                                row.state,
+                                crate::model::relation_edit::EditableRowState::Deleted
+                            ) && row.version.is_none()
+                        }),
                 ))
             })
         else {
@@ -14639,6 +14649,13 @@ impl App {
             self.notify_warning(
                 "Relation",
                 "Cannot update or delete existing rows without a primary key; no changes were saved",
+            );
+            return Vec::new();
+        }
+        if has_unversioned_delete {
+            self.notify_warning(
+                "Relation",
+                "Cannot delete PostgreSQL rows without a captured row version; refresh the relation first",
             );
             return Vec::new();
         }
@@ -14712,8 +14729,10 @@ impl App {
                                                 .collect(),
                                         },
                                         column: metadata_column,
-                                        original: row.original.get(column)?.clone(),
-                                        value: input_value(row.current.get(column)?),
+                                        original: row.original.get(result_indexes[column])?.clone(),
+                                        value: input_value(
+                                            row.current.get(result_indexes[column])?,
+                                        ),
                                     }),
                                 ));
                             }
@@ -14748,29 +14767,28 @@ impl App {
                         crate::model::relation_edit::EditableRowState::Deleted => {
                             let pk_columns = pk_columns.as_ref()?;
                             deleted.push(DeleteRowMutation {
+                                row_id: row.id,
                                 row: RowLocator {
                                     columns: pk_columns.clone(),
                                     values: pk_columns
                                         .iter()
-                                        .filter_map(|index| row.original.get(*index).cloned())
+                                        .filter_map(|index| {
+                                            row.original.get(result_indexes[*index]).cloned()
+                                        })
                                         .collect(),
                                 },
                                 original: result_indexes
                                     .iter()
                                     .filter_map(|index| row.original.get(*index).cloned())
                                     .collect(),
+                                version: row.version,
                             });
                         }
                         _ => {}
                     }
                 }
                 if let Some(first) = deleted.first() {
-                    let row_id = edit
-                        .rows
-                        .iter()
-                        .find(|row| row.original == first.original)
-                        .map(|row| row.id)?;
-                    requests.push(request(row_id, RelationMutation::DeleteRows(deleted)));
+                    requests.push(request(first.row_id, RelationMutation::DeleteRows(deleted)));
                 }
                 Some((requests, edit.clone()))
             })
@@ -14884,7 +14902,13 @@ impl App {
     fn relation_mutation_result(
         &mut self,
         request: crate::db::mutation::RelationMutationRequest,
-        result: Result<crate::db::mutation::MutationResult, String>,
+        result: Result<
+            crate::db::mutation::MutationResult,
+            (
+                String,
+                Option<crate::db::transaction::RelationMutationDiagnostic>,
+            ),
+        >,
     ) -> Vec<Command> {
         let Some(WorkspaceTab::Relation(tab)) =
             self.tabs.iter_mut().find(|t| t.id() == request.tab_id)
@@ -14895,7 +14919,7 @@ impl App {
             return Vec::new();
         };
         match result {
-            Ok(crate::db::mutation::MutationResult::Updated { row }) => {
+            Ok(crate::db::mutation::MutationResult::Updated { row, version }) => {
                 if edit.pending_mutation_history.is_some() {
                     edit.complete_mutation();
                 } else {
@@ -14940,6 +14964,7 @@ impl App {
                 if let Some(r) = edit.rows.iter_mut().find(|r| r.id == request.row_id) {
                     r.current = row.clone();
                     r.original = row;
+                    r.version = version;
                     r.state = crate::model::relation_edit::EditableRowState::Clean;
                 }
             }
@@ -14953,19 +14978,17 @@ impl App {
                 if let crate::db::mutation::RelationMutation::DeleteRows(rows) = &request.operation
                 {
                     for mutation in rows {
-                        if let Some(row) = edit
-                            .rows
-                            .iter_mut()
-                            .find(|row| row.original == mutation.original)
+                        if let Some(row) =
+                            edit.rows.iter_mut().find(|row| row.id == mutation.row_id)
                         {
                             row.state = crate::model::relation_edit::EditableRowState::Deleted;
                         }
                     }
                 }
             }
-            Ok(crate::db::mutation::MutationResult::Inserted { row }) => {
+            Ok(crate::db::mutation::MutationResult::Inserted { row, version }) => {
                 if let Some(r) = edit.rows.iter_mut().find(|r| r.id == request.row_id) {
-                    r.mark_inserted(row);
+                    r.mark_inserted(row, version);
                 }
                 if edit.pending_mutation_history.is_none() {
                     edit.record_mutation(RelationMutationHistory {
@@ -14974,7 +14997,7 @@ impl App {
                     });
                 }
             }
-            Err(message) => {
+            Err((message, diagnostic)) => {
                 edit.pending_mutation_history = None;
                 edit.pending_save.clear();
                 let ids = match &request.operation {
@@ -14983,7 +15006,7 @@ impl App {
                         .filter_map(|mutation| {
                             edit.rows
                                 .iter()
-                                .find(|row| row.original == mutation.original)
+                                .find(|row| row.id == mutation.row_id)
                                 .map(|row| row.id)
                         })
                         .collect::<Vec<_>>(),
@@ -14991,7 +15014,16 @@ impl App {
                 };
                 for id in ids {
                     if let Some(r) = edit.rows.iter_mut().find(|r| r.id == id) {
-                        r.mark_conflict(message.clone());
+                        let is_conflict = diagnostic.as_ref().is_some_and(|detail| {
+                            matches!(
+                                detail.category,
+                                crate::db::transaction::RelationMutationCategory::Conflict
+                            )
+                        }) || (diagnostic.is_none()
+                            && message.to_ascii_lowercase().contains("conflict"));
+                        if is_conflict {
+                            r.mark_conflict(message.clone());
+                        }
                     }
                 }
                 tab.transaction_state = TransactionState::Aborted;
@@ -15602,6 +15634,7 @@ impl App {
                 if matches!(&tab.data, RelationLoad::Loading { request: pending, .. } if pending == &request)
                 {
                     let pagination = snapshot.pagination;
+                    let row_versions = snapshot.row_versions.clone();
                     let rows = snapshot
                         .result
                         .result_sets
@@ -15618,7 +15651,10 @@ impl App {
                     tab.pagination = pagination;
                     tab.grid.selected_row = 0;
                     tab.grid.row_offset = 0;
-                    tab.edit = rows.map(RelationEditSession::from_rows);
+                    tab.edit = rows.map(|rows| {
+                        RelationEditSession::from_rows_with_versions(rows, row_versions)
+                            .expect("relation preview row versions must match rows")
+                    });
                 }
             }
             (RelationRequestKind::Ddl, Ok(RelationSnapshot::Ddl(snapshot))) => {
@@ -16180,6 +16216,7 @@ mod tests {
             OwnedSnapshot, RelationDescriptor, RelationLoad, RelationRequest, RelationRequestKind,
             RelationSnapshot, RelationTab, RelationView, SnapshotAttribution,
         },
+        model::relation_edit::RelationMutationHistory,
         model::tab::{
             ConsoleRecord, ConsoleTab, DerivedResultState, ExecutionResult, GridRowAlignment,
             GridRowTarget, GridScrollAmount, OutputEntry, OutputKind, ResultView, WorkspaceTab,
@@ -17168,6 +17205,7 @@ mod tests {
                     ),
                     3,
                 ),
+                row_versions: None,
             },
             attribution: SnapshotAttribution {
                 connection,
@@ -17270,6 +17308,7 @@ mod tests {
                     ),
                     0,
                 ),
+                row_versions: None,
             },
             attribution: SnapshotAttribution {
                 connection,
@@ -17314,6 +17353,7 @@ mod tests {
             request: first_request.clone(),
             result: MutationResult::Inserted {
                 row: vec![CellValue::Integer(1), CellValue::Text("one".into())],
+                version: None,
             },
         });
         let second_request = match second_commands.as_slice() {
@@ -17333,6 +17373,7 @@ mod tests {
             request: second_request,
             result: MutationResult::Inserted {
                 row: vec![CellValue::Integer(2), CellValue::Text("two".into())],
+                version: None,
             },
         });
         assert!(matches!(
@@ -17688,6 +17729,7 @@ mod tests {
                     stats: QueryStats::new(Duration::ZERO, Duration::ZERO, 1),
                 },
                 pagination: crate::model::pagination::ResultPagination::from_page(request_page, 1),
+                row_versions: None,
             })),
         });
 
@@ -17864,6 +17906,7 @@ mod tests {
             request,
             result: MutationResult::Inserted {
                 row: vec![CellValue::Integer(7), CellValue::Text("server".into())],
+                version: None,
             },
         });
         let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
@@ -17878,9 +17921,24 @@ mod tests {
     #[test]
     fn relation_mutation_failure_marks_conflict_and_requests_rollback() {
         let (mut app, request) = relation_mutation_app();
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[app.active_tab] {
+            tab.edit
+                .as_mut()
+                .unwrap()
+                .pending_save
+                .push_back(request.clone());
+        }
         let commands = app.update(Action::RelationMutationFailed {
             request,
             message: "conflict".into(),
+            diagnostic: Some(crate::db::transaction::RelationMutationDiagnostic {
+                category: crate::db::transaction::RelationMutationCategory::Conflict,
+                sqlstate: None,
+                operation: "delete".into(),
+                relation: "items".into(),
+                context: None,
+                message: "conflict".into(),
+            }),
         });
         let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
             panic!("expected relation tab")
@@ -17890,6 +17948,35 @@ mod tests {
             EditableRowState::Conflict { .. }
         ));
         assert_eq!(tab.transaction_state, TransactionState::RollingBack);
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::RelationRollback { .. }]
+        ));
+        assert!(tab.edit.as_ref().unwrap().pending_save.is_empty());
+    }
+
+    #[test]
+    fn relation_mutation_type_failure_does_not_mark_row_as_conflict() {
+        let (mut app, request) = relation_mutation_app();
+        let commands = app.update(Action::RelationMutationFailed {
+            request,
+            message: "update: value cannot be assigned (SQLSTATE 22P02)".into(),
+            diagnostic: Some(crate::db::transaction::RelationMutationDiagnostic {
+                category: crate::db::transaction::RelationMutationCategory::TypeMismatch,
+                sqlstate: Some("22P02".into()),
+                operation: "update".into(),
+                relation: "items".into(),
+                context: Some("safe type context".into()),
+                message: "value cannot be assigned".into(),
+            }),
+        });
+        let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
+            panic!("expected relation tab")
+        };
+        assert!(!matches!(
+            tab.edit.as_ref().unwrap().rows[0].state,
+            EditableRowState::Conflict { .. }
+        ));
         assert!(matches!(
             commands.as_slice(),
             [Command::RelationRollback { .. }]
@@ -17939,6 +18026,113 @@ mod tests {
         assert!(matches!(edit.rows[1].state, EditableRowState::Clean));
         assert_eq!(tab.transaction_state, TransactionState::Idle);
         assert!(tab.transaction_snapshot.is_none());
+    }
+
+    #[test]
+    fn failed_relation_mutation_clears_remaining_writes_and_restores_full_snapshot() {
+        let mut app = App::new(Vec::new());
+        let mut snapshot = RelationEditSession::from_rows_with_versions(
+            vec![
+                vec![CellValue::Integer(1), CellValue::Text("old".into())],
+                vec![CellValue::Integer(2), CellValue::Text("keep".into())],
+            ],
+            Some(vec![
+                crate::db::mutation::RowVersion::PostgresXmin(11),
+                crate::db::mutation::RowVersion::PostgresXmin(22),
+            ]),
+        )
+        .unwrap();
+        let snapshot_ids = snapshot.rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        snapshot.mutation_undo.push(RelationMutationHistory {
+            forward: relation_mutation_app().1.clone(),
+            inverse: relation_mutation_app().1,
+        });
+        let mut draft = snapshot.clone();
+        draft.update_cell(0, 1, CellValue::Text("changed".into()));
+        draft.delete_rows(1..=1);
+        draft
+            .pending_save
+            .push_back(draft.mutation_undo[0].forward.clone());
+
+        let mut tab = RelationTab::new("items");
+        tab.transaction_state = TransactionState::RollingBack;
+        tab.transaction_generation = 1;
+        tab.transaction_snapshot = Some(snapshot.clone());
+        tab.edit = Some(draft);
+        let tab_id = tab.id;
+        app.tabs.push(WorkspaceTab::Relation(tab));
+
+        app.relation_transaction_finished(
+            tab_id,
+            1,
+            ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 1,
+            },
+            true,
+            None,
+        );
+
+        let WorkspaceTab::Relation(tab) = app.tabs.iter().find(|tab| tab.id() == tab_id).unwrap()
+        else {
+            panic!()
+        };
+        let edit = tab.edit.as_ref().unwrap();
+        assert_eq!(
+            edit.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+            snapshot_ids
+        );
+        assert_eq!(edit.rows, snapshot.rows);
+        assert!(edit.pending_save.is_empty());
+        assert_eq!(edit.mutation_undo, snapshot.mutation_undo);
+    }
+
+    #[test]
+    fn failed_or_unknown_relation_rollback_keeps_snapshot_and_never_reports_success() {
+        for unknown in [false, true] {
+            let mut app = App::new(Vec::new());
+            let snapshot = RelationEditSession::from_rows_with_versions(
+                vec![vec![CellValue::Integer(1)]],
+                Some(vec![crate::db::mutation::RowVersion::PostgresXmin(7)]),
+            )
+            .unwrap();
+            let mut tab = RelationTab::new("items");
+            tab.transaction_state = TransactionState::RollingBack;
+            tab.transaction_generation = 4;
+            tab.transaction_snapshot = Some(snapshot.clone());
+            tab.edit = Some(RelationEditSession::from_rows(vec![vec![
+                CellValue::Integer(9),
+            ]]));
+            let tab_id = tab.id;
+            app.tabs.push(WorkspaceTab::Relation(tab));
+
+            app.relation_transaction_finished(
+                tab_id,
+                4,
+                ConnectionIdentity {
+                    profile_id: Uuid::nil(),
+                    generation: 1,
+                },
+                false,
+                Some(("rollback failed".into(), unknown)),
+            );
+
+            let WorkspaceTab::Relation(tab) =
+                app.tabs.iter().find(|tab| tab.id() == tab_id).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(tab.transaction_snapshot, Some(snapshot));
+            assert_eq!(
+                tab.transaction_state,
+                if unknown {
+                    TransactionState::OutcomeUnknown
+                } else {
+                    TransactionState::Active
+                }
+            );
+            assert!(app.notifications.history().next().is_some());
+        }
     }
 
     #[test]

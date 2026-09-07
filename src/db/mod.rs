@@ -53,6 +53,7 @@ pub struct RelationPreview {
     pub sql: String,
     pub result: QueryOutcome,
     pub pagination: crate::model::pagination::ResultPagination,
+    pub row_versions: Option<Vec<mutation::RowVersion>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

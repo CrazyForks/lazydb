@@ -130,6 +130,7 @@ fn unchanged_relation_response_is_the_only_accepted_identity() {
             sql: "previous".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         },
         attribution: lazydb::model::relation::SnapshotAttribution {
             connection: request.connection,
@@ -160,6 +161,7 @@ fn unchanged_relation_response_is_the_only_accepted_identity() {
                 ),
             },
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
     assert!(matches!(
@@ -183,6 +185,7 @@ fn every_stale_field_preserves_pending_and_previous_snapshot() {
                 sql: "stale".into(),
                 result: empty_outcome(),
                 pagination: default_pagination(),
+                row_versions: None,
             })),
         });
         assert_eq!(app.tabs[1], before);
@@ -230,6 +233,7 @@ fn rapid_relation_requests_accept_only_the_latest_success() {
             sql: "stale".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
     assert!(matches!(
@@ -244,6 +248,7 @@ fn rapid_relation_requests_accept_only_the_latest_success() {
             sql: "latest".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
     assert!(matches!(
@@ -289,6 +294,7 @@ fn stale_failure_and_cancelled_request_are_ignored() {
             sql: "cancelled stale".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
     assert!(matches!(
@@ -362,6 +368,7 @@ fn relation_event_cannot_mutate_a_cached_inactive_workspace() {
             sql: "stale".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
 
@@ -447,6 +454,7 @@ fn relation_app(request: &RelationRequest) -> App {
                 sql: "previous".into(),
                 result: empty_outcome(),
                 pagination: default_pagination(),
+                row_versions: None,
             },
             attribution: lazydb::model::relation::SnapshotAttribution {
                 connection: request.connection,
@@ -531,6 +539,7 @@ fn scope_mutation_does_not_change_request_snapshot_attribution() {
             sql: "select 1".into(),
             result: empty_outcome(),
             pagination: default_pagination(),
+            row_versions: None,
         })),
     });
     let WorkspaceTab::Relation(tab) = &app.tabs[1] else {

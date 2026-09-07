@@ -1701,6 +1701,7 @@ impl MySqlAdapter {
             sql,
             result: QueryOutcome::from_result_set(result_set, started.elapsed(), Duration::ZERO),
             pagination: relation_pagination(page, fetched_len, total),
+            row_versions: None,
         })
     }
 
@@ -2227,6 +2228,7 @@ impl TransactionBackend for MySqlTransactionBackend {
                     .map_err(|e| TransactionError(e.to_string()))?;
                 return Ok(MutationResult::Inserted {
                     row: decode_row(&row),
+                    version: None,
                 });
             }
             RelationMutation::UpdateCell(update) => {
@@ -2368,6 +2370,7 @@ impl TransactionBackend for MySqlTransactionBackend {
                     .ok_or_else(|| TransactionError("MySQL relation mutation conflict".into()))?;
                 Ok(MutationResult::Updated {
                     row: decode_row(&row),
+                    version: None,
                 })
             }
         }

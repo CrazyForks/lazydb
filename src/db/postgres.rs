@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    str::FromStr,
     time::{Duration, Instant},
 };
 
@@ -36,7 +37,9 @@ use crate::{
     security::sanitize_terminal_text,
 };
 
-use super::transaction::{TransactionBackend, TransactionError};
+use super::transaction::{
+    RelationMutationCategory, RelationMutationDiagnostic, TransactionBackend, TransactionError,
+};
 use super::{
     DatabaseError, ErrorCategory, ServerInfo,
     catalog::{
@@ -2999,9 +3002,7 @@ LIMIT 2001
         })
     }
 
-    pub(crate) async fn transaction_backend(
-        &self,
-    ) -> Result<PostgresTransactionBackend, DatabaseError> {
+    pub async fn transaction_backend(&self) -> Result<PostgresTransactionBackend, DatabaseError> {
         let mut connection = self
             .pool
             .acquire()
@@ -4469,7 +4470,7 @@ LIMIT 2001
         request: &CatalogRequest,
         relation: &CatalogId,
     ) -> Result<CatalogPage, DatabaseError> {
-        let (database, schema, _, relation_oid, _) = self
+        let (database, schema, _, relation_oid, _, _) = self
             .verify_relation(connection, relation, &request.key.target)
             .await?;
         let mut entries = self
@@ -4696,7 +4697,7 @@ LIMIT 2001
         connection: &mut PgConnection,
         relation: &CatalogId,
         target: &CatalogTarget,
-    ) -> Result<(String, String, String, i64, &'static str), DatabaseError> {
+    ) -> Result<(String, String, String, i64, &'static str, bool), DatabaseError> {
         if relation.profile_id() != self.connection_id || !relation.kind.is_relation() {
             return Err(catalog_target_not_found(target));
         }
@@ -4717,8 +4718,8 @@ LIMIT 2001
         if current != database {
             return Err(catalog_target_not_found(target));
         }
-        let native_kind = sqlx::query_scalar::<_, String>(
-            "SELECT c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=$1::oid AND n.nspname=$2 AND c.relname=$3",
+        let relation_info = sqlx::query(
+            "SELECT c.relkind::text AS relkind, c.relispartition, EXISTS(SELECT 1 FROM pg_inherits i WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) AS has_inheritance FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=$1::oid AND n.nspname=$2 AND c.relname=$3",
         )
         .bind(oid)
         .bind(schema)
@@ -4726,10 +4727,20 @@ LIMIT 2001
         .fetch_optional(&mut *connection)
         .await
         .map_err(sql_error)?;
-        let (expected, verified_native_kind) = match native_kind.as_deref() {
-            Some("r" | "p") => (CatalogKind::Table, "table"),
-            Some("v") => (CatalogKind::View, "view"),
-            Some("m") => (CatalogKind::MaterializedView, "materialized_view"),
+        let Some(relation_info) = relation_info else {
+            return Err(catalog_target_not_found(target));
+        };
+        let native_kind: String = relation_info.try_get("relkind").map_err(decode_error)?;
+        let is_partition: bool = relation_info
+            .try_get("relispartition")
+            .map_err(decode_error)?;
+        let has_inheritance: bool = relation_info
+            .try_get("has_inheritance")
+            .map_err(decode_error)?;
+        let (expected, verified_native_kind) = match native_kind.as_str() {
+            "r" | "p" => (CatalogKind::Table, "table"),
+            "v" => (CatalogKind::View, "view"),
+            "m" => (CatalogKind::MaterializedView, "materialized_view"),
             _ => return Err(catalog_target_not_found(target)),
         };
         if relation.kind != expected {
@@ -4741,6 +4752,7 @@ LIMIT 2001
             name.to_owned(),
             oid,
             verified_native_kind,
+            native_kind == "r" && !is_partition && !has_inheritance,
         ))
     }
 
@@ -4754,7 +4766,7 @@ LIMIT 2001
         let target = CatalogTarget::RelationChildren {
             relation: relation.clone(),
         };
-        let (_, schema, name, _, _) = self
+        let (_, schema, name, _, _, supports_xmin) = self
             .verify_relation(&mut connection, relation, &target)
             .await?;
         let database: String = sqlx::query_scalar("SELECT current_database()")
@@ -4764,14 +4776,21 @@ LIMIT 2001
         if !self.catalog_scope.allows_schema(&database, &schema) {
             return Err(catalog_target_not_found(&target));
         }
-        let mut base_sql = format!(
-            "SELECT * FROM {}.{}",
-            quote_identifier(&schema),
-            quote_identifier(&name)
-        );
-        append_preview_options(&mut base_sql, options);
+        let qualified = format!("{}.{}", quote_identifier(&schema), quote_identifier(&name));
+        let mut business_sql = format!("SELECT * FROM {qualified}");
+        append_preview_options(&mut business_sql, options);
+        let mut base_sql = if supports_xmin {
+            format!(
+                "SELECT {qualified}.*, {qualified}.xmin::text AS \"__lazydb_row_version\" FROM {qualified}"
+            )
+        } else {
+            business_sql.clone()
+        };
+        if supports_xmin {
+            append_preview_options(&mut base_sql, options);
+        }
         let total = if page.resolve_total {
-            let count_sql = relation_count_sql(&base_sql);
+            let count_sql = relation_count_sql(&business_sql);
             let count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql))
                 .fetch_one(&mut *connection)
                 .await
@@ -4794,7 +4813,7 @@ LIMIT 2001
             .prepare(AssertSqlSafe(sql.clone()).into_sql_str())
             .await
             .map_err(sql_error)?;
-        let columns = statement
+        let mut columns: Vec<ColumnMeta> = statement
             .columns()
             .iter()
             .map(|column| ColumnMeta {
@@ -4802,6 +4821,19 @@ LIMIT 2001
                 type_name: column.type_info().name().to_owned(),
             })
             .collect();
+        if supports_xmin {
+            let internal = columns.pop();
+            if internal.as_ref().map(|column| column.name.as_str()) != Some("__lazydb_row_version")
+                || internal
+                    .as_ref()
+                    .map(|column| column.type_name.to_ascii_uppercase())
+                    != Some("TEXT".to_owned())
+            {
+                return Err(catalog_internal(
+                    "PostgreSQL relation preview has an invalid row version column",
+                ));
+            }
+        }
         let mut rows = statement
             .query()
             .fetch_all(&mut *connection)
@@ -4809,15 +4841,39 @@ LIMIT 2001
             .map_err(sql_error)?;
         let fetched_len = rows.len();
         rows.truncate(page.size.get());
+        let row_versions = if supports_xmin {
+            let mut versions = Vec::with_capacity(rows.len());
+            for row in &rows {
+                let value: String = row.try_get(row.len() - 1).map_err(decode_error)?;
+                versions.push(crate::db::mutation::RowVersion::PostgresXmin(
+                    value.parse().map_err(|_| {
+                        catalog_internal("PostgreSQL returned an invalid row version")
+                    })?,
+                ));
+            }
+            Some(versions)
+        } else {
+            None
+        };
         let result_set = ResultSet {
             columns,
-            rows: rows.iter().map(decode_row).collect(),
+            rows: rows
+                .iter()
+                .map(|row| {
+                    let mut values = decode_row(row);
+                    if supports_xmin {
+                        values.pop();
+                    }
+                    values
+                })
+                .collect(),
             affected_rows: 0,
         };
         Ok(crate::db::RelationPreview {
             sql,
             result: QueryOutcome::from_result_set(result_set, started.elapsed(), Duration::ZERO),
             pagination: relation_pagination(page, fetched_len, total),
+            row_versions,
         })
     }
 
@@ -4844,7 +4900,7 @@ LIMIT 2001
         let target = CatalogTarget::RelationChildren {
             relation: relation.clone(),
         };
-        let (database, schema, name, relation_oid, native_kind) =
+        let (database, schema, name, relation_oid, native_kind, _) =
             self.verify_relation(connection, relation, &target).await?;
         if !self.catalog_scope.allows_schema(&database, &schema) {
             return Err(catalog_target_not_found(&target));
@@ -5368,7 +5424,7 @@ fn relation_count_sql(sql: &str) -> String {
     format!("SELECT COUNT(*) FROM ({sql}) AS __lazydb_count")
 }
 
-pub(crate) struct PostgresTransactionBackend {
+pub struct PostgresTransactionBackend {
     connection: PoolConnection<Postgres>,
     control: PgPool,
     pid: i32,
@@ -5404,48 +5460,56 @@ impl TransactionBackend for PostgresTransactionBackend {
             quote_identifier(relation)
         );
         match request.operation {
-            RelationMutation::DeleteRows(rows) => {
-                if columns.is_empty() {
-                    return Err(TransactionError(
-                        "PostgreSQL delete mutation has no relation columns".into(),
-                    ));
-                }
-                for mutation in &rows {
-                    if mutation.row.columns.len() != mutation.row.values.len()
-                        || mutation.original.len() != columns.len()
+            RelationMutation::DeleteRows(ref rows) => {
+                validate_postgres_delete_relation(&mut self.connection, &request, columns).await?;
+                let primary_key_columns =
+                    primary_key_indexes(columns, &request.metadata.primary_key)?;
+                for mutation in rows {
+                    if mutation.row.columns != primary_key_columns
+                        || mutation.row.values.len() != primary_key_columns.len()
                     {
                         return Err(TransactionError(
                             "PostgreSQL delete mutation is malformed".into(),
                         ));
                     }
-                    if mutation.row.columns.is_empty() {
+                    let Some(crate::db::mutation::RowVersion::PostgresXmin(version)) =
+                        mutation.version
+                    else {
                         return Err(TransactionError(
-                            "PostgreSQL delete mutation has no row locator".into(),
+                            "PostgreSQL delete mutation is missing a row version; refresh the relation".into(),
                         ));
-                    }
-                    let sql = postgres_delete_sql(&quoted_table, columns, &mutation.row.columns)?;
+                    };
+                    let sql = postgres_delete_sql(&quoted_table, columns, &primary_key_columns)?;
                     let mut query = sqlx::query(AssertSqlSafe(sql));
-                    for value in &mutation.row.values {
-                        query = bind_cell(query, value)?;
+                    for (index, value) in primary_key_columns.iter().zip(&mutation.row.values) {
+                        query = bind_cell(query, value, &columns[*index].1)?;
                     }
-                    for value in &mutation.original {
-                        query = bind_cell(query, value)?;
-                    }
-                    if query
+                    query = query.bind(version.to_string());
+                    let affected = query
                         .execute(&mut *self.connection)
                         .await
-                        .map_err(|e| TransactionError(e.to_string()))?
-                        .rows_affected()
-                        != 1
-                    {
+                        .map_err(|e| postgres_relation_error(e, "delete", &quoted_table))?
+                        .rows_affected();
+                    if affected == 0 {
+                        return Err(TransactionError::relation(RelationMutationDiagnostic {
+                            category: RelationMutationCategory::Conflict,
+                            sqlstate: None,
+                            operation: "delete".into(),
+                            relation: quoted_table.clone(),
+                            context: Some("row version did not match".into()),
+                            message: "row was changed, deleted, or is no longer visible; refresh the relation".into(),
+                        }));
+                    }
+                    if affected != 1 {
                         return Err(TransactionError(
-                            "PostgreSQL relation mutation conflict".into(),
+                            "PostgreSQL delete locator matched multiple rows".into(),
                         ));
                     }
                 }
                 return Ok(MutationResult::Deleted { rows: rows.len() });
             }
-            RelationMutation::InsertRow(insert) => {
+            RelationMutation::InsertRow(ref insert) => {
+                validate_postgres_mutation_relation(&mut self.connection, &request).await?;
                 if insert.columns.len() != insert.values.len()
                     || insert.columns.iter().any(|i| *i >= columns.len())
                 {
@@ -5461,36 +5525,49 @@ impl TransactionBackend for PostgresTransactionBackend {
                     if matches!(value, InputValue::Default) {
                         expressions.push("DEFAULT".into());
                     } else {
-                        expressions.push(postgres_placeholder(bind_count, &columns[*index].1));
+                        expressions.push(postgres_placeholder(
+                            bind_count,
+                            &columns[*index].1,
+                            PgParameterMode::Assignment,
+                        )?);
                         bind_count += 1;
                     }
                 }
                 let sql = if supplied.is_empty() {
-                    format!("INSERT INTO {quoted_table} DEFAULT VALUES RETURNING *")
+                    format!(
+                        "INSERT INTO {quoted_table} DEFAULT VALUES RETURNING *, xmin::text AS \"__lazydb_row_version\""
+                    )
                 } else {
                     format!(
-                        "INSERT INTO {quoted_table} ({}) VALUES ({}) RETURNING *",
+                        "INSERT INTO {quoted_table} ({}) VALUES ({}) RETURNING *, xmin::text AS \"__lazydb_row_version\"",
                         supplied.join(", "),
                         expressions.join(", ")
                     )
                 };
                 let mut query = sqlx::query(AssertSqlSafe(sql));
-                for value in &insert.values {
+                for (index, value) in insert.columns.iter().zip(&insert.values) {
                     match value {
                         InputValue::Default => {}
-                        InputValue::Null => query = query.bind(Option::<String>::None),
-                        InputValue::Value(value) => query = bind_cell(query, value)?,
+                        InputValue::Null => {
+                            query = bind_cell(query, &CellValue::Null, &columns[*index].1)?
+                        }
+                        InputValue::Value(value) => {
+                            query = bind_cell(query, value, &columns[*index].1)?
+                        }
                     }
                 }
                 let row = query
                     .fetch_one(&mut *self.connection)
                     .await
-                    .map_err(|e| TransactionError(e.to_string()))?;
+                    .map_err(|e| postgres_relation_error(e, "insert", &quoted_table))?;
+                let (row, version) = decode_mutation_returning_row(&row, columns.len())?;
                 return Ok(MutationResult::Inserted {
-                    row: decode_row(&row),
+                    row,
+                    version: Some(version),
                 });
             }
-            RelationMutation::UpdateCell(update) => {
+            RelationMutation::UpdateCell(ref update) => {
+                validate_postgres_mutation_relation(&mut self.connection, &request).await?;
                 let Some((column_name, _, _)) = columns.get(update.column) else {
                     return Err(TransactionError(
                         "PostgreSQL update column is out of range".into(),
@@ -5534,10 +5611,14 @@ impl TransactionBackend for PostgresTransactionBackend {
                 let quoted_column = quote_identifier(column_name);
                 let mut sql = format!("UPDATE {quoted_table} SET {quoted_column} = ");
                 let mut bind_count = 1;
-                match update.value {
+                match &update.value {
                     InputValue::Default => sql.push_str("DEFAULT"),
                     InputValue::Null | InputValue::Value(_) => {
-                        sql.push_str(&postgres_placeholder(bind_count, &columns[update.column].1));
+                        sql.push_str(&postgres_placeholder(
+                            bind_count,
+                            &columns[update.column].1,
+                            PgParameterMode::Assignment,
+                        )?);
                         bind_count += 1;
                     }
                 }
@@ -5549,7 +5630,11 @@ impl TransactionBackend for PostgresTransactionBackend {
                     let name = quote_identifier(&columns[*column_index].0);
                     sql.push_str(&format!(
                         "{name} IS NOT DISTINCT FROM {}",
-                        postgres_placeholder(bind_count, &columns[*column_index].1)
+                        postgres_placeholder(
+                            bind_count,
+                            &columns[*column_index].1,
+                            PgParameterMode::Equality,
+                        )?
                     ));
                     bind_count += 1;
                 }
@@ -5558,29 +5643,54 @@ impl TransactionBackend for PostgresTransactionBackend {
                 }
                 sql.push_str(&format!(
                     "{quoted_column} IS NOT DISTINCT FROM {}",
-                    postgres_placeholder(bind_count, &columns[update.column].1)
+                    postgres_placeholder(
+                        bind_count,
+                        &columns[update.column].1,
+                        PgParameterMode::Equality,
+                    )?
                 ));
-                sql.push_str(" RETURNING *");
+                sql.push_str(" RETURNING *, xmin::text AS \"__lazydb_row_version\"");
 
                 let mut query = sqlx::query(AssertSqlSafe(sql));
                 match &update.value {
                     InputValue::Default => {}
-                    InputValue::Null => query = query.bind(Option::<String>::None),
-                    InputValue::Value(value) => query = bind_cell(query, value)?,
+                    InputValue::Null => {
+                        query = bind_cell(query, &CellValue::Null, &columns[update.column].1)?
+                    }
+                    InputValue::Value(value) => {
+                        query = bind_cell(query, value, &columns[update.column].1)?
+                    }
                 }
-                for value in &update.row.values {
-                    query = bind_cell(query, value)?;
+                for (column_index, value) in update.row.columns.iter().zip(&update.row.values) {
+                    query = bind_cell(query, value, &columns[*column_index].1)?;
                 }
-                query = bind_cell(query, &update.original)?;
-                let row = query
-                    .fetch_optional(&mut *self.connection)
+                query = bind_cell(query, &update.original, &columns[update.column].1)?;
+                let rows = query
+                    .fetch_all(&mut *self.connection)
                     .await
-                    .map_err(|error| TransactionError(error.to_string()))?
-                    .ok_or_else(|| {
-                        TransactionError("PostgreSQL relation mutation conflict".into())
-                    })?;
+                    .map_err(|error| postgres_relation_error(error, "update", &quoted_table))?;
+                let row = match rows.as_slice() {
+                    [] => {
+                        return Err(TransactionError::relation(RelationMutationDiagnostic {
+                            category: RelationMutationCategory::Conflict,
+                            sqlstate: None,
+                            operation: "update".into(),
+                            relation: quoted_table.clone(),
+                            context: Some("original cell value did not match".into()),
+                            message: "row was changed, deleted, or is no longer visible; refresh the relation".into(),
+                        }));
+                    }
+                    [row] => row,
+                    _ => {
+                        return Err(TransactionError(
+                            "PostgreSQL update mutation matched multiple rows".into(),
+                        ));
+                    }
+                };
+                let (row, version) = decode_mutation_returning_row(row, columns.len())?;
                 Ok(MutationResult::Updated {
-                    row: decode_row(&row),
+                    row,
+                    version: Some(version),
                 })
             }
         }
@@ -5641,7 +5751,7 @@ fn postgres_delete_sql(
             "PostgreSQL delete mutation has no row locator".into(),
         ));
     }
-    let mut predicates = Vec::with_capacity(locator_columns.len() + columns.len());
+    let mut predicates = Vec::with_capacity(locator_columns.len() + 1);
     for (position, index) in locator_columns.iter().enumerate() {
         if *index >= columns.len() {
             return Err(TransactionError(
@@ -5651,61 +5761,360 @@ fn postgres_delete_sql(
         let name = quote_identifier(&columns[*index].0);
         predicates.push(format!(
             "{name} IS NOT DISTINCT FROM {}",
-            postgres_placeholder(position + 1, &columns[*index].1)
+            postgres_placeholder(position + 1, &columns[*index].1, PgParameterMode::Equality)?
         ));
     }
-    let original_offset = locator_columns.len();
-    for (position, column) in columns.iter().enumerate() {
-        predicates.push(format!(
-            "{} IS NOT DISTINCT FROM {}",
-            quote_identifier(&column.0),
-            postgres_placeholder(original_offset + position + 1, &column.1)
-        ));
-    }
+    predicates.push(format!("xmin = ${}::xid", locator_columns.len() + 1));
     Ok(format!(
         "DELETE FROM {quoted_table} WHERE {}",
         predicates.join(" AND ")
     ))
 }
 
-fn postgres_placeholder(index: usize, type_name: &str) -> String {
-    let normalized = type_name.trim().to_ascii_lowercase();
-    let type_without_typmod = normalized
-        .split_once('(')
-        .and_then(|(base, suffix)| {
-            suffix
-                .split_once(')')
-                .map(|(_, suffix)| format!("{}{}", base.trim(), suffix))
+fn decode_mutation_returning_row(
+    row: &PgRow,
+    business_column_count: usize,
+) -> Result<(Vec<CellValue>, crate::db::mutation::RowVersion), TransactionError> {
+    if row.len() != business_column_count + 1 {
+        return Err(TransactionError(
+            "PostgreSQL mutation returned an invalid row shape".into(),
+        ));
+    }
+    let version: String = row
+        .try_get(business_column_count)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let version = version.parse().map_err(|_| {
+        TransactionError("PostgreSQL mutation returned an invalid row version".into())
+    })?;
+    let mut values = decode_row(row);
+    values.truncate(business_column_count);
+    Ok((
+        values,
+        crate::db::mutation::RowVersion::PostgresXmin(version),
+    ))
+}
+
+fn primary_key_indexes(
+    columns: &[(String, String, bool)],
+    primary_key: &[String],
+) -> Result<Vec<usize>, TransactionError> {
+    if primary_key.is_empty() {
+        return Err(TransactionError(
+            "PostgreSQL deletes require a complete primary key".into(),
+        ));
+    }
+    if primary_key.windows(2).any(|names| names[0] == names[1]) {
+        return Err(TransactionError(
+            "PostgreSQL primary key metadata contains duplicate columns".into(),
+        ));
+    }
+    primary_key
+        .iter()
+        .map(|name| {
+            columns
+                .iter()
+                .position(|(column, _, _)| column == name)
+                .ok_or_else(|| TransactionError("PostgreSQL primary key column is missing".into()))
         })
-        .unwrap_or_else(|| normalized.clone());
-    let cast = match type_without_typmod.trim() {
-        "bool" | "boolean" => Some("boolean"),
-        "int2" | "smallint" => Some("smallint"),
-        "int4" | "integer" | "serial" => Some("integer"),
-        "int8" | "bigint" | "bigserial" => Some("bigint"),
-        "float4" | "real" => Some("real"),
-        "float8" | "double precision" => Some("double precision"),
-        "numeric" | "decimal" => Some("numeric"),
-        "text" => Some("text"),
-        "varchar" | "character varying" => Some("varchar"),
-        "char" | "character" => Some("char"),
-        "date" => Some("date"),
-        "time" | "time without time zone" => Some("time"),
-        "timetz" | "time with time zone" => Some("timetz"),
-        "timestamp" | "timestamp without time zone" => Some("timestamp"),
-        "timestamptz" | "timestamp with time zone" => Some("timestamptz"),
-        "uuid" => Some("uuid"),
-        "json" => Some("json"),
-        "jsonb" => Some("jsonb"),
-        "bytea" => Some("bytea"),
-        _ => None,
+        .collect()
+}
+
+async fn validate_postgres_delete_relation(
+    connection: &mut PoolConnection<Postgres>,
+    request: &RelationMutationRequest,
+    columns: &[(String, String, bool)],
+) -> Result<(), TransactionError> {
+    if request.relation.kind != CatalogKind::Table {
+        return Err(TransactionError(
+            "PostgreSQL deletes are supported only for ordinary tables".into(),
+        ));
+    }
+    let Some(oid) = request
+        .relation
+        .native_path
+        .get(3)
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return Err(TransactionError(
+            "PostgreSQL relation has an invalid table identity".into(),
+        ));
     };
-    let cast = cast.or(match type_without_typmod.trim() {
-        "varchar" | "character varying" => Some("varchar"),
-        "char" | "character" => Some("char"),
-        _ => None,
-    });
-    cast.map_or_else(|| format!("${index}"), |cast| format!("${index}::{cast}"))
+    let Some(schema) = request.relation.native_path.get(1) else {
+        return Err(TransactionError(
+            "PostgreSQL relation has an invalid schema identity".into(),
+        ));
+    };
+    let Some(name) = request.relation.native_path.get(2) else {
+        return Err(TransactionError(
+            "PostgreSQL relation has an invalid table identity".into(),
+        ));
+    };
+    let row = sqlx::query(
+        "SELECT c.relkind::text, c.relispartition, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid), EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent = c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1::oid AND n.nspname = $2 AND c.relname = $3",
+    )
+    .bind(oid as i64)
+    .bind(schema)
+    .bind(name)
+    .fetch_optional(&mut **connection)
+    .await
+    .map_err(|error| TransactionError(error.to_string()))?
+    .ok_or_else(|| TransactionError("PostgreSQL relation no longer exists".into()))?;
+    let kind: String = row
+        .try_get(0)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let is_partition: bool = row
+        .try_get(1)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let has_parent: bool = row
+        .try_get(2)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let has_children: bool = row
+        .try_get(3)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    if kind != "r" || is_partition || has_parent || has_children {
+        return Err(TransactionError(
+            "PostgreSQL deletes are supported only for independent ordinary tables".into(),
+        ));
+    }
+    let _ = primary_key_indexes(columns, &request.metadata.primary_key)?;
+    Ok(())
+}
+
+async fn validate_postgres_mutation_relation(
+    connection: &mut PoolConnection<Postgres>,
+    request: &RelationMutationRequest,
+) -> Result<(), TransactionError> {
+    if request.relation.kind != CatalogKind::Table {
+        return Err(TransactionError(
+            "PostgreSQL relation mutations are supported only for ordinary tables".into(),
+        ));
+    }
+    let Some(oid) = request
+        .relation
+        .native_path
+        .get(3)
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return Err(TransactionError(
+            "PostgreSQL relation has an invalid table identity".into(),
+        ));
+    };
+    let schema = request.relation.native_path.get(1).ok_or_else(|| {
+        TransactionError("PostgreSQL relation has an invalid schema identity".into())
+    })?;
+    let name = request.relation.native_path.get(2).ok_or_else(|| {
+        TransactionError("PostgreSQL relation has an invalid table identity".into())
+    })?;
+    let row = sqlx::query(
+        "SELECT c.relkind::text, c.relispartition, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid), EXISTS (SELECT 1 FROM pg_inherits WHERE inhparent = c.oid) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = $1::oid AND n.nspname = $2 AND c.relname = $3",
+    )
+    .bind(oid as i64)
+    .bind(schema)
+    .bind(name)
+    .fetch_optional(&mut **connection)
+    .await
+    .map_err(|error| TransactionError(error.to_string()))?
+    .ok_or_else(|| TransactionError("PostgreSQL relation no longer exists".into()))?;
+    let kind: String = row
+        .try_get(0)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let is_partition: bool = row
+        .try_get(1)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let has_parent: bool = row
+        .try_get(2)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    let has_children: bool = row
+        .try_get(3)
+        .map_err(|error| TransactionError(error.to_string()))?;
+    if kind != "r" || is_partition || has_parent || has_children {
+        return Err(TransactionError(
+            "PostgreSQL relation mutations are supported only for independent ordinary tables"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PgParameterMode {
+    Assignment,
+    Equality,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PgParameterType {
+    Boolean,
+    Smallint,
+    Integer,
+    Bigint,
+    Real,
+    Double,
+    Numeric,
+    Text,
+    Varchar,
+    Char,
+    Date,
+    Time,
+    Timetz,
+    Timestamp,
+    Timestamptz,
+    Interval,
+    Uuid,
+    Json,
+    Jsonb,
+    TextArray,
+    VarcharArray,
+    CharArray,
+    NameArray,
+    Inet,
+    Cidr,
+    Point,
+    Bytea,
+}
+
+impl PgParameterType {
+    fn cast_name(self) -> &'static str {
+        match self {
+            Self::Boolean => "boolean",
+            Self::Smallint => "smallint",
+            Self::Integer => "integer",
+            Self::Bigint => "bigint",
+            Self::Real => "real",
+            Self::Double => "double precision",
+            Self::Numeric => "numeric",
+            Self::Text => "text",
+            Self::Varchar => "varchar",
+            Self::Char => "char",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Timetz => "timetz",
+            Self::Timestamp => "timestamp",
+            Self::Timestamptz => "timestamptz",
+            Self::Interval => "interval",
+            Self::Uuid => "uuid",
+            Self::Json => "json",
+            Self::Jsonb => "jsonb",
+            Self::TextArray => "text[]",
+            Self::VarcharArray => "varchar[]",
+            Self::CharArray => "char[]",
+            Self::NameArray => "name[]",
+            Self::Inet => "inet",
+            Self::Cidr => "cidr",
+            Self::Point => "point",
+            Self::Bytea => "bytea",
+        }
+    }
+}
+
+fn postgres_parameter_type(
+    type_name: &str,
+    mode: PgParameterMode,
+) -> Result<PgParameterType, TransactionError> {
+    let normalized = type_name.trim().to_ascii_lowercase();
+    let (base, modifier) = if let Some(open) = normalized.find('(') {
+        let Some(close) = normalized[open + 1..].find(')') else {
+            return Err(TransactionError(
+                "PostgreSQL column type is malformed".into(),
+            ));
+        };
+        let close = open + close + 1;
+        let modifier = normalized[open + 1..close].trim();
+        if modifier.is_empty() || modifier.contains(['(', ')']) {
+            return Err(TransactionError(
+                "PostgreSQL column type modifier is malformed".into(),
+            ));
+        }
+        let base = format!("{}{}", &normalized[..open], &normalized[close + 1..]);
+        (base.trim().to_owned(), Some(modifier.to_owned()))
+    } else {
+        (normalized.trim().to_owned(), None)
+    };
+    if base.is_empty() || base.contains(')') || base.split_whitespace().count() > 4 {
+        return Err(TransactionError(
+            "PostgreSQL column type is unsupported".into(),
+        ));
+    }
+    if let Some(modifier) = modifier {
+        let valid = match base.as_str() {
+            "numeric" | "decimal" => modifier
+                .split(',')
+                .all(|part| part.trim().parse::<u16>().is_ok()),
+            "varchar" | "character varying" | "char" | "character" => {
+                modifier.parse::<u32>().is_ok()
+            }
+            "timestamp"
+            | "timestamp without time zone"
+            | "timestamptz"
+            | "timestamp with time zone"
+            | "time"
+            | "time without time zone"
+            | "timetz"
+            | "time with time zone" => modifier.parse::<u32>().is_ok(),
+            _ => false,
+        };
+        if !valid {
+            return Err(TransactionError(
+                "PostgreSQL column type modifier is unsupported".into(),
+            ));
+        }
+    }
+    let parameter_type = match base.as_str() {
+        "bool" | "boolean" => PgParameterType::Boolean,
+        "int2" | "smallint" => PgParameterType::Smallint,
+        "int4" | "integer" | "serial" => PgParameterType::Integer,
+        "int8" | "bigint" | "bigserial" => PgParameterType::Bigint,
+        "float4" | "real" => PgParameterType::Real,
+        "float8" | "double precision" => PgParameterType::Double,
+        "numeric" | "decimal" => PgParameterType::Numeric,
+        "text" => PgParameterType::Text,
+        "varchar" | "character varying" => PgParameterType::Varchar,
+        "char" | "character" => PgParameterType::Char,
+        "date" => PgParameterType::Date,
+        "time" | "time without time zone" => PgParameterType::Time,
+        "timetz" | "time with time zone" => PgParameterType::Timetz,
+        "timestamp" | "timestamp without time zone" => PgParameterType::Timestamp,
+        "timestamptz" | "timestamp with time zone" => PgParameterType::Timestamptz,
+        "interval" => PgParameterType::Interval,
+        "uuid" => PgParameterType::Uuid,
+        "json" => PgParameterType::Json,
+        "jsonb" => PgParameterType::Jsonb,
+        "text[]" => PgParameterType::TextArray,
+        "varchar[]" | "character varying[]" => PgParameterType::VarcharArray,
+        "char[]" | "character[]" => PgParameterType::CharArray,
+        "name[]" => PgParameterType::NameArray,
+        "inet" => PgParameterType::Inet,
+        "cidr" => PgParameterType::Cidr,
+        "point" => PgParameterType::Point,
+        "bytea" => PgParameterType::Bytea,
+        _ => {
+            return Err(TransactionError(
+                "PostgreSQL column type is unsupported".into(),
+            ));
+        }
+    };
+    if mode == PgParameterMode::Equality
+        && matches!(
+            parameter_type,
+            PgParameterType::Json | PgParameterType::Jsonb | PgParameterType::Point
+        )
+    {
+        return Err(TransactionError(
+            "PostgreSQL type does not support relation equality comparison".into(),
+        ));
+    }
+    Ok(parameter_type)
+}
+
+fn postgres_placeholder(
+    index: usize,
+    type_name: &str,
+    mode: PgParameterMode,
+) -> Result<String, TransactionError> {
+    Ok(format!(
+        "${index}::{}",
+        postgres_parameter_type(type_name, mode)?.cast_name()
+    ))
 }
 
 fn selected_schemas<'a>(request: &'a CatalogRequest, database: &str) -> Option<&'a Vec<String>> {
@@ -6038,19 +6447,123 @@ fn sql_error(error: sqlx::Error) -> DatabaseError {
     DatabaseError::from_sqlx(error, ErrorCategory::Sql)
 }
 
+fn postgres_relation_error(
+    error: sqlx::Error,
+    operation: &str,
+    relation: &str,
+) -> TransactionError {
+    let (sqlstate, category, message) = match &error {
+        sqlx::Error::Database(database) => {
+            let sqlstate = database.code().map(|code| code.into_owned());
+            let category = match sqlstate.as_deref() {
+                Some(code) if code.starts_with("08") => RelationMutationCategory::ConnectionUnknown,
+                Some("0A000" | "42883") => RelationMutationCategory::UnsupportedComparison,
+                Some(code) if code.starts_with("22") || code == "42804" => {
+                    RelationMutationCategory::TypeMismatch
+                }
+                Some(code) if code.starts_with("23") => RelationMutationCategory::Constraint,
+                _ => RelationMutationCategory::InvalidRequest,
+            };
+            let message = match category {
+                RelationMutationCategory::UnsupportedComparison => {
+                    "the PostgreSQL comparison is not supported"
+                }
+                RelationMutationCategory::TypeMismatch => {
+                    "the value does not match the PostgreSQL column type"
+                }
+                RelationMutationCategory::Constraint => {
+                    "the mutation was rejected by a database constraint"
+                }
+                RelationMutationCategory::ConnectionUnknown => {
+                    "the database connection failed; the outcome is unknown"
+                }
+                RelationMutationCategory::InvalidRequest => {
+                    "PostgreSQL rejected the relation mutation"
+                }
+                RelationMutationCategory::Conflict => "relation mutation conflict",
+            };
+            (sqlstate, category, message.to_owned())
+        }
+        _ => (
+            None,
+            RelationMutationCategory::ConnectionUnknown,
+            "PostgreSQL relation mutation failed without a server diagnostic".to_owned(),
+        ),
+    };
+    TransactionError::relation(RelationMutationDiagnostic {
+        category,
+        sqlstate,
+        operation: operation.to_owned(),
+        relation: relation.to_owned(),
+        context: None,
+        message,
+    })
+}
+
 fn bind_cell<'q>(
     query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
     value: &CellValue,
+    type_name: &str,
 ) -> Result<sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>, TransactionError> {
+    let parameter_type = postgres_parameter_type(type_name, PgParameterMode::Assignment)?;
     Ok(match value {
-        CellValue::Null => query.bind(Option::<String>::None),
+        CellValue::Null => match parameter_type {
+            PgParameterType::Boolean => query.bind(Option::<bool>::None),
+            PgParameterType::Smallint => query.bind(Option::<i16>::None),
+            PgParameterType::Integer => query.bind(Option::<i32>::None),
+            PgParameterType::Bigint => query.bind(Option::<i64>::None),
+            PgParameterType::Real => query.bind(Option::<f32>::None),
+            PgParameterType::Double => query.bind(Option::<f64>::None),
+            PgParameterType::Numeric => query.bind(Option::<BigDecimal>::None),
+            PgParameterType::Date => query.bind(Option::<NaiveDate>::None),
+            PgParameterType::Time => query.bind(Option::<NaiveTime>::None),
+            PgParameterType::Timestamp => query.bind(Option::<NaiveDateTime>::None),
+            PgParameterType::Timestamptz => query.bind(Option::<DateTime<Utc>>::None),
+            PgParameterType::Uuid => query.bind(Option::<Uuid>::None),
+            PgParameterType::Bytea => query.bind(Option::<Vec<u8>>::None),
+            _ => query.bind(Option::<String>::None),
+        },
         CellValue::Boolean(value) => query.bind(*value),
         CellValue::Integer(value) => query.bind(*value),
         CellValue::Unsigned(value) => query.bind(i64::try_from(*value).map_err(|_| {
             TransactionError("PostgreSQL cannot bind an unsigned value larger than i64".into())
         })?),
         CellValue::Float(value) => query.bind(*value),
-        CellValue::Text(value) => query.bind(value.clone()),
+        CellValue::Text(value) => match parameter_type {
+            PgParameterType::Numeric => {
+                query.bind(BigDecimal::from_str(value).map_err(|_| {
+                    TransactionError("PostgreSQL numeric value is malformed".into())
+                })?)
+            }
+            PgParameterType::Interval => query.bind(parse_pg_interval(value).ok_or_else(|| {
+                TransactionError("PostgreSQL interval value is malformed".into())
+            })?),
+            PgParameterType::Uuid => query.bind(
+                Uuid::parse_str(value)
+                    .map_err(|_| TransactionError("PostgreSQL UUID value is malformed".into()))?,
+            ),
+            PgParameterType::Inet | PgParameterType::Cidr => {
+                query.bind(IpNet::from_str(value).map_err(|_| {
+                    TransactionError("PostgreSQL network value is malformed".into())
+                })?)
+            }
+            PgParameterType::Json | PgParameterType::Jsonb => {
+                query.bind(Json::<serde_json::Value>(
+                    serde_json::from_str(value).map_err(|_| {
+                        TransactionError("PostgreSQL JSON value is malformed".into())
+                    })?,
+                ))
+            }
+            PgParameterType::TextArray
+            | PgParameterType::VarcharArray
+            | PgParameterType::CharArray
+            | PgParameterType::NameArray => {
+                query.bind(parse_pg_text_array(value).ok_or_else(|| {
+                    TransactionError("PostgreSQL text array value is malformed".into())
+                })?)
+            }
+            _ => query.bind(value.clone()),
+        },
         CellValue::Bytes(value) => query.bind(value.clone()),
         CellValue::Date(value) => query.bind(*value),
         CellValue::Time(value) => query.bind(*value),
@@ -6062,6 +6575,49 @@ fn bind_cell<'q>(
             ));
         }
     })
+}
+
+fn parse_pg_text_array(value: &str) -> Option<Vec<Option<String>>> {
+    let value = value.strip_prefix('{')?.strip_suffix('}')?;
+    if value.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut element_quoted = false;
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+        } else if character == '\\' && quoted {
+            escaped = true;
+        } else if character == '"' {
+            quoted = !quoted;
+            element_quoted = true;
+        } else if character == ',' && !quoted {
+            result.push(array_element(&current, element_quoted));
+            current.clear();
+            element_quoted = false;
+        } else {
+            current.push(character);
+        }
+    }
+    if quoted || escaped {
+        return None;
+    }
+    result.push(array_element(&current, element_quoted));
+    Some(result)
+}
+
+fn array_element(value: &str, quoted: bool) -> Option<String> {
+    let value = if quoted { value } else { value.trim() };
+    if !quoted && value.eq_ignore_ascii_case("NULL") {
+        None
+    } else {
+        Some(value.to_owned())
+    }
 }
 
 pub const fn supports_server_version(server_version_num: i32) -> bool {
@@ -6616,9 +7172,9 @@ fn monitor_timestamp(row: &PgRow, name: &str) -> Result<u64, DatabaseError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PgDdlColumn, PgDdlRelation, assemble_relation_ddl, column_definition, format_pg_array,
-        format_pg_interval, parse_pg_interval, postgres_delete_sql, postgres_placeholder,
-        quote_identifier, quote_literal,
+        PgDdlColumn, PgDdlRelation, PgParameterMode, assemble_relation_ddl, column_definition,
+        format_pg_array, format_pg_interval, parse_pg_interval, postgres_delete_sql,
+        postgres_placeholder, quote_identifier, quote_literal,
     };
     use sqlx::postgres::types::PgInterval;
 
@@ -6630,19 +7186,91 @@ mod tests {
             "decimal(38,10)",
             " NUMERIC(18, 2) ",
         ] {
-            assert_eq!(postgres_placeholder(2, type_name), "$2::numeric");
+            assert_eq!(
+                postgres_placeholder(2, type_name, PgParameterMode::Assignment).unwrap(),
+                "$2::numeric"
+            );
         }
     }
 
     #[test]
     fn postgres_placeholder_handles_typmods_and_keeps_parameter_numbers() {
-        assert_eq!(postgres_placeholder(7, "timestamp(6)"), "$7::timestamp");
         assert_eq!(
-            postgres_placeholder(8, "timestamp(6) with time zone"),
+            postgres_placeholder(7, "timestamp(6)", PgParameterMode::Assignment).unwrap(),
+            "$7::timestamp"
+        );
+        assert_eq!(
+            postgres_placeholder(
+                8,
+                "timestamp(6) with time zone",
+                PgParameterMode::Assignment
+            )
+            .unwrap(),
             "$8::timestamptz"
         );
-        assert_eq!(postgres_placeholder(9, "varchar(32)"), "$9::varchar");
-        assert_eq!(postgres_placeholder(10, "custom_type(1)"), "$10");
+        assert_eq!(
+            postgres_placeholder(9, "varchar(32)", PgParameterMode::Assignment).unwrap(),
+            "$9::varchar"
+        );
+        assert!(postgres_placeholder(10, "custom_type(1)", PgParameterMode::Assignment).is_err());
+    }
+
+    #[test]
+    fn postgres_parameter_types_are_whitelisted_by_position() {
+        let cases = [
+            ("interval", "interval", true),
+            ("text[]", "text[]", true),
+            ("inet", "inet", true),
+            ("cidr", "cidr", true),
+            ("uuid", "uuid", true),
+            ("json", "json", true),
+            ("jsonb", "jsonb", true),
+            ("timestamp(6) with time zone", "timestamptz", true),
+            ("point", "point", true),
+            ("custom_type", "", false),
+            ("text[foo]", "", false),
+            ("numeric(18, nope)", "", false),
+            ("numeric(18,2", "", false),
+        ];
+        for (type_name, cast, supported) in cases {
+            let result = postgres_placeholder(3, type_name, PgParameterMode::Assignment);
+            assert_eq!(result.is_ok(), supported, "{type_name}");
+            if supported {
+                assert_eq!(result.unwrap(), format!("$3::{cast}"));
+            }
+        }
+        assert!(postgres_placeholder(1, "json", PgParameterMode::Equality).is_err());
+        assert!(postgres_placeholder(1, "point", PgParameterMode::Equality).is_err());
+        assert!(postgres_placeholder(1, "text[]", PgParameterMode::Equality).is_ok());
+    }
+
+    #[test]
+    fn postgres_placeholder_preserves_parameter_numbering_and_rejects_raw_type_text() {
+        assert_eq!(
+            postgres_placeholder(17, "numeric(38,10)", PgParameterMode::Equality).unwrap(),
+            "$17::numeric"
+        );
+        assert!(
+            postgres_placeholder(18, "public.weird_type", PgParameterMode::Assignment).is_err()
+        );
+        assert!(
+            postgres_placeholder(19, "varchar(32) trailing", PgParameterMode::Assignment).is_err()
+        );
+    }
+
+    #[test]
+    fn parses_text_arrays_without_collapsing_null_values() {
+        assert_eq!(
+            super::parse_pg_text_array("{\"NULL\",NULL,\"with,comma\",\"back\\\\slash\"}"),
+            Some(vec![
+                Some("NULL".into()),
+                None,
+                Some("with,comma".into()),
+                Some("back\\slash".into()),
+            ])
+        );
+        assert_eq!(super::parse_pg_text_array("{}"), Some(Vec::new()));
+        assert_eq!(super::parse_pg_text_array("{\"unterminated}"), None);
     }
 
     #[test]
@@ -6718,7 +7346,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "DELETE FROM \"public\".\"users\" WHERE \"id\" IS NOT DISTINCT FROM $1::integer AND \"id\" IS NOT DISTINCT FROM $2::integer AND \"name\" IS NOT DISTINCT FROM $3::text"
+            "DELETE FROM \"public\".\"users\" WHERE \"id\" IS NOT DISTINCT FROM $1::integer AND xmin = $2::xid"
         );
         assert!(postgres_delete_sql("\"public\".\"users\"", &columns, &[]).is_err());
     }
@@ -6737,8 +7365,9 @@ mod tests {
         let sql = postgres_delete_sql("\"tools\".\"sys_user\"", &columns, &[0]).unwrap();
 
         assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $1::bigint"));
-        assert!(sql.contains("\"dept_id\" IS NOT DISTINCT FROM $3::bigint"));
-        assert!(sql.contains("\"manager\" IS NOT DISTINCT FROM $4"));
+        assert!(!sql.contains("dept_id"));
+        assert!(!sql.contains("manager"));
+        assert_eq!(sql.matches('$').count(), 2);
     }
 
     #[test]
@@ -6750,8 +7379,30 @@ mod tests {
         let sql = postgres_delete_sql("\"public\".\"payments\"", &columns, &[0]).unwrap();
 
         assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $1::bigint"));
-        assert!(sql.contains("\"id\" IS NOT DISTINCT FROM $2::bigint"));
-        assert!(sql.contains("\"amount\" IS NOT DISTINCT FROM $3::numeric"));
+        assert!(!sql.contains("amount"));
+        assert_eq!(sql.matches('$').count(), 2);
+    }
+
+    #[test]
+    fn delete_sql_supports_composite_primary_key_without_business_columns() {
+        let columns = vec![
+            ("tenant_id".to_owned(), "bigint".to_owned(), false),
+            ("item_id".to_owned(), "uuid".to_owned(), false),
+            ("metadata".to_owned(), "jsonb".to_owned(), true),
+        ];
+        let sql = postgres_delete_sql("\"public\".\"items\"", &columns, &[0, 1]).unwrap();
+        assert_eq!(
+            sql,
+            "DELETE FROM \"public\".\"items\" WHERE \"tenant_id\" IS NOT DISTINCT FROM $1::bigint AND \"item_id\" IS NOT DISTINCT FROM $2::uuid AND xmin = $3::xid"
+        );
+        assert!(!sql.contains("metadata"));
+    }
+
+    #[test]
+    fn delete_sql_rejects_empty_or_out_of_range_locators() {
+        let columns = vec![("id".to_owned(), "bigint".to_owned(), false)];
+        assert!(postgres_delete_sql("\"public\".\"items\"", &columns, &[]).is_err());
+        assert!(postgres_delete_sql("\"public\".\"items\"", &columns, &[1]).is_err());
     }
 
     #[test]
