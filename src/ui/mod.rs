@@ -222,6 +222,12 @@ pub enum CursorStyle {
     Underline,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CursorSpec {
+    pub position: Position,
+    pub style: CursorStyle,
+}
+
 #[derive(Debug)]
 pub struct UiState {
     pub hit_regions: Vec<HitRegion>,
@@ -232,7 +238,7 @@ pub struct UiState {
     pub record_view_fields: Option<(Uuid, usize)>,
     pub explorer_viewport_rows: Option<usize>,
     pub ddl_viewport: Option<DdlViewportMetrics>,
-    pub cursor_style: Option<CursorStyle>,
+    pub cursor: Option<CursorSpec>,
     pub terminal_selection_mode: bool,
     pub pane_layout: PaneLayoutMetrics,
     pub click_tracker: RefCell<Option<(crate::model::explorer::ExplorerNodeId, Instant)>>,
@@ -315,7 +321,7 @@ impl UiState {
             record_view_fields: None,
             explorer_viewport_rows: None,
             ddl_viewport: None,
-            cursor_style: None,
+            cursor: None,
             terminal_selection_mode: false,
             pane_layout: PaneLayoutMetrics::default(),
             click_tracker: RefCell::new(None),
@@ -708,7 +714,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.record_view_fields = None;
     state.explorer_viewport_rows = None;
     state.ddl_viewport = None;
-    state.cursor_style = None;
+    state.cursor = None;
     state.text_selection_targets.clear();
     state.data_query_input_targets.clear();
     state.profile_input_targets.clear();
@@ -824,6 +830,8 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     }
 
     if let Some(overlay) = &app.overlay {
+        // Only the visible overlay may own the terminal cursor.
+        state.cursor = None;
         state
             .animations
             .prepare_overlay(overlay_key(overlay), centered(area, 80, 20));
@@ -846,6 +854,9 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     }
     if app.overlay.is_none() {
         notifications::render(frame, area, app, theme, state, icons);
+    }
+    if let Some(cursor) = state.cursor {
+        frame.set_cursor_position(cursor.position);
     }
 }
 
@@ -1134,14 +1145,16 @@ pub(crate) fn render_text_input(
         Paragraph::new(format!("{prefix}{visible}")).style(style),
         area,
     );
-    state.cursor_style = Some(CursorStyle::Bar);
     let cursor_x = area
         .x
         .saturating_add(prefix_width as u16)
         .saturating_add(cursor_cells.saturating_sub(offset) as u16)
         .min(area.right().saturating_sub(1));
     let cursor = Position::new(cursor_x, area.y);
-    frame.set_cursor_position(cursor);
+    state.cursor = Some(CursorSpec {
+        position: cursor,
+        style: CursorStyle::Bar,
+    });
     Some(cursor)
 }
 
@@ -1986,7 +1999,7 @@ fn render_explorer(
         return;
     }
     if let Some(search) = app.explorer.search.as_ref() {
-        render_explorer_search(frame, inner, app, search, theme, icons);
+        render_explorer_search(frame, inner, app, search, theme, state, icons);
         return;
     }
     let viewport = app.explorer.viewport(inner.height as usize);
@@ -2239,11 +2252,14 @@ fn render_explorer_find(
         Rect::new(area.x, area.y, area.width, 1),
     );
     if find.phase == ExplorerSearchPhase::Editing {
-        frame.set_cursor_position(Position::new(
-            area.x
-                .saturating_add(explorer_search_cursor_column(&query, area.width)),
-            area.y,
-        ));
+        state.cursor = Some(CursorSpec {
+            position: Position::new(
+                area.x
+                    .saturating_add(explorer_search_cursor_column(&query, area.width)),
+                area.y,
+            ),
+            style: CursorStyle::Bar,
+        });
     }
     let tree_area = Rect::new(
         area.x,
@@ -2329,6 +2345,7 @@ fn render_explorer_search(
     app: &App,
     search: &crate::model::workspace::ExplorerSearchState,
     theme: Theme,
+    state: &mut UiState,
     icons: icons::IconSet,
 ) {
     if area.is_empty() {
@@ -2345,11 +2362,14 @@ fn render_explorer_search(
         Rect::new(area.x, area.y, area.width, 1),
     );
     if search.phase == ExplorerSearchPhase::Editing {
-        frame.set_cursor_position(Position::new(
-            area.x
-                .saturating_add(explorer_search_cursor_column(&input, area.width)),
-            area.y,
-        ));
+        state.cursor = Some(CursorSpec {
+            position: Position::new(
+                area.x
+                    .saturating_add(explorer_search_cursor_column(&input, area.width)),
+                area.y,
+            ),
+            style: CursorStyle::Bar,
+        });
     }
 
     let result_height = area.height.saturating_sub(2) as usize;
@@ -2789,7 +2809,7 @@ fn render_editor(
     let block = base_block
         .title_top(Line::raw(left_title).left_aligned())
         .title_top(Line::from(context).right_aligned());
-    state.cursor_style = Some(if snapshot.prompt.is_some() {
+    let cursor_style = if snapshot.prompt.is_some() {
         CursorStyle::Bar
     } else {
         match snapshot.mode {
@@ -2797,7 +2817,7 @@ fn render_editor(
             EditorMode::Replace => CursorStyle::Underline,
             _ => CursorStyle::Block,
         }
-    });
+    };
     frame.render_widget(block, area);
     for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
         let y = inner.y.saturating_add(row as u16);
@@ -2893,7 +2913,10 @@ fn render_editor(
             .saturating_add(prompt.prefix.chars().count() as u16)
             .saturating_add(prompt.cursor as u16)
             .min(prompt_area.right().saturating_sub(1));
-        frame.set_cursor_position(Position::new(cursor_x, prompt_area.y));
+        state.cursor = Some(CursorSpec {
+            position: Position::new(cursor_x, prompt_area.y),
+            style: cursor_style,
+        });
     } else if app.overlay.is_none()
         && app.focus == Focus::Editor
         && let Some((x, y)) = snapshot.cursor_screen_cell
@@ -2905,7 +2928,10 @@ fn render_editor(
             .min(inner.right().saturating_sub(1));
         let y = inner.y.saturating_add(y);
         if y < inner.bottom() {
-            frame.set_cursor_position(Position::new(x, y));
+            state.cursor = Some(CursorSpec {
+                position: Position::new(x, y),
+                style: cursor_style,
+            });
         }
     }
     completion_anchor
@@ -3439,11 +3465,13 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
         && app.overlay.is_none()
         && let Some((x, y)) = snapshot.cursor_screen_cell
     {
-        frame.set_cursor_position(Position::new(
-            inner.x.saturating_add(3).saturating_add(x),
-            inner.y.saturating_add(y),
-        ));
-        state.cursor_style = Some(CursorStyle::Block);
+        state.cursor = Some(CursorSpec {
+            position: Position::new(
+                inner.x.saturating_add(3).saturating_add(x),
+                inner.y.saturating_add(y),
+            ),
+            style: CursorStyle::Block,
+        });
     }
 }
 

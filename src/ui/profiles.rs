@@ -156,7 +156,7 @@ fn render_form(
                     });
                 }
                 if manager.selected_field == field && !busy {
-                    render_field_cursor(frame, row, draft, field);
+                    render_field_cursor(row, draft, field, state);
                 }
             }
         }
@@ -180,7 +180,7 @@ fn render_form(
         });
     }
     if manager.selected_field == ProfileField::Url && !busy {
-        render_field_cursor(frame, layout.url, draft, ProfileField::Url);
+        render_field_cursor(layout.url, draft, ProfileField::Url, state);
     }
     let help = if manager.selected_field == ProfileField::Url {
         url_help(draft.kind)
@@ -609,12 +609,7 @@ fn driver_icon_color(kind: DatabaseKind) -> ratatui::style::Color {
     }
 }
 
-fn render_field_cursor(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    draft: &ProfileDraft,
-    field: ProfileField,
-) {
+fn render_field_cursor(area: Rect, draft: &ProfileDraft, field: ProfileField, state: &mut UiState) {
     let value_area = field_value_area(area);
     if field == ProfileField::Password {
         return;
@@ -627,7 +622,10 @@ fn render_field_cursor(
             .saturating_add(value_area.x.saturating_sub(area.x))
             .saturating_add((draft.url_cursor() as u16).saturating_sub(offset))
             .min(value_area.right().saturating_sub(1));
-        frame.set_cursor_position(Position::new(x, area.y));
+        state.cursor = Some(super::CursorSpec {
+            position: Position::new(x, area.y),
+            style: super::CursorStyle::Bar,
+        });
         return;
     }
     let Some(input) = text_input(draft, field) else {
@@ -646,7 +644,10 @@ fn render_field_cursor(
         .saturating_add(value_area.x.saturating_sub(area.x))
         .saturating_add(cursor_width.saturating_sub(offset))
         .min(value_area.right().saturating_sub(1));
-    frame.set_cursor_position(Position::new(x, area.y));
+    state.cursor = Some(super::CursorSpec {
+        position: Position::new(x, area.y),
+        style: super::CursorStyle::Bar,
+    });
 }
 
 fn field_value_area(area: Rect) -> Rect {
