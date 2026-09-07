@@ -7,7 +7,9 @@ mod analysis;
 mod batch;
 mod completion;
 mod derived_result;
+mod diagnostics;
 mod dialect;
+pub mod embedded;
 mod execution;
 mod format;
 mod highlight;
@@ -31,6 +33,7 @@ pub use derived_result::{
     DerivedQueryError, PaginatedSql, bounded_query, build_derived_paginated_query,
     build_derived_query, build_paginated_query, derived_query_capable,
 };
+pub use diagnostics::{SqlDiagnostic, diagnose_sql};
 pub use dialect::SqlDialect;
 pub use execution::ExecutionDraft;
 pub use format::{FormatError, format_sql};

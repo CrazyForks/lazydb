@@ -118,8 +118,37 @@ pub enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// Run a Language Server Protocol server over stdio.
+    Lsp(LspArgs),
     /// Check or update the local LazyDB installation.
     Update(UpdateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct LspArgs {
+    /// Run the language server over stdin/stdout.
+    #[arg(long)]
+    pub stdio: bool,
+    /// Project root used for workspace-relative services.
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    /// Explicit SQL dialect. The language server defaults to Generic.
+    #[arg(long, value_enum)]
+    pub dialect: Option<LspDialect>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum LspDialect {
+    #[value(alias = "postgresql")]
+    Postgres,
+    #[value(name = "mysql", alias = "my-sql")]
+    MySql,
+    #[value(name = "sqlserver", alias = "sql-server")]
+    SqlServer,
+    Sqlite,
+    #[default]
+    Generic,
 }
 
 #[derive(Debug, Args)]
@@ -244,7 +273,7 @@ pub struct VersionInfo<'a> {
 pub struct Capabilities<'a> {
     pub version: &'a str,
     pub cli_api: u16,
-    pub features: [&'a str; 6],
+    pub features: [&'a str; 7],
     pub drivers: [&'a str; 3],
 }
 
@@ -290,6 +319,7 @@ pub fn capabilities() -> Capabilities<'static> {
             "profile-manager",
             "system-keyring",
             "theme-file-v1",
+            "lsp-v1",
         ],
         drivers: ["postgres", "mysql", "sqlite"],
     }
@@ -343,7 +373,7 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
         Command::Version { json: false } => Ok(format!("lazydb {}", env!("CARGO_PKG_VERSION"))),
         Command::Capabilities { json: true } => serde_json::to_string(&capabilities()),
         Command::Capabilities { json: false } => Ok(format!(
-            "lazydb {} (cli api {})\ndrivers: postgres, mysql, sqlite\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring, theme-file-v1",
+            "lazydb {} (cli api {})\ndrivers: postgres, mysql, sqlite\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring, theme-file-v1, lsp-v1",
             env!("CARGO_PKG_VERSION"),
             CLI_API_VERSION
         )),
@@ -368,6 +398,7 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
         Command::Agent { .. } | Command::Mcp { .. } => {
             Ok("This command requires asynchronous execution".to_owned())
         }
+        Command::Lsp(_) => Ok("This command requires asynchronous execution".to_owned()),
         Command::Update(_) => Ok("This command requires asynchronous execution".to_owned()),
     }
 }
@@ -473,7 +504,8 @@ mod tests {
                 "context-help",
                 "profile-manager",
                 "system-keyring",
-                "theme-file-v1"
+                "theme-file-v1",
+                "lsp-v1"
             ])
         );
     }

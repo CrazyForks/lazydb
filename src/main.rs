@@ -45,6 +45,12 @@ async fn main() -> Result<()> {
                     println!("{output}");
                 }
             },
+            Command::Lsp(args) => {
+                if !args.stdio {
+                    anyhow::bail!("the LSP server currently requires --stdio");
+                }
+                lazydb::lsp::run(args, cli.config, cli.profile).await?;
+            }
             Command::Update(args) => println!("{}", lazydb::update::run(args, cli.config).await?),
             command => println!("{}", render_command(&command)?),
         }
