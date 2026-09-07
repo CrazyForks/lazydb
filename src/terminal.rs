@@ -99,16 +99,45 @@ impl TerminalSession {
     }
 
     pub fn set_cursor_style(&mut self, style: crate::ui::CursorStyle) -> io::Result<()> {
-        let style = match style {
-            crate::ui::CursorStyle::Block => SetCursorStyle::SteadyBlock,
-            crate::ui::CursorStyle::Bar => SetCursorStyle::SteadyBar,
-            crate::ui::CursorStyle::Underline => SetCursorStyle::SteadyUnderScore,
-        };
-        execute!(self.terminal.backend_mut(), style)
+        execute!(self.terminal.backend_mut(), cursor_command(style))
     }
 
     pub fn write_osc52(&mut self, text: &str, max_bytes: usize) -> io::Result<()> {
         write_osc52_to(self.terminal.backend_mut(), text, max_bytes)
+    }
+}
+
+#[cfg(test)]
+mod cursor_style_tests {
+    use crossterm::{cursor::SetCursorStyle, execute};
+
+    use crate::ui::CursorStyle;
+
+    #[test]
+    fn cursor_styles_map_to_steady_terminal_shapes() {
+        for style in [CursorStyle::Block, CursorStyle::Bar, CursorStyle::Underline] {
+            let mut output = Vec::new();
+            execute!(output, super::cursor_command(style)).unwrap();
+            let mut expected_output = Vec::new();
+            execute!(expected_output, expected_command(style)).unwrap();
+            assert_eq!(output, expected_output);
+        }
+    }
+
+    fn expected_command(style: CursorStyle) -> SetCursorStyle {
+        match style {
+            CursorStyle::Block => SetCursorStyle::SteadyBlock,
+            CursorStyle::Bar => SetCursorStyle::SteadyBar,
+            CursorStyle::Underline => SetCursorStyle::SteadyUnderScore,
+        }
+    }
+}
+
+fn cursor_command(style: crate::ui::CursorStyle) -> SetCursorStyle {
+    match style {
+        crate::ui::CursorStyle::Block => SetCursorStyle::SteadyBlock,
+        crate::ui::CursorStyle::Bar => SetCursorStyle::SteadyBar,
+        crate::ui::CursorStyle::Underline => SetCursorStyle::SteadyUnderScore,
     }
 }
 

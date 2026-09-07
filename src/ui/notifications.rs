@@ -289,12 +289,14 @@ pub(crate) fn render_history(
         chunks[2],
     );
     if history.phase == HistorySearchPhase::Editing {
-        state.cursor_style = Some(crate::ui::CursorStyle::Bar);
         let x = chunks[0]
             .x
             .saturating_add(history.query.value().width() as u16)
             .min(chunks[0].right().saturating_sub(1));
-        frame.set_cursor_position(Position::new(x, chunks[0].y));
+        state.cursor = Some(crate::ui::CursorSpec {
+            position: Position::new(x, chunks[0].y),
+            style: crate::ui::CursorStyle::Bar,
+        });
     }
     let _ = matches;
 }

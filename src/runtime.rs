@@ -4155,8 +4155,8 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         if settings.updates.check_on_startup && startup_check_due {
             runtime.dispatch(Command::ScheduleUpdateCheck { delay_ms: 1_500 });
         }
-        if let Some(style) = ui_state.cursor_style {
-            terminal.set_cursor_style(style)?;
+        if let Some(cursor) = ui_state.cursor {
+            terminal.set_cursor_style(cursor.style)?;
         }
         sync_editor_viewport(&mut app, &mut runtime, &ui_state);
         sync_pane_layout(&mut app, &mut runtime, &ui_state);
@@ -4336,8 +4336,8 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                         theme,
                     )
                 })?;
-                if let Some(style) = ui_state.cursor_style {
-                    terminal.set_cursor_style(style)?;
+                if let Some(cursor) = ui_state.cursor {
+                    terminal.set_cursor_style(cursor.style)?;
                 }
                 sync_editor_viewport(&mut app, &mut runtime, &ui_state);
                 sync_pane_layout(&mut app, &mut runtime, &ui_state);

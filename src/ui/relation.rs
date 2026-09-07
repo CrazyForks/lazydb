@@ -634,11 +634,10 @@ fn render_ddl_editor(
         && app.overlay.is_none()
         && let Some((x, y)) = snapshot.cursor_screen_cell
     {
-        frame.set_cursor_position(Position::new(
-            inner.x.saturating_add(x),
-            inner.y.saturating_add(y),
-        ));
-        state.cursor_style = Some(super::CursorStyle::Block);
+        state.cursor = Some(super::CursorSpec {
+            position: Position::new(inner.x.saturating_add(x), inner.y.saturating_add(y)),
+            style: super::CursorStyle::Block,
+        });
     }
 }
 

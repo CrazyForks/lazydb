@@ -151,7 +151,7 @@ pub(crate) fn render(
             register_data_query_input(state, input, field, &prefix, text_input, offset);
         }
         cursor = render_query_field(
-            frame, field, &label, text_input, &spans, enabled, active, offset, theme,
+            frame, field, &label, text_input, &spans, enabled, active, offset, theme, state,
         )
         .or(cursor);
         frame.render_widget(
@@ -197,6 +197,7 @@ fn render_query_field(
     active: bool,
     offset: usize,
     theme: Theme,
+    state: &mut UiState,
 ) -> Option<Position> {
     if area.width == 0 || area.height == 0 {
         return None;
@@ -296,7 +297,10 @@ fn render_query_field(
         .saturating_add(cursor_cells.saturating_sub(offset) as u16)
         .min(area.right().saturating_sub(1));
     let cursor = Position::new(cursor_x, area.y);
-    frame.set_cursor_position(cursor);
+    state.cursor = Some(super::CursorSpec {
+        position: cursor,
+        style: super::CursorStyle::Bar,
+    });
     Some(cursor)
 }
 

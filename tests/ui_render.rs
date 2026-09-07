@@ -2704,7 +2704,7 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     app.overlay = Some(Overlay::SqlEditorList(app.sql_editor_list.clone()));
     let (search, search_state) = render_with_state(&app, 80, 24);
     assert!(search.contains("/alp"), "{search}");
-    assert!(search_state.cursor_style.is_some(), "{search}");
+    assert!(search_state.cursor.is_some(), "{search}");
 
     app.sql_editor_list.mode = lazydb::model::sql_editor_list::SqlEditorListMode::Rename {
         console_id: uuid::Uuid::from_u128(4),
@@ -2715,7 +2715,7 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     let (rename, rename_state) = render_with_state(&app, 80, 24);
     assert!(rename.contains("Rename alpha"), "{rename}");
     assert!(rename.contains("Name is already in use"), "{rename}");
-    assert!(rename_state.cursor_style.is_some(), "{rename}");
+    assert!(rename_state.cursor.is_some(), "{rename}");
 
     app.sql_editor_list.mode = lazydb::model::sql_editor_list::SqlEditorListMode::DeleteConfirm {
         console_id: uuid::Uuid::from_u128(4),
@@ -2726,7 +2726,7 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     assert!(delete.contains("[ > Cancel ]"), "{delete}");
     assert!(delete.contains("[   Delete console ]"), "{delete}");
     assert!(delete.contains("Enter activate"), "{delete}");
-    assert!(delete_state.cursor_style.is_none(), "{delete}");
+    assert!(delete_state.cursor.is_none(), "{delete}");
 }
 
 #[test]
@@ -2772,7 +2772,7 @@ fn profile_group_overlay_renders_options_and_editor_content() {
     assert!(editor.contains("duplicate"));
     assert!(editor.contains("[ Save group ]"), "{editor}");
     assert!(editor.contains("[ Cancel ]"), "{editor}");
-    assert!(editor_state.cursor_style.is_some(), "{editor}");
+    assert!(editor_state.cursor.is_some(), "{editor}");
     assert!(
         editor_state
             .hit_regions
@@ -2802,7 +2802,7 @@ fn busy_profile_group_editor_disables_actions_and_cursor() {
     assert!(editor.contains("EDIT CONNECTION GROUP"), "{editor}");
     assert!(editor.contains("BUSY // SAVING GROUP"), "{editor}");
     assert!(editor.contains("[ Saving... ]"), "{editor}");
-    assert!(state.cursor_style.is_none(), "{editor}");
+    assert!(state.cursor.is_none(), "{editor}");
     assert!(!state.hit_regions.iter().any(|region| matches!(
         region.target,
         HitTarget::ProfileGroupConfirm | HitTarget::ProfileGroupCancel
@@ -4627,7 +4627,7 @@ fn cursor_style_follows_editor_mode() {
     let mut app = fixture();
     let (_, normal_state) = render_with_state(&app, 120, 36);
     assert_eq!(
-        normal_state.cursor_style,
+        normal_state.cursor.map(|cursor| cursor.style),
         Some(lazydb::ui::CursorStyle::Block)
     );
 
@@ -4637,7 +4637,7 @@ fn cursor_style_follows_editor_mode() {
     )));
     let (_, insert_state) = render_with_state(&app, 120, 36);
     assert_eq!(
-        insert_state.cursor_style,
+        insert_state.cursor.map(|cursor| cursor.style),
         Some(lazydb::ui::CursorStyle::Bar)
     );
 
@@ -4647,8 +4647,53 @@ fn cursor_style_follows_editor_mode() {
     )));
     let (_, returned_normal_state) = render_with_state(&app, 120, 36);
     assert_eq!(
-        returned_normal_state.cursor_style,
+        returned_normal_state.cursor.map(|cursor| cursor.style),
         Some(lazydb::ui::CursorStyle::Block)
+    );
+}
+
+#[test]
+fn profile_text_input_uses_bar_cursor() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    app.update(Action::ProfileFocusField(ProfileField::Name));
+
+    let (_, state) = render_with_state(&app, 120, 36);
+
+    assert_eq!(
+        state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
+    );
+}
+
+#[test]
+fn explorer_find_input_uses_bar_cursor_while_editing() {
+    let mut app = fixture();
+    app.focus = Focus::Explorer;
+    app.update(Action::ExplorerFindOpen);
+
+    let (_, state) = render_with_state(&app, 120, 36);
+
+    assert_eq!(
+        state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
+    );
+}
+
+#[test]
+fn data_query_input_uses_bar_cursor_when_focused() {
+    let mut app = fixture();
+    app.tabs
+        .push(WorkspaceTab::Relation(RelationTab::new("users")));
+    app.active_tab = 1;
+    app.focus = Focus::Results;
+    app.update(Action::FocusDataQueryInput(DataQueryInput::Where));
+
+    let (_, state) = render_with_state(&app, 120, 36);
+
+    assert_eq!(
+        state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
     );
 }
 
@@ -4661,7 +4706,10 @@ fn editor_prompt_uses_bar_cursor() {
     )));
 
     let (_, state) = render_with_state(&app, 120, 36);
-    assert_eq!(state.cursor_style, Some(lazydb::ui::CursorStyle::Bar));
+    assert_eq!(
+        state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
+    );
 }
 
 #[test]
@@ -4673,7 +4721,10 @@ fn run_key_does_not_enter_replace_mode() {
     )));
 
     let (_, state) = render_with_state(&app, 120, 36);
-    assert_eq!(state.cursor_style, Some(lazydb::ui::CursorStyle::Block));
+    assert_eq!(
+        state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Block)
+    );
 }
 
 #[test]
@@ -6416,8 +6467,13 @@ fn hostile_and_long_form_values_render_safely_at_the_cursor() {
     hostile.update(Action::OpenProfileManager);
     hostile.update(Action::ProfileFocusField(ProfileField::Name));
     hostile.update(Action::ProfilePaste("\n\u{1b}".into()));
-    let hostile_output = render(&hostile, 80, 24);
+    let (hostile_output, hostile_state) = render_with_state(&hostile, 80, 24);
     assert!(hostile_output.contains("<LF><ESC>"));
+    assert_eq!(
+        hostile_state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
+    );
+    assert!(hostile_state.cursor.unwrap().position.x < 80);
 
     let mut long = App::new(Vec::new());
     long.update(Action::OpenProfileManager);
@@ -6430,8 +6486,13 @@ fn hostile_and_long_form_values_render_safely_at_the_cursor() {
         .unwrap()
         .name
         .set(format!("{}VISIBLE-END", "prefix-".repeat(20)));
-    let long_output = render(&long, 80, 24);
+    let (long_output, long_state) = render_with_state(&long, 80, 24);
     assert!(long_output.contains("VISIBLE-END"));
+    assert_eq!(
+        long_state.cursor.map(|cursor| cursor.style),
+        Some(lazydb::ui::CursorStyle::Bar)
+    );
+    assert!(long_state.cursor.unwrap().position.x < 80);
 }
 
 #[test]
