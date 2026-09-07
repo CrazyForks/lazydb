@@ -2902,15 +2902,28 @@ fn render_editor(
     frame.render_widget(block, area);
     for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
         let y = inner.y.saturating_add(row as u16);
-        let selected = snapshot.selections.iter().any(|selection| {
-            line.line >= selection.start.line.min(selection.end.line)
+        let line_selected = snapshot.selections.iter().any(|selection| {
+            selection.shape == crate::model::editor::EditorSelectionShape::Line
+                && line.line >= selection.start.line.min(selection.end.line)
                 && line.line <= selection.start.line.max(selection.end.line)
         });
-        let line_style = Style::new().fg(theme.border).bg(if selected {
+        let line_style = Style::new().fg(theme.border).bg(theme.surface);
+        let line_number_style = if line.line == snapshot.cursor.line
+            && app.focus == Focus::Editor
+            && app.overlay.is_none()
+        {
+            Style::new()
+                .fg(theme.accent)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            line_style
+        };
+        let content_background = if line_selected {
             theme.selection
         } else {
             theme.surface
-        });
+        };
         let statement_indicator = if line.current_statement
             && matches!(
                 snapshot.mode,
@@ -2929,7 +2942,10 @@ fn render_editor(
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {:>number_width$} ", line.line + 1), line_style),
+                Span::styled(
+                    format!(" {:>number_width$} ", line.line + 1),
+                    line_number_style,
+                ),
                 statement_indicator,
                 Span::styled(" ", line_style),
             ])),
@@ -2940,8 +2956,7 @@ fn render_editor(
             &snapshot,
             theme,
             true,
-            (!selected
-                && snapshot.selections.is_empty()
+            (snapshot.selections.is_empty()
                 && matches!(
                     snapshot.mode,
                     EditorMode::Normal | EditorMode::Insert | EditorMode::Replace
@@ -2959,13 +2974,19 @@ fn render_editor(
                 line,
             ),
         );
+        let content = if line.selection_newline {
+            let mut content = content;
+            content.push(Span::styled(
+                " ",
+                Style::new().fg(theme.text).bg(theme.selection),
+            ));
+            content
+        } else {
+            content
+        };
         frame.render_widget(
             Paragraph::new(Line::from(content))
-                .style(Style::new().bg(if selected {
-                    theme.selection
-                } else {
-                    theme.surface
-                }))
+                .style(Style::new().bg(content_background))
                 .scroll((0, snapshot.horizontal_offset.min(u16::MAX as usize) as u16)),
             Rect::new(
                 inner.x.saturating_add(gutter as u16),
