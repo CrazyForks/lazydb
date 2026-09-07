@@ -532,6 +532,31 @@ fn render_field(
                     .source_to_display_cells,
                 horizontal_offset: text_input_horizontal_offset(value_area, "", input),
                 prefix_width: 0,
+                source_start: 0,
+            },
+        ));
+        state.input_selection_targets.push((
+            super::text_selection::InputSelectionTarget::Profile(field),
+            super::text_selection::InputHitMap {
+                area: value_area,
+                source_to_display_cells: crate::security::project_editor_line(input.value())
+                    .source_to_display_cells,
+                horizontal_offset: text_input_horizontal_offset(value_area, "", input),
+                prefix_width: 0,
+                source_start: 0,
+            },
+        ));
+    } else if field == ProfileField::Url {
+        let display = safe_line(&draft.url_display());
+        let projection = crate::security::project_editor_line(&display);
+        state.input_selection_targets.push((
+            super::text_selection::InputSelectionTarget::ProfileUrl,
+            super::text_selection::InputHitMap {
+                area: value_area,
+                source_to_display_cells: projection.source_to_display_cells,
+                horizontal_offset: field_scroll_offset(draft, field, value_area.width) as usize,
+                prefix_width: 0,
+                source_start: 0,
             },
         ));
     }
@@ -544,10 +569,41 @@ fn render_field(
     } else {
         field_scroll_offset(draft, field, value_area.width)
     };
-    frame.render_widget(
-        Paragraph::new(value).style(value_style).scroll((0, scroll)),
-        value_area,
-    );
+    if field == ProfileField::Url && active {
+        let projection = crate::security::project_editor_line(&value);
+        let selection = draft.url_selection_range();
+        let offset = usize::from(scroll);
+        let mut cells = 0;
+        let mut spans = Vec::new();
+        for character in projection.text.chars() {
+            let width = usize::from(character.to_string().cell_width());
+            let source = projection
+                .source_to_display_cells
+                .partition_point(|&boundary| boundary <= cells)
+                .saturating_sub(1);
+            if cells + width > offset && cells < offset + usize::from(value_area.width) {
+                let style = if selection
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&source))
+                {
+                    value_style.add_modifier(Modifier::REVERSED)
+                } else {
+                    value_style
+                };
+                spans.push(Span::styled(character.to_string(), style));
+            }
+            cells += width;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(value_style),
+            value_area,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(value).style(value_style).scroll((0, scroll)),
+            value_area,
+        );
+    }
 }
 
 fn render_driver_options(

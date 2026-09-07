@@ -22,13 +22,65 @@ fn editor_position(
     }
 }
 
+fn input_position_clamped(
+    maps: &[(
+        &crate::ui::text_selection::InputSelectionTarget,
+        &crate::ui::text_selection::InputHitMap,
+    )],
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    let first = maps
+        .iter()
+        .map(|(_, map)| *map)
+        .min_by_key(|map| map.area.y)?;
+    let last = maps
+        .iter()
+        .map(|(_, map)| *map)
+        .max_by_key(|map| map.area.bottom())?;
+    let line = maps
+        .iter()
+        .find(|(_, map)| row >= map.area.y && row < map.area.bottom())
+        .map(|(_, map)| *map)
+        .or({
+            if row < first.area.y {
+                Some(first)
+            } else {
+                Some(last)
+            }
+        })?;
+    line.source_at_horizontal_clamped(column)
+}
+
+fn text_position_clamped(
+    maps: &[crate::ui::text_selection::TextHitMap],
+    column: u16,
+    row: u16,
+) -> Option<crate::ui::text_selection::TextPosition> {
+    let first = maps.iter().min_by_key(|map| map.area.y)?;
+    let last = maps.iter().max_by_key(|map| map.area.bottom())?;
+    let line = maps
+        .iter()
+        .find(|map| row >= map.area.y && row < map.area.bottom())
+        .unwrap_or(if row < first.area.y { first } else { last });
+    Some(line.source_at_horizontal_clamped(column))
+}
+
 pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
     // Toasts own their visible cells, even above modal inputs and selection targets.
     if let Some(
         target @ (HitTarget::DismissNotification(_) | HitTarget::OpenNotificationHistoryAt(_)),
     ) = ui.target_at(event.column, event.row)
     {
+        let input_target = ui
+            .input_gesture
+            .borrow()
+            .as_ref()
+            .map(|gesture| gesture.target.clone());
         ui.cancel_mouse_gesture();
+        if let Some(target) = input_target {
+            return Some(Action::CancelMouseInputSelection { target });
+        }
         return if event.kind == MouseEventKind::Down(MouseButton::Left) {
             match target {
                 HitTarget::DismissNotification(id) => Some(Action::DismissNotification(*id)),
@@ -43,6 +95,42 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
     }
     match event.kind {
         MouseEventKind::Drag(MouseButton::Left) => {
+            if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Input) {
+                let target_id = ui
+                    .input_gesture
+                    .borrow()
+                    .as_ref()
+                    .map(|gesture| gesture.target.clone());
+                let target_id = target_id?;
+                let position = ui
+                    .input_selection_targets
+                    .iter()
+                    .rev()
+                    .filter(|(target, _)| *target == target_id)
+                    .map(|(target, map)| (target, map))
+                    .collect::<Vec<_>>();
+                let position = input_position_clamped(&position, event.column, event.row);
+                let Some(position) = position else {
+                    let target = ui
+                        .input_gesture
+                        .borrow()
+                        .as_ref()
+                        .map(|gesture| gesture.target.clone());
+                    ui.cancel_mouse_gesture();
+                    if let Some(target) = target {
+                        return Some(Action::CancelMouseInputSelection { target });
+                    }
+                    return None;
+                };
+                let mut gesture = ui.input_gesture.borrow_mut();
+                let gesture = gesture.as_mut()?;
+                gesture.end = position;
+                gesture.has_dragged |= position != gesture.start;
+                return Some(Action::UpdateMouseInputSelection {
+                    target: gesture.target.clone(),
+                    cursor: position,
+                });
+            }
             if matches!(app.overlay, Some(Overlay::TextDetail(_)))
                 && *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text)
             {
@@ -57,7 +145,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     ui.cancel_mouse_gesture();
                     return None;
                 }
-                let end = target.source_at(event.column, event.row)?;
+                let end = text_position_clamped(&target.hit_maps, event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return None;
             }
@@ -65,7 +153,15 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 ui.relation_resize.borrow_mut().take();
                 ui.grid_scrollbar_drag.borrow_mut().take();
                 ui.pane_resize_drag.borrow_mut().take();
+                let input_target = ui
+                    .input_gesture
+                    .borrow()
+                    .as_ref()
+                    .map(|gesture| gesture.target.clone());
                 ui.cancel_mouse_gesture();
+                if let Some(target) = input_target {
+                    return Some(Action::CancelMouseInputSelection { target });
+                }
                 return None;
             }
             if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text) {
@@ -80,7 +176,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     ui.cancel_mouse_gesture();
                     return None;
                 }
-                let end = target.source_at(event.column, event.row)?;
+                let end = text_position_clamped(&target.hit_maps, event.column, event.row)?;
                 ui.update_text_gesture(end);
                 return None;
             }
@@ -130,6 +226,26 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             })
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Input) {
+                let Some(gesture) = ui.input_gesture.borrow_mut().take() else {
+                    ui.mouse_gesture.borrow_mut().take();
+                    return None;
+                };
+                ui.mouse_gesture.borrow_mut().take();
+                if !ui.input_selection_is_current(&gesture) {
+                    return None;
+                }
+                if !gesture.has_dragged {
+                    return Some(Action::CancelMouseInputSelection {
+                        target: gesture.target,
+                    });
+                }
+                return Some(Action::CompleteMouseInputSelection {
+                    target: gesture.target,
+                    start: gesture.start,
+                    end: gesture.end,
+                });
+            }
             if *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text) {
                 let Some(mut gesture) = ui.text_gesture.borrow_mut().take() else {
                     ui.end_mouse_gesture();
@@ -154,7 +270,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     .text_selection_targets
                     .iter()
                     .find(|target| target.session_id == gesture.session_id)
-                    && let Some(end) = target.source_at(event.column, event.row)
+                    && let Some(end) =
+                        text_position_clamped(&target.hit_maps, event.column, event.row)
                 {
                     gesture.has_dragged |= end != gesture.start;
                     gesture.end = end;
@@ -187,6 +304,15 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if ui.mouse_gesture.borrow().is_some() {
+                let input_target = ui
+                    .input_gesture
+                    .borrow()
+                    .as_ref()
+                    .map(|gesture| gesture.target.clone());
+                ui.cancel_mouse_gesture();
+                if let Some(target) = input_target {
+                    return Some(Action::CancelMouseInputSelection { target });
+                }
                 return None;
             }
             ui.relation_resize.borrow_mut().take();
@@ -236,17 +362,116 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if let HitTarget::OpenTextDetail(request) = target {
                 return Some(Action::OpenTextDetail(request));
             }
+            if let Some((input_target, cursor)) =
+                ui.input_selection_target_at(event.column, event.row)
+            {
+                let input_target = input_target.clone();
+                ui.input_gesture
+                    .borrow_mut()
+                    .replace(crate::ui::text_selection::InputGesture {
+                        target: input_target.clone(),
+                        hit_map: ui
+                            .input_selection_targets
+                            .iter()
+                            .find(|(target, _)| target == &input_target)
+                            .map(|(_, map)| map.clone())?,
+                        start: cursor,
+                        end: cursor,
+                        has_dragged: false,
+                    });
+                ui.mouse_gesture
+                    .borrow_mut()
+                    .replace(crate::ui::text_selection::GestureOwner::Input);
+                return Some(Action::BeginMouseInputSelection {
+                    target: input_target,
+                    cursor,
+                });
+            }
             if let HitTarget::DataQueryInput(input) = target
                 && let Some((_, cursor)) = ui.data_query_input_at(event.column, event.row)
             {
-                return Some(Action::SetDataQueryCursor { input, cursor });
+                let target = crate::ui::text_selection::InputSelectionTarget::DataQuery(input);
+                ui.input_gesture
+                    .borrow_mut()
+                    .replace(crate::ui::text_selection::InputGesture {
+                        target: target.clone(),
+                        hit_map: ui
+                            .input_selection_targets
+                            .iter()
+                            .find(|(candidate, _)| candidate == &target)
+                            .map(|(_, map)| map.clone())?,
+                        start: cursor,
+                        end: cursor,
+                        has_dragged: false,
+                    });
+                ui.mouse_gesture
+                    .borrow_mut()
+                    .replace(crate::ui::text_selection::GestureOwner::Input);
+                return Some(Action::BeginMouseInputSelection { target, cursor });
             }
             if let HitTarget::ProfileField(field) = target
                 && let Some((_, cursor)) = ui.profile_input_at(event.column, event.row)
             {
+                if field == crate::model::profile_manager::ProfileField::Password {
+                    return None;
+                }
+                if let Some((input_target, cursor)) = ui
+                    .input_selection_target_at(event.column, event.row)
+                    .filter(|(target, _)| {
+                        **target == crate::ui::text_selection::InputSelectionTarget::Profile(field)
+                    })
+                {
+                    ui.input_gesture.borrow_mut().replace(
+                        crate::ui::text_selection::InputGesture {
+                            target: input_target.clone(),
+                            hit_map: ui
+                                .input_selection_targets
+                                .iter()
+                                .find(|entry| entry.0 == *input_target)
+                                .map(|(_, map)| map.clone())?,
+                            start: cursor,
+                            end: cursor,
+                            has_dragged: false,
+                        },
+                    );
+                    ui.mouse_gesture
+                        .borrow_mut()
+                        .replace(crate::ui::text_selection::GestureOwner::Input);
+                    return Some(Action::BeginMouseInputSelection {
+                        target: input_target.clone(),
+                        cursor,
+                    });
+                }
                 return Some(Action::ProfileSetCursor { field, cursor });
             }
             if let Some((target, cursor)) = ui.catalog_input_at(event.column, event.row) {
+                let input_target =
+                    crate::ui::text_selection::InputSelectionTarget::Catalog(target.clone());
+                if let Some((_, position)) = ui
+                    .input_selection_target_at(event.column, event.row)
+                    .filter(|(candidate, _)| **candidate == input_target)
+                {
+                    ui.input_gesture.borrow_mut().replace(
+                        crate::ui::text_selection::InputGesture {
+                            target: input_target.clone(),
+                            hit_map: ui
+                                .input_selection_targets
+                                .iter()
+                                .find(|entry| entry.0 == input_target)
+                                .map(|(_, map)| map.clone())?,
+                            start: position,
+                            end: position,
+                            has_dragged: false,
+                        },
+                    );
+                    ui.mouse_gesture
+                        .borrow_mut()
+                        .replace(crate::ui::text_selection::GestureOwner::Input);
+                    return Some(Action::BeginMouseInputSelection {
+                        target: input_target,
+                        cursor: position,
+                    });
+                }
                 return Some(Action::CatalogEditorSetCursor { target, cursor });
             }
             if let Some(overlay) = &app.overlay
@@ -272,6 +497,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                             | HitTarget::ProfileGroupOption(_)
                             | HitTarget::ProfileGroupConfirm
                             | HitTarget::ProfileGroupCancel
+                            | HitTarget::SqlEditorListSearch
+                            | HitTarget::SqlEditorListRename
+                            | HitTarget::HelpSearch
+                            | HitTarget::ProfileGroupName
+                            | HitTarget::ExplorerFind
+                            | HitTarget::ExplorerSearch
+                            | HitTarget::KeySequencePopup
                             | HitTarget::ExplorerAddOption(_)
                             | HitTarget::CatalogEditorField(_)
                             | HitTarget::CatalogEditorFormField(_)
@@ -485,6 +717,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::ProfileGroupOption(index) => Some(Action::ProfileGroupSelect(index)),
                 HitTarget::ProfileGroupConfirm => Some(Action::ProfileGroupConfirm),
                 HitTarget::ProfileGroupCancel => Some(Action::ProfileGroupCancel),
+                HitTarget::SqlEditorListSearch
+                | HitTarget::SqlEditorListRename
+                | HitTarget::HelpSearch
+                | HitTarget::ProfileGroupName
+                | HitTarget::ExplorerFind
+                | HitTarget::ExplorerSearch
+                | HitTarget::KeySequencePopup => None,
                 HitTarget::ExplorerAddOption(index) => Some(Action::ExplorerAddSelect(index)),
                 HitTarget::CatalogEditorField(index) => {
                     Some(Action::CatalogEditorFocusField(index))
@@ -761,6 +1000,13 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::ProfileGroupOption(_)
         | HitTarget::ProfileGroupConfirm
         | HitTarget::ProfileGroupCancel
+        | HitTarget::SqlEditorListSearch
+        | HitTarget::SqlEditorListRename
+        | HitTarget::HelpSearch
+        | HitTarget::ProfileGroupName
+        | HitTarget::ExplorerFind
+        | HitTarget::ExplorerSearch
+        | HitTarget::KeySequencePopup
         | HitTarget::ExplorerAddOption(_)
         | HitTarget::CatalogEditorField(_)
         | HitTarget::CatalogEditorFormField(_)

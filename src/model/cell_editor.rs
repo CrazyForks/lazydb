@@ -40,9 +40,17 @@ pub enum TypedDraft {
 pub struct JsonBuffer {
     value: String,
     cursor: usize,
+    anchor: Option<usize>,
     sql_null: bool,
-    history: Vec<(String, usize)>,
-    redo: Vec<(String, usize)>,
+    history: Vec<JsonEditSnapshot>,
+    redo: Vec<JsonEditSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct JsonEditSnapshot {
+    value: String,
+    cursor: usize,
+    anchor: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +85,7 @@ impl JsonBuffer {
         Self {
             value,
             cursor,
+            anchor: None,
             sql_null: false,
             history: Vec::new(),
             redo: Vec::new(),
@@ -91,6 +100,27 @@ impl JsonBuffer {
     }
     pub fn cursor(&self) -> usize {
         self.cursor
+    }
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.anchor
+            .map(|anchor| (anchor.min(self.cursor), anchor.max(self.cursor)))
+            .filter(|(start, end)| start != end)
+    }
+    pub fn selected_text(&self) -> Option<&str> {
+        let (start, end) = self.selection()?;
+        Some(&self.value[self.byte_index(start)..self.byte_index(end)])
+    }
+    pub fn begin_selection(&mut self, anchor: usize) {
+        let anchor = anchor.min(self.value.chars().count());
+        self.anchor = Some(anchor);
+        self.cursor = anchor;
+    }
+    pub fn extend_selection(&mut self, cursor: usize) {
+        self.cursor = cursor.min(self.value.chars().count());
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
     }
     pub fn line(&self) -> usize {
         self.value[..self.byte_index(self.cursor)]
@@ -108,12 +138,18 @@ impl JsonBuffer {
 
     pub fn insert(&mut self, character: char) {
         self.record();
+        self.remove_selection();
         let index = self.byte_index(self.cursor);
         self.value.insert(index, character);
         self.cursor += 1;
     }
 
     pub fn backspace(&mut self) {
+        if self.selection().is_some() {
+            self.record();
+            self.remove_selection();
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -125,6 +161,11 @@ impl JsonBuffer {
     }
 
     pub fn delete(&mut self) {
+        if self.selection().is_some() {
+            self.record();
+            self.remove_selection();
+            return;
+        }
         if self.cursor >= self.value.chars().count() {
             return;
         }
@@ -135,15 +176,19 @@ impl JsonBuffer {
     }
 
     pub fn move_left(&mut self) {
+        self.anchor = None;
         self.cursor = self.cursor.saturating_sub(1);
     }
     pub fn move_right(&mut self) {
+        self.anchor = None;
         self.cursor = (self.cursor + 1).min(self.value.chars().count());
     }
     pub fn move_home(&mut self) {
+        self.anchor = None;
         self.cursor = self.line_start(self.cursor);
     }
     pub fn move_end(&mut self) {
+        self.anchor = None;
         self.cursor = self.line_end(self.cursor);
     }
     pub fn move_up(&mut self) {
@@ -153,17 +198,15 @@ impl JsonBuffer {
         self.move_vertical(1);
     }
     pub fn undo(&mut self) {
-        if let Some((value, cursor)) = self.history.pop() {
-            self.redo.push((self.value.clone(), self.cursor));
-            self.value = value;
-            self.cursor = cursor;
+        if let Some(snapshot) = self.history.pop() {
+            self.redo.push(self.snapshot());
+            self.restore(snapshot);
         }
     }
     pub fn redo(&mut self) {
-        if let Some((value, cursor)) = self.redo.pop() {
-            self.history.push((self.value.clone(), self.cursor));
-            self.value = value;
-            self.cursor = cursor;
+        if let Some(snapshot) = self.redo.pop() {
+            self.history.push(self.snapshot());
+            self.restore(snapshot);
         }
     }
 
@@ -177,13 +220,37 @@ impl JsonBuffer {
         tokenize_json(self.value())
     }
     pub fn replace_value(&mut self, value: String) {
+        self.record();
         self.value = value;
         self.cursor = self.value.chars().count();
+        self.anchor = None;
     }
 
     fn record(&mut self) {
-        self.history.push((self.value.clone(), self.cursor));
+        self.history.push(self.snapshot());
         self.redo.clear();
+    }
+    fn snapshot(&self) -> JsonEditSnapshot {
+        JsonEditSnapshot {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        }
+    }
+    fn restore(&mut self, snapshot: JsonEditSnapshot) {
+        self.value = snapshot.value;
+        self.cursor = snapshot.cursor;
+        self.anchor = snapshot.anchor;
+    }
+    fn remove_selection(&mut self) {
+        let Some((start, end)) = self.selection() else {
+            self.anchor = None;
+            return;
+        };
+        self.value
+            .replace_range(self.byte_index(start)..self.byte_index(end), "");
+        self.cursor = start;
+        self.anchor = None;
     }
     fn byte_index(&self, cursor: usize) -> usize {
         self.value
@@ -208,6 +275,7 @@ impl JsonBuffer {
         )
     }
     fn move_vertical(&mut self, direction: isize) {
+        self.anchor = None;
         let column = self.column();
         let line = self.line().saturating_add_signed(direction);
         let start = self
@@ -870,6 +938,30 @@ mod tests {
         buffer.move_down();
         assert_eq!(buffer.line(), 1);
         assert!(buffer.value().contains('\n'));
+    }
+
+    #[test]
+    fn json_buffer_selects_in_both_directions_and_replaces_atomically() {
+        let mut buffer = JsonBuffer::new("one\ntwo\nthree");
+        buffer.begin_selection(10);
+        buffer.extend_selection(2);
+        assert_eq!(buffer.selected_text(), Some("e\ntwo\nth"));
+        buffer.insert('X');
+        assert_eq!(buffer.value(), "onXree");
+        buffer.undo();
+        assert_eq!(buffer.value(), "one\ntwo\nthree");
+        assert_eq!(buffer.selection(), Some((2, 10)));
+    }
+
+    #[test]
+    fn json_buffer_deletes_multiline_selection_as_one_undo_step() {
+        let mut buffer = JsonBuffer::new("a\nb\nc");
+        buffer.begin_selection(0);
+        buffer.extend_selection(2);
+        buffer.backspace();
+        assert_eq!(buffer.value(), "b\nc");
+        buffer.undo();
+        assert_eq!(buffer.value(), "a\nb\nc");
     }
 
     #[test]

@@ -311,6 +311,14 @@ fn readonly_regions_register_help_dashboard_and_relation_detail_targets() {
     let (_, help_state) = render_with_state(&app, 100, 30);
     assert!(
         help_state
+            .input_selection_targets
+            .iter()
+            .any(|(target, _)| {
+                *target == lazydb::ui::text_selection::InputSelectionTarget::HelpSearch
+            })
+    );
+    assert!(
+        help_state
             .hit_regions
             .iter()
             .any(|region| { matches!(region.target, HitTarget::OpenTextDetail(_)) })
@@ -2006,6 +2014,16 @@ fn sequence_editor_renders_sections_bounds_and_all_fields() {
     ] {
         assert!(output.contains(label), "missing {label}: {output}");
     }
+    assert!(state.input_selection_targets.iter().any(|(target, _)| {
+        matches!(
+            target,
+            lazydb::ui::text_selection::InputSelectionTarget::Catalog(
+                lazydb::action::CatalogEditorCursorTarget::FormField(
+                    lazydb::model::catalog_editor::CatalogFormFocus::MinValue
+                )
+            )
+        )
+    }));
     assert!(output.contains("[x] On"), "{output}");
     if let Some(lazydb::model::catalog_editor::CatalogDraft::Sequence(draft)) = app
         .catalog_editor
@@ -2888,6 +2906,14 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     let (search, search_state) = render_with_state(&app, 80, 24);
     assert!(search.contains("/alp"), "{search}");
     assert!(search_state.cursor.is_some(), "{search}");
+    assert!(
+        search_state
+            .input_selection_targets
+            .iter()
+            .any(|(target, _)| {
+                *target == lazydb::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch
+            })
+    );
 
     app.sql_editor_list.mode = lazydb::model::sql_editor_list::SqlEditorListMode::Rename {
         console_id: uuid::Uuid::from_u128(4),
@@ -2899,6 +2925,14 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     assert!(rename.contains("Rename alpha"), "{rename}");
     assert!(rename.contains("Name is already in use"), "{rename}");
     assert!(rename_state.cursor.is_some(), "{rename}");
+    assert!(
+        rename_state
+            .input_selection_targets
+            .iter()
+            .any(|(target, _)| {
+                *target == lazydb::ui::text_selection::InputSelectionTarget::ConsoleManagerRename
+            })
+    );
 
     app.sql_editor_list.mode = lazydb::model::sql_editor_list::SqlEditorListMode::DeleteConfirm {
         console_id: uuid::Uuid::from_u128(4),
@@ -2910,6 +2944,50 @@ fn console_manager_renders_empty_search_rename_and_delete_modes() {
     assert!(delete.contains("[   Delete console ]"), "{delete}");
     assert!(delete.contains("Enter activate"), "{delete}");
     assert!(delete_state.cursor.is_none(), "{delete}");
+}
+
+#[test]
+fn rendered_input_targets_have_mouse_hit_regions() {
+    let mut app = console_manager_fixture();
+    for mode in [
+        lazydb::model::sql_editor_list::SqlEditorListMode::Search,
+        lazydb::model::sql_editor_list::SqlEditorListMode::Rename {
+            console_id: uuid::Uuid::from_u128(3),
+            input: lazydb::model::text_input::TextInput::from("renamed"),
+            error: None,
+        },
+    ] {
+        app.sql_editor_list.mode = mode.clone();
+        app.overlay = Some(Overlay::SqlEditorList(app.sql_editor_list.clone()));
+        let (_, state) = render_with_state(&app, 120, 36);
+        assert!(state.input_selection_targets.iter().any(|(target, _)| {
+            matches!(
+                target,
+                lazydb::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch
+            ) && matches!(
+                mode,
+                lazydb::model::sql_editor_list::SqlEditorListMode::Search
+            ) || matches!(
+                target,
+                lazydb::ui::text_selection::InputSelectionTarget::ConsoleManagerRename
+            ) && matches!(
+                mode,
+                lazydb::model::sql_editor_list::SqlEditorListMode::Rename { .. }
+            )
+        }));
+        assert!(state.hit_regions.iter().any(|region| {
+            matches!(region.target, HitTarget::SqlEditorListSearch)
+                && matches!(
+                    mode,
+                    lazydb::model::sql_editor_list::SqlEditorListMode::Search
+                )
+                || matches!(region.target, HitTarget::SqlEditorListRename)
+                    && matches!(
+                        mode,
+                        lazydb::model::sql_editor_list::SqlEditorListMode::Rename { .. }
+                    )
+        }));
+    }
 }
 
 #[test]

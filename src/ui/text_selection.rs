@@ -35,6 +35,21 @@ impl TextHitMap {
             column: source_column,
         })
     }
+
+    pub fn source_at_horizontal_clamped(&self, column: u16) -> TextPosition {
+        let display_cell = self
+            .horizontal_offset
+            .saturating_add(usize::from(column.saturating_sub(self.area.x)));
+        let source_column = self
+            .source_to_display_cells
+            .partition_point(|&boundary| boundary <= display_cell)
+            .saturating_sub(1)
+            .min(self.source_to_display_cells.len().saturating_sub(1));
+        TextPosition {
+            line: self.line,
+            column: source_column,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +66,45 @@ pub struct InputHitMap {
     pub source_to_display_cells: Vec<usize>,
     pub horizontal_offset: usize,
     pub prefix_width: usize,
+    pub source_start: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InputSelectionTarget {
+    DataQuery(crate::model::data_query::DataQueryInput),
+    Profile(crate::ui::ProfileField),
+    ProfileUrl,
+    Catalog(crate::action::CatalogEditorCursorTarget),
+    RelationTemporal {
+        tab_id: uuid::Uuid,
+        row_id: crate::model::relation_edit::EditableRowId,
+        column: usize,
+    },
+    RelationJson {
+        tab_id: uuid::Uuid,
+        row_id: crate::model::relation_edit::EditableRowId,
+        column: usize,
+    },
+    RelationText {
+        tab_id: uuid::Uuid,
+        row_id: crate::model::relation_edit::EditableRowId,
+        column: usize,
+    },
+    ConsoleManagerSearch,
+    ConsoleManagerRename,
+    HelpSearch,
+    ProfileGroupName,
+    ExplorerFind,
+    ExplorerSearch,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputGesture {
+    pub target: InputSelectionTarget,
+    pub hit_map: InputHitMap,
+    pub start: usize,
+    pub end: usize,
+    pub has_dragged: bool,
 }
 
 impl InputHitMap {
@@ -64,11 +118,56 @@ impl InputHitMap {
         let display_cell = self.horizontal_offset.saturating_add(
             usize::from(column.saturating_sub(self.area.x)).saturating_sub(self.prefix_width),
         );
+        let boundary = self
+            .source_to_display_cells
+            .partition_point(|&boundary| boundary <= display_cell)
+            .saturating_sub(1);
+        Some(self.source_start + boundary.min(self.source_to_display_cells.len().saturating_sub(1)))
+    }
+
+    pub fn source_at_clamped(&self, column: u16, row: u16) -> Option<usize> {
+        if row < self.area.y || row >= self.area.bottom() || self.source_to_display_cells.is_empty()
+        {
+            return None;
+        }
+        let relative = usize::from(column.saturating_sub(self.area.x));
+        if relative < self.prefix_width {
+            return Some(self.source_start);
+        }
+        let display = self
+            .horizontal_offset
+            .saturating_add(relative - self.prefix_width);
         Some(
-            self.source_to_display_cells
-                .partition_point(|&boundary| boundary <= display_cell)
-                .saturating_sub(1)
-                .min(self.source_to_display_cells.len().saturating_sub(1)),
+            self.source_start
+                + self
+                    .source_to_display_cells
+                    .partition_point(|&boundary| boundary <= display)
+                    .saturating_sub(1)
+                    .min(self.source_to_display_cells.len().saturating_sub(1)),
+        )
+    }
+
+    /// Map a pointer that may be outside this line's horizontal bounds.
+    /// Vertical bounds are handled by the caller, which can select the first
+    /// or last visible line for multiline inputs.
+    pub fn source_at_horizontal_clamped(&self, column: u16) -> Option<usize> {
+        if self.source_to_display_cells.is_empty() {
+            return None;
+        }
+        let relative = usize::from(column.saturating_sub(self.area.x));
+        if relative < self.prefix_width {
+            return Some(self.source_start);
+        }
+        let display = self
+            .horizontal_offset
+            .saturating_add(relative - self.prefix_width);
+        Some(
+            self.source_start
+                + self
+                    .source_to_display_cells
+                    .partition_point(|&boundary| boundary <= display)
+                    .saturating_sub(1)
+                    .min(self.source_to_display_cells.len().saturating_sub(1)),
         )
     }
 }
@@ -88,6 +187,7 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GestureOwner {
     Text,
+    Input,
     PaneResize,
     GridScrollbar,
     RelationColumnResize,
@@ -211,10 +311,25 @@ mod tests {
             source_to_display_cells: vec![0, 1, 2, 3, 4],
             horizontal_offset: 0,
             prefix_width: 3,
+            source_start: 0,
         };
 
         assert_eq!(input.source_at(12, 4), None);
         assert_eq!(input.source_at(13, 4), Some(0));
         assert_eq!(input.source_at(16, 4), Some(3));
+    }
+
+    #[test]
+    fn input_hit_map_clamps_horizontal_pointer_to_source_boundaries() {
+        let input = InputHitMap {
+            area: Rect::new(10, 4, 4, 1),
+            source_to_display_cells: vec![0, 1, 2, 3],
+            horizontal_offset: 0,
+            prefix_width: 0,
+            source_start: 7,
+        };
+
+        assert_eq!(input.source_at_horizontal_clamped(0), Some(7));
+        assert_eq!(input.source_at_horizontal_clamped(99), Some(10));
     }
 }

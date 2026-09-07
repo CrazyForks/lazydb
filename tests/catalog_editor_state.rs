@@ -1,5 +1,5 @@
 use lazydb::{
-    action::Action,
+    action::{Action, CatalogEditorCursorTarget},
     db::catalog_mutation::{
         CatalogMutationAnchor, CatalogMutationExecutionMode, CatalogMutationMode,
         CatalogMutationRequest, CatalogMutationTarget, CatalogObjectType, CatalogSelectionHint,
@@ -55,6 +55,68 @@ fn table_column_edit_session_is_atomic_across_confirm_and_cancel() {
     assert_eq!(draft.columns[0].name.value(), "id2");
     assert!(draft.column_editor.is_none());
     assert_eq!(draft.focus, TableEditorFocus::Columns);
+}
+
+#[test]
+fn catalog_input_accessors_follow_explicit_targets() {
+    let mut schema = CatalogDraft::Schema(SchemaDraft::new());
+    if let CatalogDraft::Schema(draft) = &mut schema {
+        draft.name = "name".into();
+        draft.owner = "owner".into();
+        draft.selected_field = 0;
+    }
+
+    assert_eq!(
+        schema
+            .input_for_target(&CatalogEditorCursorTarget::SchemaField(1))
+            .unwrap()
+            .value(),
+        "owner"
+    );
+    schema
+        .input_for_target_mut(&CatalogEditorCursorTarget::SchemaField(1))
+        .unwrap()
+        .set("changed");
+    assert_eq!(
+        schema
+            .input_for_target(&CatalogEditorCursorTarget::SchemaField(1))
+            .unwrap()
+            .value(),
+        "changed"
+    );
+}
+
+#[test]
+fn table_column_input_accessor_uses_column_edit_session_target() {
+    let mut table = TableDraft::new("public");
+    table.columns[0].name = "id".into();
+    assert!(table.begin_edit_selected_column());
+    let mut draft = CatalogDraft::Table(table);
+
+    assert_eq!(
+        draft
+            .input_for_target(&CatalogEditorCursorTarget::TableField(
+                TableEditorFocus::ColumnDetails(TableColumnField::Name),
+            ))
+            .unwrap()
+            .value(),
+        "id"
+    );
+    draft
+        .input_for_target_mut(&CatalogEditorCursorTarget::TableField(
+            TableEditorFocus::ColumnDetails(TableColumnField::Name),
+        ))
+        .unwrap()
+        .set("renamed");
+    assert_eq!(
+        draft
+            .input_for_target(&CatalogEditorCursorTarget::TableField(
+                TableEditorFocus::ColumnDetails(TableColumnField::Name),
+            ))
+            .unwrap()
+            .value(),
+        "renamed"
+    );
 }
 
 #[test]

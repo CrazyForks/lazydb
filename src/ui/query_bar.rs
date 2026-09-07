@@ -271,6 +271,14 @@ fn render_query_field(
                     theme.muted
                 })
                 .bg(theme.surface);
+            let style = if input
+                .selection_range()
+                .is_some_and(|range| range.contains(&source_index))
+            {
+                style.add_modifier(ratatui::style::Modifier::REVERSED)
+            } else {
+                style
+            };
             if let Some(previous) = spans.last_mut()
                 && previous.style == style
             {
@@ -306,9 +314,13 @@ fn render_query_field(
 
 #[cfg(test)]
 mod tests {
-    use super::{FIELD_HEIGHT, QueryBarHighlightCache, fields_height};
+    use super::{
+        FIELD_HEIGHT, QueryBarHighlightCache, fields_height, render_query_field, theme::Theme,
+    };
     use crate::model::data_query::DataQueryInput;
-    use crate::sql::{HighlightKind, SqlDialect};
+    use crate::model::text_input::TextInput;
+    use crate::sql::{HighlightKind, HighlightSpan, SqlDialect, TextRange};
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect, style::Modifier};
 
     #[test]
     fn switches_to_horizontal_layout_at_the_minimum_usable_width() {
@@ -342,5 +354,41 @@ mod tests {
             .highlights(DataQueryInput::OrderBy, "name DESC", SqlDialect::Sqlite)
             .to_vec();
         assert!(order.iter().any(|span| span.kind == HighlightKind::Keyword));
+    }
+
+    #[test]
+    fn query_bar_selection_reverses_cells_without_replacing_syntax_color() {
+        let mut input = TextInput::from("name = 1");
+        input.begin_selection(7);
+        input.extend_selection(8);
+        let mut state = super::super::UiState::new();
+        let mut terminal = Terminal::new(TestBackend::new(24, 1)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_query_field(
+                    frame,
+                    Rect::new(0, 0, 24, 1),
+                    "WHERE",
+                    &input,
+                    &[HighlightSpan {
+                        range: TextRange::new(7, 8),
+                        kind: HighlightKind::Number,
+                    }],
+                    true,
+                    true,
+                    0,
+                    Theme::default(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+
+        let cell = terminal.backend().buffer().cell((14, 0)).unwrap();
+        assert!(cell.modifier.contains(Modifier::REVERSED));
+        assert_eq!(
+            cell.fg,
+            Theme::default().syntax_color(super::theme::SyntaxColor::Number)
+        );
     }
 }

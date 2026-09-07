@@ -2028,8 +2028,30 @@ impl TableDraft {
         }
     }
 
-    pub(crate) fn selected_text_input_mut(&mut self) -> Option<&mut TextInput> {
-        match self.focus {
+    pub(crate) fn input_for_target(&self, target: &TableEditorFocus) -> Option<&TextInput> {
+        match target {
+            TableEditorFocus::General(TableGeneralField::Name) => Some(&self.name),
+            TableEditorFocus::General(TableGeneralField::Schema) => Some(&self.schema),
+            TableEditorFocus::General(TableGeneralField::Owner) => Some(&self.owner),
+            TableEditorFocus::General(TableGeneralField::Comment) => Some(&self.comment),
+            TableEditorFocus::ColumnDetails(field) => {
+                self.column_editor.as_ref().and_then(|session| match field {
+                    TableColumnField::Name => Some(&session.draft.name),
+                    TableColumnField::Type => Some(&session.draft.native_type),
+                    TableColumnField::Default => Some(&session.draft.default_expression),
+                    TableColumnField::Comment => Some(&session.draft.comment),
+                    TableColumnField::Nullable | TableColumnField::Identity => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn input_for_target_mut(
+        &mut self,
+        target: &TableEditorFocus,
+    ) -> Option<&mut TextInput> {
+        match target {
             TableEditorFocus::General(TableGeneralField::Name) => Some(&mut self.name),
             TableEditorFocus::General(TableGeneralField::Schema) => Some(&mut self.schema),
             TableEditorFocus::General(TableGeneralField::Owner) => Some(&mut self.owner),
@@ -2052,6 +2074,11 @@ impl TableDraft {
                 .map(|session| &mut session.draft.comment),
             _ => None,
         }
+    }
+
+    pub(crate) fn selected_text_input_mut(&mut self) -> Option<&mut TextInput> {
+        let focus = self.focus;
+        self.input_for_target_mut(&focus)
     }
 
     pub fn insert(&mut self, character: char) {
@@ -2280,6 +2307,142 @@ pub enum CatalogDraft {
 }
 
 impl CatalogDraft {
+    pub fn input_for_target(
+        &self,
+        target: &crate::action::CatalogEditorCursorTarget,
+    ) -> Option<&TextInput> {
+        match (self, target) {
+            (Self::Schema(draft), crate::action::CatalogEditorCursorTarget::SchemaField(index)) => {
+                match index {
+                    0 => Some(&draft.name),
+                    1 => Some(&draft.owner),
+                    2 => Some(&draft.comment),
+                    _ => None,
+                }
+            }
+            (Self::View(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                match field {
+                    CatalogFormFocus::Name => Some(&draft.name),
+                    CatalogFormFocus::Schema => Some(&draft.schema),
+                    CatalogFormFocus::Owner => Some(&draft.owner),
+                    CatalogFormFocus::Comment => Some(&draft.comment),
+                    CatalogFormFocus::OutputColumns => Some(&draft.output_columns),
+                    CatalogFormFocus::Query => Some(&draft.query),
+                    _ => None,
+                }
+            }
+            (
+                Self::MaterializedView(draft),
+                crate::action::CatalogEditorCursorTarget::FormField(field),
+            ) => match field {
+                CatalogFormFocus::Name => Some(&draft.name),
+                CatalogFormFocus::Schema => Some(&draft.schema),
+                CatalogFormFocus::Owner => Some(&draft.owner),
+                CatalogFormFocus::Comment => Some(&draft.comment),
+                CatalogFormFocus::Query if draft.query_editable => Some(&draft.query),
+                CatalogFormFocus::Tablespace => Some(&draft.tablespace),
+                _ => None,
+            },
+            (Self::Sequence(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                match field {
+                    CatalogFormFocus::Name => Some(&draft.name),
+                    CatalogFormFocus::Schema => Some(&draft.schema),
+                    CatalogFormFocus::Owner => Some(&draft.owner),
+                    CatalogFormFocus::Comment => Some(&draft.comment),
+                    CatalogFormFocus::DataType => Some(&draft.data_type),
+                    CatalogFormFocus::Increment => Some(&draft.increment),
+                    CatalogFormFocus::MinValue
+                        if draft.min_value.kind == SequenceBoundKind::Custom =>
+                    {
+                        Some(&draft.min_value.value)
+                    }
+                    CatalogFormFocus::MaxValue
+                        if draft.max_value.kind == SequenceBoundKind::Custom =>
+                    {
+                        Some(&draft.max_value.value)
+                    }
+                    CatalogFormFocus::StartValue => Some(&draft.start_value),
+                    CatalogFormFocus::RestartValue => Some(&draft.restart_value),
+                    CatalogFormFocus::Cache => Some(&draft.cache),
+                    CatalogFormFocus::OwnedBy => Some(&draft.owned_by),
+                    _ => None,
+                }
+            }
+            (Self::Table(draft), crate::action::CatalogEditorCursorTarget::TableField(field)) => {
+                draft.input_for_target(field)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn input_for_target_mut(
+        &mut self,
+        target: &crate::action::CatalogEditorCursorTarget,
+    ) -> Option<&mut TextInput> {
+        match (self, target) {
+            (Self::Schema(draft), crate::action::CatalogEditorCursorTarget::SchemaField(index)) => {
+                match index {
+                    0 => Some(&mut draft.name),
+                    1 => Some(&mut draft.owner),
+                    2 => Some(&mut draft.comment),
+                    _ => None,
+                }
+            }
+            (Self::View(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                match field {
+                    CatalogFormFocus::Name => Some(&mut draft.name),
+                    CatalogFormFocus::Schema => Some(&mut draft.schema),
+                    CatalogFormFocus::Owner => Some(&mut draft.owner),
+                    CatalogFormFocus::Comment => Some(&mut draft.comment),
+                    CatalogFormFocus::OutputColumns => Some(&mut draft.output_columns),
+                    CatalogFormFocus::Query => Some(&mut draft.query),
+                    _ => None,
+                }
+            }
+            (
+                Self::MaterializedView(draft),
+                crate::action::CatalogEditorCursorTarget::FormField(field),
+            ) => match field {
+                CatalogFormFocus::Name => Some(&mut draft.name),
+                CatalogFormFocus::Schema => Some(&mut draft.schema),
+                CatalogFormFocus::Owner => Some(&mut draft.owner),
+                CatalogFormFocus::Comment => Some(&mut draft.comment),
+                CatalogFormFocus::Query if draft.query_editable => Some(&mut draft.query),
+                CatalogFormFocus::Tablespace => Some(&mut draft.tablespace),
+                _ => None,
+            },
+            (Self::Sequence(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                match field {
+                    CatalogFormFocus::Name => Some(&mut draft.name),
+                    CatalogFormFocus::Schema => Some(&mut draft.schema),
+                    CatalogFormFocus::Owner => Some(&mut draft.owner),
+                    CatalogFormFocus::Comment => Some(&mut draft.comment),
+                    CatalogFormFocus::DataType => Some(&mut draft.data_type),
+                    CatalogFormFocus::Increment => Some(&mut draft.increment),
+                    CatalogFormFocus::MinValue
+                        if draft.min_value.kind == SequenceBoundKind::Custom =>
+                    {
+                        Some(&mut draft.min_value.value)
+                    }
+                    CatalogFormFocus::MaxValue
+                        if draft.max_value.kind == SequenceBoundKind::Custom =>
+                    {
+                        Some(&mut draft.max_value.value)
+                    }
+                    CatalogFormFocus::StartValue => Some(&mut draft.start_value),
+                    CatalogFormFocus::RestartValue => Some(&mut draft.restart_value),
+                    CatalogFormFocus::Cache => Some(&mut draft.cache),
+                    CatalogFormFocus::OwnedBy => Some(&mut draft.owned_by),
+                    _ => None,
+                }
+            }
+            (Self::Table(draft), crate::action::CatalogEditorCursorTarget::TableField(field)) => {
+                draft.input_for_target_mut(field)
+            }
+            _ => None,
+        }
+    }
+
     pub fn validation_focus(&self) -> Option<CatalogFormFocus> {
         match self {
             Self::View(draft) => draft.validation_focus(),

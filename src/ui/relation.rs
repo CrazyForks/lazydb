@@ -93,7 +93,15 @@ pub(crate) fn render(
             ])
             .split(inner);
         if let Some(json) = json {
+            let row_id = tab
+                .edit
+                .as_ref()
+                .and_then(|edit| edit.rows.get(editor.row))
+                .map(|row| row.id);
             render_json_editor(frame, inner, json, editor.error.as_deref(), theme, state);
+            if let Some(row_id) = row_id {
+                register_json_selection_target(state, tab.id, row_id, editor.column, inner, json);
+            }
         } else if is_boolean {
             render_boolean_editor(frame, sections[0], editor, theme);
             frame.render_widget(
@@ -106,6 +114,24 @@ pub(crate) fn render(
         } = &editor.input
         {
             render_text_input(frame, sections[0], "", draft.input(), theme.base(), state);
+            if let Some(row_id) = tab
+                .edit
+                .as_ref()
+                .and_then(|edit| edit.rows.get(editor.row).map(|row| row.id))
+            {
+                super::register_input_selection_target(
+                    state,
+                    super::text_selection::InputSelectionTarget::RelationTemporal {
+                        tab_id: tab.id,
+                        row_id,
+                        column: editor.column,
+                    },
+                    sections[0],
+                    "",
+                    draft.input(),
+                    super::text_input_horizontal_offset(sections[0], "", draft.input()),
+                );
+            }
             if let Some(label) = draft.calendar_label() {
                 frame.render_widget(
                     Paragraph::new(label).style(Style::new().fg(theme.muted)),
@@ -119,6 +145,24 @@ pub(crate) fn render(
             );
         } else if let Some(input) = editor.input.input() {
             render_text_input(frame, sections[0], "", input, theme.base(), state);
+            if let Some(row_id) = tab
+                .edit
+                .as_ref()
+                .and_then(|edit| edit.rows.get(editor.row).map(|row| row.id))
+            {
+                super::register_input_selection_target(
+                    state,
+                    super::text_selection::InputSelectionTarget::RelationText {
+                        tab_id: tab.id,
+                        row_id,
+                        column: editor.column,
+                    },
+                    sections[0],
+                    "",
+                    input,
+                    super::text_input_horizontal_offset(sections[0], "", input),
+                );
+            }
         } else if editor.input.is_unprovided() {
             frame.render_widget(
                 Paragraph::new("DEFAULT (unprovided)").style(Style::new().fg(theme.muted)),
@@ -142,11 +186,59 @@ pub(crate) fn render(
     }
 }
 
-fn json_line_spans(source: &str, left: usize, width: usize) -> Vec<ratatui::text::Span<'static>> {
+fn register_json_selection_target(
+    state: &mut super::UiState,
+    tab_id: uuid::Uuid,
+    row_id: crate::model::relation_edit::EditableRowId,
+    column: usize,
+    area: Rect,
+    json: &crate::model::cell_editor::JsonBuffer,
+) {
+    let body_height = usize::from(area.height).saturating_sub(2).max(1);
+    let lines = json.value().split('\n').collect::<Vec<_>>();
+    let cursor_line = json.line().min(lines.len().saturating_sub(1));
+    let cursor_cells = lines
+        .get(cursor_line)
+        .map(|line| {
+            crate::security::project_editor_line(line).source_to_display_cells[json.column()]
+        })
+        .unwrap_or(0);
+    let top = cursor_line.saturating_sub(body_height.saturating_sub(1));
+    let left = cursor_cells.saturating_sub(usize::from(area.width).saturating_sub(1));
+    let mut source_start = 0;
+    for (line_index, line) in lines.iter().enumerate() {
+        if line_index >= top && line_index < top + body_height {
+            let projection = crate::security::project_editor_line(line);
+            state.input_selection_targets.push((
+                super::text_selection::InputSelectionTarget::RelationJson {
+                    tab_id,
+                    row_id,
+                    column,
+                },
+                super::text_selection::InputHitMap {
+                    area: Rect::new(area.x, area.y + (line_index - top) as u16, area.width, 1),
+                    source_to_display_cells: projection.source_to_display_cells,
+                    horizontal_offset: left,
+                    prefix_width: 0,
+                    source_start,
+                },
+            ));
+        }
+        source_start += line.chars().count() + 1;
+    }
+}
+
+fn json_line_spans(
+    source: &str,
+    left: usize,
+    width: usize,
+    source_start: usize,
+    selection: Option<(usize, usize)>,
+) -> Vec<ratatui::text::Span<'static>> {
     let projection = crate::security::project_editor_line(source);
     let tokens = crate::model::cell_editor::tokenize_json(source);
     let mut spans = Vec::new();
-    let mut current_kind = crate::model::cell_editor::JsonTokenKind::Whitespace;
+    let mut current_kind = (crate::model::cell_editor::JsonTokenKind::Whitespace, false);
     let mut display_start = 0;
     let mut display_end = 0;
     for (index, (byte_start, character)) in source.char_indices().enumerate() {
@@ -156,6 +248,10 @@ fn json_line_spans(source: &str, left: usize, width: usize) -> Vec<ratatui::text
             .find(|token| byte_start >= token.start && byte_end <= token.end)
             .map(|token| token.kind)
             .unwrap_or(crate::model::cell_editor::JsonTokenKind::Whitespace);
+        let selected = selection.is_some_and(|(start, end)| {
+            source_start + index < end && source_start + index + 1 > start
+        });
+        let kind = (kind, selected);
         let source_start = projection.source_to_display_cells[index];
         let source_end = projection.source_to_display_cells[index + 1];
         if index > 0 && kind != current_kind {
@@ -164,9 +260,10 @@ fn json_line_spans(source: &str, left: usize, width: usize) -> Vec<ratatui::text
                 &projection.text,
                 display_start,
                 display_end,
-                current_kind,
+                current_kind.0,
                 left,
                 width,
+                current_kind.1,
             );
             display_start = source_start;
         }
@@ -179,14 +276,16 @@ fn json_line_spans(source: &str, left: usize, width: usize) -> Vec<ratatui::text
             &projection.text,
             display_start,
             display_end,
-            current_kind,
+            current_kind.0,
             left,
             width,
+            current_kind.1,
         );
     }
     spans
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_json_span(
     spans: &mut Vec<ratatui::text::Span<'static>>,
     projected: &str,
@@ -195,6 +294,7 @@ fn push_json_span(
     kind: crate::model::cell_editor::JsonTokenKind,
     left: usize,
     width: usize,
+    selected: bool,
 ) {
     let start = display_start.max(left);
     let end = display_end.min(left.saturating_add(width));
@@ -205,7 +305,11 @@ fn push_json_span(
     if !text.is_empty() {
         spans.push(ratatui::text::Span::styled(
             text,
-            Style::new().fg(json_token_color(kind)),
+            Style::new().fg(json_token_color(kind)).bg(if selected {
+                ratatui::style::Color::Blue
+            } else {
+                ratatui::style::Color::Reset
+            }),
         ));
     }
 }
@@ -299,7 +403,24 @@ fn render_json_editor(
         .iter()
         .skip(top)
         .take(body_height)
-        .map(|source| Line::from(json_line_spans(source, left, body_width)))
+        .scan(
+            lines
+                .iter()
+                .take(top)
+                .map(|line| line.chars().count() + 1)
+                .sum::<usize>(),
+            |source_start, source| {
+                let line_start = *source_start;
+                *source_start += source.chars().count() + 1;
+                Some(Line::from(json_line_spans(
+                    source,
+                    left,
+                    body_width,
+                    line_start,
+                    json.selection(),
+                )))
+            },
+        )
         .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(visible_lines),
@@ -1064,6 +1185,104 @@ mod tests {
             .unwrap();
     }
 
+    fn temporal_editor_app() -> crate::app::App {
+        let mut app = crate::app::App::new(Vec::new());
+        app.tabs
+            .push(WorkspaceTab::Relation(RelationTab::new("users")));
+        app.active_tab = 1;
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+            let mut edit =
+                RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Date(
+                    NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
+                )]]);
+            edit.mode = RelationGridMode::EditCell(CellEditorState {
+                row: 0,
+                column: 0,
+                input: CellEditorBuffer::Typed {
+                    kind: CellEditorKind::Date,
+                    draft: TypedDraft::Temporal(TemporalDraft::date(
+                        NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
+                    )),
+                },
+                error: None,
+            });
+            tab.edit = Some(edit);
+        }
+        app
+    }
+
+    #[test]
+    fn temporal_cell_editor_registers_relation_input_selection_target() {
+        let app = temporal_editor_app();
+        let mut state = super::super::UiState::new();
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    frame.area(),
+                    &app,
+                    super::Theme::default(),
+                    &mut state,
+                );
+            })
+            .unwrap();
+
+        let WorkspaceTab::Relation(tab) = &app.tabs[1] else {
+            panic!("relation tab")
+        };
+        let row_id = tab.edit.as_ref().unwrap().rows[0].id;
+        assert_eq!(state.input_selection_targets.len(), 1);
+        assert_eq!(
+            state.input_selection_targets[0].0,
+            super::super::text_selection::InputSelectionTarget::RelationTemporal {
+                tab_id: tab.id,
+                row_id,
+                column: 0,
+            }
+        );
+        let map = &state.input_selection_targets[0].1;
+        assert_eq!(map.source_at(map.area.x, map.area.y), Some(0));
+    }
+
+    #[test]
+    fn generic_cell_editor_registers_relation_input_selection_target() {
+        let mut app = crate::app::App::new(Vec::new());
+        app.tabs
+            .push(WorkspaceTab::Relation(RelationTab::new("users")));
+        app.active_tab = 1;
+        if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+            let mut edit =
+                RelationEditSession::from_rows(vec![vec![crate::db::value::CellValue::Text(
+                    "hello".into(),
+                )]]);
+            edit.mode = RelationGridMode::EditCell(CellEditorState {
+                row: 0,
+                column: 0,
+                input: CellEditorBuffer::Text(TextInput::from("hello")),
+                error: None,
+            });
+            tab.edit = Some(edit);
+        }
+        let mut state = super::super::UiState::new();
+        render_json_editor(&app, &mut state);
+
+        let WorkspaceTab::Relation(tab) = &app.tabs[1] else {
+            panic!("relation tab")
+        };
+        let row_id = tab.edit.as_ref().unwrap().rows[0].id;
+        assert_eq!(state.input_selection_targets.len(), 1);
+        assert_eq!(
+            state.input_selection_targets[0].0,
+            super::super::text_selection::InputSelectionTarget::RelationText {
+                tab_id: tab.id,
+                row_id,
+                column: 0,
+            }
+        );
+    }
+
     #[test]
     fn json_cell_editor_registers_bar_cursor_at_end() {
         let app = json_editor_app("{}");
@@ -1115,7 +1334,7 @@ mod tests {
     fn json_cell_editor_projection_keeps_source_and_display_separate() {
         let source = "\t{\"名字\": \"猫\"}";
         let projection = crate::security::project_editor_line(source);
-        let spans = super::json_line_spans(source, 0, 80);
+        let spans = super::json_line_spans(source, 0, 80, 0, None);
         let rendered = spans
             .iter()
             .map(|span| span.content.as_ref())

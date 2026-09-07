@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use unicode_width::UnicodeWidthChar;
 use url::Url;
@@ -107,22 +108,7 @@ pub fn redact_connection_string(value: &str) -> String {
         let _ = url.set_password(Some("***"));
     }
 
-    if url.query().is_some() {
-        let pairs = url
-            .query_pairs()
-            .map(|(key, value)| {
-                let replacement = if is_password_key(&key) {
-                    "***".to_owned()
-                } else {
-                    value.into_owned()
-                };
-                (key.into_owned(), replacement)
-            })
-            .collect::<Vec<_>>();
-        url.query_pairs_mut().clear().extend_pairs(pairs);
-    }
-
-    format!("{prefix}{url}")
+    redact_query_credentials(&format!("{prefix}{url}"), "***")
 }
 
 fn is_password_key(key: &str) -> bool {
@@ -132,20 +118,61 @@ fn is_password_key(key: &str) -> bool {
 }
 
 fn redact_fallback(value: &str) -> String {
-    let mut output = value.to_owned();
-    for key in ["password=", "passwd=", "pwd="] {
-        let mut start = 0;
-        while let Some(relative) = output[start..].to_ascii_lowercase().find(key) {
-            let value_start = start + relative + key.len();
-            let value_end = output[value_start..]
-                .find(['&', ';'])
-                .map(|offset| value_start + offset)
-                .unwrap_or(output.len());
-            output.replace_range(value_start..value_end, "***");
-            start = value_start + 3;
-        }
-    }
-    output
+    redact_query_credentials(value, "***")
+}
+
+pub fn redact_url_query_credentials(value: &str) -> String {
+    redact_query_credentials(value, "[REDACTED]")
+}
+
+fn redact_query_credentials(value: &str, replacement: &str) -> String {
+    let Some(query_start) = value.find('?') else {
+        return redact_properties(value, replacement);
+    };
+    let (prefix, query) = value.split_at(query_start + 1);
+    format!("{prefix}{}", redact_query_parts(query, replacement))
+}
+
+fn redact_query_parts(query: &str, replacement: &str) -> String {
+    query
+        .split_inclusive(['&', ';'])
+        .map(|part| {
+            let (body, delimiter) = part.split_at(
+                part.len()
+                    .saturating_sub(part.ends_with(['&', ';']) as usize),
+            );
+            let Some((key, _)) = body.split_once('=') else {
+                return part.to_owned();
+            };
+            let decoded_key = percent_decode_str(key).decode_utf8_lossy();
+            if is_password_key(&decoded_key) {
+                format!("{key}={replacement}{delimiter}")
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect()
+}
+
+fn redact_properties(value: &str, replacement: &str) -> String {
+    value
+        .split_inclusive(';')
+        .map(|part| {
+            let (body, delimiter) =
+                part.split_at(part.len().saturating_sub(part.ends_with(';') as usize));
+            let Some((key, _)) = body.split_once('=') else {
+                return part.to_owned();
+            };
+            if is_password_key(key.trim_start_matches(';')) {
+                format!(
+                    "{}={replacement}{delimiter}",
+                    &body[..body.find('=').unwrap_or(0)]
+                )
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -177,5 +204,21 @@ mod tests {
         assert!(!redacted.contains("secret"));
         assert!(redacted.contains("***"));
         assert!(redacted.starts_with("jdbc:"));
+    }
+
+    #[test]
+    fn redacts_query_password_aliases_delimiters_and_encoded_keys() {
+        for input in [
+            "postgres://user:secret@db/app?password=one&passwd=two;pwd=three&sslmode=require",
+            "jdbc:sqlserver://db;user=alice;password=secret;PWD=other",
+            "postgres://db/app?%70%61%73%73%77%6f%72%64=encoded-secret",
+        ] {
+            let redacted = redact_connection_string(input);
+            assert!(!redacted.contains("secret"));
+            assert!(!redacted.contains("one"));
+            assert!(!redacted.contains("two"));
+            assert!(!redacted.contains("three"));
+            assert!(!redacted.contains("encoded-secret"));
+        }
     }
 }
