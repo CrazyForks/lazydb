@@ -465,6 +465,8 @@ fn draw_card(
     theme: Theme,
     icons: IconSet,
 ) -> Option<Rect> {
+    frame.render_widget(ratatui::widgets::Clear, area);
+
     let color = level_color(notification.level, theme);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -754,6 +756,156 @@ mod tests {
         };
         assert_eq!(card_width(10, &[&notification]), 10);
         assert_eq!(card_width(100, &[&notification]), MIN_WIDTH);
+    }
+
+    #[test]
+    fn card_render_is_independent_of_underlying_content() {
+        use crate::ui::icons::IconMode;
+        use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+        let notification = Notification {
+            id: 1,
+            level: NotificationLevel::Error,
+            title: "Relation".into(),
+            body: "numeric = text".into(),
+            created_at: chrono::Local::now(),
+            source: None,
+        };
+        let theme = Theme::default();
+        let dirty_style = Style::new()
+            .fg(Color::Magenta)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+        for mode in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            for area in [
+                Rect::new(10, 2, 56, 6),
+                Rect::new(4, 2, 24, 6),
+                Rect::new(10, 9, 56, 3),
+                Rect::new(10, 11, 56, 1),
+            ] {
+                let mut clean = Terminal::new(TestBackend::new(80, 12)).unwrap();
+                clean
+                    .draw(|frame| {
+                        draw_card(frame, area, &notification, theme, IconSet::new(mode));
+                    })
+                    .unwrap();
+
+                for background in ["X".repeat(80), "界".repeat(40)] {
+                    let mut dirty = Terminal::new(TestBackend::new(80, 12)).unwrap();
+                    dirty
+                        .draw(|frame| {
+                            let lines = (0..12)
+                                .map(|_| Line::raw(background.clone()))
+                                .collect::<Vec<_>>();
+                            frame.render_widget(
+                                Paragraph::new(lines).style(dirty_style),
+                                frame.area(),
+                            );
+                            draw_card(frame, area, &notification, theme, IconSet::new(mode));
+                        })
+                        .unwrap();
+
+                    for y in area.y..area.bottom() {
+                        for x in area.x..area.right() {
+                            assert_eq!(
+                                dirty.backend().buffer()[(x, y)],
+                                clean.backend().buffer()[(x, y)],
+                                "card cell differs at ({x}, {y}) in {area:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_cards_preserve_surroundings_and_restore_after_dismissal() {
+        use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+        let mut app = App::new(Vec::new());
+        app.notifications.push(
+            NotificationLevel::Error,
+            "Relation",
+            "numeric = text",
+            Instant::now(),
+        );
+        app.notifications.push(
+            NotificationLevel::Warning,
+            "Transaction",
+            "No active relation transaction",
+            Instant::now(),
+        );
+        let mut state = UiState::new();
+        let theme = Theme::default();
+        let background = vec![Line::raw("X".repeat(80)); 20];
+        let style = Style::new().fg(Color::Cyan).bg(Color::Blue);
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(background.clone()).style(style),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let baseline = terminal.backend().buffer().clone();
+
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(background.clone()).style(style),
+                    frame.area(),
+                );
+                render(
+                    frame,
+                    frame.area(),
+                    &app,
+                    theme,
+                    &mut state,
+                    IconSet::default(),
+                );
+            })
+            .unwrap();
+
+        let cards = state
+            .hit_regions
+            .iter()
+            .filter(|region| matches!(region.target, HitTarget::OpenNotificationHistoryAt(_)))
+            .map(|region| region.area)
+            .collect::<Vec<_>>();
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].y, cards[0].bottom() + 1);
+        for y in 0..20 {
+            for x in 0..80 {
+                if !cards.iter().any(|area| area.contains(Position::new(x, y))) {
+                    assert_eq!(terminal.backend().buffer()[(x, y)], baseline[(x, y)]);
+                }
+            }
+        }
+
+        assert!(app.notifications.dismiss_all_live());
+        state.hit_regions.clear();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new(background.clone()).style(style),
+                    frame.area(),
+                );
+                render(
+                    frame,
+                    frame.area(),
+                    &app,
+                    theme,
+                    &mut state,
+                    IconSet::default(),
+                );
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer(), &baseline);
+        assert!(state.hit_regions.is_empty());
     }
 
     #[test]
