@@ -358,6 +358,29 @@ pub enum ProfileOperation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProfileMessageLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileMessage {
+    pub level: ProfileMessageLevel,
+    pub text: String,
+}
+
+impl ProfileMessage {
+    pub fn new(level: ProfileMessageLevel, text: impl Into<String>) -> Self {
+        Self {
+            level,
+            text: text.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CatalogScopeMode {
     Derived,
     Explicit,
@@ -1453,7 +1476,7 @@ pub struct ProfileManagerState {
     pub delete_focus: ProfileDeleteFocus,
     pub selected_field: ProfileField,
     pub operation: Option<ProfileOperation>,
-    pub message: Option<String>,
+    pub message: Option<ProfileMessage>,
     pub request_generation: u64,
     pub opened_automatically: bool,
     pub scope_selected_row: Option<String>,
@@ -1474,6 +1497,10 @@ pub enum ProfileDeleteFocus {
 const SCOPE_VIEWPORT_CAPACITY: usize = 29;
 
 impl ProfileManagerState {
+    pub fn set_message(&mut self, level: ProfileMessageLevel, message: impl Into<String>) {
+        self.message = Some(ProfileMessage::new(level, message));
+    }
+
     pub fn new(opened_automatically: bool) -> Self {
         Self {
             page: ProfileManagerPage::Form,
@@ -1824,7 +1851,7 @@ impl ProfileManagerState {
         if self.selected_field == ProfileField::Url
             && let Err(error) = self.commit_url()
         {
-            self.message = Some(error.message);
+            self.set_message(ProfileMessageLevel::Error, error.message);
             return;
         }
         if let Some(draft) = self.draft.as_mut() {
@@ -1847,7 +1874,7 @@ impl ProfileManagerState {
             && field != ProfileField::Url
             && let Err(error) = self.commit_url()
         {
-            self.message = Some(error.message);
+            self.set_message(ProfileMessageLevel::Error, error.message);
             return;
         }
         if field != self.selected_field
@@ -2049,7 +2076,7 @@ impl ProfileManagerState {
             Ok(()) => self.message = None,
             Err(error) => {
                 self.selected_field = ProfileField::Url;
-                self.message = Some(error.message.clone());
+                self.set_message(ProfileMessageLevel::Error, error.message.clone());
             }
         }
         result

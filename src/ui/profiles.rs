@@ -14,7 +14,7 @@ use crate::{
     model::{
         profile_manager::{
             DRIVER_ORDER, ProfileDraft, ProfileField, ProfileManagerPage, ProfileManagerState,
-            ProfileOperation,
+            ProfileMessageLevel, ProfileOperation,
         },
         text_input::TextInput,
     },
@@ -485,12 +485,12 @@ fn render_field(
     let row_style = Style::new().fg(theme.text).bg(theme.surface);
     let indicator = if active { "› " } else { "  " };
     frame.render_widget(Block::new().style(row_style), area);
-    let label_width = area.width.min(22);
+    let label_width = field_label_width(field, area.width);
     let label_area = Rect::new(area.x, area.y, label_width, 1);
     let value_area = Rect::new(
         area.x.saturating_add(label_width),
         area.y,
-        area.width.saturating_sub(label_width).min(68),
+        value_width(field, area.width.saturating_sub(label_width)),
         1,
     );
     let value_style = Style::new()
@@ -539,10 +539,13 @@ fn render_field(
     if field == ProfileField::Url && !active {
         value = truncate_display(&value, value_area.width);
     }
+    let scroll = if field == ProfileField::Url && !active {
+        0
+    } else {
+        field_scroll_offset(draft, field, value_area.width)
+    };
     frame.render_widget(
-        Paragraph::new(value)
-            .style(value_style)
-            .scroll((0, field_scroll_offset(draft, field, value_area.width))),
+        Paragraph::new(value).style(value_style).scroll((0, scroll)),
         value_area,
     );
 }
@@ -610,7 +613,7 @@ fn driver_icon_color(kind: DatabaseKind) -> ratatui::style::Color {
 }
 
 fn render_field_cursor(area: Rect, draft: &ProfileDraft, field: ProfileField, state: &mut UiState) {
-    let value_area = field_value_area(area);
+    let value_area = field_value_area(area, field);
     if field == ProfileField::Password {
         return;
     }
@@ -650,14 +653,30 @@ fn render_field_cursor(area: Rect, draft: &ProfileDraft, field: ProfileField, st
     });
 }
 
-fn field_value_area(area: Rect) -> Rect {
-    let label_width = area.width.min(22);
+fn field_value_area(area: Rect, field: ProfileField) -> Rect {
+    let label_width = field_label_width(field, area.width);
     Rect::new(
         area.x.saturating_add(label_width),
         area.y,
-        area.width.saturating_sub(label_width).min(68),
+        value_width(field, area.width.saturating_sub(label_width)),
         1,
     )
+}
+
+fn field_label_width(field: ProfileField, width: u16) -> u16 {
+    if field == ProfileField::Url {
+        width.min(6)
+    } else {
+        width.min(22)
+    }
+}
+
+fn value_width(field: ProfileField, remaining: u16) -> u16 {
+    if field == ProfileField::Url {
+        remaining
+    } else {
+        remaining.min(68)
+    }
 }
 
 fn truncate_display(value: &str, width: u16) -> String {
@@ -707,11 +726,11 @@ fn render_message_line(
     area: Rect,
     theme: Theme,
 ) {
-    let Some(message) = manager.message.as_deref() else {
+    let Some(message) = manager.message.as_ref() else {
         return;
     };
-    let (marker, color) = profile_message_style(message, theme);
-    let message = format!("{marker} {}", sanitize_terminal_text(message));
+    let (marker, color) = profile_message_style(message.level, theme);
+    let message = format!("{marker} {}", sanitize_terminal_text(&message.text));
     frame.render_widget(
         Paragraph::new(message)
             .style(Style::new().fg(color).bg(theme.surface))
@@ -720,23 +739,15 @@ fn render_message_line(
     );
 }
 
-fn profile_message_style(message: &str, theme: Theme) -> (&'static str, ratatui::style::Color) {
-    if message.contains("warning") || message.contains("unavailable") {
-        ("!", theme.warning)
-    } else if message.starts_with("Connection succeeded")
-        || message.starts_with("Connection verified")
-        || message == "Connected"
-    {
-        ("✓", theme.success)
-    } else if message.starts_with("Connection failed")
-        || message.contains("required")
-        || message.contains("invalid")
-    {
-        ("×", theme.error)
-    } else if message.starts_with("Profile saved") || message.contains("Cancel the running") {
-        ("!", theme.warning)
-    } else {
-        ("·", theme.muted)
+fn profile_message_style(
+    level: ProfileMessageLevel,
+    theme: Theme,
+) -> (&'static str, ratatui::style::Color) {
+    match level {
+        ProfileMessageLevel::Info => ("·", theme.muted),
+        ProfileMessageLevel::Success => ("✓", theme.success),
+        ProfileMessageLevel::Warning => ("!", theme.warning),
+        ProfileMessageLevel::Error => ("×", theme.error),
     }
 }
 
@@ -765,7 +776,7 @@ fn render_buttons(
         let button_area = Rect::new(x, area.y, width.min(area.right().saturating_sub(x)), 1);
         let style = if !enabled {
             Style::new().fg(theme.muted).bg(theme.surface_raised)
-        } else if *selected || *button == ProfileButton::SaveAndConnect {
+        } else if *selected {
             Style::new()
                 .fg(theme.background)
                 .bg(theme.accent)
@@ -796,39 +807,25 @@ fn form_hints(field: ProfileField, width: u16) -> Vec<ShortcutHint<'static>> {
     if width < 70 {
         return vec![
             ShortcutHint::new("^T", "Test"),
+            ShortcutHint::new("^Enter", "Save+Connect"),
             ShortcutHint::new("^S", "Save"),
-            ShortcutHint::new("^Enter", "Connect"),
             ShortcutHint::new("Esc", "Close"),
         ];
     }
+    let mut hints = vec![
+        ShortcutHint::new("Ctrl+T", "test"),
+        ShortcutHint::new("Ctrl+Enter", "save & connect"),
+        ShortcutHint::new("Ctrl+S", "save"),
+        ShortcutHint::new("Esc", "cancel"),
+    ];
     if is_text_field(field) {
-        vec![
-            ShortcutHint::new("Tab/Shift+Tab", "move"),
-            ShortcutHint::new("Ctrl+W", "delete word"),
-            ShortcutHint::new("Ctrl+A/E", "start/end"),
-        ]
+        hints.push(ShortcutHint::new("Tab/Shift+Tab", "move"));
     } else if is_cycle_field(field) || field == ProfileField::Kind {
-        vec![
-            ShortcutHint::new("Left/Right", "change"),
-            ShortcutHint::new("Tab", "move"),
-            ShortcutHint::new("Ctrl+T", "test"),
-            ShortcutHint::new("Esc", "cancel"),
-        ]
-    } else if is_button_field(field) {
-        vec![
-            ShortcutHint::new("Ctrl+T", "test"),
-            ShortcutHint::new("Ctrl+S", "save"),
-            ShortcutHint::new("Ctrl+Enter", "save & connect"),
-            ShortcutHint::new("Esc", "cancel"),
-        ]
-    } else {
-        vec![
-            ShortcutHint::new("Enter/Space", "select"),
-            ShortcutHint::new("Tab", "move"),
-            ShortcutHint::new("Ctrl+T", "test"),
-            ShortcutHint::new("Esc", "cancel"),
-        ]
+        hints.push(ShortcutHint::new("Left/Right", "change"));
+    } else if !is_button_field(field) {
+        hints.push(ShortcutHint::new("Enter/Space", "select"));
     }
+    hints
 }
 
 fn is_text_field(field: ProfileField) -> bool {

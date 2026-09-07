@@ -914,7 +914,7 @@ fn test_rejects_invalid_drafts_and_tracks_matching_results() {
     assert!(app.update(Action::ProfileTest).is_empty());
     let manager = app.profile_manager.as_ref().unwrap();
     assert_eq!(manager.selected_field, ProfileField::Name);
-    assert!(manager.message.as_deref().unwrap().contains("required"));
+    assert!(manager.message.as_ref().unwrap().text.contains("required"));
 
     valid_new_profile(&mut app, "primary");
     let commands = app.update(Action::ProfileTest);
@@ -954,7 +954,7 @@ fn test_rejects_invalid_drafts_and_tracks_matching_results() {
     ));
     let manager = app.profile_manager.as_ref().unwrap();
     assert_eq!(manager.operation, None);
-    assert!(manager.message.as_deref().unwrap().contains("16.4"));
+    assert!(manager.message.as_ref().unwrap().text.contains("16.4"));
     assert!(matches!(
         manager.draft.as_ref().unwrap().catalog_discovery,
         CatalogDiscoveryState::Fresh(_)
@@ -1004,7 +1004,7 @@ fn profile_test_discovery_failure_is_success_with_a_warning_and_preserves_scope(
 
     let manager = app.profile_manager.as_ref().unwrap();
     assert_eq!(manager.operation, None);
-    let message = manager.message.as_deref().unwrap();
+    let message = &manager.message.as_ref().unwrap().text;
     assert!(message.contains("Connection verified"));
     assert!(message.contains("catalog permission denied"));
     let draft = manager.draft.as_ref().unwrap();
@@ -1211,6 +1211,75 @@ fn save_and_save_and_connect_emit_distinct_commands() {
             })
         );
     }
+}
+
+#[test]
+fn save_and_connect_closes_profile_editor_after_save_is_accepted() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    valid_new_profile(&mut app, "primary");
+
+    let (request_id, saved) = match app.update(Action::ProfileSave { connect: true }).as_slice() {
+        [
+            Command::SaveProfile {
+                request_id,
+                submission,
+                ..
+            },
+        ] => (*request_id, submission.profile.clone()),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+
+    let commands = app.update(Action::ProfileSaved {
+        request_id,
+        profile: saved,
+        warning: None,
+        change: lazydb::model::profile_manager::ProfileChange {
+            connection_settings_changed: false,
+            catalog_scope_changed: false,
+            display_only_changed: false,
+            credentials_changed: false,
+        },
+        connect: true,
+    });
+
+    assert!(app.profile_manager.is_none());
+    assert_ne!(app.overlay, Some(Overlay::ProfileManager));
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::Connect { .. }))
+    );
+}
+
+#[test]
+fn failed_profile_save_keeps_editor_and_draft_open() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    valid_new_profile(&mut app, "primary");
+    let request_id = match app
+        .update(Action::ProfileSave { connect: false })
+        .as_slice()
+    {
+        [Command::SaveProfile { request_id, .. }] => *request_id,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+
+    app.update(Action::ProfileSaveFailed {
+        request_id,
+        message: "authentication failed".into(),
+    });
+
+    let manager = app.profile_manager.as_ref().expect("editor remains open");
+    assert!(manager.draft.is_some());
+    assert!(manager.operation.is_none());
+    assert_eq!(
+        manager
+            .message
+            .as_ref()
+            .map(|message| message.text.as_str()),
+        Some("authentication failed")
+    );
 }
 
 #[test]
@@ -1570,8 +1639,9 @@ fn query_started_while_save_is_in_flight_preserves_the_active_connection() {
             .as_ref()
             .unwrap()
             .message
-            .as_deref()
+            .as_ref()
             .unwrap()
+            .text
             .contains("running")
     );
 }
@@ -1654,8 +1724,9 @@ fn running_queries_block_switching_active_profile_saves_and_deletion() {
             .as_ref()
             .unwrap()
             .message
-            .as_deref()
+            .as_ref()
             .unwrap()
+            .text
             .contains("running")
     );
 }
@@ -1685,7 +1756,13 @@ fn credentials_required_opens_the_matching_profile_at_password() {
     assert_eq!(app.overlay, Some(Overlay::ProfileManager));
     assert_eq!(manager.page, ProfileManagerPage::Form);
     assert_eq!(manager.selected_field, ProfileField::Password);
-    assert_eq!(manager.message.as_deref(), Some("Password required"));
+    assert_eq!(
+        manager
+            .message
+            .as_ref()
+            .map(|message| message.text.as_str()),
+        Some("Password required")
+    );
 }
 
 #[test]
@@ -1751,7 +1828,12 @@ fn starting_another_profile_form_during_operation_preserves_request_generation()
         message: "late".into(),
     });
     assert_eq!(
-        app.profile_manager.as_ref().unwrap().message.as_deref(),
+        app.profile_manager
+            .as_ref()
+            .unwrap()
+            .message
+            .as_ref()
+            .map(|message| message.text.as_str()),
         Some("late")
     );
 }
