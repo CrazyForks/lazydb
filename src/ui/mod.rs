@@ -3834,10 +3834,10 @@ fn render_overlay(
         Overlay::Help(help) => render_help(frame, area, help, state, theme),
         Overlay::Update(_) => render_update_overlay(frame, area, app, state, theme),
         Overlay::NotificationHistory(history) => {
-            notifications::render_history(frame, area, app, history, theme, state)
+            notifications::render_history(frame, area, app, history, theme, state, icons)
         }
         Overlay::NotificationDetail(detail) => {
-            notifications::render_detail(frame, area, app, detail, theme)
+            notifications::render_detail(frame, area, app, detail, theme, icons)
         }
         Overlay::RecordView(view) => record_view::render(frame, area, app, view, theme, state),
         Overlay::TextDetail(view) => text_detail::render(frame, area, app, view, theme, state),
