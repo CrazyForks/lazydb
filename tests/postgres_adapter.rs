@@ -490,6 +490,27 @@ async fn connects_and_decodes_common_postgres_values_when_configured() {
     assert_eq!(row[1], CellValue::Boolean(true));
     assert_eq!(row[2], CellValue::Text("Ada".into()));
     assert_eq!(row[3], CellValue::Null);
+    let extended = database
+        .execute(
+            "SELECT 123.45::numeric, interval '1 hour', \
+             '00000000-0000-4000-8000-000000000001'::uuid, \
+             '{\"score\": 10, \"active\": false}'::jsonb, \
+             ARRAY['tag-1', 'odd']::text[], '192.168.1.1'::inet, point(1.0, 2.0)",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        extended.result_sets.last().unwrap().rows[0],
+        vec![
+            CellValue::Text("123.45".into()),
+            CellValue::Text("0 years 0 mons 0 days 1 hours 0 mins 0.0 secs".into()),
+            CellValue::Text("00000000-0000-4000-8000-000000000001".into()),
+            CellValue::Text("{\"score\": 10, \"active\": false}".into()),
+            CellValue::Text("{tag-1,odd}".into()),
+            CellValue::Text("192.168.1.1".into()),
+            CellValue::Text("(1.0,2.0)".into()),
+        ]
+    );
     let multiple = database
         .execute("SELECT 1 AS first; SELECT 2 AS second")
         .await
