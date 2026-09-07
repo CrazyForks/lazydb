@@ -5507,6 +5507,7 @@ impl App {
                     );
                     return Vec::new();
                 }
+                let profile_kind = profile.kind;
                 if self.has_running_query() {
                     self.notify_warning(
                         "Catalog",
@@ -5537,6 +5538,17 @@ impl App {
                     );
                     return Vec::new();
                 };
+                let maintenance_database = if profile_kind == crate::profile::DatabaseKind::Postgres
+                    && entry.kind == crate::db::catalog::CatalogKind::Database
+                {
+                    Some(if entry.qualified_name.object == "postgres" {
+                        "template1".to_owned()
+                    } else {
+                        "postgres".to_owned()
+                    })
+                } else {
+                    None
+                };
                 let catalog_epoch = state.catalog_epoch;
                 let request = crate::db::catalog_drop::CatalogDropRequest::new(
                     connection,
@@ -5544,12 +5556,24 @@ impl App {
                     self.next_profile_request_id(),
                 )
                 .with_entry(entry);
-                let mut request = request;
+                let mut request = if let Some(maintenance_database) = maintenance_database {
+                    request.with_maintenance_database(maintenance_database)
+                } else {
+                    request
+                };
                 request.catalog_epoch = catalog_epoch;
                 vec![Command::PlanCatalogDrop(request)]
             }
             Action::CatalogDropPlanReady(plan) => {
                 self.overlay = Some(Overlay::CatalogDropConfirm {
+                    maintenance_database: match plan.execution_target {
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::MaintenanceDatabase(
+                            ref database,
+                        ) => Some(crate::model::text_input::TextInput::from(database.clone())),
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::CurrentConnection => {
+                            None
+                        }
+                    },
                     plan: Box::new(plan),
                     delete_selected: false,
                     busy: false,
@@ -5557,8 +5581,53 @@ impl App {
                 });
                 Vec::new()
             }
-            Action::CatalogDropPlanFailed { error, .. } => {
+            Action::CatalogDropPlanFailed { request, error } => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    plan,
+                    busy,
+                    error: overlay_error,
+                    ..
+                }) = self.overlay.as_mut()
+                    && plan.request.request_id == request.request_id
+                    && plan.request.connection == request.connection
+                {
+                    *busy = false;
+                    *overlay_error = Some(error.to_string());
+                }
                 self.notify_error("Catalog", error.to_string());
+                Vec::new()
+            }
+            Action::CatalogDropMaintenanceInsert(character) => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    maintenance_database: Some(input),
+                    busy: false,
+                    ..
+                }) = self.overlay.as_mut()
+                {
+                    input.insert(character);
+                }
+                Vec::new()
+            }
+            Action::CatalogDropMaintenanceBackspace => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    maintenance_database: Some(input),
+                    busy: false,
+                    ..
+                }) = self.overlay.as_mut()
+                {
+                    input.backspace();
+                }
+                Vec::new()
+            }
+            Action::CatalogDropMaintenanceClear => {
+                if let Some(Overlay::CatalogDropConfirm {
+                    maintenance_database: Some(input),
+                    busy: false,
+                    ..
+                }) = self.overlay.as_mut()
+                {
+                    input.clear();
+                }
                 Vec::new()
             }
             Action::ToggleCatalogDropFocus => {
@@ -5588,6 +5657,7 @@ impl App {
             Action::CatalogDropConfirm => {
                 let Some(Overlay::CatalogDropConfirm {
                     plan,
+                    maintenance_database,
                     delete_selected,
                     busy,
                     ..
@@ -5601,6 +5671,31 @@ impl App {
                 if !*delete_selected {
                     self.overlay = None;
                     return Vec::new();
+                }
+                if plan.kind == crate::db::catalog::CatalogKind::Database {
+                    let Some(input) = maintenance_database.as_ref() else {
+                        self.notify_error("Catalog", "A maintenance database is required");
+                        return Vec::new();
+                    };
+                    let database = input.value().trim();
+                    if database.is_empty() {
+                        self.notify_error("Catalog", "A maintenance database is required");
+                        return Vec::new();
+                    }
+                    let current = match &plan.execution_target {
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::MaintenanceDatabase(
+                            current,
+                        ) => current,
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::CurrentConnection => {
+                            ""
+                        }
+                    };
+                    if current != database {
+                        let mut request = plan.request.clone();
+                        request.maintenance_database = Some(database.to_owned());
+                        *busy = true;
+                        return vec![Command::PlanCatalogDrop(request)];
+                    }
                 }
                 let current_epoch = self
                     .explorer
@@ -5671,6 +5766,14 @@ impl App {
             }
             Action::CatalogDropFailed { plan, message } => {
                 self.overlay = Some(Overlay::CatalogDropConfirm {
+                    maintenance_database: match plan.execution_target {
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::MaintenanceDatabase(
+                            ref database,
+                        ) => Some(crate::model::text_input::TextInput::from(database.clone())),
+                        crate::db::catalog_drop::CatalogDropExecutionTarget::CurrentConnection => {
+                            None
+                        }
+                    },
                     plan: Box::new(plan),
                     delete_selected: false,
                     busy: false,

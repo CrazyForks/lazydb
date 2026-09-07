@@ -48,7 +48,9 @@ use super::{
         NamespaceModel, ObjectGroup, OptionalMetadata, QualifiedName, RelationDdl,
         finalize_keyset_page,
     },
-    catalog_drop::{CatalogDropError, CatalogDropPlan, CatalogDropRequest},
+    catalog_drop::{
+        CatalogDropError, CatalogDropExecutionTarget, CatalogDropPlan, CatalogDropRequest,
+    },
     catalog_mutation::{
         CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
         CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationMode,
@@ -486,6 +488,41 @@ LIMIT 2001
         entry: &CatalogEntry,
     ) -> Result<CatalogDropPlan, CatalogDropError> {
         let sql = match entry.kind {
+            CatalogKind::Schema => {
+                format!("DROP SCHEMA {} RESTRICT", postgres_schema_name(entry)?)
+            }
+            CatalogKind::Database => {
+                let maintenance_database = request
+                    .maintenance_database
+                    .as_deref()
+                    .filter(|database| !database.trim().is_empty())
+                    .ok_or_else(|| CatalogDropError::Unsupported {
+                        kind: CatalogKind::Database,
+                        reason: "database drops require an explicit maintenance database"
+                            .to_owned(),
+                    })?;
+                let target = maintenance_database.to_owned();
+                if target == entry.qualified_name.object {
+                    return Err(CatalogDropError::Unsupported {
+                        kind: CatalogKind::Database,
+                        reason: "maintenance database must differ from the target database"
+                            .to_owned(),
+                    });
+                }
+                return CatalogDropPlan::new(
+                    request,
+                    entry,
+                    format!(
+                        "DROP DATABASE {}",
+                        quote_identifier(&entry.qualified_name.object)
+                    ),
+                )
+                .map(|plan| {
+                    plan.with_execution_target(CatalogDropExecutionTarget::MaintenanceDatabase(
+                        target,
+                    ))
+                });
+            }
             CatalogKind::Table => {
                 format!("DROP TABLE {}", postgres_qualified_name(entry, entry.kind)?)
             }
@@ -527,9 +564,8 @@ LIMIT 2001
             kind => {
                 return Err(CatalogDropError::Unsupported {
                     kind,
-                    reason:
-                        "catalog metadata does not provide an unambiguous PostgreSQL drop target"
-                            .to_owned(),
+                    reason: "PostgreSQL catalog drop is not implemented for this object type"
+                        .to_owned(),
                 });
             }
         };
@@ -6153,6 +6189,54 @@ fn postgres_qualified_name(
         quote_identifier(schema),
         quote_identifier(&name.object)
     ))
+}
+
+fn postgres_schema_name(entry: &CatalogEntry) -> Result<String, CatalogDropError> {
+    let database = entry
+        .qualified_name
+        .database
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| CatalogDropError::InvalidMetadata {
+            kind: CatalogKind::Schema,
+            reason: "catalog entry has no database name".to_owned(),
+        })?;
+    let schema = entry
+        .qualified_name
+        .schema
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| CatalogDropError::InvalidMetadata {
+            kind: CatalogKind::Schema,
+            reason: "catalog entry has no schema name".to_owned(),
+        })?;
+    if entry.id.native_path.len() != 2
+        || entry.id.native_path[0] != database
+        || entry.id.native_path[1] != schema
+        || entry.parent_id.as_ref().is_none_or(|parent| {
+            parent.connection_id != entry.id.connection_id
+                || parent.kind != CatalogKind::Database
+                || parent.native_path.as_slice() != [database]
+        })
+    {
+        return Err(CatalogDropError::InvalidMetadata {
+            kind: CatalogKind::Schema,
+            reason: "catalog entry namespace identity is inconsistent".to_owned(),
+        });
+    }
+    if entry.qualified_name.object != schema {
+        return Err(CatalogDropError::InvalidMetadata {
+            kind: CatalogKind::Schema,
+            reason: "catalog entry object name does not match its schema name".to_owned(),
+        });
+    }
+    if matches!(schema, "information_schema") || schema.starts_with("pg_") {
+        return Err(CatalogDropError::Unsupported {
+            kind: CatalogKind::Schema,
+            reason: "system schemas cannot be dropped from the catalog".to_owned(),
+        });
+    }
+    Ok(quote_identifier(schema))
 }
 
 fn relation_name_for_drop(entry: &CatalogEntry) -> Result<String, CatalogDropError> {

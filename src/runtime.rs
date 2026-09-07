@@ -1747,6 +1747,29 @@ impl Runtime {
         let sender = self.event_sender.clone();
         let connection = Arc::clone(&self.connection);
         let registry = Arc::clone(&self.registry);
+        let secret_store = Arc::clone(&self.secret_store);
+        let local_credential_store = self.local_credential_store.clone();
+        let target = plan.execution_target.clone();
+        if let crate::db::catalog_drop::CatalogDropExecutionTarget::MaintenanceDatabase(
+            maintenance_database,
+        ) = target
+        {
+            let task_plan = plan.clone();
+            let task = tokio::spawn(async move {
+                execute_catalog_drop_on_maintenance(
+                    task_plan,
+                    maintenance_database,
+                    connection,
+                    registry,
+                    secret_store,
+                    local_credential_store,
+                    sender,
+                )
+                .await;
+            });
+            self.catalog_drop_execute_tasks.insert(key, task);
+            return;
+        }
         let task_plan = plan.clone();
         let task = tokio::spawn(async move {
             if let Err(error) = task_plan.validate() {
@@ -3274,6 +3297,121 @@ impl Runtime {
             connection.database.close().await;
         }
     }
+}
+
+async fn execute_catalog_drop_on_maintenance(
+    plan: crate::db::catalog_drop::CatalogDropPlan,
+    maintenance_database: String,
+    connection: Arc<Mutex<Option<ActiveConnection>>>,
+    registry: Arc<Mutex<ProfileRegistry>>,
+    secret_store: Arc<dyn SecretStore>,
+    local_credential_store: LocalCredentialStore,
+    sender: mpsc::UnboundedSender<Action>,
+) {
+    if let Err(error) = plan.validate() {
+        let _ = sender.send(Action::CatalogDropFailed {
+            plan,
+            message: error.to_string(),
+        });
+        return;
+    }
+    let profile = registry
+        .lock()
+        .await
+        .profiles
+        .get(&plan.request.connection.profile_id)
+        .cloned();
+    let Some(profile) = profile else {
+        let _ = sender.send(Action::CatalogDropFailed {
+            plan,
+            message: "catalog drop profile is no longer active".to_owned(),
+        });
+        return;
+    };
+    if profile.read_only {
+        let _ = sender.send(Action::CatalogDropFailed {
+            plan,
+            message: "catalog drop is unavailable on a read-only profile".to_owned(),
+        });
+        return;
+    }
+    let target = ExecutionTarget {
+        profile_id: profile.id,
+        database: maintenance_database,
+        schema: None,
+    };
+    if !target.is_valid(&profile) {
+        let _ = sender.send(Action::CatalogDropFailed {
+            plan,
+            message: "catalog drop maintenance database is invalid for this profile".to_owned(),
+        });
+        return;
+    }
+    let password =
+        match resolve_profile_password(&registry, &secret_store, &local_credential_store, &profile)
+            .await
+        {
+            Ok(password) => password,
+            Err(error) => {
+                let _ = sender.send(Action::CatalogDropFailed {
+                    plan,
+                    message: sanitize_terminal_text(&error.to_string()),
+                });
+                return;
+            }
+        };
+    let maintenance =
+        match DatabaseConnection::connect_target(&profile, password.as_ref(), &target).await {
+            Ok(database) => database,
+            Err(error) => {
+                let _ = sender.send(Action::CatalogDropFailed {
+                    plan,
+                    message: format!(
+                        "unable to connect to PostgreSQL maintenance database: {}",
+                        sanitize_terminal_text(&error.to_string())
+                    ),
+                });
+                return;
+            }
+        };
+    let expected = plan.request.connection;
+    let active = {
+        let mut guard = connection.lock().await;
+        if guard.as_ref().is_none_or(|active| {
+            active.profile_id != expected.profile_id || active.generation != expected.generation
+        }) {
+            None
+        } else {
+            guard.take()
+        }
+    };
+    let Some(active) = active else {
+        maintenance.close().await;
+        let _ = sender.send(Action::CatalogDropFailed {
+            plan,
+            message: "catalog drop connection is no longer active".to_owned(),
+        });
+        return;
+    };
+    active.database.close().await;
+    match maintenance.execute(plan.sql()).await {
+        Ok(outcome) => {
+            let _ = sender.send(Action::CatalogDropSucceeded {
+                plan: plan.clone(),
+                outcome,
+            });
+        }
+        Err(error) => {
+            let _ = sender.send(Action::CatalogDropFailed {
+                plan: plan.clone(),
+                message: sanitize_terminal_text(&error.to_string()),
+            });
+        }
+    }
+    let _ = sender.send(Action::DisconnectCompleted {
+        connection: expected,
+    });
+    maintenance.close().await;
 }
 
 fn count_from_outcome(
