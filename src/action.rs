@@ -136,6 +136,7 @@ pub enum Action {
     ToggleTerminalSelection,
     DismissNotification(u64),
     OpenNotificationHistory,
+    OpenNotificationHistoryAt(u64),
     NotificationHistorySearchOpen,
     NotificationHistorySearchInsert(char),
     NotificationHistorySearchBackspace,

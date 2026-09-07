@@ -3540,10 +3540,17 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::OpenNotificationHistory => {
+            Action::OpenNotificationHistory | Action::OpenNotificationHistoryAt(_) => {
                 let history = self.notifications.history().cloned().collect::<Vec<_>>();
                 let mut state = crate::model::notification::NotificationHistoryState::new();
-                state.select_index(0, &history);
+                let selected = match action {
+                    Action::OpenNotificationHistoryAt(id) => history
+                        .iter()
+                        .position(|notification| notification.id == id)
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                state.select_index(selected, &history);
                 self.overlay = Some(Overlay::NotificationHistory(state));
                 Vec::new()
             }

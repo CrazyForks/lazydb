@@ -171,6 +171,7 @@ pub enum HitTarget {
     CatalogEditorColumnDetailsCancel,
     CatalogOwnerChoice(String),
     DismissNotification(u64),
+    OpenNotificationHistoryAt(u64),
     OpenTextDetail(crate::model::text_detail::TextDetailRequest),
     NotificationHistoryRow(usize),
     RelationFirstPage,

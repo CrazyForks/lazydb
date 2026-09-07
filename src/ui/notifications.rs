@@ -53,32 +53,23 @@ pub(crate) fn render(
         if y >= viewport.bottom() {
             break;
         }
-        let height = card_height(notification, width, icons);
+        let height = card_height(notification, width);
         let height = height.min(viewport.bottom().saturating_sub(y));
         if height == 0 {
             break;
         }
         let area = Rect::new(viewport.right().saturating_sub(width), y, width, height);
-        draw_card(frame, area, notification, theme, icons);
-        let close_width = icons.close().width().max(1) as u16 + 2;
+        let close_area = draw_card(frame, area, notification, theme, icons);
         state.hit_regions.push(HitRegion {
-            area: Rect::new(
-                area.x,
-                area.y.saturating_add(1),
-                area.width.saturating_sub(close_width),
-                area.height.saturating_sub(1),
-            ),
-            target: HitTarget::OpenTextDetail(notification_detail_request(notification)),
+            area,
+            target: HitTarget::OpenNotificationHistoryAt(notification.id),
         });
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
-                area.right().saturating_sub(close_width),
-                area.y,
-                close_width.min(area.width),
-                1,
-            ),
-            target: HitTarget::DismissNotification(notification.id),
-        });
+        if let Some(area) = close_area {
+            state.hit_regions.push(HitRegion {
+                area,
+                target: HitTarget::DismissNotification(notification.id),
+            });
+        }
         y = y.saturating_add(height).saturating_add(1);
     }
 }
@@ -343,15 +334,10 @@ fn card_width(viewport_width: u16, entries: &[&Notification]) -> u16 {
         .max(MIN_WIDTH.min(viewport_width))
 }
 
-fn card_height(notification: &Notification, width: u16, icons: IconSet) -> u16 {
-    let content_width = usize::from(width.saturating_sub(4));
+fn card_height(notification: &Notification, width: u16) -> u16 {
+    let content_width = usize::from(width.saturating_sub(2));
     let body_lines = wrapped_line_count(&sanitize_terminal_text(&notification.body), content_width);
-    let title_lines = wrapped_line_count(
-        &sanitize_terminal_text(&notification.title),
-        content_width.saturating_sub(4),
-    );
-    (body_lines + title_lines.max(1) + 3).clamp(4, 8) as u16
-        + u16::from(icons.notification(notification.level).width() == 0)
+    (body_lines + 4).clamp(4, 8) as u16
 }
 
 fn draw_card(
@@ -360,7 +346,7 @@ fn draw_card(
     notification: &Notification,
     theme: Theme,
     icons: IconSet,
-) {
+) -> Option<Rect> {
     let color = level_color(notification.level, theme);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -369,16 +355,18 @@ fn draw_card(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {
-        return;
+        return None;
     }
     let icon = icons.notification(notification.level);
     let title = sanitize_terminal_text(&notification.title);
     let body = sanitize_terminal_text(&notification.body);
     let time = notification.created_at.format("%H:%M:%S").to_string();
     let close = icons.close();
+    let close_width = (close.width().max(1) as u16 + 2).min(inner.width);
+    let close_area = Rect::new(inner.right() - close_width, inner.y, close_width, 1);
+    let header = Rect::new(inner.x, inner.y, inner.width - close_width, 1);
     let level = notification.level.to_string().to_uppercase();
-    let title_width =
-        usize::from(inner.width).saturating_sub(icon.width() + close.width() + level.width() + 6);
+    let title_width = usize::from(header.width).saturating_sub(icon.width() + level.width() + 2);
     let title = truncate_cells(&title, title_width);
     let line = Line::from(vec![
         Span::styled(
@@ -393,14 +381,21 @@ fn draw_card(
             title,
             Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  {close}"), Style::new().fg(theme.muted)),
     ]);
+    frame.render_widget(Paragraph::new(line), header);
+    frame.render_widget(
+        Paragraph::new(format!(" {close} ")).style(Style::new().fg(theme.muted)),
+        close_area,
+    );
     let text = vec![
-        line,
         Line::from(Span::styled(body, Style::new().fg(theme.text))),
         Line::from(Span::styled(time, Style::new().fg(theme.muted))),
     ];
-    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+    frame.render_widget(
+        Paragraph::new(text).wrap(Wrap { trim: true }),
+        Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1),
+    );
+    Some(close_area)
 }
 
 fn level_color(level: NotificationLevel, theme: Theme) -> ratatui::style::Color {
@@ -444,6 +439,129 @@ mod tests {
     use super::*;
     use ratatui::buffer::CellWidth;
     use std::time::Instant;
+
+    #[test]
+    fn visible_close_button_dismisses_only_its_notification() {
+        use crate::{action::Action, input::mouse::map_mouse, ui::icons::IconMode};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        for mode in [IconMode::Ascii, IconMode::Unicode, IconMode::NerdFont] {
+            for width in [24, 80] {
+                for title in [
+                    "Query",
+                    "Very long notification title that must be truncated",
+                    "查询消息",
+                ] {
+                    let icons = IconSet::new(mode);
+                    let mut app = App::new(Vec::new());
+                    let older = app.notifications.push(
+                        NotificationLevel::Info,
+                        "Older",
+                        "body",
+                        Instant::now(),
+                    );
+                    let id = app.notifications.push(
+                        NotificationLevel::Warning,
+                        title,
+                        "No SQL scope at cursor AUTO",
+                        Instant::now(),
+                    );
+                    let mut ui = UiState::new();
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24))
+                            .unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render(frame, frame.area(), &app, Theme::default(), &mut ui, icons)
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let x = (0..width)
+                        .find(|&x| buffer[(x, 2)].symbol() == icons.close())
+                        .expect("visible close icon on header row");
+                    assert_eq!(x, width - 2 - icons.close().width() as u16);
+                    let action = map_mouse(
+                        MouseEvent {
+                            kind: MouseEventKind::Down(MouseButton::Left),
+                            column: x,
+                            row: 2,
+                            modifiers: KeyModifiers::NONE,
+                        },
+                        &ui,
+                        &app,
+                    )
+                    .unwrap();
+                    assert_eq!(action, Action::DismissNotification(id));
+                    app.update(action);
+                    assert!(app.overlay.is_none());
+                    assert!(app.notifications.get(id).is_some());
+                    assert_eq!(app.notifications.live().len(), 1);
+                    assert_eq!(app.notifications.live()[0].notification_id, older);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_card_opens_history_at_its_stable_id() {
+        use crate::{action::Action, input::mouse::map_mouse, model::workspace::Overlay};
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        let mut app = App::new(Vec::new());
+        let id =
+            app.notifications
+                .push(NotificationLevel::Info, "Selected", "body", Instant::now());
+        app.notifications
+            .push(NotificationLevel::Info, "Newer", "body", Instant::now());
+        let mut ui = UiState::new();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    frame.area(),
+                    &app,
+                    Theme::default(),
+                    &mut ui,
+                    IconSet::default(),
+                )
+            })
+            .unwrap();
+        let area = ui
+            .hit_regions
+            .iter()
+            .find(|region| region.target == HitTarget::OpenNotificationHistoryAt(id))
+            .unwrap()
+            .area;
+        // A new arrival must not change which notification the old hit region selects.
+        app.notifications
+            .push(NotificationLevel::Info, "Newest", "body", Instant::now());
+        for (column, row) in [
+            (area.x, area.y),
+            (area.right() - 2, area.y + 2),
+            (area.right() - 1, area.bottom() - 1),
+        ] {
+            let action = map_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &ui,
+                &app,
+            )
+            .unwrap();
+            assert_eq!(action, Action::OpenNotificationHistoryAt(id));
+            app.update(action);
+            let Some(Overlay::NotificationHistory(history)) = &app.overlay else {
+                panic!("expected notification history")
+            };
+            assert_eq!(history.selected_id, Some(id));
+            assert_eq!(history.selected, 2);
+        }
+    }
 
     #[test]
     fn width_and_text_helpers_use_display_cells() {

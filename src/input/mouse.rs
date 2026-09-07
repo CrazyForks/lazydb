@@ -333,6 +333,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 HitTarget::CloseTab(id) => Some(Action::CloseTab(id)),
                 HitTarget::DismissNotification(id) => Some(Action::DismissNotification(id)),
+                HitTarget::OpenNotificationHistoryAt(id) => {
+                    Some(Action::OpenNotificationHistoryAt(id))
+                }
                 HitTarget::OpenTextDetail(request) => Some(Action::OpenTextDetail(request)),
                 HitTarget::NotificationHistoryRow(index) => {
                     Some(Action::NotificationHistorySelect(index))
@@ -718,6 +721,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::TabScrollRight(_)
         | HitTarget::CloseTab(_)
         | HitTarget::DismissNotification(_)
+        | HitTarget::OpenNotificationHistoryAt(_)
         | HitTarget::OpenTextDetail(_)
         | HitTarget::NotificationHistoryRow(_)
         | HitTarget::Help
