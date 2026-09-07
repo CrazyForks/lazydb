@@ -379,6 +379,7 @@ pub enum Action {
     ProfileGroupConfirm,
     ProfileGroupCancel,
     ProfileGroupDeleteConfirm,
+    ToggleProfileGroupDeleteFocus,
     ProfileAccessUpdated {
         request_id: u64,
         profile_id: Uuid,

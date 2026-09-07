@@ -28,6 +28,77 @@ fn control(code: KeyCode) -> KeyEvent {
 }
 
 #[test]
+fn profile_group_delete_navigation_and_enter_follow_selected_button() {
+    use lazydb::model::profile_group::ProfileGroupOverlay;
+
+    for event in [
+        key(KeyCode::Left),
+        key(KeyCode::Right),
+        key(KeyCode::Tab),
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    ] {
+        let group_id = Uuid::from_u128(99);
+        let mut app = App::new(Vec::new());
+        app.explorer.normalized.selected = Some(ExplorerNodeId::ConnectionGroup {
+            group_id,
+            region: lazydb::model::explorer::ProfileRegion::Primary,
+        });
+        let mut keymap = Keymap::default();
+        for cancel in [true, false] {
+            assert!(app.update(Action::ProfileGroupDeleteConfirm).is_empty());
+            assert_eq!(
+                keymap.map(key(KeyCode::Enter), &app),
+                Some(Action::ProfileGroupConfirm)
+            );
+            let action = keymap.map(event, &app).unwrap();
+            assert_eq!(action, Action::ToggleProfileGroupDeleteFocus);
+            assert!(app.update(action).is_empty());
+            assert!(matches!(
+                app.overlay,
+                Some(Overlay::ProfileGroup(ProfileGroupOverlay::DeleteConfirm {
+                    cancel_selected: true,
+                    ..
+                }))
+            ));
+            assert_eq!(
+                keymap.map(key(KeyCode::Char('y')), &app),
+                Some(Action::ProfileGroupConfirm)
+            );
+            for code in [KeyCode::Esc, KeyCode::Char('n'), KeyCode::Char('q')] {
+                assert_eq!(
+                    keymap.map(key(code), &app),
+                    Some(Action::ProfileGroupCancel)
+                );
+            }
+            if !cancel {
+                let action = keymap.map(event, &app).unwrap();
+                assert!(app.update(action).is_empty());
+            }
+            let action = keymap.map(key(KeyCode::Enter), &app).unwrap();
+            assert_eq!(
+                action,
+                if cancel {
+                    Action::ProfileGroupCancel
+                } else {
+                    Action::ProfileGroupConfirm
+                }
+            );
+            let commands = app.update(action);
+            if cancel {
+                assert!(commands.is_empty());
+            } else {
+                assert!(
+                    matches!(commands.as_slice(), [lazydb::action::Command::UpdateProfileOrganization {
+                    mutation: lazydb::action::ProfileOrganizationMutation::DeleteGroup { group_id: found }, ..
+                }] if *found == group_id)
+                );
+            }
+            assert!(app.overlay.is_none());
+        }
+    }
+}
+
+#[test]
 fn result_pagination_keys_map_in_sql_and_relation_data_contexts() {
     let mut sql = App::new(Vec::new());
     sql.focus = Focus::Results;

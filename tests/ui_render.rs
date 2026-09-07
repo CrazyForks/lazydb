@@ -3014,6 +3014,37 @@ fn counted_pending_prefix_keeps_count_in_footer_label() {
     assert!(output.contains("restore default pane sizes"));
 }
 
+#[test]
+fn profile_group_delete_highlight_follows_keyboard_focus() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::ProfileGroup(ProfileGroupOverlay::DeleteConfirm {
+        group_id: uuid::Uuid::from_u128(99),
+        member_count: 0,
+        cancel_selected: false,
+        busy: false,
+    }));
+    let (before, state) = render_buffer_with_state(&app, 100, 30, UiState::new());
+    let confirm = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::ProfileGroupConfirm)
+        .unwrap()
+        .area;
+    let cancel = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::ProfileGroupCancel)
+        .unwrap()
+        .area;
+    let selected_background = before[(confirm.x, confirm.y)].bg;
+    assert_ne!(selected_background, before[(cancel.x, cancel.y)].bg);
+
+    app.update(Action::ToggleProfileGroupDeleteFocus);
+    let (after, _) = render_buffer_with_state(&app, 100, 30, UiState::new());
+    assert_eq!(selected_background, after[(cancel.x, cancel.y)].bg);
+    assert_ne!(selected_background, after[(confirm.x, confirm.y)].bg);
+}
+
 fn render_buffer_with_icons(
     app: &App,
     width: u16,

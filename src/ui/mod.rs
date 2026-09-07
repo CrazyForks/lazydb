@@ -4681,6 +4681,7 @@ fn render_profile_group_overlay(
                 Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
                 if *busy { "Saving..." } else { "Save group" },
                 !busy,
+                false,
                 state,
                 theme,
             );
@@ -4701,7 +4702,10 @@ fn render_profile_group_overlay(
             );
         }
         ProfileGroupOverlay::DeleteConfirm {
-            member_count, busy, ..
+            member_count,
+            cancel_selected,
+            busy,
+            ..
         } => {
             let popup = centered(area, 64, 8);
             frame.render_widget(Clear, popup);
@@ -4726,13 +4730,15 @@ fn render_profile_group_overlay(
                 Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
                 if *busy { "Deleting..." } else { "Delete group" },
                 !busy,
+                *cancel_selected,
                 state,
                 theme,
             );
             frame.render_widget(
                 Paragraph::new(shortcut_hints::line(
                     &[
-                        ShortcutHint::new("Enter", "delete"),
+                        ShortcutHint::new("Tab/←/→", "switch"),
+                        ShortcutHint::new("Enter", "confirm"),
                         ShortcutHint::new("Esc", "cancel"),
                     ],
                     inner.width,
@@ -4752,6 +4758,7 @@ fn render_profile_group_actions(
     area: Rect,
     confirm_label: &str,
     enabled: bool,
+    cancel_selected: bool,
     state: &mut UiState,
     theme: Theme,
 ) {
@@ -4769,7 +4776,7 @@ fn render_profile_group_actions(
         1,
     );
     frame.render_widget(
-        Paragraph::new(confirm).style(if enabled {
+        Paragraph::new(confirm).style(if enabled && !cancel_selected {
             Style::new()
                 .fg(theme.background)
                 .bg(theme.accent)
@@ -4780,12 +4787,17 @@ fn render_profile_group_actions(
         confirm_area,
     );
     frame.render_widget(
-        Paragraph::new(cancel).style(
+        Paragraph::new(cancel).style(if enabled && cancel_selected {
+            Style::new()
+                .fg(theme.background)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
             Style::new()
                 .fg(theme.muted)
                 .bg(theme.surface)
-                .add_modifier(Modifier::BOLD),
-        ),
+                .add_modifier(Modifier::BOLD)
+        }),
         cancel_area,
     );
     if enabled {

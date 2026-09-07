@@ -217,15 +217,20 @@ impl Keymap {
                         _ => map_single_line_text_input_edit(event).map(Action::ProfileGroupEdit),
                     }
                 }
-                crate::model::profile_group::ProfileGroupOverlay::DeleteConfirm { .. } => {
-                    match event.code {
-                        KeyCode::Enter | KeyCode::Char('y') => Some(Action::ProfileGroupConfirm),
-                        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
-                            Some(Action::ProfileGroupCancel)
-                        }
-                        _ => None,
+                crate::model::profile_group::ProfileGroupOverlay::DeleteConfirm {
+                    cancel_selected,
+                    ..
+                } => match event.code {
+                    KeyCode::Enter if *cancel_selected => Some(Action::ProfileGroupCancel),
+                    KeyCode::Enter | KeyCode::Char('y') => Some(Action::ProfileGroupConfirm),
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                        Some(Action::ToggleProfileGroupDeleteFocus)
                     }
-                }
+                    KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                        Some(Action::ProfileGroupCancel)
+                    }
+                    _ => None,
+                },
             };
         }
         if matches!(app.overlay, Some(Overlay::RecordView(_))) {

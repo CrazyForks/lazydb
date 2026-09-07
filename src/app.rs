@@ -6088,6 +6088,19 @@ impl App {
                 Vec::new()
             }
             Action::ProfileGroupDeleteConfirm => self.confirm_profile_group_delete(),
+            Action::ToggleProfileGroupDeleteFocus => {
+                if let Some(Overlay::ProfileGroup(
+                    crate::model::profile_group::ProfileGroupOverlay::DeleteConfirm {
+                        cancel_selected,
+                        busy: false,
+                        ..
+                    },
+                )) = self.overlay.as_mut()
+                {
+                    *cancel_selected = !*cancel_selected;
+                }
+                Vec::new()
+            }
             Action::CredentialsRequired {
                 profile_id,
                 generation,
@@ -12257,6 +12270,7 @@ impl App {
                 crate::model::profile_group::ProfileGroupOverlay::DeleteConfirm {
                     group_id: *group_id,
                     member_count,
+                    cancel_selected: false,
                     busy: false,
                 },
             ));

@@ -18,6 +18,7 @@ pub enum ProfileGroupOverlay {
     DeleteConfirm {
         group_id: Uuid,
         member_count: usize,
+        cancel_selected: bool,
         busy: bool,
     },
 }

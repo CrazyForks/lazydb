@@ -220,6 +220,7 @@ fn profile_group_overlay_emits_rename_delete_and_reorder_commands() {
     app.overlay = Some(Overlay::ProfileGroup(ProfileGroupOverlay::DeleteConfirm {
         group_id,
         member_count: 2,
+        cancel_selected: false,
         busy: false,
     }));
     assert!(matches!(
