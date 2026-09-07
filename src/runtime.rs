@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     action::{Action, Command, ProfileAccessChange, ProfileOrganizationMutation},
     app::App,
-    cli::{Cli, MouseMode},
+    cli::{Cli, ColorMode, MouseMode},
     db::{
         DatabaseConnection, DatabaseError,
         catalog::{CatalogDiscovery, DiscoveredDatabase},
@@ -39,7 +39,7 @@ use crate::{
     profile::{ConnectionProfile, CredentialPolicy, ProfileCollection, import_connection_url},
     security::sanitize_terminal_text,
     terminal::TerminalSession,
-    ui::{self, UiState},
+    ui::{self, UiState, theme::Theme},
 };
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, MouseEventKind};
@@ -55,6 +55,47 @@ use tokio::{
 pub(crate) mod transaction;
 
 use transaction::ForcedCloseHandle;
+
+#[derive(Clone, Debug)]
+enum ThemeUpdate {
+    Theme(Theme),
+    Error(String),
+}
+
+fn apply_theme_update(theme: &mut Theme, update: ThemeUpdate) -> (bool, Option<String>) {
+    match update {
+        ThemeUpdate::Theme(next) => {
+            let changed = *theme != next;
+            *theme = next;
+            (changed, None)
+        }
+        ThemeUpdate::Error(error) => (false, Some(error)),
+    }
+}
+
+async fn poll_external_theme(
+    path: std::path::PathBuf,
+    sender: tokio::sync::watch::Sender<ThemeUpdate>,
+) {
+    let mut source = crate::ui::theme::external::ExternalThemeSource::new(path);
+    let mut ticker = interval(Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let update = match source.check().await {
+            crate::ui::theme::external::SourceOutcome::ThemeChanged(theme) => {
+                ThemeUpdate::Theme(theme)
+            }
+            crate::ui::theme::external::SourceOutcome::Error(error) => {
+                ThemeUpdate::Error(error.to_string())
+            }
+            crate::ui::theme::external::SourceOutcome::Unchanged => continue,
+        };
+        if sender.send(update).is_err() {
+            break;
+        }
+    }
+}
 
 fn clipboard_write_failure_message() -> String {
     "Clipboard unavailable".to_owned()
@@ -4054,7 +4095,21 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         .context("failed to initialize terminal")?;
     let mut terminal_selection_mode = false;
     let icons = crate::ui::icons::IconSet::new(settings.ui.icons);
-    let theme = crate::ui::theme::Theme::for_color_mode(settings.terminal.color);
+    let mut theme = crate::ui::theme::Theme::for_color_mode(settings.terminal.color);
+    let mut external_theme_source = cli
+        .theme_file
+        .clone()
+        .filter(|_| settings.terminal.color != ColorMode::Never)
+        .map(crate::ui::theme::external::ExternalThemeSource::new);
+    if let Some(source) = external_theme_source.as_mut() {
+        match source.check().await {
+            crate::ui::theme::external::SourceOutcome::ThemeChanged(next) => theme = next,
+            crate::ui::theme::external::SourceOutcome::Error(error) => {
+                app.notify_warning("Theme", error.to_string());
+            }
+            crate::ui::theme::external::SourceOutcome::Unchanged => {}
+        }
+    }
     let mut terminal_events = EventStream::new();
     let mut keymap = Keymap::with_sequence_timeout_and_bindings(
         Duration::from_millis(settings.keybindings.sequence_timeout_ms),
@@ -4067,6 +4122,12 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
     let mut rendered_sequence: Option<crate::input::keymap::KeySequenceState> = None;
     let mut ticker = interval(Duration::from_millis(33));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let (theme_sender, mut theme_receiver) = tokio::sync::watch::channel(ThemeUpdate::Theme(theme));
+    let mut theme_task = cli
+        .theme_file
+        .clone()
+        .filter(|_| settings.terminal.color != ColorMode::Never)
+        .map(|path| tokio::spawn(poll_external_theme(path, theme_sender)));
 
     let result: Result<Option<std::path::PathBuf>> = async {
         apply_startup_action_with_runtime(&mut app, &mut runtime, startup.selected);
@@ -4233,6 +4294,16 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                     let after = keymap.sequence_state(&app, now);
                     redraw |= sequence_redraw_needed(&before, &after);
                 }
+                changed = theme_receiver.changed(), if theme_task.is_some() => {
+                    if changed.is_ok() {
+                        let (theme_changed, error) =
+                            apply_theme_update(&mut theme, theme_receiver.borrow_and_update().clone());
+                        redraw |= theme_changed;
+                        if let Some(error) = error {
+                            app.notify_warning("Theme", error);
+                        }
+                    }
+                }
                 _ = ticker.tick() => {
                     let now = std::time::Instant::now();
                     let expired = keymap.expire_pending(&app, now);
@@ -4282,6 +4353,10 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
     .await;
 
     runtime.shutdown().await;
+    if let Some(theme_task) = theme_task.take() {
+        theme_task.abort();
+        let _ = theme_task.await;
+    }
     drop(terminal);
     result.map(|restart_path| match restart_path {
         Some(executable) => RunOutcome::Restart { executable },
@@ -4335,6 +4410,43 @@ mod key_sequence_redraw_tests {
         let prefix = Some(state("Space"));
         assert!(sequence_redraw_needed(&prefix, &None));
         assert!(!sequence_redraw_needed(&None, &None));
+    }
+}
+
+#[cfg(test)]
+mod theme_update_tests {
+    use ratatui::style::Color;
+
+    use super::{ThemeUpdate, apply_theme_update};
+    use crate::ui::theme::Theme;
+
+    #[test]
+    fn applies_latest_theme_without_resetting_runtime_state() {
+        let mut current = Theme::deep_space();
+        let mut next = current;
+        next.background = Color::Rgb(1, 2, 3);
+
+        assert_eq!(
+            apply_theme_update(&mut current, ThemeUpdate::Theme(next)),
+            (true, None)
+        );
+        assert_eq!(current.background, Color::Rgb(1, 2, 3));
+        assert_eq!(
+            apply_theme_update(&mut current, ThemeUpdate::Theme(next)),
+            (false, None)
+        );
+    }
+
+    #[test]
+    fn theme_errors_keep_the_current_theme() {
+        let mut current = Theme::deep_space();
+        let original = current;
+
+        assert_eq!(
+            apply_theme_update(&mut current, ThemeUpdate::Error("invalid".to_owned())),
+            (false, Some("invalid".to_owned()))
+        );
+        assert_eq!(current, original);
     }
 }
 
