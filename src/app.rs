@@ -2013,6 +2013,9 @@ impl App {
                         | Action::OpenRecordView
                         | Action::OpenTextDetail(_)
                         | Action::CompleteMouseTextSelection { .. }
+                        | Action::BeginMouseInputSelection { .. }
+                        | Action::UpdateMouseInputSelection { .. }
+                        | Action::CompleteMouseInputSelection { .. }
                         | Action::CopyTextDetailAll { .. }
                         | Action::CloseTextDetail
                         | Action::RecordViewMoveFields(_)
@@ -2267,6 +2270,638 @@ impl App {
             return Vec::new();
         }
         match action {
+            Action::BeginMouseInputSelection { target, cursor } => {
+                match target {
+                    crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
+                        if let Some(query) = self.active_data_query_mut() {
+                            query.focus = Some(input);
+                            let value = match input {
+                                DataQueryInput::Where => &mut query.where_input,
+                                DataQueryInput::OrderBy => &mut query.order_by_input,
+                            };
+                            value.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
+                        if field == crate::model::profile_manager::ProfileField::Password {
+                            return Vec::new();
+                        }
+                        if let Some(manager) = self.profile_manager.as_mut() {
+                            manager.selected_field = field;
+                            if let Some(input) = manager
+                                .draft
+                                .as_mut()
+                                .and_then(|draft| draft.mouse_selection_input_mut(field))
+                            {
+                                input.begin_selection(cursor);
+                            }
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileUrl => {
+                        if let Some(draft) = self.profile_manager.as_mut().as_mut() {
+                            draft.selected_field = crate::model::profile_manager::ProfileField::Url;
+                            if let Some(draft) = draft.draft.as_mut() {
+                                draft.begin_url_selection(cursor);
+                            }
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Catalog(target) => {
+                        if let Some(draft) = self
+                            .catalog_editor
+                            .as_mut()
+                            .and_then(|editor| editor.draft.as_mut())
+                        {
+                            if let Some(input) = draft.input_for_target_mut(&target) {
+                                input.begin_selection(cursor);
+                            }
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationTemporal {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(input) =
+                            self.tabs
+                                .get_mut(self.active_tab)
+                                .and_then(|tab| match tab {
+                                    WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                        tab.edit.as_mut()
+                                    }
+                                    _ => None,
+                                })
+                                .and_then(|edit| {
+                                    match &mut edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) => match &mut state.input {
+                                    crate::model::cell_editor::CellEditorBuffer::Typed {
+                                        draft:
+                                            crate::model::cell_editor::TypedDraft::Temporal(draft),
+                                        ..
+                                    } => Some(draft.input_mut()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                                })
+                        {
+                            input.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationJson {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(json) = self.relation_json_buffer_mut(tab_id, row_id, column) {
+                            json.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationText {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(input) = self
+                            .tabs
+                            .get_mut(self.active_tab)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                    tab.edit.as_mut()
+                                }
+                                _ => None,
+                            })
+                            .and_then(|edit| match &mut edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) =>
+                                {
+                                    Some(state.input.input_mut())
+                                }
+                                _ => None,
+                            })
+                        {
+                            input.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch => {
+                        if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                            self.overlay.as_mut()
+                        {
+                            list.query.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerRename => {
+                        if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                            self.overlay.as_mut()
+                            && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
+                                input,
+                                ..
+                            } = &mut list.mode
+                        {
+                            input.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::HelpSearch => {
+                        if let Some(crate::model::workspace::Overlay::Help(help)) =
+                            self.overlay.as_mut()
+                        {
+                            help.query.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileGroupName => {
+                        if let Some(crate::model::workspace::Overlay::ProfileGroup(
+                            crate::model::profile_group::ProfileGroupOverlay::Edit { name, .. },
+                        )) = self.overlay.as_mut()
+                        {
+                            name.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerFind => {
+                        if let Some(find) = self.explorer.find.as_mut() {
+                            find.query.begin_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
+                        if let Some(search) = self.explorer.search.as_mut() {
+                            search.query.begin_selection(cursor);
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            Action::UpdateMouseInputSelection { target, cursor } => {
+                match target {
+                    crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
+                        if let Some(query) = self.active_data_query_mut() {
+                            let value = match input {
+                                DataQueryInput::Where => &mut query.where_input,
+                                DataQueryInput::OrderBy => &mut query.order_by_input,
+                            };
+                            value.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
+                        if field == crate::model::profile_manager::ProfileField::Password {
+                            return Vec::new();
+                        }
+                        if let Some(input) = self
+                            .profile_manager
+                            .as_mut()
+                            .and_then(|manager| manager.draft.as_mut())
+                            .and_then(|draft| draft.mouse_selection_input_mut(field))
+                        {
+                            input.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileUrl => {
+                        if let Some(draft) = self
+                            .profile_manager
+                            .as_mut()
+                            .and_then(|manager| manager.draft.as_mut())
+                        {
+                            draft.extend_url_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Catalog(target) => {
+                        if let Some(input) = self
+                            .catalog_editor
+                            .as_mut()
+                            .and_then(|editor| editor.draft.as_mut())
+                            .and_then(|draft| draft.input_for_target_mut(&target))
+                        {
+                            input.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationTemporal {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(input) =
+                            self.tabs
+                                .get_mut(self.active_tab)
+                                .and_then(|tab| match tab {
+                                    WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                        tab.edit.as_mut()
+                                    }
+                                    _ => None,
+                                })
+                                .and_then(|edit| {
+                                    match &mut edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) => match &mut state.input {
+                                    crate::model::cell_editor::CellEditorBuffer::Typed {
+                                        draft:
+                                            crate::model::cell_editor::TypedDraft::Temporal(draft),
+                                        ..
+                                    } => Some(draft.input_mut()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                                })
+                        {
+                            input.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationJson {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(json) = self.relation_json_buffer_mut(tab_id, row_id, column) {
+                            json.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationText {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        if let Some(input) = self
+                            .tabs
+                            .get_mut(self.active_tab)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                    tab.edit.as_mut()
+                                }
+                                _ => None,
+                            })
+                            .and_then(|edit| match &mut edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) =>
+                                {
+                                    Some(state.input.input_mut())
+                                }
+                                _ => None,
+                            })
+                        {
+                            input.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch => {
+                        if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                            self.overlay.as_mut()
+                        {
+                            list.query.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerRename => {
+                        if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                            self.overlay.as_mut()
+                            && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
+                                input,
+                                ..
+                            } = &mut list.mode
+                        {
+                            input.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::HelpSearch => {
+                        if let Some(crate::model::workspace::Overlay::Help(help)) =
+                            self.overlay.as_mut()
+                        {
+                            help.query.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileGroupName => {
+                        if let Some(crate::model::workspace::Overlay::ProfileGroup(
+                            crate::model::profile_group::ProfileGroupOverlay::Edit { name, .. },
+                        )) = self.overlay.as_mut()
+                        {
+                            name.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerFind => {
+                        if let Some(find) = self.explorer.find.as_mut() {
+                            find.query.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
+                        if let Some(search) = self.explorer.search.as_mut() {
+                            search.query.extend_selection(cursor);
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            Action::CancelMouseInputSelection { target } => {
+                self.clear_mouse_input_selection(&target);
+                Vec::new()
+            }
+            Action::CompleteMouseInputSelection {
+                target,
+                start: _,
+                end: _,
+            } => {
+                let profile_target_is_current =
+                    matches!(self.overlay, Some(Overlay::ProfileManager))
+                        && self
+                            .profile_manager
+                            .as_ref()
+                            .is_some_and(|manager| manager.draft.is_some());
+                if matches!(
+                    target,
+                    crate::ui::text_selection::InputSelectionTarget::Profile(_)
+                        | crate::ui::text_selection::InputSelectionTarget::ProfileUrl
+                ) && !profile_target_is_current
+                {
+                    return Vec::new();
+                }
+                match target {
+                    crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
+                        let text = self
+                            .active_data_query_mut()
+                            .and_then(|query| match input {
+                                DataQueryInput::Where => query.where_input.selected_text(),
+                                DataQueryInput::OrderBy => query.order_by_input.selected_text(),
+                            })
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
+                        if field == crate::model::profile_manager::ProfileField::Password {
+                            return Vec::new();
+                        }
+                        let text = self
+                            .profile_manager
+                            .as_ref()
+                            .and_then(|manager| manager.draft.as_ref())
+                            .and_then(|draft| draft.mouse_selection_input(field))
+                            .and_then(|input| input.selected_text())
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileUrl => {
+                        let text = self
+                            .profile_manager
+                            .as_ref()
+                            .and_then(|manager| manager.draft.as_ref())
+                            .and_then(|draft| draft.selected_url_display());
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Redacted URL selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::Catalog(target) => {
+                        let text = self
+                            .catalog_editor
+                            .as_ref()
+                            .and_then(|editor| editor.draft.as_ref())
+                            .and_then(|draft| draft.input_for_target(&target))
+                            .and_then(|input| input.selected_text())
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationTemporal {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        let text = self
+                            .tabs
+                            .get(self.active_tab)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                    tab.edit.as_ref()
+                                }
+                                _ => None,
+                            })
+                            .and_then(|edit| match &edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) =>
+                                {
+                                    state.input.input().and_then(|input| input.selected_text())
+                                }
+                                _ => None,
+                            })
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationJson {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        let text = self
+                            .relation_json_buffer(tab_id, row_id, column)
+                            .and_then(|json| json.selected_text())
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RelationText {
+                        tab_id,
+                        row_id,
+                        column,
+                    } => {
+                        let text = self
+                            .tabs
+                            .get(self.active_tab)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::Relation(tab) if tab.id == tab_id => {
+                                    tab.edit.as_ref()
+                                }
+                                _ => None,
+                            })
+                            .and_then(|edit| match &edit.mode {
+                                RelationGridMode::EditCell(state)
+                                    if edit.rows.get(state.row).is_some_and(|row| {
+                                        row.id == row_id && state.column == column
+                                    }) =>
+                                {
+                                    state.input.input().and_then(|input| input.selected_text())
+                                }
+                                _ => None,
+                            });
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch => {
+                        let text = self.overlay.as_ref().and_then(|overlay| match overlay {
+                            crate::model::workspace::Overlay::SqlEditorList(list) => {
+                                list.query.selected_text()
+                            }
+                            _ => None,
+                        });
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ConsoleManagerRename => {
+                        let text = self.overlay.as_ref().and_then(|overlay| match overlay {
+                            crate::model::workspace::Overlay::SqlEditorList(list) => {
+                                match &list.mode {
+                                    crate::model::sql_editor_list::SqlEditorListMode::Rename {
+                                        input,
+                                        ..
+                                    } => input.selected_text(),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        });
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::HelpSearch => {
+                        let text = self.overlay.as_ref().and_then(|overlay| match overlay {
+                            crate::model::workspace::Overlay::Help(help) => {
+                                help.query.selected_text()
+                            }
+                            _ => None,
+                        });
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ProfileGroupName => {
+                        let text = self.overlay.as_ref().and_then(|overlay| match overlay {
+                            crate::model::workspace::Overlay::ProfileGroup(
+                                crate::model::profile_group::ProfileGroupOverlay::Edit {
+                                    name, ..
+                                },
+                            ) => name.selected_text(),
+                            _ => None,
+                        });
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerFind => {
+                        if let Some(text) = self
+                            .explorer
+                            .find
+                            .as_ref()
+                            .and_then(|find| find.query.selected_text())
+                        {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
+                        if let Some(text) = self
+                            .explorer
+                            .search
+                            .as_ref()
+                            .and_then(|search| search.query.selected_text())
+                        {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                }
+                Vec::new()
+            }
             Action::WorkspaceSaveSucceeded { revision } => {
                 self.notify_info("Workspace", format!("Saved workspace revision {revision}"));
                 self.workspace_save.succeeded(revision);
@@ -11669,6 +12304,158 @@ impl App {
         Vec::new()
     }
 
+    fn clear_mouse_input_selection(
+        &mut self,
+        target: &crate::ui::text_selection::InputSelectionTarget,
+    ) {
+        match target {
+            crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
+                if let Some(query) = self.active_data_query_mut() {
+                    match input {
+                        DataQueryInput::Where => query.where_input.clear_selection(),
+                        DataQueryInput::OrderBy => query.order_by_input.clear_selection(),
+                    }
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
+                if let Some(input) = self
+                    .profile_manager
+                    .as_mut()
+                    .and_then(|manager| manager.draft.as_mut())
+                    .and_then(|draft| draft.mouse_selection_input_mut(*field))
+                {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ProfileUrl => {
+                if let Some(draft) = self
+                    .profile_manager
+                    .as_mut()
+                    .and_then(|manager| manager.draft.as_mut())
+                {
+                    draft.clear_url_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::Catalog(target) => {
+                if let Some(input) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                    .and_then(|draft| draft.input_for_target_mut(target))
+                {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::RelationTemporal {
+                tab_id,
+                row_id,
+                column,
+            } => {
+                if let Some(input) = self
+                    .tabs
+                    .get_mut(self.active_tab)
+                    .and_then(|tab| match tab {
+                        WorkspaceTab::Relation(tab) if tab.id == *tab_id => tab.edit.as_mut(),
+                        _ => None,
+                    })
+                    .and_then(|edit| match &mut edit.mode {
+                        RelationGridMode::EditCell(state)
+                            if edit.rows.get(state.row).is_some_and(|row| {
+                                row.id == *row_id && state.column == *column
+                            }) =>
+                        {
+                            match &mut state.input {
+                                crate::model::cell_editor::CellEditorBuffer::Typed {
+                                    draft: crate::model::cell_editor::TypedDraft::Temporal(draft),
+                                    ..
+                                } => Some(draft.input_mut()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::RelationJson {
+                tab_id,
+                row_id,
+                column,
+            } => {
+                if let Some(input) = self.relation_json_buffer_mut(*tab_id, *row_id, *column) {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::RelationText {
+                tab_id,
+                row_id,
+                column,
+            } => {
+                if let Some(input) = self
+                    .tabs
+                    .get_mut(self.active_tab)
+                    .and_then(|tab| match tab {
+                        WorkspaceTab::Relation(tab) if tab.id == *tab_id => tab.edit.as_mut(),
+                        _ => None,
+                    })
+                    .and_then(|edit| match &mut edit.mode {
+                        RelationGridMode::EditCell(state)
+                            if edit.rows.get(state.row).is_some_and(|row| {
+                                row.id == *row_id && state.column == *column
+                            }) =>
+                        {
+                            Some(state.input.input_mut())
+                        }
+                        _ => None,
+                    })
+                {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ConsoleManagerSearch => {
+                if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                    self.overlay.as_mut()
+                {
+                    list.query.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ConsoleManagerRename => {
+                if let Some(crate::model::workspace::Overlay::SqlEditorList(list)) =
+                    self.overlay.as_mut()
+                    && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
+                        input, ..
+                    } = &mut list.mode
+                {
+                    input.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::HelpSearch => {
+                if let Some(crate::model::workspace::Overlay::Help(help)) = self.overlay.as_mut() {
+                    help.query.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ProfileGroupName => {
+                if let Some(crate::model::workspace::Overlay::ProfileGroup(
+                    crate::model::profile_group::ProfileGroupOverlay::Edit { name, .. },
+                )) = self.overlay.as_mut()
+                {
+                    name.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ExplorerFind => {
+                if let Some(find) = self.explorer.find.as_mut() {
+                    find.query.clear_selection();
+                }
+            }
+            crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
+                if let Some(search) = self.explorer.search.as_mut() {
+                    search.query.clear_selection();
+                }
+            }
+        }
+    }
+
     pub fn commands_for_catalog_targets(
         &mut self,
         profile_id: Uuid,
@@ -13507,6 +14294,57 @@ impl App {
             } else {
                 state.input.input_mut().insert(character);
             }
+        }
+    }
+
+    fn relation_json_buffer(
+        &self,
+        tab_id: uuid::Uuid,
+        row_id: crate::model::relation_edit::EditableRowId,
+        column: usize,
+    ) -> Option<&crate::model::cell_editor::JsonBuffer> {
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::Relation(tab)) if tab.id == tab_id => {
+                tab.edit.as_ref().and_then(|edit| match &edit.mode {
+                    RelationGridMode::EditCell(state)
+                        if state.column == column
+                            && edit.rows.get(state.row).is_some_and(|row| row.id == row_id) =>
+                    {
+                        state.input.json_buffer()
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn relation_json_buffer_mut(
+        &mut self,
+        tab_id: uuid::Uuid,
+        row_id: crate::model::relation_edit::EditableRowId,
+        column: usize,
+    ) -> Option<&mut crate::model::cell_editor::JsonBuffer> {
+        match self.tabs.get_mut(self.active_tab) {
+            Some(WorkspaceTab::Relation(tab)) if tab.id == tab_id => {
+                tab.edit.as_mut().and_then(|edit| {
+                    let valid = match &edit.mode {
+                        RelationGridMode::EditCell(state) => {
+                            state.column == column
+                                && edit.rows.get(state.row).is_some_and(|row| row.id == row_id)
+                        }
+                        _ => false,
+                    };
+                    if !valid {
+                        return None;
+                    }
+                    match &mut edit.mode {
+                        RelationGridMode::EditCell(state) => state.input.json_buffer_mut(),
+                        _ => None,
+                    }
+                })
+            }
+            _ => None,
         }
     }
 

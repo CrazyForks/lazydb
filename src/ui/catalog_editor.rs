@@ -445,6 +445,20 @@ fn render_schema(
                     .source_to_display_cells,
                 horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
                 prefix_width: 0,
+                source_start: 0,
+            },
+        ));
+        ui.input_selection_targets.push((
+            super::text_selection::InputSelectionTarget::Catalog(
+                crate::action::CatalogEditorCursorTarget::SchemaField(index),
+            ),
+            super::text_selection::InputHitMap {
+                area: value_area,
+                source_to_display_cells: crate::security::project_editor_line(input.value())
+                    .source_to_display_cells,
+                horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
+                prefix_width: 0,
+                source_start: 0,
             },
         ));
         let style = Style::new().fg(theme.text).bg(if active {
@@ -1013,6 +1027,17 @@ fn render_sequence_bound(
                 theme.surface
             }),
             ui,
+        );
+        let value_area = catalog_field_areas(input_area).1;
+        super::register_input_selection_target(
+            ui,
+            super::text_selection::InputSelectionTarget::Catalog(
+                crate::action::CatalogEditorCursorTarget::FormField(field),
+            ),
+            value_area,
+            "",
+            &bound.value,
+            super::text_input_horizontal_offset(value_area, "", &bound.value),
         );
     }
 }
@@ -2060,13 +2085,25 @@ fn render_catalog_text_field(
         };
         if let Some(cursor_target) = cursor_target {
             ui.catalog_input_targets.push((
-                cursor_target,
+                cursor_target.clone(),
                 super::text_selection::InputHitMap {
                     area: value_area,
                     source_to_display_cells: crate::security::project_editor_line(input.value())
                         .source_to_display_cells,
                     horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
                     prefix_width: 0,
+                    source_start: 0,
+                },
+            ));
+            ui.input_selection_targets.push((
+                super::text_selection::InputSelectionTarget::Catalog(cursor_target),
+                super::text_selection::InputHitMap {
+                    area: value_area,
+                    source_to_display_cells: crate::security::project_editor_line(input.value())
+                        .source_to_display_cells,
+                    horizontal_offset: super::text_input_horizontal_offset(value_area, "", input),
+                    prefix_width: 0,
+                    source_start: 0,
                 },
             ));
         }

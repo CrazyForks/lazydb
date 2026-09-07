@@ -24,7 +24,8 @@ use lazydb::{
     ui::{
         self, HitRegion, HitTarget, ProfileButton, UiState,
         text_selection::{
-            TextGesture, TextGestureSource, TextHitMap, TextPosition, TextSelectionTarget,
+            InputHitMap, InputSelectionTarget, TextGesture, TextGestureSource, TextHitMap,
+            TextPosition, TextSelectionTarget,
         },
     },
 };
@@ -107,6 +108,254 @@ fn mouse_down_drag_up_routes_selection_for_each_text_source() {
         );
         assert!(ui.mouse_gesture.borrow().is_none(), "{source}");
         assert!(ui.text_gesture.borrow().is_none(), "{source}");
+    }
+}
+
+#[test]
+fn mouse_down_drag_up_routes_profile_input_selection() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let target = InputSelectionTarget::Profile(ProfileField::Host);
+    ui.input_selection_targets.push((
+        target.clone(),
+        InputHitMap {
+            area: Rect::new(10, 5, 20, 1),
+            source_to_display_cells: (0..=8).collect(),
+            horizontal_offset: 0,
+            prefix_width: 0,
+            source_start: 0,
+        },
+    ));
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(0, 0, 40, 20),
+        target: HitTarget::ProfileField(ProfileField::Host),
+    });
+
+    let down = map_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 11, 5),
+        &ui,
+        &app,
+    );
+    assert_eq!(
+        down,
+        Some(Action::BeginMouseInputSelection { target, cursor: 1 })
+    );
+    let drag = map_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), 15, 5),
+        &ui,
+        &app,
+    );
+    assert!(matches!(
+        drag,
+        Some(Action::UpdateMouseInputSelection { .. })
+    ));
+    let up = map_mouse(
+        mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
+        &ui,
+        &app,
+    );
+    assert!(matches!(
+        up,
+        Some(Action::CompleteMouseInputSelection { .. })
+    ));
+    assert!(ui.mouse_gesture.borrow().is_none());
+}
+
+#[test]
+fn input_drag_outside_visible_area_clamps_to_source_end_without_cancelling() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let target = InputSelectionTarget::RelationJson {
+        tab_id: Uuid::new_v4(),
+        row_id: lazydb::model::relation_edit::EditableRowId(1),
+        column: 0,
+    };
+    let hit_map = InputHitMap {
+        area: Rect::new(10, 5, 8, 1),
+        source_to_display_cells: (0..=5).collect(),
+        horizontal_offset: 0,
+        prefix_width: 0,
+        source_start: 0,
+    };
+    ui.input_selection_targets
+        .push((target.clone(), hit_map.clone()));
+    ui.mouse_gesture
+        .replace(Some(lazydb::ui::text_selection::GestureOwner::Input));
+    ui.input_gesture
+        .replace(Some(lazydb::ui::text_selection::InputGesture {
+            target: target.clone(),
+            hit_map,
+            start: 1,
+            end: 1,
+            has_dragged: false,
+        }));
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 80, 20),
+            &ui,
+            &app
+        ),
+        Some(Action::UpdateMouseInputSelection { target, cursor: 5 })
+    );
+    assert_eq!(
+        ui.input_gesture
+            .borrow()
+            .as_ref()
+            .map(|gesture| gesture.end),
+        Some(5)
+    );
+}
+
+#[test]
+fn editor_drag_outside_visible_area_clamps_to_nearest_visible_source_line() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let session_id = Uuid::new_v4();
+    ui.text_selection_targets.push(TextSelectionTarget {
+        session_id,
+        hit_maps: vec![TextHitMap {
+            area: Rect::new(10, 5, 8, 1),
+            line: 3,
+            source_to_display_cells: (0..=5).collect(),
+            horizontal_offset: 0,
+        }],
+    });
+    ui.mouse_gesture
+        .replace(Some(lazydb::ui::text_selection::GestureOwner::Text));
+    ui.text_gesture.replace(Some(TextGesture {
+        session_id,
+        source: TextGestureSource::Editor,
+        start: TextPosition { line: 0, column: 0 },
+        end: TextPosition { line: 0, column: 0 },
+        revision: 0,
+        has_dragged: false,
+    }));
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 80, 20),
+            &ui,
+            &app
+        ),
+        None
+    );
+    assert_eq!(
+        ui.text_gesture.borrow().as_ref().map(|gesture| gesture.end),
+        Some(TextPosition { line: 3, column: 5 })
+    );
+}
+
+#[test]
+fn mouse_down_drag_up_routes_relation_temporal_selection() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    let target = InputSelectionTarget::RelationTemporal {
+        tab_id: Uuid::new_v4(),
+        row_id: lazydb::model::relation_edit::EditableRowId(7),
+        column: 2,
+    };
+    ui.input_selection_targets.push((
+        target.clone(),
+        InputHitMap {
+            area: Rect::new(10, 5, 20, 1),
+            source_to_display_cells: (0..=10).collect(),
+            horizontal_offset: 0,
+            prefix_width: 0,
+            source_start: 0,
+        },
+    ));
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(10, 5, 20, 1),
+        target: HitTarget::Focus(Focus::Results),
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 11, 5),
+            &ui,
+            &app,
+        ),
+        Some(Action::BeginMouseInputSelection { target, cursor: 1 })
+    );
+    assert!(matches!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 15, 5),
+            &ui,
+            &app,
+        ),
+        Some(Action::UpdateMouseInputSelection { .. })
+    ));
+    assert!(matches!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
+            &ui,
+            &app,
+        ),
+        Some(Action::CompleteMouseInputSelection { .. })
+    ));
+}
+
+#[test]
+fn mouse_down_drag_up_routes_single_line_overlay_inputs() {
+    let cases = [
+        (
+            InputSelectionTarget::ConsoleManagerSearch,
+            HitTarget::SqlEditorListSearch,
+        ),
+        (
+            InputSelectionTarget::ConsoleManagerRename,
+            HitTarget::SqlEditorListRename,
+        ),
+        (InputSelectionTarget::HelpSearch, HitTarget::HelpSearch),
+        (
+            InputSelectionTarget::ProfileGroupName,
+            HitTarget::ProfileGroupName,
+        ),
+    ];
+
+    for (target, hit_target) in cases {
+        let app = App::new(Vec::new());
+        let mut ui = UiState::new();
+        ui.input_selection_targets.push((
+            target.clone(),
+            InputHitMap {
+                area: Rect::new(10, 5, 20, 1),
+                source_to_display_cells: (0..=8).collect(),
+                horizontal_offset: 0,
+                prefix_width: 0,
+                source_start: 0,
+            },
+        ));
+        ui.hit_regions.push(HitRegion {
+            area: Rect::new(10, 5, 20, 1),
+            target: hit_target,
+        });
+
+        assert_eq!(
+            map_mouse(
+                mouse(MouseEventKind::Down(MouseButton::Left), 11, 5),
+                &ui,
+                &app,
+            ),
+            Some(Action::BeginMouseInputSelection { target, cursor: 1 })
+        );
+        assert!(matches!(
+            map_mouse(
+                mouse(MouseEventKind::Drag(MouseButton::Left), 15, 5),
+                &ui,
+                &app,
+            ),
+            Some(Action::UpdateMouseInputSelection { .. })
+        ));
+        assert!(matches!(
+            map_mouse(
+                mouse(MouseEventKind::Up(MouseButton::Left), 15, 5),
+                &ui,
+                &app,
+            ),
+            Some(Action::CompleteMouseInputSelection { .. })
+        ));
     }
 }
 
@@ -1348,6 +1597,64 @@ fn maps_profile_fields_toggles_and_buttons() {
         ),
         None
     );
+}
+
+#[test]
+fn profile_url_mouse_copy_is_redacted_end_to_end() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    app.update(Action::ProfileFocusField(ProfileField::Url));
+    app.update(Action::ProfileDeleteToStart);
+    app.update(Action::ProfilePaste(
+        "postgres://alice:secret@db.example/app?password=query-secret&sslmode=require".into(),
+    ));
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut state = UiState::new();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut state))
+        .unwrap();
+    let (target, map) = state
+        .input_selection_targets
+        .iter()
+        .find(|(target, _)| *target == InputSelectionTarget::ProfileUrl)
+        .expect("profile URL input target");
+    let start = map.area.x;
+    let end = map.area.x.saturating_add(map.area.width.saturating_sub(1));
+
+    let down = map_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), start, map.area.y),
+        &state,
+        &app,
+    )
+    .expect("profile URL mouse down action");
+    app.update(down);
+    let drag = map_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), end, map.area.y),
+        &state,
+        &app,
+    )
+    .expect("profile URL mouse drag action");
+    app.update(drag);
+    let up = map_mouse(
+        mouse(MouseEventKind::Up(MouseButton::Left), end, map.area.y),
+        &state,
+        &app,
+    )
+    .expect("profile URL mouse up action");
+    let commands = app.update(up);
+
+    let Command::WriteClipboard(payload) = commands.first().expect("clipboard command") else {
+        panic!("expected clipboard command");
+    };
+    assert!(
+        !payload.text.contains("secret"),
+        "copied payload: {}",
+        payload.text
+    );
+    assert!(!payload.text.contains("query-secret"));
+    assert!(payload.text.contains("[REDACTED]"));
+    let _ = target;
 }
 
 #[test]

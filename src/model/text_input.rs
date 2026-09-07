@@ -20,6 +20,7 @@ const HISTORY_LIMIT: usize = 100;
 struct Snapshot {
     value: String,
     cursor: usize,
+    anchor: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,12 +41,13 @@ struct History {
 pub struct TextInput {
     value: String,
     cursor: usize,
+    anchor: Option<usize>,
     history: History,
 }
 
 impl PartialEq for TextInput {
     fn eq(&self, other: &Self) -> bool {
-        self.value == other.value && self.cursor == other.cursor
+        self.value == other.value && self.cursor == other.cursor && self.anchor == other.anchor
     }
 }
 
@@ -97,6 +99,7 @@ impl TextInput {
     pub fn set(&mut self, value: impl Into<String>) {
         self.value = value.into();
         self.cursor = self.value.chars().count();
+        self.anchor = None;
         self.history = History::default();
     }
 
@@ -108,10 +111,56 @@ impl TextInput {
     pub fn set_cursor(&mut self, column: usize) {
         self.finish_edit_group();
         self.cursor = column.min(self.value.chars().count());
+        self.anchor = None;
+    }
+
+    pub fn selection_range(&self) -> Option<std::ops::Range<usize>> {
+        let anchor = self.anchor?;
+        let (start, end) = if anchor <= self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        };
+        (start < end).then_some(start..end)
+    }
+
+    pub fn selected_text(&self) -> Option<&str> {
+        let range = self.selection_range()?;
+        Some(&self.value[self.byte_index(range.start)..self.byte_index(range.end)])
+    }
+
+    pub fn begin_selection(&mut self, column: usize) {
+        self.finish_edit_group();
+        let column = column.min(self.value.chars().count());
+        self.cursor = column;
+        self.anchor = Some(column);
+    }
+
+    pub fn extend_selection(&mut self, column: usize) {
+        let column = column.min(self.value.chars().count());
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.cursor = column;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
     }
 
     pub fn insert(&mut self, character: char) {
         let before = self.snapshot();
+        if let Some(range) = self.selection_range() {
+            let start = self.byte_index(range.start);
+            let end = self.byte_index(range.end);
+            self.value.replace_range(start..end, "");
+            self.cursor = range.start;
+            self.anchor = None;
+            self.value.insert(self.byte_index(self.cursor), character);
+            self.cursor += 1;
+            self.record_atomic(before);
+            return;
+        }
         let byte_index = self.byte_index(self.cursor);
         self.value.insert(byte_index, character);
         self.cursor += 1;
@@ -124,6 +173,13 @@ impl TextInput {
             return;
         }
         let before = self.snapshot();
+        if let Some(range) = self.selection_range() {
+            let start = self.byte_index(range.start);
+            let end = self.byte_index(range.end);
+            self.value.replace_range(start..end, "");
+            self.cursor = range.start;
+            self.anchor = None;
+        }
         let byte_index = self.byte_index(self.cursor);
         self.value.insert_str(byte_index, text);
         self.cursor += text.chars().count();
@@ -131,6 +187,16 @@ impl TextInput {
     }
 
     pub fn backspace(&mut self) {
+        if let Some(range) = self.selection_range() {
+            let before = self.snapshot();
+            let start = self.byte_index(range.start);
+            let end = self.byte_index(range.end);
+            self.value.replace_range(start..end, "");
+            self.cursor = range.start;
+            self.anchor = None;
+            self.record_atomic(before);
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -144,6 +210,10 @@ impl TextInput {
     }
 
     pub fn delete_previous_word(&mut self) {
+        if self.selection_range().is_some() {
+            self.backspace();
+            return;
+        }
         let before = self.snapshot();
         let mut start = self.cursor;
         while start > 0
@@ -173,6 +243,10 @@ impl TextInput {
     }
 
     pub fn delete_to_start(&mut self) {
+        if self.selection_range().is_some() {
+            self.backspace();
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -184,6 +258,10 @@ impl TextInput {
     }
 
     pub fn clear(&mut self) {
+        if self.selection_range().is_some() {
+            self.backspace();
+            return;
+        }
         if self.value.is_empty() {
             return;
         }
@@ -194,6 +272,10 @@ impl TextInput {
     }
 
     pub fn delete(&mut self) {
+        if self.selection_range().is_some() {
+            self.backspace();
+            return;
+        }
         let start = self.byte_index(self.cursor);
         if start == self.value.len() {
             return;
@@ -207,22 +289,34 @@ impl TextInput {
 
     pub fn move_left(&mut self) {
         self.finish_edit_group();
+        if let Some(range) = self.selection_range() {
+            self.cursor = range.start;
+            self.anchor = None;
+            return;
+        }
         self.cursor = self.cursor.saturating_sub(1);
     }
 
     pub fn move_right(&mut self) {
         self.finish_edit_group();
+        if let Some(range) = self.selection_range() {
+            self.cursor = range.end;
+            self.anchor = None;
+            return;
+        }
         self.cursor = (self.cursor + 1).min(self.value.chars().count());
     }
 
     pub fn move_home(&mut self) {
         self.finish_edit_group();
         self.cursor = 0;
+        self.anchor = None;
     }
 
     pub fn move_end(&mut self) {
         self.finish_edit_group();
         self.cursor = self.value.chars().count();
+        self.anchor = None;
     }
 
     pub fn replace(&mut self, range: crate::sql::TextRange, replacement: &str) {
@@ -234,6 +328,7 @@ impl TextInput {
         let before = self.snapshot();
         self.value.replace_range(start..end, replacement);
         self.cursor = range.start + replacement.chars().count();
+        self.anchor = None;
         if self.snapshot() != before {
             self.record_atomic(before);
         }
@@ -248,6 +343,7 @@ impl TextInput {
         }
         self.value = value;
         self.cursor = self.value.chars().count();
+        self.anchor = None;
         self.record_atomic(before);
         true
     }
@@ -284,12 +380,16 @@ impl TextInput {
         Snapshot {
             value: self.value.clone(),
             cursor: self.cursor,
+            anchor: self.anchor,
         }
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
         self.value = snapshot.value;
         self.cursor = snapshot.cursor.min(self.value.chars().count());
+        self.anchor = snapshot
+            .anchor
+            .filter(|anchor| *anchor <= self.value.chars().count());
     }
 
     fn record_grouped(&mut self, group: EditGroup, before: Snapshot) {
@@ -409,6 +509,49 @@ mod tests {
         assert!(input.undo());
         assert_eq!(input.value(), "abc");
         assert!(!input.undo());
+    }
+
+    #[test]
+    fn selection_is_normalized_and_selected_text_is_unicode_safe() {
+        let mut input = TextInput::from("a你🙂bc");
+
+        input.begin_selection(4);
+        input.extend_selection(1);
+
+        assert_eq!(input.selection_range(), Some(1..4));
+        assert_eq!(input.selected_text(), Some("你🙂b"));
+    }
+
+    #[test]
+    fn replacing_selection_is_atomic_and_undoable() {
+        let mut input = TextInput::from("abcdef");
+
+        input.begin_selection(1);
+        input.extend_selection(4);
+        input.paste("X");
+
+        assert_eq!(input.value(), "aXef");
+        assert_eq!(input.cursor(), 2);
+        assert!(input.selection_range().is_none());
+        assert!(input.undo());
+        assert_eq!(input.value(), "abcdef");
+        assert_eq!(input.cursor(), 4);
+        assert!(input.redo());
+        assert_eq!(input.value(), "aXef");
+    }
+
+    #[test]
+    fn editing_commands_delete_selection_before_regular_editing() {
+        let mut input = TextInput::from("abcdef");
+        input.begin_selection(1);
+        input.extend_selection(4);
+        input.backspace();
+        assert_eq!(input.value(), "aef");
+
+        input.begin_selection(1);
+        input.extend_selection(2);
+        input.delete();
+        assert_eq!(input.value(), "af");
     }
 
     #[test]

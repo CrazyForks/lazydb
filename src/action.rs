@@ -442,6 +442,22 @@ pub enum Action {
         end: crate::model::editor::EditorPosition,
         revision: u64,
     },
+    CompleteMouseInputSelection {
+        target: crate::ui::text_selection::InputSelectionTarget,
+        start: usize,
+        end: usize,
+    },
+    BeginMouseInputSelection {
+        target: crate::ui::text_selection::InputSelectionTarget,
+        cursor: usize,
+    },
+    UpdateMouseInputSelection {
+        target: crate::ui::text_selection::InputSelectionTarget,
+        cursor: usize,
+    },
+    CancelMouseInputSelection {
+        target: crate::ui::text_selection::InputSelectionTarget,
+    },
     SetEditorMouseCursor {
         session_id: Uuid,
         position: crate::model::editor::EditorPosition,

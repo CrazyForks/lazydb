@@ -736,6 +736,25 @@ fn jdbc_sql_server_url_commit_redacts_password_and_preserves_format_after_edits(
 }
 
 #[test]
+fn url_display_redacts_query_password_aliases() {
+    let mut draft = ProfileDraft::new(DatabaseKind::Postgres);
+    while draft.url_cursor() > 0 {
+        draft.backspace(ProfileField::Url);
+    }
+    draft.paste(
+        ProfileField::Url,
+        "postgres://alice:secret@db.example/app?password=query-secret&pwd=other-secret&sslmode=require",
+    );
+
+    let display = draft.url_display();
+    assert!(!display.contains("secret"));
+    assert!(!display.contains("query-secret"));
+    assert!(!display.contains("other-secret"));
+    assert!(display.contains("password=[REDACTED]"));
+    assert!(display.contains("pwd=[REDACTED]"));
+}
+
+#[test]
 fn jdbc_sql_server_draft_redacts_every_duplicate_password_before_validation() {
     let mut draft = ProfileDraft::new(DatabaseKind::SqlServer);
     while draft.url_cursor() > 0 {

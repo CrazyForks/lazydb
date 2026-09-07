@@ -99,6 +99,8 @@ pub enum HitTarget {
     CloseTab(Uuid),
     ExplorerRow(crate::model::explorer::ExplorerNodeId),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
+    ExplorerFind,
+    ExplorerSearch,
     ResultCell {
         row: usize,
         column: usize,
@@ -204,6 +206,11 @@ pub enum HitTarget {
     CatalogDropCancel,
     CatalogDropConfirm,
     SqlEditorListDeleteCancel,
+    SqlEditorListSearch,
+    SqlEditorListRename,
+    HelpSearch,
+    ProfileGroupName,
+    KeySequencePopup,
     TextDetailCopyAll,
     TextDetailClose,
     RecordViewCopyCell,
@@ -265,6 +272,7 @@ pub struct UiState {
     pub pane_resize_drag: RefCell<Option<PaneResizeDrag>>,
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
+    pub input_gesture: RefCell<Option<text_selection::InputGesture>>,
     pub text_selection_targets: Vec<text_selection::TextSelectionTarget>,
     pub data_query_input_targets: Vec<(
         crate::model::data_query::DataQueryInput,
@@ -273,6 +281,10 @@ pub struct UiState {
     pub profile_input_targets: Vec<(ProfileField, text_selection::InputHitMap)>,
     pub catalog_input_targets: Vec<(
         crate::action::CatalogEditorCursorTarget,
+        text_selection::InputHitMap,
+    )>,
+    pub input_selection_targets: Vec<(
+        text_selection::InputSelectionTarget,
         text_selection::InputHitMap,
     )>,
     pub(crate) query_bar_highlights: query_bar::QueryBarHighlightCache,
@@ -360,10 +372,12 @@ impl UiState {
             pane_resize_drag: RefCell::new(None),
             mouse_gesture: RefCell::new(None),
             text_gesture: RefCell::new(None),
+            input_gesture: RefCell::new(None),
             text_selection_targets: Vec::new(),
             data_query_input_targets: Vec::new(),
             profile_input_targets: Vec::new(),
             catalog_input_targets: Vec::new(),
+            input_selection_targets: Vec::new(),
             query_bar_highlights: query_bar::QueryBarHighlightCache::default(),
             animations: animation::AnimationState::new(mode, Instant::now()),
             result_area: None,
@@ -451,6 +465,20 @@ impl UiState {
             })
     }
 
+    pub fn input_selection_target_at(
+        &self,
+        column: u16,
+        row: u16,
+    ) -> Option<(&text_selection::InputSelectionTarget, usize)> {
+        self.input_selection_targets
+            .iter()
+            .rev()
+            .find_map(|(target, map)| {
+                map.source_at(column, row)
+                    .map(|position| (target, position))
+            })
+    }
+
     pub fn track_explorer_click(
         &self,
         id: &crate::model::explorer::ExplorerNodeId,
@@ -507,15 +535,21 @@ impl UiState {
 
     pub fn end_mouse_gesture(&self) -> Option<text_selection::GestureOwner> {
         let owner = self.mouse_gesture.borrow_mut().take();
-        if owner == Some(text_selection::GestureOwner::Text) {
-            self.text_gesture.borrow_mut().take();
-        }
+        self.text_gesture.borrow_mut().take();
+        self.input_gesture.borrow_mut().take();
         owner
     }
 
     pub fn cancel_mouse_gesture(&self) {
         self.mouse_gesture.borrow_mut().take();
         self.text_gesture.borrow_mut().take();
+        self.input_gesture.borrow_mut().take();
+    }
+
+    pub fn input_selection_is_current(&self, gesture: &text_selection::InputGesture) -> bool {
+        self.input_selection_targets
+            .iter()
+            .any(|(target, map)| target == &gesture.target && map == &gesture.hit_map)
     }
 }
 
@@ -759,6 +793,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.data_query_input_targets.clear();
     state.profile_input_targets.clear();
     state.catalog_input_targets.clear();
+    state.input_selection_targets.clear();
     state.result_area = None;
 
     if layout.mode == LayoutMode::TooSmall {
@@ -983,6 +1018,9 @@ fn render_key_sequence_popup(
         area.width.saturating_sub(2),
         height,
     );
+    // Keep the transient sequence chooser from forwarding clicks to controls
+    // underneath it.
+    // The caller maps this target to no action.
     let inner_width = popup.width.saturating_sub(2);
     let column_width = usize::from(inner_width) / columns;
     let mut lines = Vec::with_capacity(rows);
@@ -1178,13 +1216,26 @@ pub(crate) fn render_text_input(
         .copied()
         .unwrap_or_else(|| projection.text.width());
     let offset = text_input_horizontal_offset(area, prefix, input);
-    let mut visible = String::new();
+    let selection = input.selection_range();
+    let mut visible = Vec::new();
     let mut cells = 0;
     for character in projection.text.chars() {
         let width = character.width().unwrap_or(0);
         let end = cells + width;
         if end > offset && cells < offset + available {
-            visible.push(character);
+            let source = projection
+                .source_to_display_cells
+                .partition_point(|&boundary| boundary <= cells)
+                .saturating_sub(1);
+            let character_style = if selection
+                .as_ref()
+                .is_some_and(|range| range.contains(&source))
+            {
+                style.add_modifier(Modifier::REVERSED)
+            } else {
+                style
+            };
+            visible.push(Span::styled(character.to_string(), character_style));
         }
         cells = end;
         if cells >= offset + available {
@@ -1192,7 +1243,12 @@ pub(crate) fn render_text_input(
         }
     }
     frame.render_widget(
-        Paragraph::new(format!("{prefix}{visible}")).style(style),
+        Paragraph::new(Line::from(
+            std::iter::once(Span::styled(prefix, style))
+                .chain(visible)
+                .collect::<Vec<_>>(),
+        ))
+        .style(style),
         area,
     );
     let cursor_x = area
@@ -1224,6 +1280,28 @@ pub(crate) fn register_data_query_input(
                 .source_to_display_cells,
             horizontal_offset: offset,
             prefix_width: prefix.width(),
+            source_start: 0,
+        },
+    ));
+}
+
+pub(crate) fn register_input_selection_target(
+    state: &mut UiState,
+    target: text_selection::InputSelectionTarget,
+    area: Rect,
+    prefix: &str,
+    value: &crate::model::text_input::TextInput,
+    offset: usize,
+) {
+    state.input_selection_targets.push((
+        target,
+        text_selection::InputHitMap {
+            area,
+            source_to_display_cells: crate::security::project_editor_line(value.value())
+                .source_to_display_cells,
+            horizontal_offset: offset,
+            prefix_width: prefix.width(),
+            source_start: 0,
         },
     ));
 }
@@ -4968,6 +5046,18 @@ fn render_profile_group_overlay(
                 frame.render_widget(Paragraph::new(name.value()).style(input_style), input_area);
             } else {
                 render_text_input(frame, input_area, "", name, input_style, state);
+                state.hit_regions.push(HitRegion {
+                    area: input_area,
+                    target: HitTarget::ProfileGroupName,
+                });
+                register_input_selection_target(
+                    state,
+                    text_selection::InputSelectionTarget::ProfileGroupName,
+                    input_area,
+                    "",
+                    name,
+                    text_input_horizontal_offset(input_area, "", name),
+                );
             }
 
             if let Some(error) = error {
@@ -5267,23 +5357,35 @@ fn render_console_manager(
     );
     match &list.mode {
         SqlEditorListMode::Search => {
-            render_text_input(
-                frame,
-                Rect::new(inner.x, inner.y, inner.width, 1),
+            let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+            state.hit_regions.push(HitRegion {
+                area: input_area,
+                target: HitTarget::SqlEditorListSearch,
+            });
+            render_text_input(frame, input_area, "/", &list.query, theme.base(), state);
+            register_input_selection_target(
+                state,
+                text_selection::InputSelectionTarget::ConsoleManagerSearch,
+                input_area,
                 "/",
                 &list.query,
-                theme.base(),
-                state,
+                text_input_horizontal_offset(input_area, "/", &list.query),
             );
         }
         SqlEditorListMode::Rename { input, .. } => {
-            render_text_input(
-                frame,
-                Rect::new(inner.x, inner.y + 2, inner.width, 1),
+            let input_area = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+            state.hit_regions.push(HitRegion {
+                area: input_area,
+                target: HitTarget::SqlEditorListRename,
+            });
+            render_text_input(frame, input_area, "Name: ", input, theme.base(), state);
+            register_input_selection_target(
+                state,
+                text_selection::InputSelectionTarget::ConsoleManagerRename,
+                input_area,
                 "Name: ",
                 input,
-                theme.base(),
-                state,
+                text_input_horizontal_offset(input_area, "Name: ", input),
             );
         }
         _ => {}
@@ -5529,6 +5631,18 @@ fn render_help(
         &help.query,
         Style::new().fg(theme.accent).bg(theme.surface_raised),
         state,
+    );
+    state.hit_regions.push(HitRegion {
+        area: chunks[0],
+        target: HitTarget::HelpSearch,
+    });
+    register_input_selection_target(
+        state,
+        text_selection::InputSelectionTarget::HelpSearch,
+        chunks[0],
+        "Search ",
+        &help.query,
+        text_input_horizontal_offset(chunks[0], "Search ", &help.query),
     );
     let visible_height = chunks[2].height as usize;
     let start = if visible_height == 0 {

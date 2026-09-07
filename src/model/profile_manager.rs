@@ -570,6 +570,7 @@ pub struct ProfileDraft {
     pub kind: DatabaseKind,
     pub url_format: ConnectionUrlFormat,
     url: SecretTextInput,
+    url_selection: Option<(usize, usize)>,
     url_pending: bool,
     url_error: Option<String>,
     pub name: TextInput,
@@ -627,6 +628,7 @@ impl ProfileDraft {
             kind,
             url_format: ConnectionUrlFormat::default_for(kind),
             url: SecretTextInput::default(),
+            url_selection: None,
             url_pending: false,
             url_error: None,
             name: TextInput::default(),
@@ -685,6 +687,7 @@ impl ProfileDraft {
                 ConnectionUrlFormat::default_for(profile.kind)
             },
             url: SecretTextInput::default(),
+            url_selection: None,
             url_pending: false,
             url_error: None,
             name: TextInput::from(profile.name.clone()),
@@ -736,7 +739,7 @@ impl ProfileDraft {
     }
 
     pub fn url_display(&self) -> String {
-        redact_url_password(self.url.value()).0
+        redact_url_query_passwords(&redact_url_password(self.url.value()).0)
     }
 
     pub fn url_cursor(&self) -> usize {
@@ -758,6 +761,39 @@ impl ProfileDraft {
             adjustment += redacted_len as isize - (end - start) as isize;
         }
         (raw_cursor as isize + adjustment) as usize
+    }
+
+    pub fn url_selection_range(&self) -> Option<std::ops::Range<usize>> {
+        let (start, end) = self.url_selection?;
+        (start.min(end) < start.max(end)).then_some(start.min(end)..start.max(end))
+    }
+
+    pub fn begin_url_selection(&mut self, cursor: usize) {
+        let cursor = cursor.min(self.url_display().chars().count());
+        self.url_selection = Some((cursor, cursor));
+    }
+
+    pub fn extend_url_selection(&mut self, cursor: usize) {
+        let cursor = cursor.min(self.url_display().chars().count());
+        let start = self
+            .url_selection
+            .map_or(self.url_cursor(), |(_, start)| start);
+        self.url_selection = Some((start, cursor));
+    }
+
+    pub fn clear_url_selection(&mut self) {
+        self.url_selection = None;
+    }
+
+    pub fn selected_url_display(&self) -> Option<String> {
+        let range = self.url_selection_range()?;
+        Some(
+            self.url_display()
+                .chars()
+                .skip(range.start)
+                .take(range.end - range.start)
+                .collect(),
+        )
     }
 
     pub fn url_is_pending(&self) -> bool {
@@ -1244,6 +1280,26 @@ impl ProfileDraft {
         }
     }
 
+    pub(crate) fn mouse_selection_input_mut(
+        &mut self,
+        field: ProfileField,
+    ) -> Option<&mut TextInput> {
+        self.text_input_mut(field)
+    }
+
+    pub(crate) fn mouse_selection_input(&self, field: ProfileField) -> Option<&TextInput> {
+        match field {
+            ProfileField::Name => Some(&self.name),
+            ProfileField::Host => Some(&self.host),
+            ProfileField::Port => Some(&self.port),
+            ProfileField::User => Some(&self.user),
+            ProfileField::Database => Some(&self.database),
+            ProfileField::Schema => Some(&self.schema),
+            ProfileField::SqlitePath => Some(&self.sqlite_path),
+            _ => None,
+        }
+    }
+
     pub fn undo(&mut self, field: ProfileField) {
         let changed = match field {
             ProfileField::Url => self.url.undo(),
@@ -1357,6 +1413,7 @@ impl ProfileDraft {
     fn mark_url_edited(&mut self) {
         self.url_pending = true;
         self.url_error = None;
+        self.url_selection = None;
     }
 
     fn refresh_url(&mut self) {
@@ -1367,6 +1424,7 @@ impl ProfileDraft {
             return;
         };
         self.url.set(url);
+        self.url_selection = None;
         self.url_pending = false;
         self.url_error = None;
     }
@@ -2443,6 +2501,10 @@ fn redact_url_password(value: &str) -> (String, Vec<(usize, usize)>) {
         ),
         vec![password_chars],
     )
+}
+
+fn redact_url_query_passwords(value: &str) -> String {
+    crate::security::redact_url_query_credentials(value)
 }
 
 const POSTGRES_FIELDS: [ProfileField; 18] = [
