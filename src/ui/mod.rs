@@ -1777,7 +1777,8 @@ struct RenderedTab {
     index: usize,
     id: Uuid,
     label: String,
-    close: Option<String>,
+    marker: String,
+    can_close: bool,
     width: u16,
 }
 
@@ -1890,16 +1891,24 @@ fn render_tabs(
                     .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),
             };
             let label = format!(" {icon} {title} ");
-            let close = format!("{} ", icons.close());
-            let can_close = true;
+            let can_close = !app.is_default_console(tab.id());
+            let marker = format!(
+                "{} ",
+                if can_close {
+                    icons.close()
+                } else {
+                    icons.pin()
+                }
+            );
             let label_width = label.cell_width();
-            let close_width = if can_close { close.cell_width() } else { 0 };
-            let width = label_width + close_width;
+            let marker_width = marker.cell_width();
+            let width = label_width + marker_width;
             RenderedTab {
                 index,
                 id: tab.id(),
                 label,
-                close: can_close.then_some(close),
+                marker,
+                can_close,
                 width,
             }
         })
@@ -1933,13 +1942,13 @@ fn render_tabs(
     for tab in &rendered_tabs[viewport.start..viewport.end] {
         let active = tab.index == app.active_tab;
         let style = if active { active_style } else { inactive_style };
-        let close_width = tab.close.as_ref().map_or(0, |close| close.cell_width());
-        let max_label_width = tabs_area.width.saturating_sub(close_width);
+        let marker_width = tab.marker.cell_width();
+        let max_label_width = tabs_area.width.saturating_sub(marker_width);
         let label = truncate_to_cell_width(&tab.label, max_label_width);
         let label_width = label.cell_width();
         spans.push(Span::styled(label, style));
-        if let Some(close) = &tab.close {
-            spans.push(Span::styled(close.clone(), style));
+        if !tab.marker.is_empty() {
+            spans.push(Span::styled(tab.marker.clone(), style));
         }
         if x < tabs_area.right() {
             state.hit_regions.push(HitRegion {
@@ -1952,13 +1961,13 @@ fn render_tabs(
                 target: HitTarget::Tab(tab.index),
             });
         }
-        let close_x = x.saturating_add(label_width);
-        if close_width > 0 && close_x < tabs_area.right() {
+        let marker_x = x.saturating_add(label_width);
+        if tab.can_close && marker_width > 0 && marker_x < tabs_area.right() {
             state.hit_regions.push(HitRegion {
                 area: Rect::new(
-                    close_x,
+                    marker_x,
                     tabs_area.y,
-                    close_width.min(tabs_area.right().saturating_sub(close_x)),
+                    marker_width.min(tabs_area.right().saturating_sub(marker_x)),
                     1,
                 ),
                 target: HitTarget::CloseTab(tab.id),

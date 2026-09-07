@@ -156,6 +156,14 @@ impl IconSet {
         }
     }
 
+    pub const fn pin(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_PIN,
+            IconMode::Unicode => "📌",
+            IconMode::Ascii => "P",
+        }
+    }
+
     pub const fn tab_previous(self) -> &'static str {
         match self.mode {
             IconMode::NerdFont | IconMode::Unicode => "‹",

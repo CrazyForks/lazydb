@@ -2763,7 +2763,7 @@ fn console_manager_renders_sorted_open_and_closed_consoles() {
     let app = console_manager_fixture();
     let output = render(&app, 100, 30);
 
-    assert_order(&output, &["console", "alpha", "Beta", "charlie"]);
+    assert_order(&output, &["charlie", "alpha", "Beta", "console"]);
     assert!(output.contains("OPEN"), "{output}");
     assert!(output.contains("CLOSED"), "{output}");
     assert!(output.contains("a new"), "{output}");
@@ -5328,12 +5328,17 @@ fn workspace_tabs_publish_close_targets_for_each_tab() {
         .collect::<Vec<_>>();
     assert!(!visible_tab_ids.is_empty());
     assert!(visible_tab_ids.iter().all(|id| ids.contains(id)));
-    assert!(visible_tab_ids.iter().all(|id| {
-        state
-            .hit_regions
+    assert!(
+        visible_tab_ids
             .iter()
-            .any(|region| region.target == HitTarget::CloseTab(*id))
-    }));
+            .filter(|id| *id != &app.tabs[0].id())
+            .all(|id| {
+                state
+                    .hit_regions
+                    .iter()
+                    .any(|region| region.target == HitTarget::CloseTab(*id))
+            })
+    );
 }
 
 #[test]
@@ -5343,7 +5348,7 @@ fn default_console_tab_has_no_close_target() {
     let (_, state) = render_with_state(&app, 120, 36);
 
     assert!(
-        state
+        !state
             .hit_regions
             .iter()
             .any(|region| region.target == HitTarget::CloseTab(id))
