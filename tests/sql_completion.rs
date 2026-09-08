@@ -1,10 +1,10 @@
 use lazydb::{
-    action::Action,
+    action::{Action, Command},
     app::App,
     db::ServerInfo,
     db::catalog::{
-        CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, ColumnMetadata, OptionalMetadata,
-        QualifiedName,
+        CatalogCount, CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, CatalogPage,
+        CatalogRequest, CatalogTarget, ColumnMetadata, OptionalMetadata, QualifiedName,
     },
     profile::{CatalogScope, CatalogSelection, DatabaseKind, DatabaseScope, import_connection_url},
     sql::{
@@ -2958,6 +2958,201 @@ fn app_completion_prefers_the_active_console_target_schema() {
     assert_eq!(scores, [1]);
 }
 
+fn completion_app_with_table() -> (App, Uuid, CatalogEntry) {
+    let mut profile = import_connection_url("postgres://localhost/app", Some("app"))
+        .unwrap()
+        .profile;
+    profile.catalog_scope =
+        CatalogScope::for_profile(DatabaseKind::Postgres, "app", Some("public"));
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: ServerInfo {
+            kind: DatabaseKind::Postgres,
+            version: "16.4".into(),
+            database: "app".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+    let table = completion_table(profile_id);
+    let database = CatalogEntry::database(
+        CatalogId::new(profile_id, CatalogKind::Database, ["app"]),
+        qualified("app", None, "app"),
+        "database",
+        OptionalMetadata::Supported(None),
+        false,
+    )
+    .unwrap();
+    let schema = CatalogEntry::schema(
+        CatalogId::new(profile_id, CatalogKind::Schema, ["app", "public"]),
+        database.id.clone(),
+        qualified("app", Some("public"), "public"),
+        "schema",
+        OptionalMetadata::Supported(None),
+        false,
+    )
+    .unwrap();
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&profile_id)
+        .unwrap()
+        .catalog
+        .insert_subtree(vec![database, schema, table.clone()])
+        .unwrap();
+    app.explorer.completion_index = CompletionIndex::new(std::slice::from_ref(&table));
+    (app, profile_id, table)
+}
+
+fn completion_page(request: &CatalogRequest, entries: Vec<CatalogEntry>) -> CatalogPage {
+    CatalogPage::new(request, entries, CatalogCount::Exact(1), None).unwrap()
+}
+
+fn completion_table(profile_id: Uuid) -> CatalogEntry {
+    CatalogEntry::relation(
+        CatalogId::new(profile_id, CatalogKind::Table, ["app", "public", "users"]),
+        CatalogId::new(profile_id, CatalogKind::Schema, ["app", "public"]),
+        qualified("app", Some("public"), "users"),
+        "table",
+        OptionalMetadata::Supported(None),
+        false,
+    )
+    .unwrap()
+}
+
+fn completion_column(profile_id: Uuid, table: &CatalogEntry) -> CatalogEntry {
+    CatalogEntry::relation_child(
+        CatalogId::new(
+            profile_id,
+            CatalogKind::Column,
+            ["app", "public", "users", "user_id"],
+        ),
+        table.id.clone(),
+        qualified("app", Some("public"), "user_id"),
+        "column",
+        OptionalMetadata::Unsupported,
+        CatalogMetadata::Column(ColumnMetadata::new(1, "bigint", false)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn app_completion_requests_missing_relation_children() {
+    let (mut app, profile_id, table) = completion_app_with_table();
+    app.update(Action::ReplaceEditor(
+        "select * from users u where u.".into(),
+    ));
+    app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('A'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+
+    let commands = app.update(Action::CompletionExplicit);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::LoadCatalogPage(request)]
+            if request.key.target == CatalogTarget::relation_children(table.id.clone()).unwrap()
+    ));
+    assert!(matches!(
+        &commands[0],
+        Command::LoadCatalogPage(request) if request.key.connection.profile_id == profile_id
+    ));
+}
+
+#[test]
+fn app_completion_refreshes_popup_when_relation_children_load() {
+    let (mut app, profile_id, table) = completion_app_with_table();
+    let column = completion_column(profile_id, &table);
+    app.update(Action::ReplaceEditor(
+        "select * from users u where u.".into(),
+    ));
+    app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('A'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    let commands = app.update(Action::CompletionExplicit);
+    let request = match &commands[..] {
+        [Command::LoadCatalogPage(request)] => request.clone(),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+
+    app.update(Action::CatalogPageLoaded(completion_page(
+        &request,
+        vec![column.clone()],
+    )));
+
+    let popup = app.active_console().completion.as_ref().unwrap();
+    assert!(
+        popup
+            .candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Column
+                && candidate.label == "user_id")
+    );
+}
+
+#[test]
+fn app_completion_does_not_request_already_loaded_relation_children() {
+    let (mut app, profile_id, table) = completion_app_with_table();
+    let column = completion_column(profile_id, &table);
+    app.update(Action::ReplaceEditor(
+        "select * from users u where u.".into(),
+    ));
+    app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('A'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    let request = match app.update(Action::CompletionExplicit).as_slice() {
+        [Command::LoadCatalogPage(request)] => request.clone(),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::CatalogPageLoaded(completion_page(
+        &request,
+        vec![column],
+    )));
+
+    let commands = app.update(Action::CompletionExplicit);
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::LoadCatalogPage(_)))
+    );
+}
+
+#[test]
+fn stale_completion_catalog_response_does_not_restore_popup_after_edit() {
+    let (mut app, profile_id, table) = completion_app_with_table();
+    let column = completion_column(profile_id, &table);
+    app.update(Action::ReplaceEditor(
+        "select * from users u where u.".into(),
+    ));
+    app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('A'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    let request = match app.update(Action::CompletionExplicit).as_slice() {
+        [Command::LoadCatalogPage(request)] => request.clone(),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ReplaceEditor(
+        "select * from users u where u.user".into(),
+    ));
+
+    app.update(Action::CatalogPageLoaded(completion_page(
+        &request,
+        vec![column],
+    )));
+
+    assert!(app.active_console().completion.is_none());
+}
+
 #[test]
 fn relation_completion_uses_shortest_target_relative_reference() {
     let connection = Uuid::new_v4();
@@ -3072,6 +3267,476 @@ fn relation_completion_deduplicates_mirrored_database_and_schema_detail() {
 
     assert_eq!(candidates[0].label, "users");
     assert_eq!(candidates[0].detail.as_deref(), Some("(app)"));
+}
+
+fn sqlserver_update_fixture() -> Vec<CatalogEntry> {
+    let connection = Uuid::new_v4();
+    let schema = CatalogId::new(connection, CatalogKind::Schema, ["app", "public"]);
+    let mut entries = Vec::new();
+    for (table_name, columns) in [("users", &["id", "user_name"][..]), ("u", &["dumb"][..])] {
+        let table = CatalogId::new(
+            connection,
+            CatalogKind::Table,
+            ["app", "public", table_name],
+        );
+        entries.push(
+            CatalogEntry::relation(
+                table.clone(),
+                schema.clone(),
+                qualified("app", Some("public"), table_name),
+                "table",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+        entries.extend(columns.iter().enumerate().map(|(position, column)| {
+            CatalogEntry::relation_child(
+                CatalogId::new(
+                    connection,
+                    CatalogKind::Column,
+                    ["app", "public", table_name, column],
+                ),
+                table.clone(),
+                qualified("app", Some("public"), column),
+                "column",
+                OptionalMetadata::Unsupported,
+                CatalogMetadata::Column(ColumnMetadata::new(position as u32 + 1, "text", true)),
+            )
+            .unwrap()
+        }));
+    }
+    entries
+}
+
+fn update_context() -> CompletionContext<'static> {
+    CompletionContext {
+        database: Some("app"),
+        schema: Some("public"),
+    }
+}
+
+#[test]
+fn update_set_target_completion_lists_only_target_columns() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for sql in [
+        "update sys_user set ",
+        "select * from user_agreement_accept; update sys_user set ",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        let mut labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        assert_eq!(
+            labels,
+            vec![
+                "update_time",
+                "update_user",
+                "update_user_phone",
+                "user_type",
+                "username",
+            ],
+            "{sql}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.kind == CompletionKind::Column),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn update_set_target_completion_matches_prefix_and_replaces_only_it() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let sql = "update sys_user set update_";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    let mut labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(
+        labels,
+        vec!["update_time", "update_user", "update_user_phone"]
+    );
+    for candidate in &candidates {
+        assert_eq!(candidate.kind, CompletionKind::Column);
+        assert_eq!(candidate.replace.start, sql.len() - "update_".len());
+        assert_eq!(candidate.replace.end, sql.len());
+        assert_eq!(candidate.insert_text, format!("\"{}\"", candidate.label));
+        assert_eq!(candidate.detail.as_deref(), Some("text"));
+    }
+}
+
+#[test]
+fn update_set_second_assignment_returns_to_target_columns() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    for sql in [
+        "update users set user_name = 'x', ",
+        "update users set user_name = 'x', id = 1, ",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        let mut labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["id", "user_name"], "{sql}");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.kind == CompletionKind::Column),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn update_set_value_offers_columns_and_expression_keywords() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "update users set user_name = ";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    for keyword in ["CASE", "NULL", "TRUE", "FALSE", "DEFAULT"] {
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.kind == CompletionKind::Keyword && candidate.label == keyword
+            }),
+            "missing {keyword}: {:?}",
+            candidates
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    for column in ["id", "user_name"] {
+        assert!(candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::Column && candidate.label == column
+        }));
+    }
+    assert!(candidates.iter().all(|candidate| matches!(
+        candidate.kind,
+        CompletionKind::Column | CompletionKind::Function | CompletionKind::Keyword
+    )));
+}
+
+#[test]
+fn update_set_target_excludes_source_relation_columns() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "update users set u from roles r";
+    let cursor = sql.len() - " from roles r".len();
+    let candidates = complete(sql, cursor, SqlDialect::Postgres, &index, update_context());
+    let labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&"user_name"), "{labels:?}");
+    assert!(!labels.contains(&"role_name"), "{labels:?}");
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.kind == CompletionKind::Column)
+    );
+}
+
+#[test]
+fn update_set_value_qualifier_uses_source_relation_columns() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "update users set user_name = r. from roles r";
+    let cursor = sql.len() - " from roles r".len();
+    let candidates = complete(sql, cursor, SqlDialect::Postgres, &index, update_context());
+    let labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&"role_name"), "{labels:?}");
+    assert!(!labels.contains(&"user_name"), "{labels:?}");
+}
+
+#[test]
+fn update_set_missing_target_offers_nothing_global() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for sql in ["update missing_table set ", "update missing_table set s"] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        assert!(candidates.is_empty(), "{sql}: {candidates:?}");
+    }
+}
+
+#[test]
+fn update_set_pg_as_alias_is_not_a_clause_boundary() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let sql = "update sys_user as output set update_";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    let mut labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(
+        labels,
+        vec!["update_time", "update_user", "update_user_phone"]
+    );
+}
+
+#[test]
+fn update_set_array_brackets_keep_value_until_closed() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let inside = complete(
+        "update users set user_name = ARRAY['a', ",
+        "update users set user_name = ARRAY['a', ".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    assert!(
+        inside
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Keyword && candidate.label == "CASE"),
+        "comma inside array brackets must keep value context"
+    );
+    let after = complete(
+        "update users set user_name = ARRAY['a', 'b'], ",
+        "update users set user_name = ARRAY['a', 'b'], ".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    let mut labels = after
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(labels, vec!["id", "user_name"]);
+}
+
+#[test]
+fn update_set_nested_subquery_uses_its_own_scope() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "update users set user_name = (SELECT r from roles)";
+    let cursor = sql.len() - " from roles)".len();
+    let candidates = complete(sql, cursor, SqlDialect::Postgres, &index, update_context());
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Column
+                && candidate.label == "role_name"),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn update_set_string_and_comments_do_not_change_stage() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    for sql in [
+        "update users set user_name = 'a,b=1', \nuser_",
+        "update users -- comment with , and =\nset user_name = 'x',\nuser_",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        let labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"user_name"), "{sql}: {labels:?}");
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.kind == CompletionKind::Column)
+        );
+    }
+}
+
+#[test]
+fn update_set_tuple_assignment_is_bounded_to_target_columns() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "update users set (id, user_name) = (1, ";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    let labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    assert!(!labels.contains(&"role_name"), "{labels:?}");
+    assert!(candidates.iter().all(|candidate| matches!(
+        candidate.kind,
+        CompletionKind::Column | CompletionKind::Keyword
+    )));
+}
+
+#[test]
+fn standalone_set_and_ddl_set_start_no_assignment_context() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let standalone = complete(
+        "set search_path = p",
+        "set search_path = p".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    assert!(
+        !standalone
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Column),
+        "{standalone:?}"
+    );
+    let ddl = complete(
+        "alter table sys_user alter column user_name set default u",
+        "alter table sys_user alter column user_name set default u".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    assert!(
+        !ddl.iter()
+            .any(|candidate| candidate.kind == CompletionKind::Keyword),
+        "assignment expression keywords must not leak into DDL: {ddl:?}"
+    );
+}
+
+#[test]
+fn update_set_sqlserver_alias_target_resolves_through_from_binding() {
+    let index = CompletionIndex::new(&sqlserver_update_fixture());
+    let sql = "update u set  from public.users as u";
+    let cursor = sql.len() - " from public.users as u".len();
+    let candidates = complete(sql, cursor, SqlDialect::SqlServer, &index, update_context());
+    let labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&"user_name"), "{labels:?}");
+    assert!(!labels.contains(&"dumb"), "{labels:?}");
+    let without_from = complete(
+        "update u set ",
+        "update u set ".len(),
+        SqlDialect::SqlServer,
+        &index,
+        update_context(),
+    );
+    let mut labels = without_from
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(labels, vec!["dumb"]);
+}
+
+#[test]
+fn update_set_pg_qualified_column_name_is_not_offered() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let candidates = complete(
+        "update users set users.u",
+        "update users set users.u".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    assert!(candidates.is_empty(), "{candidates:?}");
+}
+
+#[test]
+fn update_set_dependencies_resolve_only_the_target() {
+    let mut entries = multi_relation_fixture();
+    entries.retain(|entry| entry.kind != CatalogKind::Column);
+    let index = CompletionIndex::new(&entries);
+    let users = index
+        .entries()
+        .iter()
+        .find(|entry| entry.kind == CatalogKind::Table)
+        .unwrap()
+        .id
+        .clone();
+    for sql in [
+        "update users set user_",
+        "update users set user_name = ",
+        "update users set user_name = 'x', ",
+    ] {
+        let dependencies = completion_dependencies(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        assert_eq!(dependencies.relation_children, vec![users.clone()], "{sql}");
+    }
+}
+
+#[test]
+fn update_set_cursor_mid_identifier_uses_token_boundary() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let sql = "update sys_user set update_time";
+    let candidates = complete(
+        sql,
+        sql.len() - "time".len(),
+        SqlDialect::Postgres,
+        &index,
+        update_context(),
+    );
+    let mut labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    labels.sort_unstable();
+    assert_eq!(
+        labels,
+        vec!["update_time", "update_user", "update_user_phone"]
+    );
+    for candidate in &candidates {
+        assert_eq!(
+            candidate.replace.start,
+            sql.len() - "time".len() - "update_".len()
+        );
+        assert_eq!(candidate.replace.end, sql.len() - "time".len());
+    }
 }
 
 fn qualified(database: &str, schema: Option<&str>, object: &str) -> QualifiedName {
