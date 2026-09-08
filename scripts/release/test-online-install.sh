@@ -37,6 +37,7 @@ cat > "$LAZYDB_INSTALL_DIR/lazydb" <<'BIN'
 printf '{"version":"%s"}\n' "$TEST_ACTUAL"
 BIN
 chmod 755 "$LAZYDB_INSTALL_DIR/lazydb"
+printf '%s\n' 'Run in your current terminal (no need to reconnect):'
 SH
 chmod 755 "$TMP/bin/curl" "$TMP/bin/sleep"
 export PATH="$TMP/bin:$PATH" TEST_INSTALLER="$TMP/installer.sh"

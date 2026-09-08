@@ -98,7 +98,8 @@ for installer in "$TMP/pages/install.sh" "$ROOT/install.sh"; do
     original_path=$PATH
     HOME="$test_home" sh "$installer" > "$TMP/path-output"
     [ "$PATH" = "$original_path" ]
-    grep -q 'Run in your current terminal:' "$TMP/path-output"
+    grep -q 'Run in your current terminal' "$TMP/path-output"
+    grep -q 'no need to reconnect' "$TMP/path-output"
     grep -q 'PATH configured in:' "$TMP/path-output"
     HOME="$test_home" bash --noprofile --rcfile "$test_home/.bashrc" -ic 'lazydb version --json' > "$TMP/launched" 2>/dev/null
     grep -q '1.2.3' "$TMP/launched"
@@ -107,6 +108,10 @@ for installer in "$TMP/pages/install.sh" "$ROOT/install.sh"; do
     cmp "$test_home/.bashrc" "$TMP/profile-before"
     HOME="$test_home" PATH="$test_home/.local/bin:$PATH" sh "$installer" > "$TMP/ready"
     grep -q 'Ready to use in this terminal: lazydb' "$TMP/ready"
+    if grep -q 'no need to reconnect' "$TMP/ready"; then
+        printf '%s\n' 'ready installation still requested activation' >&2
+        exit 1
+    fi
     # Preserve dotfile links, permissions, and unrelated content when updating.
     mv "$test_home/.bashrc" "$test_home/shell-config"
     printf '\n# user configuration\n' >> "$test_home/shell-config"

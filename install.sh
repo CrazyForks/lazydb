@@ -219,12 +219,6 @@ elif modify != '1':
 else:
     print('WARNING: unknown shell; configure PATH manually.')
 
-if ready:
-    print('Ready to use in this terminal: lazydb')
-elif profile is not None:
-    print('Run in your current terminal:\n  ' + activate + '\n  lazydb')
-else:
-    print('Run the executable directly: ' + shlex.quote(executable))
 if configured:
     print('Future shells that load this file will include the installation directory on PATH.')
 elif not ready:
@@ -256,3 +250,24 @@ if profile:
     os.replace(temporary, state_path)
 PY
 printf '%s\n' 'To configure database access for Claude Code, Codex, or OpenCode, run `lazydb mcp setup` inside your project.'
+python3 - "$INSTALL_DIR" <<'PY'
+import os, shlex, shutil, sys
+from pathlib import Path
+
+directory = sys.argv[1]
+shell = Path(os.environ.get('SHELL', '')).name
+quoted = shlex.quote(directory)
+activate = 'export PATH=' + quoted + ':"$PATH"'
+if shell == 'fish':
+    quoted = "'" + directory.replace('\\', '\\\\').replace("'", "\\'") + "'"
+    activate = 'fish_add_path --path -- ' + quoted
+visible = shutil.which('lazydb')
+executable = str(Path(directory) / 'lazydb')
+ready = bool(visible and os.path.samefile(visible, executable))
+if ready:
+    print('Ready to use in this terminal: lazydb')
+elif shell in ('bash', 'zsh', 'fish', 'sh', 'dash', 'ash'):
+    print('Run in your current terminal (no need to reconnect):\n  ' + activate + '\n  lazydb')
+else:
+    print('Run the executable directly: ' + shlex.quote(executable))
+PY

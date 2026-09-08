@@ -22,7 +22,8 @@ attempt=1
 while [ "$attempt" -le 6 ]; do
     if curl -fsSL --proto '=https' --tlsv1.2 --max-time 60 \
         "https://lazydb.yelog.org/$entry" -o "$TMP/installer.sh" &&
-        sh "$TMP/installer.sh" --version "$version" --install-dir "$LAZYDB_INSTALL_DIR" &&
+        sh "$TMP/installer.sh" --version "$version" --install-dir "$LAZYDB_INSTALL_DIR" >"$TMP/install-output" &&
+        grep -q 'no need to reconnect' "$TMP/install-output" &&
         "$LAZYDB_INSTALL_DIR/lazydb" version --json > "$TMP/version.json" &&
         python3 - "$TMP/version.json" "$version" <<'PY'
 import json, sys
