@@ -8,8 +8,9 @@ use lazydb::{
     },
     profile::{CatalogScope, CatalogSelection, DatabaseKind, DatabaseScope, import_connection_url},
     sql::{
-        CompletionContext, CompletionIndex, CompletionKind, SqlDialect, TextRange, complete,
-        completion_dependencies, quote_identifier, should_offer_completion,
+        CompletionContext, CompletionIndex, CompletionInsertionMode, CompletionKind, SqlDialect,
+        TextRange, complete, complete_with_mode, completion_dependencies, quote_identifier,
+        should_offer_completion,
     },
 };
 use uuid::Uuid;
@@ -865,6 +866,581 @@ fn multi_relation_fixture() -> Vec<CatalogEntry> {
         }));
     }
     entries
+}
+
+fn cross_database_fixture() -> Vec<CatalogEntry> {
+    let connection = Uuid::new_v4();
+    let app = CatalogId::new(connection, CatalogKind::Database, ["app"]);
+    let public = CatalogId::new(connection, CatalogKind::Schema, ["app", "public"]);
+    let audit = CatalogId::new(connection, CatalogKind::Schema, ["app", "audit"]);
+    let other = CatalogId::new(connection, CatalogKind::Database, ["other"]);
+    let tools = CatalogId::new(connection, CatalogKind::Schema, ["other", "tools"]);
+    let mut entries = vec![
+        CatalogEntry::database(
+            app.clone(),
+            qualified("app", None, "app"),
+            "database",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            public.clone(),
+            app.clone(),
+            qualified("app", Some("public"), "public"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            audit.clone(),
+            app,
+            qualified("app", Some("audit"), "audit"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::database(
+            other.clone(),
+            qualified("other", None, "other"),
+            "database",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            tools.clone(),
+            other,
+            qualified("other", Some("tools"), "tools"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+    ];
+    for (schema_id, schema_name, database_name) in [
+        (public, "public", "app"),
+        (audit, "audit", "app"),
+        (tools, "tools", "other"),
+    ] {
+        let table = CatalogId::new(
+            connection,
+            CatalogKind::Table,
+            [database_name, schema_name, "sys_user"],
+        );
+        entries.push(
+            CatalogEntry::relation(
+                table,
+                schema_id,
+                qualified(database_name, Some(schema_name), "sys_user"),
+                "table",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+    }
+    entries
+}
+
+#[test]
+fn current_segment_mode_never_adds_namespace() {
+    let index = CompletionIndex::new(&cross_database_fixture());
+    for context in [
+        CompletionContext::default(),
+        CompletionContext {
+            database: Some("app"),
+            schema: Some("public"),
+        },
+    ] {
+        let candidates = complete_with_mode(
+            "select * from sys_",
+            "select * from sys_".len(),
+            SqlDialect::Generic,
+            &index,
+            context,
+            CompletionInsertionMode::CurrentSegment,
+        );
+        let table = candidates
+            .iter()
+            .find(|candidate| candidate.kind == CompletionKind::Table)
+            .expect("table completion in current segment mode");
+        assert_eq!(table.insert_text, "sys_user");
+    }
+}
+
+#[test]
+fn contextual_mode_keeps_existing_namespace_policy() {
+    let index = CompletionIndex::new(&cross_database_fixture());
+    let without_context = complete(
+        "select * from sys_",
+        "select * from sys_".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    let table = without_context
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table)
+        .expect("table completion in contextual mode");
+    assert_eq!(table.insert_text, "app.public.sys_user");
+
+    let with_context = complete(
+        "select * from sys_",
+        "select * from sys_".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext {
+            database: Some("app"),
+            schema: Some("public"),
+        },
+    );
+    let table = with_context
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table)
+        .expect("table completion with matching context");
+    assert_eq!(table.insert_text, "sys_user");
+}
+
+#[test]
+fn current_segment_mode_preserves_typed_qualifier_prefix() {
+    let index = CompletionIndex::new(&cross_database_fixture());
+    let sql = "select * from tools.sys_";
+    let candidates = complete_with_mode(
+        sql,
+        sql.len(),
+        SqlDialect::Generic,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table)
+        .expect("table completion with qualifier");
+    assert_eq!(table.insert_text, "sys_user");
+    let mut applied = String::new();
+    applied.push_str(&sql[..table.replace.start]);
+    applied.push_str(&table.insert_text);
+    applied.push_str(&sql[table.replace.end..]);
+    assert_eq!(applied, "select * from tools.sys_user");
+}
+
+fn quoted_identifier_fixture() -> Vec<CatalogEntry> {
+    let connection = Uuid::new_v4();
+    let app = CatalogId::new(connection, CatalogKind::Database, ["app"]);
+    let public = CatalogId::new(connection, CatalogKind::Schema, ["app", "public"]);
+    let weird = CatalogId::new(connection, CatalogKind::Schema, ["app", "weird.schema"]);
+    let unicode_table = CatalogId::new(connection, CatalogKind::Table, ["app", "public", "用户"]);
+    let dot_table = CatalogId::new(
+        connection,
+        CatalogKind::Table,
+        ["app", "weird.schema", "sys_user"],
+    );
+    vec![
+        CatalogEntry::database(
+            app.clone(),
+            qualified("app", None, "app"),
+            "database",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            public.clone(),
+            app.clone(),
+            qualified("app", Some("public"), "public"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            weird.clone(),
+            app,
+            qualified("app", Some("weird.schema"), "weird.schema"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::relation(
+            unicode_table,
+            public,
+            qualified("app", Some("public"), "用户"),
+            "table",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::relation(
+            dot_table,
+            weird,
+            qualified("app", Some("weird.schema"), "sys_user"),
+            "table",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+    ]
+}
+
+#[test]
+fn quoted_qualifier_with_dot_resolves_as_single_segment() {
+    let index = CompletionIndex::new(&quoted_identifier_fixture());
+    let sql = "select * from \"weird.schema\".";
+    let candidates = complete_with_mode(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "sys_user")
+        .expect("quoted schema with dot must resolve to its tables");
+    assert_eq!(table.detail.as_deref(), Some("(app.weird.schema)"));
+}
+
+#[test]
+fn current_segment_keeps_quoted_qualifier_path() {
+    let index = CompletionIndex::new(&quoted_identifier_fixture());
+    let sql = "select * from \"weird.schema\".sys_";
+    let candidates = complete_with_mode(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table)
+        .expect("table completion inside a quoted qualifier path");
+    assert_eq!(table.insert_text, "sys_user");
+    let mut applied = String::new();
+    applied.push_str(&sql[..table.replace.start]);
+    applied.push_str(&table.insert_text);
+    applied.push_str(&sql[table.replace.end..]);
+    assert_eq!(applied, "select * from \"weird.schema\".sys_user");
+}
+
+#[test]
+fn mid_word_completion_replaces_whole_token() {
+    let index = CompletionIndex::new(&quoted_identifier_fixture());
+    let sql = "select * from sys_user_archive";
+    let candidates = complete_with_mode(
+        sql,
+        "select * from sys_".len(),
+        SqlDialect::Generic,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "sys_user")
+        .expect("mid word completion should still match the prefix");
+    assert_eq!(table.insert_text, "sys_user");
+    let mut applied = String::new();
+    applied.push_str(&sql[..table.replace.start]);
+    applied.push_str(&table.insert_text);
+    applied.push_str(&sql[table.replace.end..]);
+    assert_eq!(applied, "select * from sys_user");
+}
+
+#[test]
+fn unclosed_quoted_segment_inserts_quoted_object() {
+    let index = CompletionIndex::new(&quoted_identifier_fixture());
+    let sql = "select * from \"sys_";
+    let candidates = complete_with_mode(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "sys_user")
+        .expect("quoted prefix should match table names");
+    assert_eq!(table.insert_text, "\"sys_user\"");
+    let mut applied = String::new();
+    applied.push_str(&sql[..table.replace.start]);
+    applied.push_str(&table.insert_text);
+    applied.push_str(&sql[table.replace.end..]);
+    assert_eq!(applied, "select * from \"sys_user\"");
+}
+
+#[test]
+fn unicode_prefix_matches_identifier_without_byte_splitting() {
+    let index = CompletionIndex::new(&quoted_identifier_fixture());
+    let sql = "select * from 用";
+    let candidates = complete_with_mode(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+        CompletionInsertionMode::CurrentSegment,
+    );
+    let table = candidates
+        .iter()
+        .find(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "用户")
+        .expect("unicode prefix should match");
+    assert_eq!(table.insert_text, "\"用户\"");
+    let mut applied = String::new();
+    applied.push_str(&sql[..table.replace.start]);
+    applied.push_str(&table.insert_text);
+    applied.push_str(&sql[table.replace.end..]);
+    assert_eq!(applied, "select * from \"用户\"");
+}
+
+fn schema_ambiguity_fixture() -> Vec<CatalogEntry> {
+    let connection = Uuid::new_v4();
+    let mut entries = Vec::new();
+    for database_name in ["app", "other"] {
+        let database = CatalogId::new(connection, CatalogKind::Database, [database_name]);
+        let tools = CatalogId::new(connection, CatalogKind::Schema, [database_name, "tools"]);
+        let users = CatalogId::new(
+            connection,
+            CatalogKind::Table,
+            [database_name, "tools", "sys_user"],
+        );
+        entries.push(
+            CatalogEntry::database(
+                database.clone(),
+                qualified(database_name, None, database_name),
+                "database",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+        entries.push(
+            CatalogEntry::schema(
+                tools.clone(),
+                database,
+                qualified(database_name, Some("tools"), "tools"),
+                "schema",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+        entries.push(
+            CatalogEntry::relation(
+                users,
+                tools,
+                qualified(database_name, Some("tools"), "sys_user"),
+                "table",
+                OptionalMetadata::Supported(None),
+                true,
+            )
+            .unwrap(),
+        );
+    }
+    entries
+}
+
+fn mirrored_nav_fixture() -> Vec<CatalogEntry> {
+    let connection = Uuid::new_v4();
+    let database = CatalogId::new(connection, CatalogKind::Database, ["app"]);
+    let schema = CatalogId::new(connection, CatalogKind::Schema, ["app", "app"]);
+    let orders = CatalogId::new(connection, CatalogKind::Table, ["app", "app", "orders"]);
+    vec![
+        CatalogEntry::database(
+            database.clone(),
+            qualified("app", None, "app"),
+            "database",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::schema(
+            schema.clone(),
+            database,
+            qualified("app", Some("app"), "app"),
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+        CatalogEntry::relation(
+            orders,
+            schema,
+            qualified("app", Some("app"), "orders"),
+            "table",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+    ]
+}
+
+#[test]
+fn single_qualifier_schema_is_limited_to_active_database() {
+    let index = CompletionIndex::new(&schema_ambiguity_fixture());
+    let sql = "select * from tools.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Generic,
+        &index,
+        CompletionContext {
+            database: Some("app"),
+            schema: Some("public"),
+        },
+    );
+    let tables = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == CompletionKind::Table)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tables.len(),
+        1,
+        "only the active database schema should match"
+    );
+    assert_eq!(tables[0].label, "sys_user");
+    assert_eq!(tables[0].detail.as_deref(), Some("(app.tools)"));
+}
+
+#[test]
+fn ambiguous_schemata_keep_distinct_details_when_context_unknown() {
+    let index = CompletionIndex::new(&schema_ambiguity_fixture());
+    let sql = "select * from tools.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Generic,
+        &index,
+        CompletionContext::default(),
+    );
+    let details = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == CompletionKind::Table)
+        .map(|candidate| candidate.detail.as_deref().unwrap_or(""))
+        .collect::<Vec<_>>();
+    assert!(
+        details.contains(&"(app.tools)"),
+        "missing app schema detail"
+    );
+    assert!(
+        details.contains(&"(other.tools)"),
+        "missing other schema detail"
+    );
+    let unqualified = complete(
+        "select * from ",
+        "select * from ".len(),
+        SqlDialect::Generic,
+        &index,
+        CompletionContext::default(),
+    );
+    let schema_details = unqualified
+        .iter()
+        .filter(|candidate| candidate.kind == CompletionKind::Schema)
+        .filter_map(|candidate| candidate.detail.as_deref())
+        .collect::<Vec<_>>();
+    assert!(
+        schema_details.contains(&"(app)"),
+        "schema detail requires database"
+    );
+    assert!(
+        schema_details.contains(&"(other)"),
+        "schema detail requires database"
+    );
+}
+
+#[test]
+fn postgres_blocks_non_current_database_navigation() {
+    let index = CompletionIndex::new(&schema_ambiguity_fixture());
+    let sql = "select * from other.tools.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext {
+            database: Some("app"),
+            schema: Some("public"),
+        },
+    );
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Table),
+        "postgres must not navigate into a non-current database"
+    );
+}
+
+#[test]
+fn alias_shortcut_ignores_extra_segments() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+    let sql = "select u.x. from users u";
+    let candidates = complete(
+        sql,
+        "select u.x.".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().all(|candidate| {
+            candidate.kind != CompletionKind::Column
+                || (candidate.label != "user_name" && candidate.label != "id")
+        }),
+        "a multi-segment path starting with an alias must not fall back to alias columns"
+    );
+}
+
+#[test]
+fn mysql_folds_mirrored_schema_level() {
+    let index = CompletionIndex::new(&mirrored_nav_fixture());
+    let sql = "select * from app.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::MySql,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "orders"));
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Schema),
+        "mysql must not expose the mirrored schema node after a database qualifier"
+    );
+}
+
+#[test]
+fn sqlite_main_qualifier_offers_tables_not_schema_node() {
+    let index = CompletionIndex::new(&mirrored_nav_fixture());
+    let sql = "select * from app.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Sqlite,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(candidates
+        .iter()
+        .any(|candidate| candidate.kind == CompletionKind::Table && candidate.label == "orders"));
+    assert!(
+        !candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Schema),
+        "sqlite must not expose the mirrored schema node after a qualifier"
+    );
 }
 
 #[test]

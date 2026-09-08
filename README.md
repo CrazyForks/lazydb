@@ -263,6 +263,20 @@ return {
 Use `:checkhealth lazydb` to verify the executable and CLI API. See the plugin
 repository for native package installation and the complete command reference.
 
+The standalone LSP supports profile-backed catalog completion for Neovim. It
+replaces only the current identifier segment, so accepting `sys_user` inserts
+`sys_user` rather than an automatically generated full path. After typing a
+dot, completion navigates the next catalog level: `database.` lists schemas,
+`database.schema.` lists tables/views, and `schema.` resolves inside the active
+database. Candidate details show the database/schema source for ambiguous
+names; visible aliases such as `u.` load their relation columns on demand.
+
+The exact path syntax follows the selected profile dialect. SQL Server supports
+three-part names, MySQL folds its database/schema mirror, SQLite uses attached
+database names such as `main`, and PostgreSQL does not present ordinary
+cross-database paths. Profile `catalog_scope` and database permissions remain
+the visibility boundary.
+
 The footer and help view show contextual controls for the active context and mode. See the
 complete [keyboard reference](docs/keybindings.md) for the operational contract,
 including the distinction between application `Space` commands in Explorer/Results
