@@ -11,21 +11,31 @@ permissions:
 
 jobs:
   windows-installer:
-    name: Windows installer (${{ matrix.shell }})
+    name: Windows installer (PowerShell)
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        shell: [powershell, pwsh]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
       - name: Show PowerShell version
-        shell: ${{ matrix.shell }}
+        shell: powershell
         run: '$PSVersionTable | Out-String | Write-Host'
       - name: Test Windows installer contracts
-        shell: ${{ matrix.shell }}
+        shell: powershell
+        run: ./scripts/release/test-windows-installer.ps1
+
+  windows-installer-pwsh:
+    name: Windows installer (pwsh)
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: Show PowerShell version
+        shell: pwsh
+        run: '$PSVersionTable | Out-String | Write-Host'
+      - name: Test Windows installer contracts
+        shell: pwsh
         run: ./scripts/release/test-windows-installer.ps1
 
   distribution:
