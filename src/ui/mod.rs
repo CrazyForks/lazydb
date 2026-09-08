@@ -3240,7 +3240,9 @@ fn scrollbar_geometry(track: u16, visible: usize, total: usize, offset: usize) -
     let position = if max_offset == 0 {
         0
     } else {
-        ((travel as usize * offset.min(max_offset)) / max_offset) as u16
+        ((travel as usize * offset.min(max_offset))
+            .checked_div(max_offset)
+            .unwrap_or_default()) as u16
     };
     (thumb, position)
 }
