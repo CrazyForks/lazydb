@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::db::catalog::{CatalogEntry, CatalogId, CatalogKind, CatalogMetadata};
 use crate::profile::CatalogScope;
 
+use super::builtins::{Builtin, default_value_builtins, expression_builtins};
 use super::identifier_match::{
     IdentifierMatch, compact_identifier, fold_identifier, identifier_match,
 };
@@ -198,6 +199,7 @@ enum DdlContext {
     ExistingIndex,
     ReferenceRelation,
     ReferenceColumn,
+    DefaultValue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -470,6 +472,36 @@ pub fn complete(
                     },
                 });
             }
+        }
+    }
+    if qualifiers.is_empty()
+        && !matches!(
+            ordering_stage,
+            Some(
+                OrderingStage::Direction
+                    | OrderingStage::AfterDirection
+                    | OrderingStage::NullPlacement
+                    | OrderingStage::Complete,
+            )
+        )
+        && !cursor_in_literal_or_quoted(&tokens, statement_cursor)
+    {
+        match context {
+            Context::Expression(_) => push_builtin_candidates(
+                &mut candidates,
+                expression_builtins(dialect),
+                &prefix,
+                replace,
+                2,
+            ),
+            Context::Ddl(DdlContext::DefaultValue) => push_builtin_candidates(
+                &mut candidates,
+                default_value_builtins(dialect),
+                &prefix,
+                replace,
+                3,
+            ),
+            _ => {}
         }
     }
     candidates.sort_by(|left, right| {
@@ -877,6 +909,118 @@ fn catalog_kind_allowed(context: Context, kind: CompletionKind) -> bool {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TableElement {
+    start: usize,
+    default_active: bool,
+}
+
+fn create_table_element(tokens: &[CompletionToken], cursor: usize) -> Option<TableElement> {
+    let table_paren = tokens.iter().find(|token| {
+        token.kind == CompletionTokenKind::LeftParen && token.depth == 0 && token.end <= cursor
+    })?;
+    let element_level = table_paren.depth + 1;
+    let mut start = table_paren.end;
+    let mut default_start: Option<usize> = None;
+    for token in tokens.iter().filter(|token| {
+        token.start >= table_paren.end && token.end <= cursor && token.depth >= element_level
+    }) {
+        match &token.kind {
+            CompletionTokenKind::Comma if token.depth == element_level => {
+                if default_start.is_some() {
+                    default_start = None;
+                }
+                start = token.end;
+            }
+            CompletionTokenKind::RightParen if token.depth == table_paren.depth => return None,
+            CompletionTokenKind::Word(word) if !token.quoted && token.depth == element_level => {
+                if default_start.is_some() && is_default_end_keyword(word) {
+                    default_start = None;
+                } else if word.eq_ignore_ascii_case("default") && default_start.is_none() {
+                    default_start = Some(token.start);
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(TableElement {
+        start,
+        default_active: default_start.is_some(),
+    })
+}
+
+fn is_default_end_keyword(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "not" | "primary" | "unique" | "references" | "check"
+    )
+}
+
+fn alter_table_default_active(words: &[String]) -> bool {
+    let Some(index) = words.iter().rposition(|word| word == "default") else {
+        return false;
+    };
+    let action = words.get(3).map(String::as_str);
+    let is_add = action == Some("add");
+    let is_set = match action {
+        Some("alter") => words
+            .get(index.saturating_sub(1))
+            .is_some_and(|word| word == "set"),
+        _ => false,
+    };
+    if !(is_add || is_set) {
+        return false;
+    }
+    if is_add && words.get(4).is_some_and(|word| word == "constraint") {
+        return false;
+    }
+    words[index + 1..].iter().all(|word| {
+        !is_default_end_keyword(word)
+            && !matches!(word.as_str(), "add" | "alter" | "drop" | "rename")
+    })
+}
+
+fn cursor_in_literal_or_quoted(tokens: &[CompletionToken], cursor: usize) -> bool {
+    tokens.iter().any(|token| {
+        (token.kind == CompletionTokenKind::Literal || token.quoted)
+            && token.start < cursor
+            && cursor < token.end
+    })
+}
+
+fn push_builtin_candidates(
+    candidates: &mut Vec<CompletionCandidate>,
+    builtins: impl IntoIterator<Item = Builtin>,
+    prefix: &str,
+    replace: TextRange,
+    context_score: u8,
+) {
+    for builtin in builtins {
+        if prefix.is_empty() && builtin.kind != CompletionKind::Keyword {
+            continue;
+        }
+        let Some(name_match) = identifier_match(builtin.name, prefix) else {
+            continue;
+        };
+        candidates.push(CompletionCandidate {
+            label: builtin.name.to_owned(),
+            insert_text: builtin.name.to_owned(),
+            kind: builtin.kind,
+            detail: Some(builtin.detail.to_owned()),
+            replace,
+            score: CompletionScore {
+                context: context_score,
+                name_match: match name_match {
+                    IdentifierMatch::CompactPrefix => 1,
+                    IdentifierMatch::Prefix => 2,
+                    IdentifierMatch::Exact => 3,
+                },
+                schema: 0,
+            },
+        });
+    }
+}
+
 fn context_at(
     tokens: &[CompletionToken],
     cursor: usize,
@@ -894,12 +1038,13 @@ fn context_at(
                 )
             })
     });
-    let tokens = tokens
+    let raw_tokens = tokens;
+    let tokens = raw_tokens
         .iter()
         .filter(|token| {
             token.end <= cursor
                 && (is_ddl
-                    && !tokens.iter().any(|query_token| {
+                    && !raw_tokens.iter().any(|query_token| {
                         query_token.start < cursor
                             && !query_token.quoted
                             && token_word(Some(query_token))
@@ -992,60 +1137,66 @@ fn context_at(
     {
         context = ddl_context_from_words(&words, context, dialect, prefix);
     }
+    if words.first().map(String::as_str) == Some("alter") && alter_table_default_active(&words) {
+        context = Context::Ddl(DdlContext::DefaultValue);
+    }
     if matches!(
         context,
         Context::Ddl(DdlContext::ExistingObject(DdlObjectTarget::Table))
     ) && words.first().map(String::as_str) == Some("create")
-        && tokens
-            .iter()
-            .any(|token| token.kind == CompletionTokenKind::LeftParen)
+        && let Some(element) = create_table_element(raw_tokens, cursor)
     {
-        let element_start = tokens
-            .iter()
-            .rposition(|token| {
-                matches!(
-                    token.kind,
-                    CompletionTokenKind::LeftParen | CompletionTokenKind::Comma
-                )
-            })
-            .map_or(0, |position| position + 1);
-        let element_words = tokens[element_start..]
-            .iter()
-            .filter_map(|token| token_word(Some(*token)))
-            .filter(|word| !(*word).eq_ignore_ascii_case("create"))
-            .count();
-        let has_type = tokens[element_start..].iter().any(|token| {
-            token_word(Some(*token)).is_some_and(|word| {
-                matches!(
-                    word.to_ascii_uppercase().as_str(),
-                    "INT"
-                        | "INTEGER"
-                        | "BIGINT"
-                        | "TEXT"
-                        | "VARCHAR"
-                        | "NUMERIC"
-                        | "DECIMAL"
-                        | "BOOLEAN"
-                        | "JSON"
-                        | "JSONB"
-                        | "DATE"
-                        | "TIMESTAMP"
-                        | "DATETIME"
-                        | "DATETIME2"
-                        | "REAL"
-                        | "BLOB"
-                        | "BIT"
-                        | "NVARCHAR"
-                        | "UNIQUEIDENTIFIER"
-                )
-            })
-        });
-        context = if element_words == 0 {
-            Context::Ddl(DdlContext::TableConstraint)
-        } else if element_words <= 1 || !has_type {
-            Context::Ddl(DdlContext::ColumnType)
+        context = if element.default_active {
+            Context::Ddl(DdlContext::DefaultValue)
         } else {
-            Context::Ddl(DdlContext::ColumnConstraint)
+            let element_words = raw_tokens
+                .iter()
+                .filter(|token| {
+                    token.start >= element.start
+                        && token.end <= cursor
+                        && token.depth >= 1
+                        && !token.quoted
+                })
+                .filter_map(|token| token_word(Some(token)))
+                .filter(|word| !(*word).eq_ignore_ascii_case("create"))
+                .count();
+            let has_type = raw_tokens.iter().any(|token| {
+                token.start >= element.start
+                    && token.end <= cursor
+                    && token.depth >= 1
+                    && !token.quoted
+                    && token_word(Some(token)).is_some_and(|word| {
+                        matches!(
+                            word.to_ascii_uppercase().as_str(),
+                            "INT"
+                                | "INTEGER"
+                                | "BIGINT"
+                                | "TEXT"
+                                | "VARCHAR"
+                                | "NUMERIC"
+                                | "DECIMAL"
+                                | "BOOLEAN"
+                                | "JSON"
+                                | "JSONB"
+                                | "DATE"
+                                | "TIMESTAMP"
+                                | "DATETIME"
+                                | "DATETIME2"
+                                | "REAL"
+                                | "BLOB"
+                                | "BIT"
+                                | "NVARCHAR"
+                                | "UNIQUEIDENTIFIER"
+                        )
+                    })
+            });
+            if element_words == 0 {
+                Context::Ddl(DdlContext::TableConstraint)
+            } else if element_words <= 1 || !has_type {
+                Context::Ddl(DdlContext::ColumnType)
+            } else {
+                Context::Ddl(DdlContext::ColumnConstraint)
+            }
         };
     }
     if matches!(
@@ -1964,6 +2115,7 @@ fn keywords(
             "REFERENCES",
             "CHECK",
         ],
+        Context::Ddl(DdlContext::DefaultValue) => &["NULL", "TRUE", "FALSE"],
         Context::Expression(ExpressionContext::Projection) if projection_complete => {
             &["FROM", "CASE", "NULL", "TRUE", "FALSE"]
         }

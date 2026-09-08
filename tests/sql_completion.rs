@@ -8,11 +8,638 @@ use lazydb::{
     },
     profile::{CatalogScope, CatalogSelection, DatabaseKind, DatabaseScope, import_connection_url},
     sql::{
-        CompletionContext, CompletionIndex, CompletionKind, SqlDialect, complete,
+        CompletionContext, CompletionIndex, CompletionKind, SqlDialect, TextRange, complete,
         completion_dependencies, quote_identifier, should_offer_completion,
     },
 };
 use uuid::Uuid;
+
+#[test]
+fn builtin_default_current_timestamp_without_catalog() {
+    let sql = "CREATE TABLE test1(\n id BIGINT NOT NULL,\n \"name\" text,\n create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIM\n)";
+    let cursor = sql.find("CURRENT_TIM").unwrap() + "CURRENT_TIM".len();
+    let candidates = complete(
+        sql,
+        cursor,
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.label == "CURRENT_TIMESTAMP")
+        .expect("CURRENT_TIMESTAMP completion");
+    assert_eq!(candidate.insert_text, "CURRENT_TIMESTAMP");
+    assert_eq!(candidate.kind, CompletionKind::Keyword);
+    assert_eq!(
+        candidate.replace,
+        TextRange::new(cursor - "CURRENT_TIM".len(), cursor)
+    );
+}
+
+#[test]
+fn builtin_current_timestamp_is_available_in_select_expression() {
+    let sql = "SELECT CURRENT_TIM";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_select_expression_match_is_case_insensitive() {
+    let sql = "SELECT current_tim";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate.label == "CURRENT_TIMESTAMP" && candidate.insert_text == "CURRENT_TIMESTAMP"
+        }),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_select_dialect_specific_functions_are_isolated() {
+    let cases = [
+        (SqlDialect::Postgres, "GETDATE", 0),
+        (SqlDialect::MySql, "NOW", 1),
+        (SqlDialect::SqlServer, "GETDATE", 1),
+        (SqlDialect::Sqlite, "NOW", 0),
+    ];
+    for (dialect, prefix, expected_any) in cases {
+        let sql = format!("SELECT {prefix}");
+        let candidates = complete(
+            &sql,
+            sql.len(),
+            dialect,
+            &CompletionIndex::default(),
+            CompletionContext::default(),
+        );
+        let present = candidates
+            .iter()
+            .any(|candidate| candidate.label == dialect_bound_name(prefix));
+        assert_eq!(present, expected_any == 1, "{dialect:?}: {candidates:?}");
+    }
+}
+
+fn dialect_bound_name(prefix: &str) -> &'static str {
+    match prefix {
+        "NOW" => "NOW",
+        "GETDATE" => "GETDATE",
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn builtin_select_empty_prefix_only_offers_special_expressions() {
+    let sql = "SELECT ";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "COALESCE"),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_select_not_offered_in_relation_or_qualifier_positions() {
+    let from = complete(
+        "SELECT * FROM cur",
+        "SELECT * FROM cur".len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        from.iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{from:?}"
+    );
+    let qualified = complete(
+        "SELECT t.cur FROM test t",
+        "SELECT t.cur".len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        qualified
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{qualified:?}"
+    );
+}
+
+#[test]
+fn builtin_sqlite_function_is_not_excluded_by_catalog_dialect_filter() {
+    let sql = "SELECT LENGTH";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Sqlite,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate.label == "LENGTH" && candidate.kind == CompletionKind::Function
+        }),
+        "{candidates:?}"
+    );
+}
+
+fn has_builtin(
+    candidates: &[lazydb::sql::CompletionCandidate],
+    label: &str,
+    kind: lazydb::sql::CompletionKind,
+) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.label == label && candidate.kind == kind)
+}
+
+#[test]
+fn builtin_default_expression_scope_handles_parentheses_and_boundaries() {
+    let dialect = SqlDialect::Postgres;
+    let index = CompletionIndex::default();
+    let cases: &[(&str, &str)] = &[
+        (
+            "CREATE TABLE t (ts TIMESTAMP DEFAULT CURRENT_TIM",
+            "CURRENT_TIM",
+        ),
+        (
+            "CREATE TABLE t (ts TIMESTAMP DEFAULT (CURRENT_TIM)",
+            "CURRENT_TIM",
+        ),
+        (
+            "CREATE TABLE t (n DECIMAL(10, 2), ts TIMESTAMP DEFAULT CURRENT_TIM)",
+            "CURRENT_TIM",
+        ),
+        (
+            "CREATE TABLE t (ts TIMESTAMP DEFAULT COALESCE(NULL, CURRENT_TIM))",
+            "CURRENT_TIM",
+        ),
+    ];
+    for (sql, needle) in cases {
+        let cursor = sql.find(needle).unwrap() + needle.len();
+        let candidates = complete(sql, cursor, dialect, &index, CompletionContext::default());
+        assert!(
+            has_builtin(&candidates, "CURRENT_TIMESTAMP", CompletionKind::Keyword),
+            "{sql}: {candidates:?}"
+        );
+    }
+}
+
+#[test]
+fn builtin_default_value_restores_type_and_constraint_context() {
+    let dialect = SqlDialect::Postgres;
+    let index = CompletionIndex::default();
+    let type_case = "CREATE TABLE t (ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, n IN";
+    let candidates = complete(
+        type_case,
+        type_case.len(),
+        dialect,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::DataType),
+        "expected type candidates: {candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+
+    let constraint_case = "CREATE TABLE t (ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT N";
+    let candidates = complete(
+        constraint_case,
+        constraint_case.len(),
+        dialect,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "NOT NULL"),
+        "expected NOT NULL keyword: {candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_default_null_value_does_not_break_column_boundary() {
+    let sql = "CREATE TABLE t (ts TIMESTAMP DEFAULT NULL, n IN";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::DataType),
+        "expected type candidates: {candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_default_ignores_quoted_identifiers_and_string_literals() {
+    let sql = "CREATE TABLE t (\"default\" TIMESTAMP NOT N";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "NOT NULL"),
+        "expected NOT NULL keyword: {candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "{candidates:?}"
+    );
+
+    let literal = "CREATE TABLE t (a TEXT DEFAULT 'DEFAULT CURRENT_TIM";
+    let candidates = complete(
+        literal,
+        literal.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "string literal must not offer builtins: {candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_default_value_dialect_layout_match() {
+    let index = CompletionIndex::default();
+    let pg = complete(
+        "CREATE TABLE t (ts TIMESTAMP DEFAULT NOW",
+        "CREATE TABLE t (ts TIMESTAMP DEFAULT NOW".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    let mysql = complete(
+        "CREATE TABLE t (ts TIMESTAMP DEFAULT NOW",
+        "CREATE TABLE t (ts TIMESTAMP DEFAULT NOW".len(),
+        SqlDialect::MySql,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        pg.iter().any(|candidate| candidate.label == "NOW"),
+        "{pg:?}"
+    );
+    assert!(
+        mysql.iter().all(|candidate| candidate.label != "NOW"),
+        "{mysql:?}"
+    );
+}
+
+#[test]
+fn builtin_alter_table_default_forms_offer_builtins() {
+    let index = CompletionIndex::default();
+    let cases = [
+        (
+            "ALTER TABLE t ADD COLUMN c TIMESTAMP DEFAULT CURRENT_TIM",
+            SqlDialect::Postgres,
+            "CURRENT_TIMESTAMP",
+        ),
+        (
+            "ALTER TABLE t ALTER COLUMN c SET DEFAULT CURRENT_TIM",
+            SqlDialect::Postgres,
+            "CURRENT_TIMESTAMP",
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN c TIMESTAMP DEFAULT CURRENT_TIM",
+            SqlDialect::MySql,
+            "CURRENT_TIMESTAMP",
+        ),
+        (
+            "ALTER TABLE t ALTER COLUMN c SET DEFAULT CURRENT_TIM",
+            SqlDialect::MySql,
+            "CURRENT_TIMESTAMP",
+        ),
+        (
+            "ALTER TABLE t ADD c INT DEFAULT GETD",
+            SqlDialect::SqlServer,
+            "GETDATE",
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN c TIMESTAMP DEFAULT CURRENT_TIM",
+            SqlDialect::Sqlite,
+            "CURRENT_TIMESTAMP",
+        ),
+    ];
+    for (sql, dialect, expected) in cases {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            dialect,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == expected),
+            "{dialect:?} {sql}: {candidates:?}"
+        );
+    }
+}
+
+#[test]
+fn builtin_alter_non_default_actions_offer_no_builtins() {
+    let index = CompletionIndex::default();
+    let cases = [
+        (
+            "ALTER TABLE t ALTER COLUMN c DROP DEFAULT",
+            SqlDialect::Postgres,
+        ),
+        (
+            "ALTER TABLE t RENAME COLUMN a TO default",
+            SqlDialect::Postgres,
+        ),
+        ("ALTER TABLE t DROP COLUMN c", SqlDialect::Postgres),
+        (
+            "ALTER TABLE t ADD CONSTRAINT ck DEFAULT 0 FOR c",
+            SqlDialect::SqlServer,
+        ),
+    ];
+    for (sql, dialect) in cases {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            dialect,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"
+                    && candidate.label != "GETDATE"),
+            "{dialect:?} {sql}: {candidates:?}"
+        );
+    }
+}
+
+#[test]
+fn builtin_filter_subqueries_and_ordering_positions() {
+    let index = CompletionIndex::default();
+    let subquery = "SELECT * FROM t WHERE x IN (SELECT CUR";
+    let candidates = complete(
+        subquery,
+        subquery.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP"),
+        "subquery expression should offer builtins: {candidates:?}"
+    );
+
+    let expression = "SELECT a FROM t ORDER BY CUR";
+    let candidates = complete(
+        expression,
+        expression.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP"),
+        "ordering expression should offer builtins: {candidates:?}"
+    );
+
+    let direction = "SELECT a FROM t ORDER BY a ASC";
+    let candidates = complete(
+        direction,
+        direction.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "CURRENT_TIMESTAMP"),
+        "ordering direction state must not offer builtins: {candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_filter_comment_position_is_not_offered_by_trigger() {
+    let sql = "SELECT /* CUR";
+    assert!(!should_offer_completion(sql, sql.len()));
+}
+
+#[test]
+fn builtin_identity_keeps_user_functions_and_avoid_internal_duplicates() {
+    let mut entries = fixture();
+    let connection = entries[0].id.profile_id();
+    let schema = entries[1].id.clone();
+    let function = CatalogEntry::object(
+        CatalogId::new(connection, CatalogKind::Function, ["app", "public", "NOW"]),
+        schema.clone(),
+        qualified("app", Some("public"), "NOW"),
+        "user function",
+        OptionalMetadata::Supported(None),
+        false,
+    )
+    .unwrap();
+    entries.push(function);
+    let index = CompletionIndex::new(&entries);
+    let sql = "SELECT NOW";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    let now = candidates
+        .iter()
+        .filter(|candidate| candidate.label == "NOW")
+        .count();
+    assert!(
+        now >= 2,
+        "static builtin and catalog function must both survive: {candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_internal_list_has_no_duplicate_labels() {
+    let sql = "SELECT C";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    let mut labels: Vec<&str> = candidates
+        .iter()
+        .filter(|candidate| candidate.detail.is_some())
+        .map(|candidate| candidate.label.as_str())
+        .collect();
+    labels.sort_unstable();
+    let before = labels.len();
+    labels.dedup();
+    assert_eq!(
+        before,
+        labels.len(),
+        "duplicate builtin labels: {candidates:?}"
+    );
+}
+
+#[test]
+fn builtin_default_completion_does_not_request_relation_children() {
+    let sql = "CREATE TABLE t (ts TIMESTAMP DEFAULT CURRENT_TIM";
+    let cursor = sql.find("CURRENT_TIM").unwrap();
+    let dependencies = completion_dependencies(
+        sql,
+        cursor,
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        dependencies.relation_children.is_empty(),
+        "default value completion must not add catalog requests: {dependencies:?}"
+    );
+}
+
+#[test]
+fn builtin_app_completion_popup_and_accept_work_end_to_end() {
+    let profile = import_connection_url("postgres://localhost/app", Some("app"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation: 1,
+        server: ServerInfo {
+            kind: DatabaseKind::Postgres,
+            version: "16.4".into(),
+            database: "app".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+    let sql = "CREATE TABLE test1(\n id BIGINT NOT NULL,\n \"name\" text,\n create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIM";
+    app.update(Action::ReplaceEditor(sql[..sql.len() - 2].into()));
+    for key in ['G', '$', 'a', 'I', 'M'] {
+        app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(key),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+    app.update(Action::CompletionExplicit);
+    let popup = app
+        .active_console_opt()
+        .and_then(|tab| tab.completion.as_ref())
+        .expect("completion popup");
+    assert!(
+        popup
+            .candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP"),
+        "{:?}",
+        popup
+            .candidates
+            .iter()
+            .map(|c| &c.label)
+            .collect::<Vec<_>>()
+    );
+    let mut steps = 0;
+    while app
+        .active_console_opt()
+        .and_then(|tab| tab.completion.as_ref())
+        .and_then(|popup| popup.candidates.get(popup.selected))
+        .map(|candidate| candidate.label.as_str())
+        != Some("CURRENT_TIMESTAMP")
+    {
+        app.update(Action::CompletionNext);
+        steps += 1;
+        assert!(steps < 20, "could not navigate to CURRENT_TIMESTAMP");
+    }
+    app.update(Action::CompletionAccept);
+    let text = app.active_editor_text().unwrap();
+    assert!(
+        text.trim_end().ends_with("DEFAULT CURRENT_TIMESTAMP"),
+        "accepted completion must replace prefix without quotes: {text:?}"
+    );
+    assert!(
+        !text.contains("CURRENT_TIMESTAMP\""),
+        "builtin expression must not be quoted: {text:?}"
+    );
+}
 
 fn fixture() -> Vec<CatalogEntry> {
     let connection = Uuid::new_v4();

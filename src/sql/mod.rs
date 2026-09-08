@@ -5,6 +5,7 @@
 
 mod analysis;
 mod batch;
+mod builtins;
 mod completion;
 mod derived_result;
 mod diagnostics;
