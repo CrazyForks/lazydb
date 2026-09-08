@@ -517,6 +517,35 @@ pub fn complete_with_mode(
         });
     }
     if qualifiers.is_empty() {
+        // A complete UPDATE prefix can end its SET clause; incomplete expressions cannot.
+        if context == Context::Expression(ExpressionContext::AssignmentValue)
+            && !quoted_segment
+            && "where".starts_with(&folded_prefix)
+            && sqlparser::parser::Parser::parse_sql(
+                super::dialect::parser_dialect(dialect),
+                &statement[..statement_cursor],
+            )
+            .is_ok_and(|statements| match statements.as_slice() {
+                [sqlparser::ast::Statement::Update(_)] => true,
+                [sqlparser::ast::Statement::Query(query)] => {
+                    matches!(query.body.as_ref(), sqlparser::ast::SetExpr::Update(_))
+                }
+                _ => false,
+            })
+        {
+            candidates.push(CompletionCandidate {
+                label: "WHERE".to_owned(),
+                insert_text: "WHERE".to_owned(),
+                kind: CompletionKind::Keyword,
+                detail: None,
+                replace,
+                score: CompletionScore {
+                    context: 4,
+                    name_match: 2,
+                    schema: 0,
+                },
+            });
+        }
         for keyword in
             keywords_for_completion(context, dialect, projection_complete, ordering_stage)
         {
@@ -1232,6 +1261,7 @@ fn assignment_context(
         .iter()
         .position(|token| token.start == command.start)?;
     if context.is_none() {
+        // Exclude the word being completed and any SQL after the cursor from alias parsing.
         let before_cursor = &tokens[..tokens.partition_point(|token| token.end <= cursor)];
         let (target, end) = relation_binding_at(before_cursor, position + 1)?;
         return (end == before_cursor.len()).then_some((Context::UpdateSet, target));

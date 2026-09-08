@@ -4386,6 +4386,173 @@ fn update_context() -> CompletionContext<'static> {
 }
 
 #[test]
+fn update_where_completion_after_complete_assignment() {
+    let index = CompletionIndex::new(&[]);
+    for dialect in [
+        SqlDialect::Generic,
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+    ] {
+        for assignment in [
+            "small_num = 1",
+            "small_num = NULL",
+            "small_num = other_num",
+            "small_num = 1 + 2",
+            "small_num = abs(-1)",
+            "small_num = (select 1)",
+            "small_num = CASE WHEN 1 = 1 THEN 2 ELSE 3 END",
+            "small_num = 1, other_num = 2",
+        ] {
+            for prefix in ["", "w", "wh", "WhErE"] {
+                let before = format!("update all_types_test SET {assignment} {prefix}");
+                let sql = format!("{before} small_num > 0");
+                let candidates = complete(&sql, before.len(), dialect, &index, update_context());
+                let candidate = candidates
+                    .iter()
+                    .find(|candidate| candidate.label == "WHERE")
+                    .unwrap_or_else(|| panic!("{dialect:?}: {sql}: {candidates:?}"));
+                assert_eq!(candidate.kind, CompletionKind::Keyword);
+                assert_eq!(candidate.insert_text, "WHERE");
+                assert_eq!(
+                    candidate.replace,
+                    TextRange::new(before.len() - prefix.len(), before.len())
+                );
+            }
+        }
+    }
+    for sql in [
+        "update all_types_test SET \"small_num\" = 1 w",
+        "select 1; update all_types_test set small_num = 1 w",
+        "update all_types_test set small_num = 1 -- value\nw",
+        "with t as (select 1) update all_types_test set small_num = 1 w",
+    ] {
+        assert!(
+            has_builtin(
+                &complete(
+                    sql,
+                    sql.len(),
+                    SqlDialect::Postgres,
+                    &index,
+                    update_context()
+                ),
+                "WHERE",
+                CompletionKind::Keyword
+            ),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn update_where_completion_rejects_incomplete_assignments() {
+    let index = CompletionIndex::new(&[]);
+    for sql in [
+        "update all_types_test w",
+        "update all_types_test set w",
+        "update all_types_test set small_num = w",
+        "update all_types_test set small_num = 1 + w",
+        "update all_types_test set small_num = (1 w",
+        "update all_types_test set small_num = abs(1 w",
+        "update all_types_test set small_num = CASE WHEN 1 = 1 THEN 2 w",
+        "update all_types_test set small_num = 1, w",
+        "update all_types_test set small_num = 1, other_num = w",
+        "update all_types_test set small_num = (select 1 w",
+        "update all_types_test set small_num = 1 where w",
+        "update all_types_test set small_num = t.w",
+    ] {
+        assert!(
+            !has_builtin(
+                &complete(
+                    sql,
+                    sql.len(),
+                    SqlDialect::Postgres,
+                    &index,
+                    update_context()
+                ),
+                "WHERE",
+                CompletionKind::Keyword
+            ),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn update_target_completion_offers_set_keyword() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for dialect in [
+        SqlDialect::Generic,
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+    ] {
+        for before in [
+            "update all_types_test ",
+            "update all_types_test s",
+            "update all_types_test se",
+            "UPDATE all_types_test SeT",
+            "update public.all_types_test s",
+            "update \"all_types_test\" s",
+            "update all_types_test t s",
+            "update all_types_test as t s",
+            "update all_types_test -- target\ns",
+            "select 1; update all_types_test s",
+            "with t as (select 1) update all_types_test s",
+        ] {
+            for suffix in ["", " username = 'x'"] {
+                let sql = format!("{before}{suffix}");
+                let candidates = complete(&sql, before.len(), dialect, &index, update_context());
+                assert_eq!(candidates.len(), 1, "{dialect:?}: {sql}: {candidates:?}");
+                let candidate = &candidates[0];
+                assert_eq!(candidate.label, "SET", "{dialect:?}: {sql}");
+                assert_eq!(candidate.kind, CompletionKind::Keyword);
+                assert_eq!(candidate.insert_text, "SET");
+                let prefix_start = before.rfind(char::is_whitespace).unwrap() + 1;
+                assert_eq!(candidate.replace.start, prefix_start);
+                assert_eq!(candidate.replace.end, before.len());
+            }
+        }
+    }
+}
+
+#[test]
+fn update_set_keyword_does_not_leak_into_other_contexts() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for sql in [
+        "update s",
+        "update public.s",
+        "update all_types_test as s",
+        "update all_types_test set s",
+        "update all_types_test set username = s",
+        "update all_types_test set username = 'x' where s",
+        "select * from all_types_test s",
+        "update all_types_test set username = (select s",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            update_context(),
+        );
+        assert!(
+            !has_builtin(&candidates, "SET", CompletionKind::Keyword),
+            "{sql}"
+        );
+        if sql == "update s" {
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.label == "sys_user")
+            );
+        }
+    }
+}
+
+#[test]
 fn update_set_target_completion_lists_only_target_columns() {
     let index = CompletionIndex::new(&contextual_fixture());
     for sql in [
