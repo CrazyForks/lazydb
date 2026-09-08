@@ -4709,6 +4709,63 @@ fn completion_candidate_labels_share_a_fixed_icon_column() {
 }
 
 #[test]
+fn completion_candidate_icons_distinguish_semantic_kinds() {
+    let mut app = fixture();
+    app.focus = Focus::Editor;
+    app.update(Action::ReplaceEditor(String::new()));
+    app.update(Action::EditorKey(KeyEvent::new(
+        KeyCode::Char('i'),
+        KeyModifiers::NONE,
+    )));
+    app.update(Action::EditorPaste("SELECT lo".into()));
+    let replace = TextRange::new(7, 9);
+    app.active_console_mut().completion = Some(CompletionPopup {
+        candidates: vec![
+            ("SELECT", CompletionKind::Keyword),
+            ("LOWER", CompletionKind::Function),
+            ("CURRENT_DATE", CompletionKind::BuiltinExpression),
+            ("users", CompletionKind::Table),
+        ]
+        .into_iter()
+        .map(|(label, kind)| CompletionCandidate {
+            label: label.into(),
+            insert_text: label.into(),
+            kind,
+            detail: None,
+            replace,
+            score: CompletionScore {
+                context: 3,
+                name_match: 2,
+                schema: 1,
+            },
+        })
+        .collect(),
+        selected: 0,
+    });
+
+    for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+        let (buffer, state) = render_buffer_with_icons(&app, 120, 36, IconSet::new(mode));
+        let popup = state.completion_popup.unwrap();
+        let labels = ["SELECT", "LOWER", "CURRENT_DATE", "users"];
+        let positions = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                find_ascii_cells(&buffer, popup.y + 1 + index as u16, label)
+                    .expect("candidate label")
+            })
+            .collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|rows| rows[0] == rows[1]));
+
+        let keyword = IconSet::new(mode).completion(CompletionKind::Keyword);
+        let function = IconSet::new(mode).completion(CompletionKind::Function);
+        let expression = IconSet::new(mode).completion(CompletionKind::BuiltinExpression);
+        assert_ne!(keyword, function);
+        assert_ne!(keyword, expression);
+    }
+}
+
+#[test]
 fn completion_candidate_label_highlights_an_ordinary_prefix() {
     let app = completion_app("SELECT * FROM sys_u", TextRange::new(14, 19), "sys_user");
     let (buffer, state) = render_buffer_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));

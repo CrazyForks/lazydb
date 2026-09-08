@@ -125,7 +125,7 @@ pub fn complete_document(
 
 fn lsp_kind(kind: CompletionKind) -> LspKind {
     match kind {
-        CompletionKind::Keyword => LspKind::KEYWORD,
+        CompletionKind::Keyword | CompletionKind::BuiltinExpression => LspKind::KEYWORD,
         CompletionKind::DataType | CompletionKind::Type => LspKind::TYPE_PARAMETER,
         CompletionKind::Database | CompletionKind::Schema => LspKind::MODULE,
         CompletionKind::Table | CompletionKind::View => LspKind::CLASS,

@@ -29,6 +29,7 @@ pub struct CompletionContext<'a> {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CompletionKind {
     Keyword,
+    BuiltinExpression,
     DataType,
     Database,
     Schema,
@@ -996,7 +997,7 @@ fn push_builtin_candidates(
     context_score: u8,
 ) {
     for builtin in builtins {
-        if prefix.is_empty() && builtin.kind != CompletionKind::Keyword {
+        if prefix.is_empty() && builtin.kind != CompletionKind::BuiltinExpression {
             continue;
         }
         let Some(name_match) = identifier_match(builtin.name, prefix) else {
