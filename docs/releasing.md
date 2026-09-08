@@ -76,7 +76,40 @@ and executes it with `-File`; it does not pipe a web response to
 `Invoke-Expression`. The installer writes its temporary archive with a `.zip`
 extension and writes `install.json` as UTF-8 without a BOM for compatibility
 with the Rust JSON parser. The Pages workflow runs the same installation against
-the public endpoint after deployment, using isolated `windows-2022` runners.
+the public endpoint after deployment, using isolated `windows-2022` runners
+and explicit `powershell` and `pwsh` steps. The smoke test downloads
+`install.ps1` for either channel and compares its SHA-256 with the checked-out
+`pages/install.ps1` **before execution**. A stale deployment fails verification
+even if it could install the requested release. Each child installer uses the
+same executable as the smoke-test host, so the PowerShell 7 check does not
+silently run Windows PowerShell 5.1 instead. Downloads and installer execution
+have timeouts; failed attempts retry up to six times.
+
+The old `irm ... | iex` bootstrap is not supported. Fixing the script body
+does not fix how an older bootstrap decodes or evaluates the HTTP response.
+Use the current README's download-to-file command instead.
+
+### Redeploying Installer Fixes
+
+Installer/workflow-only fixes do not require replacing a release tag or
+rebuilding its assets. After the fixes are reviewed and published on `main`,
+manually dispatch **Pages**, selecting `main` as the workflow ref and an
+existing published release tag as the `tag` input:
+
+```bash
+gh workflow run pages.yml --repo yelog/lazydb --ref main -f tag=vVERSION
+gh run list --repo yelog/lazydb --workflow pages.yml --limit 5
+gh run watch RUN_ID --repo yelog/lazydb --exit-status
+```
+
+The selected ref supplies the installer scripts and verification code; the tag
+selects the existing release assets and channel version. Automatic runs after
+Release instead check out the Release run's head SHA. Confirm that `assemble`,
+`deploy`, both POSIX verification jobs, and both Windows-host verification jobs
+all pass. Deployment success alone is not installation verification. If the
+SHA-256 check fails, inspect the selected source ref and public script before
+retrying; do not remove the comparison to accommodate stale content. No DNS or
+Cloudflare change is needed for a script-only redeployment.
 
 ## Assets
 
@@ -176,25 +209,35 @@ For repository-side validation before tagging, run:
 
 ```bash
 git diff --check
-sh scripts/release/test-channel-manifest.sh
-sh scripts/release/test-pages.sh
-sh scripts/release/test-installer.sh
+sh scripts/release/test-distribution.sh
+actionlint
 ```
 
-On Windows, run the installer contracts with both supported PowerShell hosts:
+On an isolated Windows account, run the behavioral fixtures with both supported
+PowerShell hosts. They use real ZIP files, SHA-256 hashing, extraction, compiled
+executables, and installation state; only HTTP downloads are mocked with exact
+URL mappings. They also execute the PowerShell bootstrap extracted from README.
+Failure fixtures verify old-install preservation and temporary-file cleanup.
+Success fixtures verify repeated installation, empty/repeated user PATH entries,
+literal bracket paths, and BOM-free JSON.
+
+Both Windows test scripts require explicit permission to mutate user PATH.
+They restore the saved nullable user PATH and overridden process environment in
+`finally`, including on failure. Do not run them concurrently on a shared user
+account: restoration could overwrite another process's concurrent PATH change.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/test-windows-installer.ps1
-pwsh -NoProfile -File scripts/release/test-windows-installer.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/test-windows-installer.ps1 -AllowUserPathMutation
+pwsh -NoProfile -File scripts/release/test-windows-installer.ps1 -AllowUserPathMutation
 ```
 
 After Pages deployment, the Windows online smoke test is run by CI for both
 hosts. To reproduce it manually, use the channel and version selected by the
-Pages workflow:
+Pages workflow and a checkout of the exact installer source deployed by it:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION
-pwsh -NoProfile -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION -AllowUserPathMutation
+pwsh -NoProfile -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION -AllowUserPathMutation
 ```
 
 ## First Release Checklist

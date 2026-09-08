@@ -20,9 +20,9 @@ jobs:
       - name: Show PowerShell version
         shell: powershell
         run: '$PSVersionTable | Out-String | Write-Host'
-      - name: Test Windows installer contracts
+      - name: Test Windows installer behavior
         shell: powershell
-        run: ./scripts/release/test-windows-installer.ps1
+        run: ./scripts/release/test-windows-installer.ps1 -AllowUserPathMutation
 
   windows-installer-pwsh:
     name: Windows installer (pwsh)
@@ -34,9 +34,9 @@ jobs:
       - name: Show PowerShell version
         shell: pwsh
         run: '$PSVersionTable | Out-String | Write-Host'
-      - name: Test Windows installer contracts
+      - name: Test Windows installer behavior
         shell: pwsh
-        run: ./scripts/release/test-windows-installer.ps1
+        run: ./scripts/release/test-windows-installer.ps1 -AllowUserPathMutation
 
   distribution:
     name: Distribution contracts

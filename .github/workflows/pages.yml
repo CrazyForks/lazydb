@@ -123,15 +123,23 @@ jobs:
       matrix:
         shell: [powershell, pwsh]
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - name: Install from public Pages endpoint
-        shell: ${{ matrix.shell }}
+        if: matrix.shell == 'powershell'
+        shell: powershell
         env:
           CHANNEL: ${{ needs.assemble.outputs.channel }}
           VERSION: ${{ needs.assemble.outputs.version }}
-        run: ./scripts/release/smoke-online-install.ps1 -Channel $env:CHANNEL -Version $env:VERSION
+        run: ./scripts/release/smoke-online-install.ps1 -Channel $env:CHANNEL -Version $env:VERSION -AllowUserPathMutation
+      - name: Install from public Pages endpoint (PowerShell 7)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
+        env:
+          CHANNEL: ${{ needs.assemble.outputs.channel }}
+          VERSION: ${{ needs.assemble.outputs.version }}
+        run: ./scripts/release/smoke-online-install.ps1 -Channel $env:CHANNEL -Version $env:VERSION -AllowUserPathMutation

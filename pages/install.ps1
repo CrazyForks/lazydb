@@ -12,8 +12,8 @@ $archivePath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileNam
 $extractDir = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 
 try {
-    Invoke-WebRequest -Uri "$baseUrl/$channel.json" -OutFile $manifestPath -UseBasicParsing
-    $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+    Invoke-WebRequest -Uri "$baseUrl/$channel.json" -OutFile $manifestPath -UseBasicParsing -TimeoutSec 60
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.schema -ne 1 -or $manifest.product -ne 'lazydb' -or $manifest.channel -ne $channel) {
         throw 'manifest identity mismatch'
     }
@@ -21,20 +21,20 @@ try {
     if ($null -eq $asset -or $asset.url -notlike 'https://github.com/yelog/lazydb/releases/download/*' -or $asset.sha256 -notmatch '^[0-9a-fA-F]{64}$') {
         throw 'invalid Windows release asset'
     }
-    Invoke-WebRequest -Uri $asset.url -OutFile $archivePath -UseBasicParsing
-    $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+    Invoke-WebRequest -Uri $asset.url -OutFile $archivePath -UseBasicParsing -TimeoutSec 60
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
     if ($actual -ne $asset.sha256.ToLowerInvariant()) { throw 'checksum mismatch' }
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
-    $binary = Get-ChildItem -Path $extractDir -Filter lazydb.exe -File -Recurse | Select-Object -First 1
+    $binary = Get-ChildItem -LiteralPath $extractDir -Filter lazydb.exe -File -Recurse | Select-Object -First 1
     if ($null -eq $binary) { throw 'archive does not contain lazydb.exe' }
     $versionJson = & $binary.FullName version --json
     if ($LASTEXITCODE -ne 0 -or ($versionJson | ConvertFrom-Json).version -ne $manifest.version) { throw 'staged binary failed version check' }
 
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-    Copy-Item $binary.FullName (Join-Path $installDir 'lazydb.exe') -Force
+    [IO.Directory]::CreateDirectory($installDir) | Out-Null
+    Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $installDir 'lazydb.exe') -Force
     $configDir = Join-Path $env:APPDATA 'lazydb'
-    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    [IO.Directory]::CreateDirectory($configDir) | Out-Null
     $state = @{ schema = 1; product = 'lazydb'; manager = 'native'; channel = $channel; version = $manifest.version; target = $target; path = (Join-Path $installDir 'lazydb.exe') } |
         ConvertTo-Json
     [IO.File]::WriteAllText(
@@ -57,5 +57,5 @@ try {
         }
     }
 } finally {
-    Remove-Item $manifestPath, $archivePath, $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $manifestPath, $archivePath, $extractDir -Recurse -Force -ErrorAction SilentlyContinue
 }

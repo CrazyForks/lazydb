@@ -1,0 +1,2 @@
+# Pages publishes these bytes on Linux; Windows smoke checks compare their SHA256.
+pages/install.ps1 text eol=lf
