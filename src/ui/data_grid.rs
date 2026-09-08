@@ -383,10 +383,11 @@ fn header_cells(
         if position > 0 {
             cells.push(Cell::from("│").style(separator_style));
         }
-        let name = header_cell_text(
+        let name = header_cell_line(
             column.index,
             &result.columns[column.index],
             column.rendered_width,
+            theme,
             icons,
             sort_projection,
         );
@@ -447,13 +448,18 @@ fn sort_indicator_slot_width(
     base.saturating_add(priority_width)
 }
 
-fn header_cell_text(
+fn header_cell_line(
     column_index: usize,
     column: &crate::db::query::ColumnMeta,
     width: u16,
+    theme: Theme,
     icons: IconSet,
     sort_projection: Option<&[Option<crate::sql::RelationColumnSort>]>,
-) -> String {
+) -> Line<'static> {
+    let sorted = sort_projection
+        .and_then(|projection| projection.get(column_index))
+        .and_then(Option::as_ref)
+        .is_some();
     let indicator = sort_projection.map_or_else(String::new, |projection| {
         projection
             .get(column_index)
@@ -471,15 +477,19 @@ fn header_cell_text(
     let label = super::truncate_to_cells(&column_header_text(column, icons), available);
     let used = UnicodeWidthStr::width(label.as_str());
     let indicator_padding = reserved.saturating_sub(indicator_width);
-    format!(
-        "{label}{}{}{indicator}",
-        " ".repeat(
-            usize::from(width)
-                .saturating_sub(used)
-                .saturating_sub(reserved)
-        ),
-        " ".repeat(indicator_padding),
-    )
+    let padding = usize::from(width)
+        .saturating_sub(used)
+        .saturating_sub(reserved)
+        .saturating_add(indicator_padding);
+    let indicator_style = if sorted {
+        Style::new().fg(theme.action).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(theme.muted).remove_modifier(Modifier::BOLD)
+    };
+    Line::from(vec![
+        Span::raw(format!("{label}{}", " ".repeat(padding))),
+        Span::styled(indicator, indicator_style),
+    ])
 }
 
 fn body_cells(
@@ -752,7 +762,7 @@ mod tests {
         horizontal_scroll_target, row_number_style, row_number_width, row_viewport_start,
         selected_data_cell, total_width, viewport_start, visible_columns,
     };
-    use ratatui::style::Style;
+    use ratatui::style::{Modifier, Style};
     use unicode_width::UnicodeWidthStr;
 
     use crate::{
@@ -887,23 +897,96 @@ mod tests {
     }
 
     #[test]
+    fn sort_markers_use_muted_and_action_styles() {
+        let column = ColumnMeta {
+            name: "name".into(),
+            type_name: "text".into(),
+        };
+        let projection = [
+            None,
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 0,
+            }),
+        ];
+        let theme = Theme::deep_space();
+
+        let inactive = super::header_cell_line(
+            0,
+            &column,
+            12,
+            theme,
+            IconSet::new(IconMode::Unicode),
+            Some(&projection),
+        );
+        let active = super::header_cell_line(
+            1,
+            &column,
+            12,
+            theme,
+            IconSet::new(IconMode::Unicode),
+            Some(&projection),
+        );
+
+        let inactive_style = inactive.spans.last().expect("sort marker span").style;
+        assert_eq!(inactive_style.fg, Some(theme.muted));
+        assert!(!inactive_style.add_modifier.contains(Modifier::BOLD));
+
+        let active_style = active.spans.last().expect("sort marker span").style;
+        assert_eq!(active_style.fg, Some(theme.action));
+        assert!(active_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn sort_markers_keep_direction_and_priority_in_plain_theme() {
+        let column = ColumnMeta {
+            name: "name".into(),
+            type_name: "text".into(),
+        };
+        let projection = [
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Desc,
+                priority: 0,
+            }),
+            Some(crate::sql::RelationColumnSort {
+                direction: crate::sql::SortDirection::Asc,
+                priority: 1,
+            }),
+        ];
+        let line = super::header_cell_line(
+            1,
+            &column,
+            12,
+            Theme::for_color_mode(crate::cli::ColorMode::Never),
+            IconSet::new(IconMode::Unicode),
+            Some(&projection),
+        );
+
+        assert_eq!(line.to_string().width(), 12);
+        assert!(line.to_string().ends_with("▲2"));
+        let indicator_style = line.spans.last().expect("sort marker span").style;
+        assert!(indicator_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
     fn sorted_header_keeps_indicator_at_the_right_edge() {
         let column = ColumnMeta {
             name: "name".into(),
             type_name: "text".into(),
         };
-        let text = super::header_cell_text(
+        let text = super::header_cell_line(
             0,
             &column,
             12,
+            Theme::deep_space(),
             IconSet::new(IconMode::Unicode),
             Some(&[Some(crate::sql::RelationColumnSort {
                 direction: crate::sql::SortDirection::Desc,
                 priority: 1,
             })]),
         );
-        assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
-        assert!(text.ends_with('▾'), "{text:?}");
+        assert_eq!(UnicodeWidthStr::width(text.to_string().as_str()), 12);
+        assert!(text.to_string().ends_with('▼'), "{text:?}");
     }
 
     #[test]
@@ -912,18 +995,19 @@ mod tests {
             name: "very-long-name".into(),
             type_name: "text".into(),
         };
-        let text = super::header_cell_text(
+        let text = super::header_cell_line(
             0,
             &column,
             6,
+            Theme::deep_space(),
             IconSet::new(IconMode::Ascii),
             Some(&[Some(crate::sql::RelationColumnSort {
                 direction: crate::sql::SortDirection::Asc,
                 priority: 0,
             })]),
         );
-        assert_eq!(UnicodeWidthStr::width(text.as_str()), 6);
-        assert!(text.ends_with('^'), "{text:?}");
+        assert_eq!(UnicodeWidthStr::width(text.to_string().as_str()), 6);
+        assert!(text.to_string().ends_with('^'), "{text:?}");
     }
 
     #[test]
@@ -942,15 +1026,16 @@ mod tests {
                 priority: 1,
             }),
         ];
-        let text = super::header_cell_text(
+        let text = super::header_cell_line(
             1,
             &column,
             12,
+            Theme::deep_space(),
             IconSet::new(IconMode::Unicode),
             Some(&projection),
         );
-        assert_eq!(UnicodeWidthStr::width(text.as_str()), 12);
-        assert!(text.ends_with("▾2"), "{text:?}");
+        assert_eq!(UnicodeWidthStr::width(text.to_string().as_str()), 12);
+        assert!(text.to_string().ends_with("▼2"), "{text:?}");
     }
 
     #[test]
@@ -974,10 +1059,11 @@ mod tests {
         let headers: Vec<_> = projections
             .iter()
             .map(|projection| {
-                super::header_cell_text(
+                super::header_cell_line(
                     0,
                     &column,
                     14,
+                    Theme::deep_space(),
                     IconSet::new(IconMode::Unicode),
                     Some(projection),
                 )
@@ -988,7 +1074,7 @@ mod tests {
         assert!(
             headers
                 .iter()
-                .all(|header| header[..10].starts_with("│ long"))
+                .all(|header| header.to_string().starts_with("│ long"))
         );
         assert_eq!(
             super::sort_indicator_slot_width(
@@ -1029,10 +1115,11 @@ mod tests {
 
         for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
             for width in [0, 1, 2, 6, 12] {
-                let text = super::header_cell_text(
+                let text = super::header_cell_line(
                     0,
                     &column,
                     width,
+                    Theme::deep_space(),
                     IconSet::new(mode),
                     Some(&projection),
                 );
@@ -1051,11 +1138,18 @@ mod tests {
             name: "name".into(),
             type_name: "text".into(),
         };
-        let text = super::header_cell_text(0, &column, 12, IconSet::new(IconMode::Unicode), None);
+        let text = super::header_cell_line(
+            0,
+            &column,
+            12,
+            Theme::deep_space(),
+            IconSet::new(IconMode::Unicode),
+            None,
+        );
 
         assert_eq!(text.width(), 12);
-        assert!(!text.contains('▴'));
-        assert!(!text.contains('▾'));
+        assert!(!text.to_string().contains('▲'));
+        assert!(!text.to_string().contains('▼'));
         assert_eq!(
             super::sort_indicator_slot_width(0, IconSet::new(IconMode::Unicode), None),
             0
