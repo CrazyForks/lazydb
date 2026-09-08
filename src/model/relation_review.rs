@@ -103,23 +103,15 @@ fn predicate(values: &[CellValue], columns: &[String], primary_key_columns: &[St
     indices
         .into_iter()
         .filter_map(|index| {
-            Some(format!(
-                "(({} = {}) OR ({} IS NULL AND {} IS NULL))",
-                quote_identifier(columns.get(index)?),
-                sql_null_safe_literal(values.get(index)?),
-                quote_identifier(columns.get(index)?),
-                sql_null_safe_literal(values.get(index)?)
-            ))
+            let column = quote_identifier(columns.get(index)?);
+            let value = values.get(index)?;
+            Some(match value {
+                CellValue::Null => format!("{column} IS NULL"),
+                _ => format!("{column} = {}", literal(value)),
+            })
         })
         .collect::<Vec<_>>()
         .join(" AND ")
-}
-
-fn sql_null_safe_literal(value: &CellValue) -> String {
-    match value {
-        CellValue::Null => "NULL".into(),
-        _ => literal(value),
-    }
 }
 
 fn quote_identifier(value: &str) -> String {
@@ -165,9 +157,10 @@ mod tests {
             &["id".into(), "name".into()],
             &["id".into()],
         );
-        assert!(sql.contains("UPDATE \"items\""));
-        assert!(sql.contains("'new'"));
-        assert!(sql.contains("\"id\" = 1"));
+        assert_eq!(
+            sql,
+            "UPDATE \"items\" SET \"name\" = 'new' WHERE \"id\" = 1;"
+        );
     }
 
     #[test]
@@ -176,6 +169,60 @@ mod tests {
         session.insert_row(0, vec![CellValue::Null, CellValue::Text("x".into())]);
         let sql = preview_sql(&session, "items", &["id".into(), "name".into()], &[]);
         assert!(sql.contains("DEFAULT VALUES") || sql.contains("NULL"));
+    }
+
+    #[test]
+    fn predicates_use_equality_or_is_null_for_original_values() {
+        let columns = vec!["id".into(), "name".into()];
+        let values = vec![CellValue::Integer(12), CellValue::Null];
+        assert_eq!(
+            super::predicate(&values, &columns, &["id".into()]),
+            "\"id\" = 12"
+        );
+        assert_eq!(
+            super::predicate(&values, &columns, &[]),
+            "\"id\" = 12 AND \"name\" IS NULL"
+        );
+        assert_eq!(
+            super::predicate(&[CellValue::Null], &["name".into()], &[]),
+            "\"name\" IS NULL"
+        );
+    }
+
+    #[test]
+    fn predicates_preserve_composite_key_order_and_escaping() {
+        let columns = vec!["id".into(), "tenant\"name".into(), "note".into()];
+        let values = vec![
+            CellValue::Integer(12),
+            CellValue::Text("O'Reilly".into()),
+            CellValue::Null,
+        ];
+        assert_eq!(
+            super::predicate(&values, &columns, &["tenant\"name".into(), "id".into()],),
+            "\"tenant\"\"name\" = 'O''Reilly' AND \"id\" = 12"
+        );
+    }
+
+    #[test]
+    fn preview_sql_simplifies_deletes_and_locates_updates_by_old_key() {
+        use crate::model::relation_edit::EditableRowState;
+
+        let mut session = RelationEditSession::from_rows(vec![
+            vec![CellValue::Integer(8)],
+            vec![CellValue::Integer(1218)],
+            vec![CellValue::Integer(12)],
+        ]);
+        session.rows[0].state = EditableRowState::Deleted;
+        session.rows[1].state = EditableRowState::Deleted;
+        session.update_cell(2, 0, CellValue::Integer(13));
+        assert_eq!(
+            preview_sql(&session, "items", &["id".into()], &["id".into()]),
+            concat!(
+                "DELETE FROM \"items\" WHERE \"id\" = 8;\n",
+                "DELETE FROM \"items\" WHERE \"id\" = 1218;\n",
+                "UPDATE \"items\" SET \"id\" = 13 WHERE \"id\" = 12;",
+            )
+        );
     }
 
     #[test]
