@@ -35,6 +35,18 @@ Oracle MySQL, SQL Server, and SQLite.
       <img alt="mouse-support" src="https://github.com/user-attachments/assets/bf39b262-b7b1-4f21-b1cc-fe8a58be7928" />
     </td>
   </tr>
+  <tr>
+    <th>MCP</th>
+    <th>Neovim LSP</th>
+  </tr>
+  <tr>
+    <td>
+      <img alt="lazydb-mcp" src="https://github.com/user-attachments/assets/f4b03b84-0386-4090-8bc5-81178d29d360" />
+    </td>
+    <td>
+      <img alt="lazydb-lsp" src="https://github.com/user-attachments/assets/63dee305-ec5a-4262-8366-2afdf52591d9" />
+    </td>
+  </tr>
 </table>
 
 ---
