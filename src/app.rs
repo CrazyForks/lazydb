@@ -7086,13 +7086,7 @@ impl App {
             Action::Osc52Clipboard { .. } => Vec::new(),
             Action::EditorViewportChanged(viewport) => {
                 let id = match self.tabs.get(self.active_tab) {
-                    Some(WorkspaceTab::Sql(tab))
-                        if self.focus == Focus::Results
-                            && matches!(tab.result_view, ResultView::Output | ResultView::Plan) =>
-                    {
-                        tab.output_editor_id
-                    }
-                    Some(WorkspaceTab::Sql(tab)) => tab.id,
+                    Some(WorkspaceTab::Sql(tab)) if self.focus == Focus::Results => tab.id,
                     Some(WorkspaceTab::Relation(tab))
                         if self.focus == Focus::Results && tab.view == RelationView::Ddl =>
                     {
@@ -7101,6 +7095,13 @@ impl App {
                     _ => return Vec::new(),
                 };
                 let _ = self.editor.set_viewport(id, viewport);
+                Vec::new()
+            }
+            Action::OutputViewportChanged {
+                session_id,
+                viewport,
+            } => {
+                let _ = self.editor.sync_output_viewport(session_id, viewport);
                 Vec::new()
             }
             Action::GridViewportChanged(viewport) => {
@@ -18185,6 +18186,231 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, Command::PersistWorkspace { .. }))
         );
+    }
+
+    #[test]
+    fn output_viewport_changed_syncs_tail_even_when_editor_focused() {
+        let mut app = App::new(Vec::new());
+        let tab_id = app.active_console().id;
+        let output_id = app.active_console().output_editor_id;
+        for index in 0..30 {
+            app.append_console_output(
+                tab_id,
+                OutputEntry::plain(OutputKind::Info, format!("line-{index}")),
+            );
+        }
+        app.focus = Focus::Editor;
+        let viewport = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 3,
+        };
+        let commands = app.update(Action::OutputViewportChanged {
+            session_id: output_id,
+            viewport,
+        });
+        assert!(commands.is_empty());
+        assert_eq!(app.focus, Focus::Editor);
+
+        let snapshot = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(snapshot.first_line, snapshot.total_lines.saturating_sub(3));
+        let visible = snapshot
+            .lines
+            .iter()
+            .take(viewport.height)
+            .collect::<Vec<_>>();
+        assert_eq!(visible[0].line, snapshot.total_lines - 3);
+        assert_eq!(visible[2].line, snapshot.total_lines - 1);
+
+        let after = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(after.first_line, snapshot.first_line);
+    }
+
+    #[test]
+    fn execution_events_append_via_output_editor_and_follow_tail() {
+        let (mut app, tab_id, generation) = connected_query_app("SELECT id FROM users");
+        let connection = app.connection.active_identity().unwrap();
+        for index in 0..30 {
+            app.append_console_output(
+                tab_id,
+                OutputEntry::plain(OutputKind::Info, format!("line-{index}")),
+            );
+        }
+        app.focus = Focus::Editor;
+        app.update(Action::QueryFinished {
+            tab_id,
+            generation,
+            connection,
+            outcome: empty_outcome(),
+        });
+        app.update(Action::QueryFailed {
+            tab_id,
+            generation,
+            connection,
+            message: "boom-tail".into(),
+        });
+
+        let viewport = crate::model::editor::EditorViewport {
+            width: 120,
+            height: 4,
+        };
+        let output_id = app.active_console().output_editor_id;
+        let commands = app.update(Action::OutputViewportChanged {
+            session_id: output_id,
+            viewport,
+        });
+        assert!(commands.is_empty());
+        assert_eq!(app.focus, Focus::Editor);
+
+        let snapshot = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(snapshot.first_line, snapshot.total_lines.saturating_sub(4));
+        let visible = snapshot
+            .lines
+            .iter()
+            .take(viewport.height)
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(visible.contains("boom-tail"), "{visible}");
+        let after = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(after.first_line, snapshot.first_line);
+    }
+
+    #[test]
+    fn background_console_output_does_not_affect_active_tab() {
+        let mut app = App::new(Vec::new());
+        app.create_sql_editor_named("background".into());
+        let background = app
+            .tabs
+            .last()
+            .unwrap()
+            .as_console()
+            .expect("background tab");
+        let background_id = background.id;
+        let background_output = background.output_editor_id;
+        for index in 0..20 {
+            app.append_console_output(
+                background_id,
+                OutputEntry::plain(OutputKind::Info, format!("bg-{index}")),
+            );
+        }
+        assert_eq!(app.active_console().output.len(), 0);
+
+        let viewport = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 3,
+        };
+        assert!(
+            app.active_output_editor_snapshot(viewport)
+                .unwrap()
+                .total_lines
+                <= 1
+        );
+        let commands = app.update(Action::OutputViewportChanged {
+            session_id: background_output,
+            viewport,
+        });
+        assert!(commands.is_empty());
+        let snapshot = app
+            .editor
+            .render_snapshot(background_output, viewport)
+            .unwrap();
+        let visible = snapshot
+            .lines
+            .iter()
+            .take(viewport.height)
+            .map(|line| line.line)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible,
+            (snapshot.total_lines.saturating_sub(3)..snapshot.total_lines).collect::<Vec<_>>()
+        );
+        assert!(
+            app.active_output_editor_snapshot(viewport)
+                .unwrap()
+                .total_lines
+                <= 1
+        );
+    }
+
+    #[test]
+    fn hidden_output_pending_survives_view_switch_until_visible() {
+        let mut app = App::new(Vec::new());
+        let tab_id = app.active_console().id;
+        let output_id = app.active_console().output_editor_id;
+        app.active_console_mut().result_view = ResultView::Data;
+        for index in 0..15 {
+            app.append_console_output(
+                tab_id,
+                OutputEntry::plain(OutputKind::Info, format!("line-{index}")),
+            );
+        }
+        app.active_console_mut().result_view = ResultView::Output;
+
+        let viewport = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 3,
+        };
+        let commands = app.update(Action::OutputViewportChanged {
+            session_id: output_id,
+            viewport,
+        });
+        assert!(commands.is_empty());
+        let after = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(after.first_line, after.total_lines.saturating_sub(3));
+    }
+
+    #[test]
+    fn output_tail_resizes_keep_tail_position() {
+        let mut app = App::new(Vec::new());
+        let tab_id = app.active_console().id;
+        let output_id = app.active_console().output_editor_id;
+        for index in 0..30 {
+            app.append_console_output(
+                tab_id,
+                OutputEntry::plain(OutputKind::Info, format!("line-{index}")),
+            );
+        }
+        let small = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 3,
+        };
+        app.update(Action::OutputViewportChanged {
+            session_id: output_id,
+            viewport: small,
+        });
+        let large = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 7,
+        };
+        app.update(Action::OutputViewportChanged {
+            session_id: output_id,
+            viewport: large,
+        });
+        let snapshot = app.active_output_editor_snapshot(large).unwrap();
+        assert_eq!(snapshot.first_line, snapshot.total_lines.saturating_sub(7));
+    }
+
+    #[test]
+    fn output_viewport_changed_ignores_unknown_session() {
+        let mut app = App::new(Vec::new());
+        let output_id = app.active_console().output_editor_id;
+        let viewport = crate::model::editor::EditorViewport {
+            width: 80,
+            height: 3,
+        };
+        let commands = app.update(Action::OutputViewportChanged {
+            session_id: Uuid::new_v4(),
+            viewport,
+        });
+        assert!(commands.is_empty());
+        let snapshot = app.active_output_editor_snapshot(viewport).unwrap();
+        assert_eq!(snapshot.first_line, 0);
+        assert_eq!(app.active_console().output_editor_id, output_id);
     }
 
     #[test]

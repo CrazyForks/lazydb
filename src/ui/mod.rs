@@ -256,6 +256,7 @@ pub struct CursorSpec {
 pub struct UiState {
     pub hit_regions: Vec<HitRegion>,
     pub editor_viewport: Option<EditorViewport>,
+    pub output_viewport: Option<(Uuid, EditorViewport)>,
     pub completion_popup: Option<Rect>,
     pub grid_viewport: Option<DataGridViewport>,
     pub grid_horizontal_scroll: Option<GridHorizontalScrollTargets>,
@@ -356,6 +357,7 @@ impl UiState {
         Self {
             hit_regions: Vec::new(),
             editor_viewport: None,
+            output_viewport: None,
             completion_popup: None,
             grid_viewport: None,
             grid_horizontal_scroll: None,
@@ -782,6 +784,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.pane_layout = layout.pane_metrics;
     state.hit_regions.clear();
     state.editor_viewport = None;
+    state.output_viewport = None;
     state.completion_popup = None;
     state.grid_viewport = None;
     state.grid_horizontal_scroll = None;
@@ -3769,7 +3772,9 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
         width: inner.width.saturating_sub(3) as usize,
         height: inner.height as usize,
     };
-    state.editor_viewport = Some(viewport);
+    if let Some(session_id) = app.active_console_opt().map(|tab| tab.output_editor_id) {
+        state.output_viewport = Some((session_id, viewport));
+    }
     let Ok(snapshot) = app.active_output_editor_snapshot(viewport) else {
         return;
     };

@@ -4306,6 +4306,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
             terminal.set_cursor_style(cursor.style)?;
         }
         sync_editor_viewport(&mut app, &mut runtime, &ui_state);
+        sync_output_viewport(&mut app, &mut runtime, &ui_state);
         sync_pane_layout(&mut app, &mut runtime, &ui_state);
         sync_grid_viewport(&mut app, &mut runtime, &ui_state);
         sync_record_view_fields(&mut app, &mut runtime, &ui_state);
@@ -4487,6 +4488,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                     terminal.set_cursor_style(cursor.style)?;
                 }
                 sync_editor_viewport(&mut app, &mut runtime, &ui_state);
+                sync_output_viewport(&mut app, &mut runtime, &ui_state);
                 sync_pane_layout(&mut app, &mut runtime, &ui_state);
                 sync_grid_viewport(&mut app, &mut runtime, &ui_state);
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
@@ -4642,15 +4644,17 @@ fn sync_editor_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
     let Some(viewport) = state.editor_viewport else {
         return;
     };
-    let current = if app.focus == crate::model::workspace::Focus::Results
+    if app.focus == crate::model::workspace::Focus::Results
         && app.active_console_opt().is_some_and(|tab| {
             matches!(
                 tab.result_view,
                 crate::model::tab::ResultView::Output | crate::model::tab::ResultView::Plan
             )
-        }) {
-        app.active_output_editor_viewport().ok()
-    } else if app.focus == crate::model::workspace::Focus::Results
+        })
+    {
+        return;
+    }
+    let current = if app.focus == crate::model::workspace::Focus::Results
         && app.is_active_relation_tab()
         && app.tabs.get(app.active_tab).is_some_and(|tab| {
             matches!(
@@ -4658,8 +4662,7 @@ fn sync_editor_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
                 crate::model::tab::WorkspaceTab::Relation(relation)
                     if relation.view == crate::model::relation::RelationView::Ddl
             )
-        })
-    {
+        }) {
         app.active_ddl_editor_viewport().ok()
     } else {
         app.active_editor_viewport().ok()
@@ -4667,6 +4670,20 @@ fn sync_editor_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
     if current != Some(viewport) {
         apply_action(app, runtime, Action::EditorViewportChanged(viewport));
     }
+}
+
+fn sync_output_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    let Some((session_id, viewport)) = state.output_viewport else {
+        return;
+    };
+    apply_action(
+        app,
+        runtime,
+        Action::OutputViewportChanged {
+            session_id,
+            viewport,
+        },
+    );
 }
 
 fn sync_pane_layout(app: &mut App, runtime: &mut Runtime, state: &UiState) {

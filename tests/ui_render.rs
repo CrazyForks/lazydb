@@ -3070,6 +3070,121 @@ fn busy_profile_group_editor_disables_actions_and_cursor() {
     )));
 }
 
+fn empty_query_outcome() -> QueryOutcome {
+    QueryOutcome {
+        result_sets: vec![],
+        stats: QueryStats::new(Duration::ZERO, Duration::ZERO, 1),
+    }
+}
+
+fn append_output_via_public_actions(app: &mut App, count: usize) {
+    let tab_id = app.active_console().id;
+    let generation = app.active_console().generation;
+    let connection = app.connection.active_identity().unwrap();
+    for _ in 0..count {
+        app.update(Action::QueryFinished {
+            tab_id,
+            generation,
+            connection,
+            outcome: empty_query_outcome(),
+        });
+    }
+}
+
+#[test]
+fn output_log_follows_tail_on_first_draw_with_editor_focus() {
+    let mut app = fixture();
+    app.active_console_mut().result_view = ResultView::Output;
+    app.focus = Focus::Editor;
+    append_output_via_public_actions(&mut app, 14);
+    app.update(Action::QueryFailed {
+        tab_id: app.active_console().id,
+        generation: app.active_console().generation,
+        connection: app.connection.active_identity().unwrap(),
+        message: "TAIL-MARKER-42".into(),
+    });
+
+    let (buffer, state) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(
+        find_text_cell(&buffer, "TAIL-MARKER-42").is_some(),
+        "latest log must be visible on the first draw"
+    );
+    let (session_id, viewport) = state
+        .output_viewport
+        .expect("output viewport was not reported");
+    assert_eq!(session_id, app.active_console().output_editor_id);
+    assert_ne!(
+        state.editor_viewport,
+        Some(viewport),
+        "output viewport must not reuse the sql editor viewport"
+    );
+
+    app.update(Action::OutputViewportChanged {
+        session_id,
+        viewport,
+    });
+    let (after, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(find_text_cell(&after, "TAIL-MARKER-42").is_some());
+}
+
+#[test]
+fn output_log_manual_scroll_survives_redraw_until_next_execution() {
+    let mut app = fixture();
+    app.active_console_mut().result_view = ResultView::Output;
+    app.focus = Focus::Editor;
+    append_output_via_public_actions(&mut app, 14);
+    app.update(Action::QueryFailed {
+        tab_id: app.active_console().id,
+        generation: app.active_console().generation,
+        connection: app.connection.active_identity().unwrap(),
+        message: "TAIL-MARKER-42".into(),
+    });
+
+    let (_, state) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    let (session_id, viewport) = state.output_viewport.expect("output viewport");
+    app.update(Action::OutputViewportChanged {
+        session_id,
+        viewport,
+    });
+
+    let scroll_rows = -(viewport.height as isize + 2);
+    app.update(Action::EditorScrollBy {
+        session_id,
+        rows: scroll_rows,
+        columns: 0,
+    });
+    let (scrolled, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(
+        find_text_cell(&scrolled, "TAIL-MARKER-42").is_none(),
+        "marker must leave the viewport after manual scroll"
+    );
+    let (redrawn, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(
+        find_text_cell(&redrawn, "TAIL-MARKER-42").is_none(),
+        "redraw without a new log must not yank back to the tail"
+    );
+
+    app.update(Action::QueryFailed {
+        tab_id: app.active_console().id,
+        generation: app.active_console().generation,
+        connection: app.connection.active_identity().unwrap(),
+        message: "FINAL-MARKER-7".into(),
+    });
+    let (fresh, state2) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(
+        find_text_cell(&fresh, "FINAL-MARKER-7").is_some(),
+        "a new log must show the tail on the next draw"
+    );
+    let (session_id2, viewport2) = state2.output_viewport.expect("output viewport");
+    assert_eq!(session_id2, session_id);
+    app.update(Action::OutputViewportChanged {
+        session_id: session_id2,
+        viewport: viewport2,
+    });
+    let (settled, _) = render_buffer_with_icons(&app, 100, 24, IconSet::new(IconMode::Ascii));
+    assert!(find_text_cell(&settled, "FINAL-MARKER-7").is_some());
+}
+
 fn record_view_field_background(app: &App, field: &str) -> Color {
     let width = 100;
     let height = 30;

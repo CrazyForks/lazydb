@@ -191,7 +191,7 @@ struct EditorSession {
     revision: u64,
     history: EditorHistory,
     capability: EditorSessionCapability,
-    interacted: bool,
+    pending_tail_scroll: bool,
 }
 
 const EDITOR_HISTORY_LIMIT: usize = 100;
@@ -376,7 +376,7 @@ impl EditorWorkspace {
                 revision: 0,
                 history: EditorHistory::default(),
                 capability,
-                interacted: false,
+                pending_tail_scroll: false,
             },
         );
         if capability == EditorSessionCapability::Editable {
@@ -901,11 +901,19 @@ impl EditorWorkspace {
         let total_lines = buffer.get_lines().max(1);
         let full_text = decode_editor_text(&buffer.get_text())?;
         let max_line_width = full_line_width(&full_text);
-        let first_line = session
-            .viewport
-            .corner
-            .get_y()
-            .min(total_lines.saturating_sub(viewport.height.max(1)));
+        let tail_requested =
+            session.pending_tail_scroll && viewport.width > 0 && viewport.height > 0;
+        let max_row = total_lines.saturating_sub(viewport.height.max(1));
+        let first_line = if tail_requested {
+            max_row
+        } else {
+            session.viewport.corner.get_y().min(max_row)
+        };
+        let horizontal_offset = if tail_requested {
+            0
+        } else {
+            session.viewport.corner.get_x()
+        };
         let overscan = 2;
         let key = sql::AnalysisKey {
             console_id: id,
@@ -1123,7 +1131,7 @@ impl EditorWorkspace {
                     .source_to_display_cells
                     .get(session.position.column)
                     .unwrap_or_else(|| line.source_to_display_cells.last().unwrap_or(&0));
-                cell.checked_sub(session.viewport.corner.get_x())
+                cell.checked_sub(horizontal_offset)
                     .filter(|cell| *cell < viewport.width && row < viewport.height)
                     .map(|cell| (cell as u16, row as u16))
             });
@@ -1134,7 +1142,7 @@ impl EditorWorkspace {
             first_line,
             total_lines,
             viewport,
-            horizontal_offset: session.viewport.corner.get_x(),
+            horizontal_offset,
             max_line_width,
             lines,
             cursor: session.position,
@@ -1296,6 +1304,53 @@ impl EditorWorkspace {
         Ok(())
     }
 
+    pub(crate) fn sync_output_viewport(
+        &mut self,
+        id: Uuid,
+        viewport: EditorViewport,
+    ) -> Result<(), EditorError> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        if viewport.width == 0 || viewport.height == 0 {
+            return Ok(());
+        }
+        let tail_pending = session.pending_tail_scroll;
+        if !tail_pending
+            && session.viewport.get_width() == viewport.width
+            && session.viewport.get_height() == viewport.height
+        {
+            return Ok(());
+        }
+        let text = {
+            let buffer = session
+                .buffer
+                .read()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+            decode_editor_text(&buffer.get_text())?
+        };
+        let line_count = text.split('\n').count().max(1);
+        let max_row = line_count.saturating_sub(viewport.height.max(1));
+        let max_column = full_line_width(&text).saturating_sub(viewport.width.max(1));
+        session.viewport.dimensions = (viewport.width, viewport.height);
+        if tail_pending {
+            session.viewport.corner.set_y(max_row);
+            session.viewport.corner.set_x(0);
+            session.pending_tail_scroll = false;
+        } else {
+            session
+                .viewport
+                .corner
+                .set_y(session.viewport.corner.get_y().min(max_row));
+            session
+                .viewport
+                .corner
+                .set_x(session.viewport.corner.get_x().min(max_column));
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_text(&mut self, id: Uuid, text: &str) -> Result<(), EditorError> {
         let session = self
             .sessions
@@ -1328,15 +1383,6 @@ impl EditorWorkspace {
         if session.capability != EditorSessionCapability::ReadOnly {
             return Err(EditorError::Operation("session is editable".into()));
         }
-        let position = if follow_tail && !session.interacted {
-            let line = text.rsplit('\n').next().unwrap_or_default();
-            EditorPosition {
-                line: text.matches('\n').count(),
-                column: line.chars().count(),
-            }
-        } else {
-            session.position
-        };
         let encoded = encode_editor_text(text);
         let mut buffer = session
             .buffer
@@ -1347,11 +1393,22 @@ impl EditorWorkspace {
             session.revision = session.revision.saturating_add(1);
         }
         let line_count = text.matches('\n').count();
-        let line = text.rsplit('\n').next().unwrap_or_default();
-        session.position = EditorPosition {
-            line: position.line.min(line_count),
-            column: position.column.min(line.chars().count()),
+        let last_line_column = text
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count());
+        session.position = if follow_tail {
+            EditorPosition {
+                line: line_count,
+                column: 0,
+            }
+        } else {
+            EditorPosition {
+                line: session.position.line.min(line_count),
+                column: session.position.column.min(last_line_column),
+            }
         };
+        session.pending_tail_scroll = follow_tail;
         buffer.set_leader(
             session.group_id,
             modalkit::editing::cursor::Cursor::new(session.position.line, session.position.column),
@@ -1391,20 +1448,16 @@ impl EditorWorkspace {
             .ok_or(EditorError::MissingSession(id))?
             .capability
             == EditorSessionCapability::ReadOnly;
-        if read_only {
-            self.sessions
-                .get_mut(&id)
-                .expect("session was checked above")
-                .interacted = true;
-            if matches!(
+        if read_only
+            && matches!(
                 key,
                 EditorKey::Character('i' | 'a' | 'o' | 'O' | 'R' | 'Q' | ':')
                     | EditorKey::Undo
                     | EditorKey::Redo
                     | EditorKey::Control('r')
-            ) {
-                return Ok(());
-            }
+            )
+        {
+            return Ok(());
         }
         if self.prompt.is_some() {
             return self.press_prompt(id, key);

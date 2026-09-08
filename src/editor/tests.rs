@@ -1066,19 +1066,198 @@ fn read_only_sessions_ignore_editing_and_application_actions() {
 }
 
 #[test]
-fn read_only_text_replacement_follows_tail_until_interaction() {
+fn output_tail_text_update_repositions_after_interaction() {
     let (mut workspace, id) = read_only_fixture("one");
     workspace.set_read_only_text(id, "one\ntwo", true).unwrap();
     assert_eq!(
         workspace.position(id).unwrap(),
-        EditorPosition { line: 1, column: 3 }
+        EditorPosition { line: 1, column: 0 }
     );
 
-    workspace.press(id, EditorKey::Character('g')).unwrap();
+    press_keys(&mut workspace, id, "gg");
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 0, column: 0 }
+    );
+
     workspace
         .set_read_only_text(id, "one\ntwo\nthree", true)
         .unwrap();
-    assert_eq!(workspace.position(id).unwrap().line, 1);
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 2, column: 0 }
+    );
+}
+
+#[test]
+fn output_tail_snapshot_shows_last_block_without_prior_viewport() {
+    let text = (0..10)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    workspace
+        .set_read_only_text(id, &format!("{text}\ntail-marker"), true)
+        .unwrap();
+
+    let viewport = EditorViewport {
+        width: 40,
+        height: 3,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 8);
+    assert_eq!(snapshot.horizontal_offset, 0);
+    assert!(snapshot.lines.iter().any(|line| {
+        line.line == 10
+            && line
+                .spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+                == "tail-marker"
+    }));
+}
+
+#[test]
+fn output_tail_short_content_stays_at_first_line() {
+    let (mut workspace, id) = read_only_fixture("one");
+    workspace.set_read_only_text(id, "one\ntwo", true).unwrap();
+    let viewport = EditorViewport {
+        width: 40,
+        height: 3,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 0);
+    assert_eq!(snapshot.total_lines, 2);
+}
+
+#[test]
+fn output_tail_trailing_newline_keeps_empty_logical_line() {
+    let (mut workspace, id) = read_only_fixture("one");
+    workspace
+        .set_read_only_text(id, "one\ntwo\n", true)
+        .unwrap();
+    let viewport = EditorViewport {
+        width: 40,
+        height: 3,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 0);
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 2, column: 0 }
+    );
+}
+
+#[test]
+fn output_tail_long_last_line_keeps_horizontal_offset_zero() {
+    let long = "x".repeat(120);
+    let (mut workspace, id) = read_only_fixture("head");
+    workspace
+        .set_read_only_text(id, &format!("head\n{long}"), true)
+        .unwrap();
+    let viewport = EditorViewport {
+        width: 10,
+        height: 3,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 0);
+    assert_eq!(snapshot.horizontal_offset, 0);
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 1, column: 0 }
+    );
+}
+
+#[test]
+fn output_tail_viewport_sync_matches_snapshot_and_respects_manual_scroll() {
+    let text = (0..10)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    workspace
+        .set_read_only_text(id, &format!("{text}\ntail-marker"), true)
+        .unwrap();
+
+    let viewport = EditorViewport {
+        width: 40,
+        height: 3,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 8);
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    let after_sync = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(after_sync.first_line, 8);
+
+    workspace.scroll(id, -3, 0).unwrap();
+    let after_scroll = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(after_scroll.first_line, 5);
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    let after_idle_sync = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(after_idle_sync.first_line, 5);
+
+    workspace
+        .set_read_only_text(id, &format!("{text}\ntail-marker\nnew-tail"), true)
+        .unwrap();
+    let tail_snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(tail_snapshot.first_line, 9);
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    let tail_after = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(tail_after.first_line, 9);
+    assert!(tail_after.lines.iter().any(|line| {
+        line.line == 11
+            && line
+                .spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+                == "new-tail"
+    }));
+}
+
+#[test]
+fn output_tail_request_survives_zero_size_viewport_sync() {
+    let (mut workspace, id) = read_only_fixture("one");
+    workspace
+        .set_read_only_text(id, "one\ntwo\nthree\nfour\nfive", true)
+        .unwrap();
+    workspace
+        .sync_output_viewport(
+            id,
+            EditorViewport {
+                width: 0,
+                height: 0,
+            },
+        )
+        .unwrap();
+
+    let viewport = EditorViewport {
+        width: 40,
+        height: 2,
+    };
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 3);
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    let after = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(after.first_line, 3);
+}
+
+#[test]
+fn output_tail_false_update_cancels_pending_request() {
+    let (mut workspace, id) = read_only_fixture("one");
+    let viewport = EditorViewport {
+        width: 40,
+        height: 3,
+    };
+    workspace.set_read_only_text(id, "one\ntwo", true).unwrap();
+    workspace.set_read_only_text(id, "three", false).unwrap();
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 0);
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    let after = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(after.first_line, 0);
+    assert_eq!(snapshot.total_lines, 1);
 }
 
 #[test]

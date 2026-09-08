@@ -485,6 +485,10 @@ pub enum Action {
         payload: ClipboardPayload,
     },
     EditorViewportChanged(crate::model::editor::EditorViewport),
+    OutputViewportChanged {
+        session_id: Uuid,
+        viewport: crate::model::editor::EditorViewport,
+    },
     EditorScroll {
         rows: isize,
         columns: isize,
