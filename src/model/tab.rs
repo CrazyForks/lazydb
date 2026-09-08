@@ -144,6 +144,7 @@ pub struct OutputEntry {
     pub kind: OutputKind,
     pub message: String,
     pub sql_range: Option<TextRange>,
+    pub timestamp_ranges: Vec<TextRange>,
 }
 
 impl OutputEntry {
@@ -152,6 +153,7 @@ impl OutputEntry {
             kind,
             message: message.into(),
             sql_range: None,
+            timestamp_ranges: Vec::new(),
         }
     }
 
@@ -164,7 +166,22 @@ impl OutputEntry {
             kind,
             message,
             sql_range: Some(TextRange::new(start, end)),
+            timestamp_ranges: Vec::new(),
         }
+    }
+
+    pub fn with_timestamp(mut self, timestamp: &str) -> Self {
+        let prefix = format!("[{timestamp}] ");
+        let mut ranges = Vec::new();
+        let mut offset = 0;
+        for line in self.message.split_inclusive('\n') {
+            if line.starts_with(&prefix) {
+                ranges.push(TextRange::new(offset, offset + prefix.len() - 1));
+            }
+            offset += line.len();
+        }
+        self.timestamp_ranges = ranges;
+        self
     }
 }
 
@@ -502,6 +519,25 @@ mod tests {
         let range = entry.sql_range.unwrap();
 
         assert_eq!(&entry.message[range.start..range.end], "SELECT 'Ada'");
+    }
+
+    #[test]
+    fn output_entry_records_timestamp_prefix_for_each_physical_line() {
+        let entry = OutputEntry::plain(
+            OutputKind::Error,
+            "[2026-09-08 11:08:17:413] ERROR: failed\n[2026-09-08 11:08:17:413] Position: 15",
+        )
+        .with_timestamp("2026-09-08 11:08:17:413");
+
+        assert_eq!(entry.timestamp_ranges.len(), 2);
+        assert_eq!(
+            entry.timestamp_ranges[0].get(&entry.message),
+            Some("[2026-09-08 11:08:17:413]")
+        );
+        assert_eq!(
+            entry.timestamp_ranges[1].get(&entry.message),
+            Some("[2026-09-08 11:08:17:413]")
+        );
     }
 
     #[test]

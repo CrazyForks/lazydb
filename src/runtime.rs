@@ -1985,7 +1985,7 @@ impl Runtime {
                         tab_id,
                         generation,
                         connection: expected,
-                        message: error.to_string(),
+                        message: error.output_message(),
                     });
                 }
             }
@@ -2174,7 +2174,7 @@ impl Runtime {
                             tab_id,
                             generation,
                             connection: expected,
-                            message: error.to_string(),
+                            message: error.output_message(),
                         });
                         return;
                     }

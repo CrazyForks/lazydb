@@ -3078,6 +3078,7 @@ LIMIT 2001
                 message: format!(
                     "PostgreSQL 12 or newer is required; server_version_num is {server_version}"
                 ),
+                diagnostic: None,
             });
         }
         Ok(Self {
@@ -6428,6 +6429,7 @@ fn catalog_target_not_found(target: &CatalogTarget) -> DatabaseError {
             "PostgreSQL catalog target was not found: {}",
             target.description()
         )),
+        diagnostic: None,
     }
 }
 
@@ -6440,6 +6442,7 @@ fn catalog_internal(message: impl AsRef<str>) -> DatabaseError {
         category: ErrorCategory::Internal,
         code: Some("postgres_catalog_invariant".to_owned()),
         message: sanitize_terminal_text(message.as_ref()),
+        diagnostic: None,
     }
 }
 
@@ -7166,6 +7169,7 @@ fn monitor_timestamp(row: &PgRow, name: &str) -> Result<u64, DatabaseError> {
         category: ErrorCategory::Internal,
         code: Some("postgres_monitor_decode".to_owned()),
         message: format!("PostgreSQL returned a negative monitoring timestamp: {name}"),
+        diagnostic: None,
     })
 }
 

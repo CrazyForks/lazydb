@@ -109,7 +109,7 @@ impl std::fmt::Display for TransactionError {
 
 impl From<DatabaseError> for TransactionError {
     fn from(error: DatabaseError) -> Self {
-        Self(error.to_string())
+        Self(error.output_message())
     }
 }
 

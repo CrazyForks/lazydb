@@ -1023,6 +1023,7 @@ fn render_ddl_editor(
                 &snapshot,
                 line,
             ),
+            None,
         );
         let selected = snapshot
             .selection_cells

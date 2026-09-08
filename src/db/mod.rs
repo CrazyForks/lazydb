@@ -69,12 +69,28 @@ pub enum ErrorCategory {
     Internal,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DatabaseErrorPosition {
+    Original(usize),
+    Internal { position: usize, query: String },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DatabaseDiagnostic {
+    pub severity: Option<String>,
+    pub detail: Option<String>,
+    pub hint: Option<String>,
+    pub position: Option<DatabaseErrorPosition>,
+    pub context: Option<String>,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("{message}")]
 pub struct DatabaseError {
     pub category: ErrorCategory,
     pub code: Option<String>,
     pub message: String,
+    pub diagnostic: Option<Box<DatabaseDiagnostic>>,
 }
 
 impl DatabaseError {
@@ -83,6 +99,7 @@ impl DatabaseError {
             category: ErrorCategory::Configuration,
             code: None,
             message: sanitize_terminal_text(message.as_ref()),
+            diagnostic: None,
         }
     }
 
@@ -91,6 +108,7 @@ impl DatabaseError {
             category: ErrorCategory::Configuration,
             code: Some("invalid_catalog_request".to_owned()),
             message: sanitize_terminal_text(&format!("invalid catalog request: {error}")),
+            diagnostic: None,
         }
     }
 
@@ -102,6 +120,7 @@ impl DatabaseError {
                 "{} catalog target is not implemented for {kind:?}",
                 target.description()
             ),
+            diagnostic: None,
         }
     }
 
@@ -122,10 +141,32 @@ impl DatabaseError {
             } else {
                 default_category
             };
+            let diagnostic = database
+                .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
+                .map(|postgres| {
+                    Box::new(DatabaseDiagnostic {
+                        severity: Some(format_postgres_severity(postgres.severity())),
+                        detail: sanitized_optional(postgres.detail()),
+                        hint: sanitized_optional(postgres.hint()),
+                        position: postgres.position().map(|position| match position {
+                            sqlx::postgres::PgErrorPosition::Original(position) => {
+                                DatabaseErrorPosition::Original(position)
+                            }
+                            sqlx::postgres::PgErrorPosition::Internal { position, query } => {
+                                DatabaseErrorPosition::Internal {
+                                    position,
+                                    query: sanitize_terminal_text(query),
+                                }
+                            }
+                        }),
+                        context: sanitized_optional(postgres.r#where()),
+                    })
+                });
             return Self {
                 category,
                 code: database.code().map(|code| code.into_owned()),
                 message,
+                diagnostic,
             };
         }
 
@@ -133,8 +174,72 @@ impl DatabaseError {
             category: default_category,
             code: None,
             message: sanitize_terminal_text(&error.to_string()),
+            diagnostic: None,
         }
     }
+
+    pub fn output_message(&self) -> String {
+        let mut lines = Vec::new();
+        let severity = self
+            .diagnostic
+            .as_ref()
+            .and_then(|diagnostic| diagnostic.severity.as_deref())
+            .unwrap_or("ERROR");
+        let code = self
+            .code
+            .as_deref()
+            .map(|code| format!("[{code}] "))
+            .unwrap_or_default();
+        lines.push(format!("{code}{severity}: {}", self.message));
+
+        if let Some(diagnostic) = &self.diagnostic {
+            if let Some(detail) = &diagnostic.detail {
+                lines.push(format_diagnostic_lines("Detail", detail));
+            }
+            if let Some(hint) = &diagnostic.hint {
+                lines.push(format_diagnostic_lines("Hint", hint));
+            }
+            if let Some(position) = &diagnostic.position {
+                match position {
+                    DatabaseErrorPosition::Original(position) => {
+                        lines.push(format!("Position: {position}"));
+                    }
+                    DatabaseErrorPosition::Internal { position, query } => {
+                        lines.push(format!("Internal Position: {position}"));
+                        lines.push(format_diagnostic_lines("Internal Query", query));
+                    }
+                }
+            }
+            if let Some(context) = &diagnostic.context {
+                lines.push(format_diagnostic_lines("Context", context));
+            }
+        }
+        lines.join("\n")
+    }
+}
+
+fn format_diagnostic_lines(label: &str, value: &str) -> String {
+    format!("{label}: {value}")
+}
+
+fn sanitized_optional(value: Option<&str>) -> Option<String> {
+    value
+        .map(sanitize_terminal_text)
+        .filter(|value| !value.is_empty())
+}
+
+fn format_postgres_severity(severity: sqlx::postgres::PgSeverity) -> String {
+    match severity {
+        sqlx::postgres::PgSeverity::Panic => "PANIC",
+        sqlx::postgres::PgSeverity::Fatal => "FATAL",
+        sqlx::postgres::PgSeverity::Error => "ERROR",
+        sqlx::postgres::PgSeverity::Warning => "WARNING",
+        sqlx::postgres::PgSeverity::Notice => "NOTICE",
+        sqlx::postgres::PgSeverity::Debug => "DEBUG",
+        sqlx::postgres::PgSeverity::Info => "INFO",
+        sqlx::postgres::PgSeverity::Log => "LOG",
+    }
+    .to_owned()
 }
 
 #[derive(Clone, Debug)]
@@ -155,6 +260,7 @@ impl DatabaseConnection {
                 category: ErrorCategory::Unsupported,
                 code: Some("monitoring_unsupported".into()),
                 message: "SQLite does not expose server monitoring metrics".into(),
+                diagnostic: None,
             }),
         }
     }
@@ -177,6 +283,7 @@ impl DatabaseConnection {
                 category: ErrorCategory::Unsupported,
                 code: Some("process_list_unsupported".into()),
                 message: "SQLite does not expose a server process list".into(),
+                diagnostic: None,
             }),
         }
     }
@@ -457,5 +564,56 @@ impl DatabaseConnection {
             Self::Sqlite(adapter) => adapter.close().await,
             Self::SqlServer(adapter) => adapter.close().await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DatabaseDiagnostic, DatabaseError, DatabaseErrorPosition, ErrorCategory};
+
+    #[test]
+    fn output_message_formats_postgres_diagnostics_without_changing_display() {
+        let error = DatabaseError {
+            category: ErrorCategory::Sql,
+            code: Some("42P01".into()),
+            message: "relation \"sdfsdf\" does not exist".into(),
+            diagnostic: Some(Box::new(DatabaseDiagnostic {
+                severity: Some("ERROR".into()),
+                detail: None,
+                hint: None,
+                position: Some(DatabaseErrorPosition::Original(15)),
+                context: None,
+            })),
+        };
+
+        assert_eq!(
+            error.output_message(),
+            "[42P01] ERROR: relation \"sdfsdf\" does not exist\nPosition: 15"
+        );
+        assert_eq!(error.to_string(), "relation \"sdfsdf\" does not exist");
+    }
+
+    #[test]
+    fn output_message_formats_optional_and_internal_diagnostics() {
+        let error = DatabaseError {
+            category: ErrorCategory::Sql,
+            code: None,
+            message: "failed".into(),
+            diagnostic: Some(Box::new(DatabaseDiagnostic {
+                severity: Some("ERROR".into()),
+                detail: Some("first line\nsecond line".into()),
+                hint: Some("try again".into()),
+                position: Some(DatabaseErrorPosition::Internal {
+                    position: 3,
+                    query: "SELECT 1".into(),
+                }),
+                context: Some("in function f".into()),
+            })),
+        };
+
+        assert_eq!(
+            error.output_message(),
+            "ERROR: failed\nDetail: first line\nsecond line\nHint: try again\nInternal Position: 3\nInternal Query: SELECT 1\nContext: in function f"
+        );
     }
 }
