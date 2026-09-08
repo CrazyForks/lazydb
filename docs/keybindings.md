@@ -446,9 +446,8 @@ cannot be parsed.
 | `V` | Enter Visual Line when editing is available |
 | `p` | Paste row when editing is available |
 | `u` | Undo row changes when editing is available |
-| `Ctrl-s` | Commit changes when editing is available |
+| `Ctrl-s` | Review relation changes before committing when editing is available |
 | `Ctrl-r` | Redo row changes when editing is available |
-| `Ctrl-x` | Roll back relation changes when editing is available |
 | `/` / `s` | Focus WHERE/ORDER BY when query capability is available |
 | `r` | Refresh relation |
 

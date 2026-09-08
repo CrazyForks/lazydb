@@ -529,7 +529,7 @@ fn transaction_panel_enter_confirms_the_selected_choice() {
 }
 
 #[test]
-fn relation_space_tc_reaches_the_transaction_panel() {
+fn relation_space_tc_no_longer_opens_the_transaction_panel() {
     let mut app = App::new(Vec::new());
     let mut relation = lazydb::model::relation::RelationTab::new("users");
     relation.transaction_state = TransactionState::Active;
@@ -545,7 +545,7 @@ fn relation_space_tc_reaches_the_transaction_panel() {
         }
     }
 
-    assert!(matches!(
+    assert!(!matches!(
         app.overlay,
         Some(Overlay::RelationTransactionConfirm { .. })
     ));

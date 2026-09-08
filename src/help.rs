@@ -1653,7 +1653,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         RelationCommit,
         [RelationDataBrowse],
         "Ctrl-s",
-        "commit changes",
+        "review and commit changes",
         RelationEditAvailable,
         display
     ),
@@ -1669,12 +1669,6 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         [RelationDataBrowse],
         "Ctrl-r",
         "redo row changes"
-    ),
-    row!(
-        RelationRollback,
-        [RelationDataBrowse],
-        "Ctrl-x",
-        "rollback relation changes"
     ),
     row!(
         RelationEditText,
