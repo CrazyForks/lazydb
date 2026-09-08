@@ -114,3 +114,24 @@ jobs:
           CHANNEL: ${{ needs.assemble.outputs.channel }}
           VERSION: ${{ needs.assemble.outputs.version }}
         run: sh scripts/release/smoke-online-install.sh "$CHANNEL" "$VERSION"
+
+  verify-windows:
+    name: Online Windows installation (${{ matrix.shell }})
+    needs: [assemble, deploy]
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Install from public Pages endpoint
+        shell: ${{ matrix.shell }}
+        env:
+          CHANNEL: ${{ needs.assemble.outputs.channel }}
+          VERSION: ${{ needs.assemble.outputs.version }}
+        run: ./scripts/release/smoke-online-install.ps1 -Channel $env:CHANNEL -Version $env:VERSION
