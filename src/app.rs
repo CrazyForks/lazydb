@@ -11681,10 +11681,16 @@ impl App {
             return Vec::new();
         };
         let mut insert_text = candidate.insert_text;
+        let mut replace = candidate.replace;
         let needs_space = self.editor.text(id).ok().is_none_or(|text| {
-            let Some(suffix) = text.get(candidate.replace.end..) else {
+            let Some(suffix) = text.get(replace.end..) else {
                 return true;
             };
+            if suffix.starts_with(' ') {
+                replace.end += 1;
+                insert_text.push(' ');
+                return false;
+            }
             if suffix.chars().next().is_some_and(char::is_whitespace) {
                 return false;
             }
@@ -11698,7 +11704,7 @@ impl App {
         }
         if let Err(error) = self.editor.replace_range(
             id,
-            candidate.replace,
+            replace,
             &insert_text,
             crate::editor::ReplacementCursor::EndOfInsertion,
         ) {
@@ -11717,7 +11723,18 @@ impl App {
         } else {
             CompletionAfterEdit::Suppress
         };
-        self.apply_editor_effects(completion)
+        let should_schedule_without_edit = matches!(completion, CompletionAfterEdit::Schedule)
+            && self.active_console().completion_request.is_none()
+            && self.completion_key().is_some();
+        let mut commands = self.apply_editor_effects(completion);
+        if should_schedule_without_edit
+            && commands.is_empty()
+            && let Some(key) = self.completion_key()
+        {
+            self.set_completion_request(false, Vec::new());
+            commands.push(Command::ScheduleCompletion(key));
+        }
+        commands
     }
 
     pub(crate) fn sql_dialect(&self) -> SqlDialect {

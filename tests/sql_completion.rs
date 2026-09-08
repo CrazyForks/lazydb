@@ -2457,9 +2457,11 @@ fn ddl_completion_trigger_matches_structural_context() {
         "DROP ",
         "TRUNCATE TABLE ",
         "CREATE INDEX ix ON ",
-        "ALTER TABLE users DROP COLUMN ",
     ] {
         assert!(!should_offer_completion(sql, sql.len()), "{sql}");
+    }
+    for sql in ["ALTER TABLE users ", "ALTER TABLE users DROP COLUMN "] {
+        assert!(should_offer_completion(sql, sql.len()), "{sql}");
     }
     for sql in [
         "SELECT 'CREATE '",
@@ -2552,6 +2554,83 @@ fn ddl_completion_only_uses_the_statement_at_cursor() {
         candidates
             .iter()
             .all(|candidate| candidate.kind == CompletionKind::Table)
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "users"),
+        "{third}: {candidates:?}"
+    );
+}
+
+#[test]
+fn alter_table_target_completion_matches_drop_table() {
+    let index = CompletionIndex::new(&fixture());
+    for sql in ["ALTER TABLE us", "Alter table us", "DROP TABLE us"] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(
+            candidates.iter().any(|candidate| {
+                candidate.kind == CompletionKind::Table && candidate.label == "users"
+            }),
+            "{sql}: {candidates:?}"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.kind == CompletionKind::Table)
+        );
+    }
+}
+
+#[test]
+fn alter_table_operation_completion_is_dialect_specific() {
+    let index = CompletionIndex::new(&fixture());
+
+    let mysql = complete(
+        "ALTER TABLE users M",
+        "ALTER TABLE users M".len(),
+        SqlDialect::MySql,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        mysql
+            .iter()
+            .any(|candidate| candidate.label == "MODIFY COLUMN"),
+        "{mysql:?}"
+    );
+
+    let postgres = complete(
+        "ALTER TABLE users M",
+        "ALTER TABLE users M".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        !postgres
+            .iter()
+            .any(|candidate| candidate.label == "MODIFY COLUMN")
+    );
+
+    let add_column = complete(
+        "ALTER TABLE users ADD C",
+        "ALTER TABLE users ADD C".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        add_column
+            .iter()
+            .any(|candidate| { candidate.label == "COLUMN" && candidate.insert_text == "COLUMN" }),
+        "{add_column:?}"
     );
 }
 
@@ -2876,10 +2955,23 @@ fn ddl_completion_covers_table_elements_alter_actions_and_children() {
         &index,
         CompletionContext::default(),
     );
-    assert!(candidates.iter().any(|candidate| candidate.label == "ADD"));
-    assert!(candidates.iter().any(|candidate| candidate.label == "DROP"));
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "ADD COLUMN")
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "DROP COLUMN")
+    );
 
     for (sql, kind, expected) in [
+        (
+            "ALTER TABLE users MODIFY COLUMN e",
+            CompletionKind::Column,
+            "email",
+        ),
         (
             "ALTER TABLE users DROP COLUMN e",
             CompletionKind::Column,

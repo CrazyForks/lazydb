@@ -614,9 +614,9 @@ fn accepting_completion_places_cursor_after_inserted_text() {
 }
 
 #[test]
-fn accepting_completion_before_existing_whitespace_ends_current_request() {
+fn accepting_completion_before_existing_whitespace_reuses_ascii_space() {
     for prefix in ["", "select 1;\n"] {
-        for suffix in [" ", "\n", "\t"] {
+        for suffix in [" ", "  "] {
             let mut app = connected_completion_app();
             app.update(Action::ReplaceEditor(format!("{suffix}select 2;")));
             editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
@@ -635,7 +635,7 @@ fn accepting_completion_before_existing_whitespace_ends_current_request() {
                 app.active_editor_text().unwrap(),
                 format!("{prefix}SELECT{suffix}select 2;")
             );
-            assert_completion_cursor(&app, usize::from(!prefix.is_empty()), 6);
+            assert_completion_cursor(&app, usize::from(!prefix.is_empty()), 7);
             assert!(app.active_console().completion.is_none());
             assert!(
                 app.active_console().completion_request.is_none(),
@@ -647,6 +647,26 @@ fn accepting_completion_before_existing_whitespace_ends_current_request() {
                     .any(|command| matches!(command, Command::ScheduleCompletion(_)))
             );
         }
+    }
+}
+
+#[test]
+fn accepting_completion_before_newline_or_tab_keeps_cursor_before_suffix() {
+    for suffix in ["\n", "\t"] {
+        let mut app = connected_completion_app();
+        app.update(Action::ReplaceEditor(format!("{suffix}select 2;")));
+        editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        app.update(Action::EditorPaste("sel".into()));
+        app.update(Action::CompletionExplicit);
+        select_completion(&mut app, "SELECT");
+
+        app.update(Action::CompletionAccept);
+
+        assert_eq!(
+            app.active_editor_text().unwrap(),
+            format!("SELECT{suffix}select 2;")
+        );
+        assert_completion_cursor(&app, 0, 6);
     }
 }
 
@@ -761,42 +781,32 @@ fn accepting_completion_preserves_ordering_continuation() {
             "select 1 order by 1 DESC "
         );
         assert!(app.active_console().completion.is_none());
-        if suffix.is_empty() {
-            assert_completion_cursor(&app, 0, "select 1 order by 1 DESC ".len());
-            let key = commands
+        assert_completion_cursor(&app, 0, "select 1 order by 1 DESC ".len());
+        let key = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::ScheduleCompletion(key) => Some(*key),
+                _ => None,
+            })
+            .expect("next ordering position must be scheduled");
+        assert!(app.active_console().completion_request.is_some());
+        app.update(Action::CompletionDue(key));
+        let candidates = &app.active_console().completion.as_ref().unwrap().candidates;
+        assert!(
+            candidates
                 .iter()
-                .find_map(|command| match command {
-                    Command::ScheduleCompletion(key) => Some(*key),
-                    _ => None,
-                })
-                .expect("next ordering position must be scheduled");
-            assert!(app.active_console().completion_request.is_some());
-            app.update(Action::CompletionDue(key));
-            let candidates = &app.active_console().completion.as_ref().unwrap().candidates;
-            assert!(
-                candidates
-                    .iter()
-                    .any(|candidate| candidate.insert_text == "NULLS FIRST")
-            );
-            assert!(
-                candidates
-                    .iter()
-                    .any(|candidate| candidate.insert_text == "NULLS LAST")
-            );
-            assert!(
-                !candidates
-                    .iter()
-                    .any(|candidate| candidate.insert_text == "DESC")
-            );
-        } else {
-            assert_completion_cursor(&app, 0, "select 1 order by 1 DESC".len());
-            assert!(app.active_console().completion_request.is_none());
-            assert!(
-                !commands
-                    .iter()
-                    .any(|command| matches!(command, Command::ScheduleCompletion(_)))
-            );
-        }
+                .any(|candidate| candidate.insert_text == "NULLS FIRST")
+        );
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.insert_text == "NULLS LAST")
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|candidate| candidate.insert_text == "DESC")
+        );
     }
 }
 
@@ -813,7 +823,8 @@ fn accepting_completion_does_not_suppress_later_input_or_explicit_requests() {
         assert!(app.active_console().completion_request.is_none());
 
         app.update(Action::CompletionExplicit);
-        select_completion(&mut app, "SELECT");
+        // The cursor now moves past the reused space, so the next explicit
+        // request is for the expression after SELECT rather than SELECT itself.
         assert!(
             app.active_console()
                 .completion_request
@@ -831,21 +842,21 @@ fn accepting_completion_does_not_suppress_later_input_or_explicit_requests() {
             })
             .expect("later editing must schedule completion");
         let expected = if code == KeyCode::Backspace {
-            "SELEC "
+            "SELECT"
         } else {
-            "SELECTx "
+            "SELECT x"
         };
         assert_eq!(app.active_editor_text().unwrap(), expected);
         let request = app.active_console().completion_request.as_ref().unwrap();
         assert_eq!(request.revision, app.active_editor_revision());
-        assert_eq!(request.cursor, expected.len() - 1);
+        assert_eq!(request.cursor, expected.len());
         app.update(Action::CompletionDue(key));
         if code == KeyCode::Backspace {
             select_completion(&mut app, "SELECT");
             let popup = app.active_console().completion.as_ref().unwrap();
             assert_eq!(
                 popup.candidates[popup.selected].replace,
-                TextRange::new(0, 5)
+                TextRange::new(0, 6)
             );
         } else {
             assert!(app.active_console().completion.is_none());
@@ -868,7 +879,7 @@ fn accepting_completion_without_text_change_ends_current_request() {
 
     assert_eq!(app.active_editor_text().unwrap(), "SELECT ");
     assert_eq!(app.active_editor_revision(), revision);
-    assert_completion_cursor(&app, 0, 6);
+    assert_completion_cursor(&app, 0, 7);
     assert!(app.active_console().completion.is_none());
     assert!(app.active_console().completion_request.is_none());
     assert!(
@@ -914,7 +925,7 @@ fn accepting_completion_ignores_pre_accept_due_event() {
         assert!(commands.is_empty());
         assert_eq!(app.active_editor_text().unwrap(), "SELECT ");
         assert_eq!(app.active_editor_revision(), revision);
-        assert_completion_cursor(&app, 0, 6);
+        assert_completion_cursor(&app, 0, 7);
         assert!(app.active_console().completion.is_none());
         assert!(app.active_console().completion_request.is_none());
     }
