@@ -122,6 +122,8 @@ pub enum Command {
     Lsp(LspArgs),
     /// Check or update the local LazyDB installation.
     Update(UpdateArgs),
+    /// Remove the native LazyDB installation without deleting user data by default.
+    Uninstall(UninstallArgs),
 }
 
 #[derive(Debug, Args)]
@@ -163,6 +165,22 @@ pub struct UpdateArgs {
     #[arg(long, conflicts_with = "check")]
     pub allow_downgrade: bool,
     /// Emit the stable machine-readable report contract.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Show the planned actions without changing the filesystem.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Skip the interactive confirmation prompt.
+    #[arg(long)]
+    pub yes: bool,
+    /// Also remove LazyDB user data and credentials when safely possible.
+    #[arg(long)]
+    pub purge: bool,
+    /// Emit a machine-readable report.
     #[arg(long)]
     pub json: bool,
 }
@@ -399,7 +417,9 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
             Ok("This command requires asynchronous execution".to_owned())
         }
         Command::Lsp(_) => Ok("This command requires asynchronous execution".to_owned()),
-        Command::Update(_) => Ok("This command requires asynchronous execution".to_owned()),
+        Command::Update(_) | Command::Uninstall(_) => {
+            Ok("This command requires asynchronous execution".to_owned())
+        }
     }
 }
 
@@ -408,7 +428,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        CLI_API_VERSION, Cli, Command, MotionMode, UpdateArgs, capabilities, render_command,
+        CLI_API_VERSION, Cli, Command, MotionMode, UninstallArgs, UpdateArgs, capabilities,
+        render_command,
     };
     use crate::ui::icons::IconMode;
 
@@ -419,6 +440,30 @@ mod tests {
 
         assert_eq!(cli.url.as_deref(), Some("sqlite://demo.db"));
         assert!(cli.read_only);
+    }
+
+    #[test]
+    fn parses_uninstall_options() {
+        let cli = Cli::try_parse_from([
+            "lazydb",
+            "uninstall",
+            "--dry-run",
+            "--yes",
+            "--purge",
+            "--json",
+        ])
+        .unwrap();
+
+        let Command::Uninstall(UninstallArgs {
+            dry_run,
+            yes,
+            purge,
+            json,
+        }) = cli.command.unwrap()
+        else {
+            panic!("expected uninstall command");
+        };
+        assert!(dry_run && yes && purge && json);
     }
 
     #[test]

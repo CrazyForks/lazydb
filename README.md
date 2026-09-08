@@ -79,6 +79,43 @@ OpenCode from the target project:
 lazydb mcp setup
 ```
 
+### Uninstalling LazyDB
+
+Native installations can be inspected without changes and then removed with
+the CLI:
+
+```bash
+lazydb uninstall --dry-run
+lazydb uninstall
+```
+
+The default uninstall removes the LazyDB launcher, native releases, current
+release link, installation metadata, and the PATH block managed by the LazyDB
+installer. It preserves connection profiles, encrypted credential material,
+settings, workspace files, SQL files, and unknown files. Use `--yes` for a
+non-interactive uninstall. Use `--json` with `--dry-run` or `--yes` for a
+machine-readable report.
+
+`--purge` additionally removes the allowlisted LazyDB data files after profile
+and credential checks. It may remove saved connection definitions, local
+credential keys, settings, workspace state, and update-check state. Unknown
+files and database files are preserved. System keyring entries are removed
+only when they are referenced by valid LazyDB profiles and the native secret
+store is available:
+
+```bash
+lazydb uninstall --purge --dry-run
+lazydb uninstall --purge
+```
+
+Uninstall does not modify project MCP configuration. Remove the `lazydb` entry
+from `.mcp.json`, `.codex/config.toml`, or `opencode.json[c]` in each project
+before or after uninstall. Homebrew, Cargo, and system-package installations
+must be removed through their original package manager. Windows uninstall is
+not provided by the native POSIX command yet. If installation metadata is
+missing or paths no longer match the recorded native installation, uninstall
+stops without deleting anything and reports the paths that need manual review.
+
 The setup command uses a project-scoped MCP configuration and denies database
 writes by default. It does not install a coding agent or copy credentials.
 Native script installers may offer an opt-in reminder on an interactive first
