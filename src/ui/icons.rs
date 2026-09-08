@@ -129,16 +129,16 @@ impl IconSet {
     pub const fn sort_ascending(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "^",
-            IconMode::NerdFont => fa::FA_SORT_UP,
-            IconMode::Unicode => "▴",
+            IconMode::NerdFont => fa::FA_CARET_UP,
+            IconMode::Unicode => "▲",
         }
     }
 
     pub const fn sort_descending(self) -> &'static str {
         match self.mode {
             IconMode::Ascii => "v",
-            IconMode::NerdFont => fa::FA_SORT_DOWN,
-            IconMode::Unicode => "▾",
+            IconMode::NerdFont => fa::FA_CARET_DOWN,
+            IconMode::Unicode => "▼",
         }
     }
 
@@ -550,13 +550,13 @@ mod tests {
     fn sorting_icons_match_each_mode() {
         let nerd = IconSet::new(IconMode::NerdFont);
         assert_eq!(nerd.sort_default(), fa::FA_SORT);
-        assert_eq!(nerd.sort_ascending(), fa::FA_SORT_UP);
-        assert_eq!(nerd.sort_descending(), fa::FA_SORT_DOWN);
+        assert_eq!(nerd.sort_ascending(), fa::FA_CARET_UP);
+        assert_eq!(nerd.sort_descending(), fa::FA_CARET_DOWN);
 
         let unicode = IconSet::new(IconMode::Unicode);
         assert_eq!(unicode.sort_default(), "▴▾");
-        assert_eq!(unicode.sort_ascending(), "▴");
-        assert_eq!(unicode.sort_descending(), "▾");
+        assert_eq!(unicode.sort_ascending(), "▲");
+        assert_eq!(unicode.sort_descending(), "▼");
 
         let ascii = IconSet::new(IconMode::Ascii);
         assert_eq!(ascii.sort_default(), "S");
