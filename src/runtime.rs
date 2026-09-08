@@ -267,7 +267,6 @@ pub struct Runtime {
     dashboard_metric_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_metadata_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_process_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
-    known_relations: Arc<StdMutex<HashSet<(ConnectionIdentity, crate::db::catalog::CatalogId)>>>,
     background_tasks: Vec<JoinHandle<()>>,
     update_check_task: Option<JoinHandle<()>>,
     update_install_task: Option<JoinHandle<()>>,
@@ -365,7 +364,6 @@ impl Runtime {
             dashboard_metric_tasks: HashMap::new(),
             dashboard_metadata_tasks: HashMap::new(),
             dashboard_process_tasks: HashMap::new(),
-            known_relations: Arc::new(StdMutex::new(HashSet::new())),
             background_tasks: Vec::new(),
             update_check_task: None,
             update_install_task: None,
@@ -1168,7 +1166,6 @@ impl Runtime {
             task.abort();
         }
         let connection = Arc::clone(&self.connection);
-        let known_relations = Arc::clone(&self.known_relations);
         let mutation = Arc::clone(&self.profile_mutation);
         let attempts = Arc::clone(&self.connection_attempts);
         let sender = self.event_sender.clone();
@@ -1192,9 +1189,6 @@ impl Runtime {
                 }
             };
             if let Some(active) = active {
-                if let Ok(mut known) = known_relations.lock() {
-                    known.clear();
-                }
                 active.database.close().await;
             }
             let _ = sender.send(Action::DisconnectCompleted {
@@ -1211,7 +1205,6 @@ impl Runtime {
         let sender = self.event_sender.clone();
         let connection = Arc::clone(&self.connection);
         let attempts = Arc::clone(&self.connection_attempts);
-        let known_relations = Arc::clone(&self.known_relations);
         let expected = ConnectionIdentity {
             profile_id,
             generation,
@@ -1321,9 +1314,6 @@ impl Runtime {
                         {
                             None
                         } else {
-                            if let Ok(mut known) = known_relations.lock() {
-                                known.clear();
-                            }
                             Some(active.replace(ActiveConnection {
                                 profile_id,
                                 generation,
@@ -1372,7 +1362,6 @@ impl Runtime {
     fn load_catalog_page(&mut self, request: crate::db::catalog::CatalogRequest) {
         let sender = self.event_sender.clone();
         let connection = Arc::clone(&self.connection);
-        let known_relations = Arc::clone(&self.known_relations);
         self.background_tasks.push(tokio::spawn(async move {
             let key = request.key.clone();
             let database = {
@@ -1408,14 +1397,6 @@ impl Runtime {
                                 .is_some();
                         if !active {
                             return;
-                        }
-                        if let Ok(mut known) = known_relations.lock() {
-                            known.extend(
-                                page.entries
-                                    .iter()
-                                    .filter(|entry| entry.kind.is_relation())
-                                    .map(|entry| (request.key.connection, entry.id.clone())),
-                            );
                         }
                         let _ = sender.send(Action::CatalogPageLoaded(page));
                     }
@@ -1868,28 +1849,6 @@ impl Runtime {
             let _ = self.event_sender.send(Action::RelationFailed {
                 request,
                 message: "relation request is not owned by the active profile".to_owned(),
-            });
-            return;
-        }
-        let active = self.connection.try_lock().ok().and_then(|guard| {
-            guard.as_ref().map(|active| ConnectionIdentity {
-                profile_id: active.profile_id,
-                generation: active.generation,
-            })
-        }) == Some(request.connection);
-        if !active {
-            let _ = self.event_sender.send(Action::RelationFailed {
-                request,
-                message: "No active database connection".to_owned(),
-            });
-            return;
-        }
-        if !self.known_relations.lock().is_ok_and(|known| {
-            known.contains(&(request.connection, request.relation.object_id.clone()))
-        }) {
-            let _ = self.event_sender.send(Action::RelationFailed {
-                request,
-                message: "relation is not present in the active catalog snapshot".to_owned(),
             });
             return;
         }
@@ -4884,6 +4843,46 @@ mod tests {
         assert!(removed.is_some());
         assert!(active.is_none());
         removed.unwrap().database.close().await;
+    }
+
+    #[tokio::test]
+    async fn active_database_waits_for_connection_lock_and_rechecks_identity() {
+        let profile = import_connection_url("sqlite::memory:", Some("runtime-lock-test"))
+            .unwrap()
+            .profile;
+        let database = DatabaseConnection::connect(&profile, None).await.unwrap();
+        let connection = Arc::new(Mutex::new(Some(ActiveConnection {
+            profile_id: profile.id,
+            generation: 2,
+            target: ExecutionTarget::from_profile(&profile),
+            database,
+        })));
+        let guard = connection.lock().await;
+        let waiting = tokio::spawn(active_database(
+            Arc::clone(&connection),
+            ConnectionIdentity {
+                profile_id: profile.id,
+                generation: 2,
+            },
+        ));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(guard);
+        assert!(waiting.await.unwrap().is_some());
+
+        let guard = connection.lock().await;
+        let stale = tokio::spawn(active_database(
+            Arc::clone(&connection),
+            ConnectionIdentity {
+                profile_id: profile.id,
+                generation: 1,
+            },
+        ));
+        drop(guard);
+        assert!(stale.await.unwrap().is_none());
+
+        let active = connection.lock().await.take().unwrap();
+        active.database.close().await;
     }
 
     #[tokio::test]

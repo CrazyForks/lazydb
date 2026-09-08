@@ -1621,17 +1621,21 @@ impl MsSqlAdapter {
         mut page: crate::model::pagination::PageRequest,
     ) -> Result<RelationPreview, DatabaseError> {
         let target = format!("SQL Server relation {:?}", relation.native_path);
-        if relation.profile_id() != self.connection_id
-            || !relation.kind.is_relation()
-            || relation.native_path.len() != 3
-        {
+        let [database, schema, name, object_id] = relation.native_path.as_slice() else {
+            return Err(DatabaseError::configuration(format!(
+                "catalog target is not a SQL Server relation: {target}"
+            )));
+        };
+        if relation.profile_id() != self.connection_id || !relation.kind.is_relation() {
             return Err(DatabaseError::configuration(format!(
                 "catalog target is not a SQL Server relation: {target}"
             )));
         }
-        let [database, schema, name] = relation.native_path.as_slice() else {
-            unreachable!("relation path length was checked")
-        };
+        let object_id = object_id.parse::<i32>().map_err(|_| {
+            DatabaseError::configuration(format!(
+                "catalog target is not a SQL Server relation: {target}"
+            ))
+        })?;
         if !self.catalog_scope.allows_database(database)
             || !self.catalog_scope.allows_schema(database, schema)
         {
@@ -1662,6 +1666,37 @@ impl MsSqlAdapter {
             .unwrap_or_else(|| "(SELECT NULL)".to_owned());
 
         let pool = self.pool_for_database(database).await?;
+        let verification_sql = format!(
+            "SELECT o.[name], o.[object_id], o.[type] FROM {}.sys.objects o JOIN {}.sys.schemas s ON s.[schema_id] = o.[schema_id] WHERE o.[object_id] = {} AND s.[name] = {} AND o.[name] = {} AND o.[is_ms_shipped] = 0",
+            quote_identifier(database),
+            quote_identifier(database),
+            object_id,
+            quote_literal(schema),
+            quote_literal(name),
+        );
+        let Some(row) = query_rows(&pool, &verification_sql)
+            .await?
+            .into_iter()
+            .next()
+        else {
+            return Err(DatabaseError::configuration(format!(
+                "SQL Server relation identity is no longer valid: {database}.{schema}.{name}"
+            )));
+        };
+        let native_type = row
+            .try_get::<&str, _>("type")
+            .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+            .ok_or_else(|| decode_error("SQL Server returned NULL for relation type"))?;
+        let expected_type = if relation.kind == CatalogKind::View {
+            "V"
+        } else {
+            "U"
+        };
+        if native_type != expected_type {
+            return Err(DatabaseError::configuration(format!(
+                "SQL Server relation kind no longer matches: {database}.{schema}.{name}"
+            )));
+        }
         let total = if page.resolve_total {
             let count_sql = format!(
                 "SELECT COUNT_BIG(*) AS [__lazydb_count] FROM ({filtered_sql}) AS [__lazydb_count_source]"

@@ -1745,6 +1745,9 @@ impl MySqlAdapter {
         let (database, name, native_kind) = self
             .verify_relation(connection, relation, &target, lower_case)
             .await?;
+        if !self.catalog_scope.allows_schema(&database, &database) {
+            return Err(catalog_target_not_found(&target));
+        }
         let relation_entry = CatalogEntry::relation(
             relation.clone(),
             CatalogId::new(

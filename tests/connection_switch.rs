@@ -1525,6 +1525,70 @@ async fn runtime_rejects_target_mismatch_before_query_io() {
 }
 
 #[tokio::test]
+async fn relation_load_does_not_require_a_preloaded_catalog_page() {
+    let temp = TempDir::new().unwrap();
+    let profile = file_profile(&temp.path().join("relation.db"), "relation", "present").await;
+    let profile_id = profile.id;
+    let scope = profile.catalog_scope.clone();
+    let target = ExecutionTarget::from_profile(&profile);
+    let database = target.database.clone();
+    let (mut runtime, mut receiver) = runtime(
+        &temp,
+        vec![profile],
+        Arc::new(MissingSecretStore::default()),
+        None,
+    );
+    runtime.dispatch(Command::Connect {
+        profile_id,
+        generation: 1,
+        target,
+    });
+    let connected = next_action(&mut receiver).await;
+    assert!(matches!(connected, Action::ConnectionSucceeded { .. }));
+
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    let request = RelationRequest {
+        tab_id: Uuid::new_v4(),
+        tab_generation: 1,
+        request_id: 1,
+        connection,
+        relation: RelationKey {
+            profile_id,
+            object_id: CatalogId::new(
+                profile_id,
+                CatalogKind::Table,
+                [database, "main".into(), "marker".into()],
+            ),
+        },
+        kind: RelationRequestKind::Preview,
+        scope,
+        options: Default::default(),
+        page: lazydb::model::pagination::PageRequest::first(
+            lazydb::model::pagination::PageSize::Ten,
+        ),
+    };
+    runtime.dispatch(Command::LoadRelationPreview(request.clone()));
+    let preview = next_action(&mut receiver).await;
+    assert!(matches!(
+        preview,
+        Action::RelationSucceeded { request: result, .. } if result == request
+    ));
+
+    runtime.dispatch(Command::LoadRelationDdl(RelationRequest {
+        kind: RelationRequestKind::Ddl,
+        ..request
+    }));
+    assert!(matches!(
+        next_action(&mut receiver).await,
+        Action::RelationSucceeded { .. }
+    ));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn failed_switch_restores_the_previous_database() {
     let temp = TempDir::new().unwrap();
     let first = file_profile(&temp.path().join("first.db"), "first", "alpha").await;

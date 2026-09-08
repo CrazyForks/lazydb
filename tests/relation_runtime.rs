@@ -493,7 +493,7 @@ fn default_pagination() -> lazydb::model::pagination::ResultPagination {
 }
 
 #[tokio::test]
-async fn runtime_rejects_relation_before_adapter_when_catalog_identity_is_unknown() {
+async fn runtime_rejects_relation_without_an_active_connection() {
     let temp = TempDir::new().unwrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let mut runtime = Runtime::new(
