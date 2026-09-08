@@ -212,6 +212,8 @@ enum DdlContext {
     CreateIndexTarget,
     ColumnType,
     ColumnConstraint,
+    AlterColumnDefinition,
+    AlterColumnType(bool),
     TableConstraint,
     AlterTableAction,
     ExistingColumn,
@@ -618,11 +620,26 @@ pub fn complete_with_mode(
         }
     }
     if qualifiers.is_empty() {
+        let keyword_prefix_match =
+            matches!(context, Context::Ddl(DdlContext::AlterColumnDefinition))
+                && keywords_for_completion(context, dialect, projection_complete, ordering_stage)
+                    .iter()
+                    .any(|keyword| keyword.to_ascii_lowercase().starts_with(&folded_prefix));
         for data_type in data_types_for_context(context, dialect) {
-            if data_type.to_ascii_lowercase().starts_with(&folded_prefix) {
+            if !keyword_prefix_match && data_type.to_ascii_lowercase().starts_with(&folded_prefix) {
+                let insert_text = if matches!(
+                    context,
+                    Context::Ddl(DdlContext::AlterColumnDefinition)
+                        | Context::Ddl(DdlContext::AlterColumnType(true))
+                ) && dialect == SqlDialect::Postgres
+                {
+                    format!("TYPE {data_type}")
+                } else {
+                    (*data_type).to_owned()
+                };
                 candidates.push(CompletionCandidate {
                     label: (*data_type).to_owned(),
-                    insert_text: (*data_type).to_owned(),
+                    insert_text,
                     kind: CompletionKind::DataType,
                     detail: Some("data type".to_owned()),
                     replace,
@@ -977,6 +994,9 @@ fn should_offer_alter_table_completion(text: &str, cursor: usize, dialect: SqlDi
                 | DdlContext::ExistingColumn
                 | DdlContext::ExistingConstraint
                 | DdlContext::ExistingIndex
+                | DdlContext::AlterColumnDefinition
+                | DdlContext::AlterColumnType(_)
+                | DdlContext::DefaultValue
         )
     )
 }
@@ -1549,7 +1569,7 @@ fn context_at(
     if let Some(first) = words.first().map(String::as_str)
         && matches!(first, "create" | "alter" | "drop" | "truncate")
     {
-        context = ddl_context_from_words(&words, context, dialect, prefix);
+        context = ddl_context_from_words(raw_tokens, &words, context, dialect, prefix, cursor);
     }
     if words.first().map(String::as_str) == Some("alter") && alter_table_default_active(&words) {
         context = Context::Ddl(DdlContext::DefaultValue);
@@ -1901,10 +1921,12 @@ fn ddl_child_parent(
 }
 
 fn ddl_context_from_words(
+    tokens: &[CompletionToken],
     words: &[String],
     fallback: Context,
     dialect: SqlDialect,
     prefix: &str,
+    cursor: usize,
 ) -> Context {
     let word = |value: &str| words.iter().position(|item| item == value);
     let Some(first) = words.first().map(String::as_str) else {
@@ -1968,16 +1990,64 @@ fn ddl_context_from_words(
     }
     if let Some(target) = target {
         if target == DdlObjectTarget::Table && first == "alter" {
-            if let Some((position, action)) =
-                words.iter().enumerate().skip(3).find(|(_, word)| {
-                    matches!(word.as_str(), "add" | "modify" | "change" | "rename")
-                })
-            {
+            if let Some((position, action)) = words.iter().enumerate().skip(2).find(|(_, word)| {
+                matches!(
+                    word.as_str(),
+                    "add" | "alter" | "modify" | "change" | "rename"
+                )
+            }) {
                 let action = action.as_str();
                 let column_offset = 2;
                 if words.get(position + 1).map(String::as_str) == Some("column") {
-                    if matches!(action, "modify" | "change") {
-                        return Context::Ddl(DdlContext::ExistingColumn);
+                    if matches!(action, "modify" | "change" | "alter") {
+                        let name_position = position + column_offset;
+                        let action_token = tokens.iter().find(|token| {
+                            token_word(Some(token)).is_some_and(|word| {
+                                !token.quoted && word.eq_ignore_ascii_case(action)
+                            })
+                        });
+                        let column_token = action_token.and_then(|action_token| {
+                            tokens.iter().find(|token| {
+                                token.start > action_token.end
+                                    && token_word(Some(token)).is_some_and(|word| {
+                                        !token.quoted && word.eq_ignore_ascii_case("column")
+                                    })
+                            })
+                        });
+                        let name = column_token.and_then(|column_token| {
+                            tokens.iter().find(|token| {
+                                token.start > column_token.end && token_word(Some(token)).is_some()
+                            })
+                        });
+                        if name.is_none() || name.is_some_and(|name| cursor <= name.end) {
+                            return Context::Ddl(DdlContext::ExistingColumn);
+                        }
+                        let definition = words.get(name_position + 1..).unwrap_or_default();
+                        let explicit_type = definition.first().is_some_and(|word| {
+                            word == "type"
+                                || (word == "set"
+                                    && definition.get(1).map(String::as_str) == Some("data")
+                                    && definition.get(2).map(String::as_str) == Some("type"))
+                        });
+                        return if explicit_type {
+                            Context::Ddl(DdlContext::AlterColumnType(false))
+                        } else if definition.is_empty() {
+                            if prefix.is_empty()
+                                || is_column_constraint_prefix(prefix)
+                                || is_column_action_prefix(prefix)
+                            {
+                                Context::Ddl(DdlContext::AlterColumnDefinition)
+                            } else {
+                                Context::Ddl(DdlContext::AlterColumnType(true))
+                            }
+                        } else if matches!(
+                            definition.first().map(String::as_str),
+                            Some("set" | "drop")
+                        ) {
+                            Context::Ddl(DdlContext::AlterColumnDefinition)
+                        } else {
+                            Context::Ddl(DdlContext::AlterColumnType(true))
+                        };
                     }
                     if action == "rename" {
                         return match words.get(position + 2).map(String::as_str) {
@@ -2074,6 +2144,26 @@ fn is_column_constraint_word(word: &str) -> bool {
         word,
         "null" | "not" | "default" | "primary" | "unique" | "references" | "check"
     )
+}
+
+fn is_column_constraint_prefix(prefix: &str) -> bool {
+    [
+        "null",
+        "not",
+        "default",
+        "primary",
+        "unique",
+        "references",
+        "check",
+    ]
+    .iter()
+    .any(|keyword| keyword.starts_with(&prefix.to_ascii_lowercase()))
+}
+
+fn is_column_action_prefix(prefix: &str) -> bool {
+    ["type", "set", "drop"]
+        .iter()
+        .any(|keyword| keyword.starts_with(&prefix.to_ascii_lowercase()))
 }
 
 fn projection_is_complete(
@@ -2810,6 +2900,30 @@ fn keywords(
         Context::Ddl(DdlContext::ExistingObject(_)) => &[],
         Context::Ddl(DdlContext::CreateIndexTarget) => &[],
         Context::Ddl(DdlContext::ColumnType) => &[],
+        Context::Ddl(DdlContext::AlterColumnDefinition) => match dialect {
+            SqlDialect::Postgres => &[
+                "TYPE",
+                "SET DEFAULT",
+                "DROP DEFAULT",
+                "SET NOT NULL",
+                "DROP NOT NULL",
+                "NULL",
+                "NOT NULL",
+                "DEFAULT",
+            ],
+            SqlDialect::SqlServer => &["NULL", "NOT NULL"],
+            SqlDialect::MySql | SqlDialect::Generic => &[
+                "NULL",
+                "NOT NULL",
+                "DEFAULT",
+                "PRIMARY KEY",
+                "UNIQUE",
+                "REFERENCES",
+                "CHECK",
+            ],
+            SqlDialect::Sqlite => &[],
+        },
+        Context::Ddl(DdlContext::AlterColumnType(_)) => &[],
         Context::Ddl(DdlContext::NewColumnName) => &[],
         Context::Ddl(DdlContext::RenameColumnTo) => &["TO"],
         Context::Ddl(DdlContext::NewObjectName) => &[],
@@ -2949,7 +3063,14 @@ fn alter_table_action_keywords(dialect: SqlDialect) -> &'static [&'static str] {
 }
 
 fn data_types_for_context(context: Context, dialect: SqlDialect) -> &'static [&'static str] {
-    if !matches!(context, Context::Ddl(DdlContext::ColumnType)) {
+    if !matches!(
+        context,
+        Context::Ddl(
+            DdlContext::ColumnType
+                | DdlContext::AlterColumnDefinition
+                | DdlContext::AlterColumnType(_),
+        )
+    ) {
         return &[];
     }
     match dialect {

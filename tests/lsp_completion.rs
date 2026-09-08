@@ -203,6 +203,42 @@ fn sql_completion_returns_keyword_text_edit() {
 }
 
 #[test]
+fn alter_column_type_completion_uses_valid_postgres_text_edit() {
+    let text = "ALTER TABLE users ALTER COLUMN age v";
+    let document = Document {
+        uri: "file:///tmp/alter-column.sql".parse::<Uri>().expect("URI"),
+        language_id: "sql".into(),
+        version: 1,
+        text: text.into(),
+    };
+    let response = complete_document(
+        &document,
+        Position {
+            line: 0,
+            character: text.chars().count() as u32,
+        },
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        false,
+    );
+    let CompletionResponse::List(list) = response else {
+        panic!("expected completion list");
+    };
+    let item = list
+        .items
+        .into_iter()
+        .find(|item| item.label == "VARCHAR")
+        .expect("VARCHAR completion");
+    assert_eq!(item.kind, Some(CompletionItemKind::TYPE_PARAMETER));
+    let Some(CompletionTextEdit::Edit(TextEdit { new_text, range })) = item.text_edit else {
+        panic!("expected text edit");
+    };
+    assert_eq!(new_text, "TYPE VARCHAR");
+    assert_eq!(range.start.character, text.chars().count() as u32 - 1);
+    assert_eq!(range.end.character, text.chars().count() as u32);
+}
+
+#[test]
 fn builtin_lsp_default_value_completion_maps_utf16_ranges() {
     let text = "CREATE TABLE t (\n  📊 TIMESTAMP DEFAULT CURRENT_TIM";
     let document = Document {

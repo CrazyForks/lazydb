@@ -779,6 +779,189 @@ fn alter_add_column_offers_constraints_after_completed_type() {
 }
 
 #[test]
+fn alter_column_offers_definition_after_completed_column_name() {
+    let index = CompletionIndex::default();
+    let type_prefix = "ALTER TABLE users ALTER COLUMN age v";
+    let type_candidates = complete(
+        type_prefix,
+        type_prefix.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        type_candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::DataType && candidate.label == "VARCHAR"
+        }),
+        "{type_prefix}: {type_candidates:?}"
+    );
+
+    let constraint_prefix = "ALTER TABLE users ALTER COLUMN age s";
+    let constraint_candidates = complete(
+        constraint_prefix,
+        constraint_prefix.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        constraint_candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::Keyword && candidate.label == "SET NOT NULL"
+        }),
+        "{constraint_prefix}: {constraint_candidates:?}"
+    );
+
+    let default_prefix = "ALTER TABLE users ALTER COLUMN age SET DEFAULT n";
+    let default_candidates = complete(
+        default_prefix,
+        default_prefix.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        default_candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::Function && candidate.label == "NOW"
+        }),
+        "{default_prefix}: {default_candidates:?}"
+    );
+}
+
+#[test]
+fn alter_column_postgres_type_and_attribute_insertions_are_valid() {
+    let index = CompletionIndex::default();
+    for (sql, label, insert_text) in [
+        (
+            "ALTER TABLE users ALTER COLUMN age v",
+            "VARCHAR",
+            "TYPE VARCHAR",
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN age TYPE v",
+            "VARCHAR",
+            "VARCHAR",
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN age SET n",
+            "NOT NULL",
+            "NOT NULL",
+        ),
+        (
+            "ALTER TABLE users ALTER COLUMN age DROP d",
+            "DEFAULT",
+            "DEFAULT",
+        ),
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.label == label)
+            .unwrap_or_else(|| panic!("{sql}: {candidates:?}"));
+        assert_eq!(candidate.insert_text, insert_text, "{sql}");
+    }
+}
+
+#[test]
+fn alter_column_definition_follows_dialect_rules() {
+    let index = CompletionIndex::default();
+    let mysql = complete(
+        "ALTER TABLE users MODIFY COLUMN age v",
+        "ALTER TABLE users MODIFY COLUMN age v".len(),
+        SqlDialect::MySql,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(mysql.iter().any(|candidate| {
+        candidate.kind == CompletionKind::DataType
+            && candidate.label == "VARCHAR"
+            && candidate.insert_text == "VARCHAR"
+    }));
+
+    let sql_server = complete(
+        "ALTER TABLE users ALTER COLUMN age n",
+        "ALTER TABLE users ALTER COLUMN age n".len(),
+        SqlDialect::SqlServer,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(sql_server.iter().any(|candidate| {
+        candidate.kind == CompletionKind::Keyword && candidate.label == "NOT NULL"
+    }));
+
+    let sqlite = complete(
+        "ALTER TABLE users ALTER COLUMN age v",
+        "ALTER TABLE users ALTER COLUMN age v".len(),
+        SqlDialect::Sqlite,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(sqlite.is_empty(), "{sqlite:?}");
+}
+
+#[test]
+fn alter_column_keeps_completed_name_in_column_stage_until_space() {
+    let index = CompletionIndex::new(&fixture_with_column_names(&["age", "archived"]));
+    let sql = "ALTER TABLE users ALTER COLUMN age";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.kind == CompletionKind::Column && candidate.label == "age"),
+        "{candidates:?}"
+    );
+    assert!(candidates.iter().all(|candidate| {
+        candidate.kind == CompletionKind::Column || candidate.kind == CompletionKind::Keyword
+    }));
+}
+
+#[test]
+fn alter_column_definition_allows_automatic_completion_after_space() {
+    for sql in [
+        "ALTER TABLE users ALTER COLUMN age ",
+        "ALTER TABLE users ALTER COLUMN age TYPE ",
+        "ALTER TABLE users ALTER COLUMN age SET ",
+        "ALTER TABLE users ALTER COLUMN age SET DEFAULT ",
+    ] {
+        assert!(
+            lazydb::sql::should_offer_completion_for_dialect(sql, sql.len(), SqlDialect::Postgres,),
+            "{sql:?}"
+        );
+    }
+}
+
+#[test]
+fn alter_column_definition_handles_quoted_table_and_column_names() {
+    let sql = "ALTER TABLE \"users\" ALTER COLUMN \"age\" v";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &CompletionIndex::default(),
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::DataType
+                && candidate.label == "VARCHAR"
+                && candidate.insert_text == "TYPE VARCHAR"
+        }),
+        "{candidates:?}"
+    );
+}
+
+#[test]
 fn alter_rename_column_suggests_target_columns() {
     let entries = fixture_with_column_names(&["age", "archived"]);
     let index = CompletionIndex::new(&entries);
