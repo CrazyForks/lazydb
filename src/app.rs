@@ -236,6 +236,8 @@ pub struct App {
     resolving_deferred: Option<DeferredTransactionPrompt>,
     pending_target_console: Option<Uuid>,
     pending_editor_target_switch: Option<(Uuid, Uuid, u64)>,
+    connect_started_at: Option<Instant>,
+    transaction_op_started_at: Option<(Uuid, Instant)>,
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
     workspaces: HashMap<Uuid, ConnectionWorkspace>,
     workspace_save: crate::model::workspace_save::SaveState,
@@ -617,6 +619,8 @@ impl App {
             resolving_deferred: None,
             pending_target_console: None,
             pending_editor_target_switch: None,
+            connect_started_at: None,
+            transaction_op_started_at: None,
             sql_editor_list: Default::default(),
             workspaces: HashMap::new(),
             workspace_save: Default::default(),
@@ -6916,6 +6920,7 @@ impl App {
                 self.connection.pending_target = None;
                 self.pending_editor_target_switch = None;
                 self.pending_target_console = None;
+                self.connect_started_at = None;
                 self.connection.status = if self.connection.profile_id.is_some() {
                     ConnectionStatus::Connected
                 } else {
@@ -6965,6 +6970,7 @@ impl App {
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
                     self.pending_target_console = None;
+                    self.connect_started_at = None;
                 }
                 if active_matches {
                     let profile_id = connection.profile_id;
@@ -8136,6 +8142,13 @@ impl App {
                     return Vec::new();
                 }
                 let pending_matches = self.pending_connection_matches(profile_id, generation);
+                let switch_elapsed = if pending_matches {
+                    self.connect_started_at
+                        .take()
+                        .map(|started| started.elapsed())
+                } else {
+                    None
+                };
                 let target = if pending_matches {
                     self.connection.pending_target.clone().or_else(|| {
                         self.profiles
@@ -8215,6 +8228,8 @@ impl App {
                 {
                     tab.execution_target = Some(target.clone());
                     persist_target = true;
+                    append_target_switch_log(&mut self.editor, tab, &target, switch_elapsed);
+                    tab.result_view = ResultView::Output;
                 }
                 if pending_matches {
                     self.connection.pending_target = None;
@@ -8277,6 +8292,8 @@ impl App {
                     if should_default {
                         tab.execution_target = Some(target.clone());
                         persist_target = true;
+                        append_target_switch_log(&mut self.editor, tab, &target, switch_elapsed);
+                        tab.result_view = ResultView::Output;
                     }
                     if tab.transaction_state == TransactionState::OutcomeUnknown
                         && let Ok(next) = transaction::transition(
@@ -8757,6 +8774,7 @@ impl App {
                     connection,
                     TransactionState::Starting,
                 ) {
+                    let elapsed = self.take_transaction_op_elapsed(tab_id, Instant::now());
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -8767,6 +8785,12 @@ impl App {
                         transaction::transition(tab_snapshot(tab), TransactionEvent::Started)
                     {
                         apply_transaction_snapshot(tab, next);
+                        append_transaction_status(
+                            &mut self.editor,
+                            tab,
+                            "transaction started",
+                            elapsed,
+                        );
                     }
                 }
                 Vec::new()
@@ -8785,6 +8809,7 @@ impl App {
                     connection,
                     TransactionState::Starting,
                 ) {
+                    self.clear_transaction_op_timing(tab_id);
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9006,6 +9031,7 @@ impl App {
                     connection,
                     TransactionState::Committing,
                 ) {
+                    let elapsed = self.take_transaction_op_elapsed(tab_id, Instant::now());
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9016,6 +9042,12 @@ impl App {
                         transaction::transition(tab_snapshot(tab), TransactionEvent::Committed)
                     {
                         apply_transaction_snapshot(tab, next);
+                        append_transaction_status(
+                            &mut self.editor,
+                            tab,
+                            "transaction committed",
+                            elapsed,
+                        );
                         return self.finish_deferred(tab_id);
                     }
                 }
@@ -9037,6 +9069,7 @@ impl App {
                     connection,
                     TransactionState::Committing,
                 ) {
+                    self.clear_transaction_op_timing(tab_id);
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9073,6 +9106,7 @@ impl App {
                     connection,
                     TransactionState::RollingBack,
                 ) {
+                    let elapsed = self.take_transaction_op_elapsed(tab_id, Instant::now());
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9083,6 +9117,12 @@ impl App {
                         transaction::transition(tab_snapshot(tab), TransactionEvent::RolledBack)
                     {
                         apply_transaction_snapshot(tab, next);
+                        append_transaction_status(
+                            &mut self.editor,
+                            tab,
+                            "transaction rolled back",
+                            elapsed,
+                        );
                         return self.finish_deferred(tab_id);
                     }
                 }
@@ -9104,6 +9144,7 @@ impl App {
                     connection,
                     TransactionState::RollingBack,
                 ) {
+                    self.clear_transaction_op_timing(tab_id);
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9971,6 +10012,17 @@ impl App {
         let query_generation = tab.generation;
         let transaction_generation = tab.transaction_generation;
         apply_transaction_snapshot(tab, next);
+        if let Some(label) = tab.execution_target.as_ref().map(console_target_label) {
+            let statement = if commit { "commit;" } else { "rollback;" };
+            let timestamp = now_timestamp();
+            append_console_output_to_editor(
+                &mut self.editor,
+                tab,
+                format_sql_output_entry(OutputKind::Success, &timestamp, &label, statement),
+            );
+        }
+        tab.result_view = ResultView::Output;
+        self.transaction_op_started_at = Some((prompt.console_id, Instant::now()));
         self.resolving_deferred = Some(prompt);
         if commit {
             vec![Command::ManualCommit {
@@ -10959,6 +11011,7 @@ impl App {
             state.status = ExplorerConnectionStatus::Linking;
             state.last_error = None;
         }
+        self.connect_started_at = Some(Instant::now());
         commands.push(Command::Connect {
             profile_id,
             generation,
@@ -11551,12 +11604,17 @@ impl App {
             return Vec::new();
         }
         let (text, cursor) = self.active_editor_text_and_cursor();
-        let completion =
-            if crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect()) {
-                CompletionAfterEdit::Schedule
-            } else {
-                CompletionAfterEdit::Suppress
-            };
+        let starts_next_completion = insert_text
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_whitespace() || character == '.');
+        let completion = if starts_next_completion
+            && crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
+        {
+            CompletionAfterEdit::Schedule
+        } else {
+            CompletionAfterEdit::Suppress
+        };
         self.apply_editor_effects(completion)
     }
 
@@ -11614,17 +11672,50 @@ impl App {
     }
 
     fn set_transaction_mode(&mut self, mode: TransactionMode) -> Vec<Command> {
-        let Some(tab) = self.active_console_opt_mut() else {
+        let Some(tab) = self.active_console_opt() else {
             return Vec::new();
         };
+        if tab.transaction_mode == mode {
+            return Vec::new();
+        }
+        let console_id = tab.id;
         let event = match mode {
             TransactionMode::Manual => TransactionEvent::EnterManual,
             TransactionMode::Auto => TransactionEvent::SetAuto,
         };
-        if let Ok(next) = transaction::transition(tab_snapshot(tab), event) {
+        if let Ok(next) = transaction::transition(tab_snapshot(tab), event)
+            && let Some(tab) = self
+                .tabs
+                .iter_mut()
+                .find(|tab| tab.id() == console_id)
+                .and_then(WorkspaceTab::as_console_mut)
+        {
             apply_transaction_snapshot(tab, next);
+            append_transaction_mode_notice(&mut self.editor, tab, mode);
+            tab.result_view = ResultView::Output;
         }
         Vec::new()
+    }
+
+    fn take_transaction_op_elapsed(
+        &mut self,
+        tab_id: Uuid,
+        now: Instant,
+    ) -> Option<std::time::Duration> {
+        self.transaction_op_started_at
+            .take()
+            .filter(|(id, _)| *id == tab_id)
+            .map(|(_, started)| now.duration_since(started))
+    }
+
+    fn clear_transaction_op_timing(&mut self, tab_id: Uuid) {
+        if self
+            .transaction_op_started_at
+            .as_ref()
+            .is_some_and(|(id, _)| *id == tab_id)
+        {
+            self.transaction_op_started_at = None;
+        }
     }
 
     fn transaction_control(&mut self, commit: bool) -> Vec<Command> {
@@ -11643,10 +11734,28 @@ impl App {
         let id = tab.id;
         let query_generation = tab.generation.saturating_add(1);
         let transaction_generation = tab.transaction_generation;
+        let target_label = tab.execution_target.as_ref().map(console_target_label);
         let connection = self.database_command_identity();
-        let tab = self.active_console_mut();
-        tab.generation = query_generation;
-        apply_transaction_snapshot(tab, next);
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id() == id)
+            .and_then(WorkspaceTab::as_console_mut)
+        {
+            tab.generation = query_generation;
+            apply_transaction_snapshot(tab, next);
+            if let Some(label) = target_label {
+                let statement = if commit { "commit;" } else { "rollback;" };
+                let timestamp = now_timestamp();
+                append_console_output_to_editor(
+                    &mut self.editor,
+                    tab,
+                    format_sql_output_entry(OutputKind::Success, &timestamp, &label, statement),
+                );
+            }
+            tab.result_view = ResultView::Output;
+        }
+        self.transaction_op_started_at = Some((id, Instant::now()));
         let Some(connection) = connection else {
             return Vec::new();
         };
@@ -11767,9 +11876,32 @@ impl App {
                 let Ok(next) = next else { return Vec::new() };
                 let query_generation = tab.generation.saturating_add(1);
                 let transaction_generation = next.generation;
-                let tab = self.active_console_mut();
-                tab.generation = query_generation;
-                apply_transaction_snapshot(tab, next);
+                let target_label = tab.execution_target.as_ref().map(console_target_label);
+                if let Some(tab) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id() == tab_id)
+                    .and_then(WorkspaceTab::as_console_mut)
+                {
+                    tab.generation = query_generation;
+                    apply_transaction_snapshot(tab, next);
+                    append_transaction_mode_notice(&mut self.editor, tab, TransactionMode::Manual);
+                    tab.result_view = ResultView::Output;
+                    if let Some(label) = target_label {
+                        let timestamp = now_timestamp();
+                        append_console_output_to_editor(
+                            &mut self.editor,
+                            tab,
+                            format_sql_output_entry(
+                                OutputKind::Success,
+                                &timestamp,
+                                &label,
+                                "begin;",
+                            ),
+                        );
+                    }
+                }
+                self.transaction_op_started_at = Some((tab_id, Instant::now()));
                 vec![Command::ManualBegin {
                     connection,
                     target,
@@ -15969,20 +16101,8 @@ fn append_failed_execution_output(
         .as_ref()
         .filter(|last| last.draft.query_generation + 1 == generation)
     {
-        let target = crate::security::sanitize_terminal_text(&format!(
-            "{}{}",
-            last.draft.target.database,
-            last.draft
-                .target
-                .schema
-                .as_deref()
-                .map_or(String::new(), |schema| format!(".{schema}"))
-        ));
-        let elapsed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|elapsed| format_timestamp(elapsed.as_secs(), elapsed.subsec_millis()));
-        let timestamp = elapsed.unwrap_or_else(|| "unknown time".to_owned());
+        let target = console_target_label(&last.draft.target);
+        let timestamp = now_timestamp();
         append_console_output_to_editor(
             editor,
             tab,
@@ -15998,15 +16118,7 @@ fn format_execution_log(
 ) -> Option<(OutputEntry, OutputEntry)> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     let timestamp = format_timestamp(elapsed.as_secs(), elapsed.subsec_millis());
-    let target = crate::security::sanitize_terminal_text(&format!(
-        "{}{}",
-        last.draft.target.database,
-        last.draft
-            .target
-            .schema
-            .as_deref()
-            .map_or(String::new(), |schema| format!(".{schema}"))
-    ));
+    let target = console_target_label(&last.draft.target);
     let context =
         format_sql_output_entry(OutputKind::Success, &timestamp, &target, &last.draft.sql);
     let stats = &outcome.stats;
@@ -16046,6 +16158,96 @@ fn format_execution_target(target: &ExecutionTarget) -> String {
         Some(schema) => format!("{}/{}", target.database, schema),
         None => target.database.clone(),
     }
+}
+
+fn now_timestamp() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| format_timestamp(elapsed.as_secs(), elapsed.subsec_millis()))
+        .unwrap_or_else(|| "unknown time".to_owned())
+}
+
+fn console_target_label(target: &ExecutionTarget) -> String {
+    crate::security::sanitize_terminal_text(&match &target.schema {
+        Some(schema) => format!("{}.{}", target.database, schema),
+        None => target.database.clone(),
+    })
+}
+
+fn target_switch_statement(target: &ExecutionTarget) -> String {
+    match &target.schema {
+        Some(schema) => format!("set search_path = {:?}", schema),
+        None => format!("use {:?}", target.database),
+    }
+}
+
+fn format_completed_line(timestamp: &str, elapsed: Option<std::time::Duration>) -> String {
+    match elapsed {
+        Some(duration) => format!("[{timestamp}] completed in {} ms", duration.as_millis()),
+        None => format!("[{timestamp}] completed"),
+    }
+}
+
+fn append_target_switch_log(
+    editor: &mut EditorWorkspace,
+    tab: &mut ConsoleTab,
+    target: &ExecutionTarget,
+    elapsed: Option<std::time::Duration>,
+) {
+    let timestamp = now_timestamp();
+    append_console_output_to_editor(
+        editor,
+        tab,
+        format_sql_output_entry(
+            OutputKind::Success,
+            &timestamp,
+            &console_target_label(target),
+            &target_switch_statement(target),
+        ),
+    );
+    append_console_output_to_editor(
+        editor,
+        tab,
+        OutputEntry::plain(
+            OutputKind::Success,
+            format_completed_line(&timestamp, elapsed),
+        ),
+    );
+}
+
+fn append_transaction_mode_notice(
+    editor: &mut EditorWorkspace,
+    tab: &mut ConsoleTab,
+    mode: TransactionMode,
+) {
+    let message = match mode {
+        TransactionMode::Manual => "manual transaction mode ON",
+        TransactionMode::Auto => "auto transaction mode ON",
+    };
+    append_console_output_to_editor(
+        editor,
+        tab,
+        OutputEntry::plain(OutputKind::Info, format!("[{}] {message}", now_timestamp())),
+    );
+}
+
+fn append_transaction_status(
+    editor: &mut EditorWorkspace,
+    tab: &mut ConsoleTab,
+    status: &str,
+    elapsed: Option<std::time::Duration>,
+) {
+    let timestamp = now_timestamp();
+    let message = match elapsed {
+        Some(duration) => format!("[{timestamp}] {status} in {} ms", duration.as_millis()),
+        None => format!("[{timestamp}] {status}"),
+    };
+    append_console_output_to_editor(
+        editor,
+        tab,
+        OutputEntry::plain(OutputKind::Success, message),
+    );
 }
 
 fn format_timestamp(seconds: u64, millis: u32) -> String {
@@ -16292,6 +16494,263 @@ mod tests {
         assert_eq!(
             entry.sql_range.unwrap().get(&entry.message),
             Some("SELECT\n\t'line<CR>value'<ESC><0x07>;")
+        );
+    }
+
+    #[test]
+    fn transaction_mode_switch_appends_output_notice() {
+        let profile = import_connection_url("sqlite::memory:", Some("mode"))
+            .unwrap()
+            .profile;
+        let mut app = App::new(vec![profile.clone()]);
+        let connect = app.update(Action::RequestProfileConnect {
+            profile_id: profile.id,
+        });
+        let generation = match connect.as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "test".into(),
+                database: "memory".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+
+        app.update(Action::SetTransactionMode(TransactionMode::Manual));
+        let last = app
+            .active_console()
+            .output
+            .last()
+            .expect("mode notice appended");
+        assert_eq!(last.kind, OutputKind::Info);
+        assert!(
+            last.message.ends_with("manual transaction mode ON"),
+            "{}",
+            last.message
+        );
+        assert_eq!(app.active_console().result_view, ResultView::Output);
+        assert_eq!(app.focus, Focus::Editor);
+
+        app.update(Action::SetTransactionMode(TransactionMode::Auto));
+        let last = app
+            .active_console()
+            .output
+            .last()
+            .expect("mode notice appended");
+        assert_eq!(last.kind, OutputKind::Info);
+        assert!(
+            last.message.ends_with("auto transaction mode ON"),
+            "{}",
+            last.message
+        );
+        assert_eq!(app.active_console().result_view, ResultView::Output);
+    }
+
+    #[test]
+    fn manual_transaction_lifecycle_appends_output() {
+        let profile = import_connection_url("sqlite::memory:", Some("tx"))
+            .unwrap()
+            .profile;
+        let mut app = App::new(vec![profile.clone()]);
+        let connect = app.update(Action::RequestProfileConnect {
+            profile_id: profile.id,
+        });
+        let generation = match connect.as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "test".into(),
+                database: "memory".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let connection = app.connection.active_identity().unwrap();
+
+        app.update(Action::ReplaceEditor("BEGIN".into()));
+        let commands = app.update(Action::RunActiveSql);
+        let (tab_id, query_generation, transaction_generation) = match commands.as_slice() {
+            [
+                Command::ManualBegin {
+                    tab_id,
+                    query_generation,
+                    transaction_generation,
+                    ..
+                },
+            ] => (*tab_id, *query_generation, *transaction_generation),
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        assert!(
+            app.active_console()
+                .output
+                .last()
+                .unwrap()
+                .message
+                .contains("> begin;")
+        );
+
+        app.update(Action::ManualStarted {
+            tab_id,
+            query_generation,
+            transaction_generation,
+            connection,
+        });
+        assert!(
+            app.active_console()
+                .output
+                .last()
+                .unwrap()
+                .message
+                .contains("transaction started")
+        );
+
+        let commands = app.update(Action::CommitTransaction);
+        let (tab_id, query_generation, transaction_generation) = match commands.as_slice() {
+            [
+                Command::ManualCommit {
+                    tab_id,
+                    query_generation,
+                    transaction_generation,
+                    ..
+                },
+            ] => (*tab_id, *query_generation, *transaction_generation),
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        assert!(
+            app.active_console()
+                .output
+                .last()
+                .unwrap()
+                .message
+                .contains("> commit;")
+        );
+        assert_eq!(app.active_console().result_view, ResultView::Output);
+        app.update(Action::ManualCommitted {
+            tab_id,
+            query_generation,
+            transaction_generation,
+            connection,
+        });
+        assert!(
+            app.active_console()
+                .output
+                .last()
+                .unwrap()
+                .message
+                .contains("transaction committed")
+        );
+
+        app.active_console_mut().transaction_state = TransactionState::Active;
+        let commands = app.update(Action::RollbackTransaction);
+        let (tab_id, query_generation, transaction_generation) = match commands.as_slice() {
+            [
+                Command::ManualRollback {
+                    tab_id,
+                    query_generation,
+                    transaction_generation,
+                    ..
+                },
+            ] => (*tab_id, *query_generation, *transaction_generation),
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ManualRolledBack {
+            tab_id,
+            query_generation,
+            transaction_generation,
+            connection,
+        });
+        assert!(
+            app.active_console()
+                .output
+                .last()
+                .unwrap()
+                .message
+                .contains("transaction rolled back")
+        );
+    }
+
+    #[test]
+    fn editor_target_switch_appends_search_path_output() {
+        let profile = import_connection_url(
+            "postgresql://postgres:postgres@localhost:5432/analyzer",
+            Some("target"),
+        )
+        .unwrap()
+        .profile;
+        let mut app = App::new(vec![profile.clone()]);
+        let connect = app.update(Action::RequestProfileConnect {
+            profile_id: profile.id,
+        });
+        let generation = match connect.as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Postgres,
+                version: "test".into(),
+                database: "analyzer".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+
+        let tab_id = app.active_console().id;
+        let new_target = ExecutionTarget {
+            profile_id: profile.id,
+            database: "analyzer".into(),
+            schema: Some("kitting".into()),
+        };
+        let commands = app.request_connection_target_for_editor_target(new_target.clone(), tab_id);
+        let generation = match commands.as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Postgres,
+                version: "test".into(),
+                database: "app".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+
+        let output = app.active_console().output.clone();
+        assert_eq!(app.active_console().result_view, ResultView::Output);
+        assert_eq!(app.focus, Focus::Editor);
+        let statement = output
+            .iter()
+            .rev()
+            .find(|entry| entry.message.contains("set search_path"))
+            .expect("search path is logged");
+        assert_eq!(statement.kind, OutputKind::Success);
+        assert!(
+            statement
+                .message
+                .contains("analyzer.kitting> set search_path = \"kitting\""),
+            "{}",
+            statement.message
+        );
+        assert!(
+            output.last().unwrap().message.contains("completed in"),
+            "{}",
+            output.last().unwrap().message
         );
     }
 

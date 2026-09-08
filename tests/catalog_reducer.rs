@@ -22,6 +22,109 @@ use uuid::Uuid;
 const PAGE_SIZE: usize = 100;
 
 #[test]
+fn accepting_completion_does_not_reopen_on_late_relation_children() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let users = install_table(&mut app, &profile, &schema, "users");
+    app.update(Action::ReplaceEditor(" ".into()));
+    app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    app.update(Action::EditorPaste(
+        "select * from users order by 1 des".into(),
+    ));
+    let commands = app.update(Action::CompletionExplicit);
+    let target = CatalogTarget::relation_children(users.id.clone()).unwrap();
+    let request = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::LoadCatalogPage(request) if request.key.target == target => {
+                Some(request.clone())
+            }
+            _ => None,
+        })
+        .expect("completion must request missing relation children");
+    assert_eq!(pending_request(&app, profile.id, &target), request);
+    assert!(
+        app.active_console()
+            .completion_request
+            .as_ref()
+            .unwrap()
+            .relation_children
+            .contains(&users.id)
+    );
+    let popup = app.active_console_mut().completion.as_mut().unwrap();
+    popup.selected = popup
+        .candidates
+        .iter()
+        .position(|candidate| candidate.insert_text == "DESC")
+        .unwrap();
+    let commands = app.update(Action::CompletionAccept);
+    assert!(app.active_console().completion.is_none());
+    assert!(app.active_console().completion_request.is_none());
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+    );
+    let revision = app.active_editor_revision();
+    let column = CatalogEntry::relation_child(
+        id(
+            profile.id,
+            CatalogKind::Column,
+            &["app", "public", "users", "user_id"],
+        ),
+        users.id.clone(),
+        QualifiedName {
+            database: Some("app".into()),
+            schema: Some("public".into()),
+            object: "user_id".into(),
+        },
+        "column",
+        OptionalMetadata::Unsupported,
+        lazydb::db::catalog::CatalogMetadata::Column(lazydb::db::catalog::ColumnMetadata::new(
+            1, "bigint", false,
+        )),
+    )
+    .unwrap();
+    assert!(catalog(&app, profile.id).get(&column.id).is_none());
+    assert_eq!(pending_request(&app, profile.id, &target), request);
+
+    let commands = app.update(Action::CatalogPageLoaded(page(
+        &request,
+        vec![column.clone()],
+        None,
+    )));
+
+    assert_eq!(catalog(&app, profile.id).get(&column.id), Some(&column));
+    assert!(
+        app.explorer
+            .completion_index
+            .entries()
+            .iter()
+            .any(|entry| entry.id == column.id)
+    );
+    assert!(matches!(
+        load_state(&app, ExplorerOwnerId::Catalog(users.id)),
+        ExplorerLoadState::Loaded { next_cursor: None }
+    ));
+    assert_eq!(
+        app.active_editor_text().unwrap(),
+        "select * from users order by 1 DESC "
+    );
+    assert_eq!(app.active_editor_revision(), revision);
+    assert!(app.active_console().completion.is_none());
+    assert!(app.active_console().completion_request.is_none());
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+    );
+}
+
+#[test]
 fn frontend_explorer_search_is_synchronous_and_local() {
     let (mut app, profile) = connected_app();
     let database = install_database(&mut app, &profile);
