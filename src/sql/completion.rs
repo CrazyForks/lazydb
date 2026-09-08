@@ -175,11 +175,19 @@ fn entry_in_scope(entry: &CatalogEntry, scope: &CatalogScope) -> bool {
 enum Context {
     Statement,
     Insert,
+    Delete(DeleteContext),
     Relation,
     Expression(ExpressionContext),
     Qualifier,
     Routine,
     Ddl(DdlContext),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeleteContext {
+    From,
+    AfterTarget,
+    Alias,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -421,6 +429,7 @@ pub fn complete(
                         context: match (context, projection_complete, *keyword) {
                             (Context::Expression(ExpressionContext::Projection), true, "FROM") => 4,
                             (Context::Statement | Context::Insert, _, _) => 4,
+                            (Context::Delete(_), _, _) => 4,
                             (Context::Expression(_), _, _) => 2,
                             (Context::Relation | Context::Routine, _, _) => 1,
                             (Context::Qualifier, _, _) => 0,
@@ -829,6 +838,7 @@ fn completion_kind(kind: CatalogKind) -> Option<CompletionKind> {
 fn catalog_kind_allowed(context: Context, kind: CompletionKind) -> bool {
     match context {
         Context::Statement | Context::Insert => false,
+        Context::Delete(_) => false,
         Context::Relation => matches!(
             kind,
             CompletionKind::Database
@@ -970,6 +980,9 @@ fn context_at(
             Context::Ddl(DdlContext::ReferenceRelation)
         };
     }
+    if let Some(delete_context) = delete_context(&tokens) {
+        return delete_context;
+    }
     if words.first().map(String::as_str) == Some("create")
         && words.iter().any(|word| word == "index")
         && let Some(on) = words.iter().position(|word| word == "on")
@@ -1058,6 +1071,92 @@ fn context_at(
     } else {
         context
     }
+}
+
+fn delete_context(tokens: &[&CompletionToken]) -> Option<Context> {
+    let first_word = tokens.iter().find_map(|token| {
+        (!token.quoted).then(|| token_word(Some(*token)).map(str::to_ascii_lowercase))?
+    });
+    if !matches!(first_word.as_deref(), Some("delete" | "with")) {
+        return None;
+    }
+    let command = tokens.iter().enumerate().rev().find_map(|(index, token)| {
+        if token.quoted {
+            return None;
+        }
+        let word = token_word(Some(*token))?;
+        let lower = word.to_ascii_lowercase();
+        if !matches!(lower.as_str(), "delete" | "select") {
+            return None;
+        }
+        let previous = tokens.get(index.wrapping_sub(1)).copied();
+        let command_position = previous.is_none()
+            || matches!(
+                previous.map(|token| &token.kind),
+                Some(CompletionTokenKind::LeftParen | CompletionTokenKind::RightParen)
+            );
+        if !command_position {
+            return None;
+        }
+        Some((index, word))
+    })?;
+    if command.1.eq_ignore_ascii_case("select") {
+        return None;
+    }
+    let delete = command.0;
+    let Some(from_token) = tokens.get(delete + 1).copied() else {
+        return Some(Context::Delete(DeleteContext::From));
+    };
+    let from_word = (!from_token.quoted)
+        .then(|| token_word(Some(from_token)))
+        .flatten()
+        .map(str::to_ascii_lowercase);
+    if from_word.as_deref() != Some("from") {
+        return if delete + 2 == tokens.len()
+            && from_word.is_some_and(|word| "from".starts_with(&word))
+        {
+            Some(Context::Delete(DeleteContext::From))
+        } else {
+            None
+        };
+    }
+    let from = delete + 1;
+    let first = tokens.get(from + 1)?;
+    token_word(Some(*first))?;
+    let mut target_end = from + 2;
+    while tokens
+        .get(target_end)
+        .is_some_and(|token| matches!(token.kind, CompletionTokenKind::Dot))
+    {
+        tokens
+            .get(target_end + 1)
+            .and_then(|token| token_word(Some(*token)))?;
+        target_end += 2;
+    }
+    let tail = &tokens[target_end..];
+    if tail
+        .iter()
+        .any(|token| !token.quoted && token_word(Some(*token)).is_some_and(is_delete_clause_word))
+    {
+        return None;
+    }
+    let first = match tail.first() {
+        Some(token) => token_word(Some(*token)),
+        None => return Some(Context::Delete(DeleteContext::AfterTarget)),
+    };
+    let word = first?;
+    if word.eq_ignore_ascii_case("as") {
+        return if tail.len() == 1 {
+            Some(Context::Delete(DeleteContext::Alias))
+        } else {
+            Some(Context::Delete(DeleteContext::AfterTarget))
+        };
+    }
+    Some(Context::Delete(DeleteContext::AfterTarget))
+}
+
+fn is_delete_clause_word(word: &str) -> bool {
+    is_relation_boundary(word) || matches!(word.to_ascii_lowercase().as_str(), "from" | "using")
 }
 
 fn order_by_keyword(
@@ -1478,6 +1577,27 @@ fn qualified_candidate_indices(
         })
         .map(|(_, entry)| entry.id.clone())
         .collect::<Vec<_>>();
+    if parents.is_empty() && qualifiers.len() == 1 {
+        return index
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry.kind.is_relation()
+                    && (entry
+                        .qualified_name
+                        .schema
+                        .as_deref()
+                        .is_some_and(|schema| schema.eq_ignore_ascii_case(qualifier))
+                        || entry
+                            .qualified_name
+                            .database
+                            .as_deref()
+                            .is_some_and(|database| database.eq_ignore_ascii_case(qualifier)))
+            })
+            .map(|(position, _)| position)
+            .collect();
+    }
     for qualifier in &qualifiers[1..] {
         parents = parents
             .into_iter()
@@ -1934,6 +2054,9 @@ fn keywords(
             ],
         },
         Context::Insert => &["INTO"],
+        Context::Delete(DeleteContext::From) => &["FROM"],
+        Context::Delete(DeleteContext::AfterTarget) => &["WHERE"],
+        Context::Delete(DeleteContext::Alias) => &[],
         Context::Ddl(DdlContext::CreateObjectKind) => ddl_object_keywords(dialect, true),
         Context::Ddl(DdlContext::AlterObjectKind) => &["TABLE", "VIEW", "INDEX", "SCHEMA"],
         Context::Ddl(DdlContext::DropObjectKind) => ddl_object_keywords(dialect, false),

@@ -8,7 +8,7 @@ use lazydb::{
     },
     profile::{CatalogScope, CatalogSelection, DatabaseKind, DatabaseScope, import_connection_url},
     sql::{
-        CompletionContext, CompletionIndex, CompletionKind, SqlDialect, complete,
+        CompletionContext, CompletionIndex, CompletionKind, SqlDialect, TextRange, complete,
         completion_dependencies, quote_identifier, should_offer_completion,
     },
 };
@@ -669,6 +669,469 @@ fn order_by_completion_keeps_nested_query_scopes_separate() {
 }
 
 #[test]
+fn delete_from_keyword_completion() {
+    let index = CompletionIndex::new(&[]);
+    for sql in [
+        "DELETE f",
+        "DELETE fr",
+        "DELETE fro",
+        "dElEtE FrO",
+        "DELETE ",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(candidates.len(), 1, "{sql}: {candidates:?}");
+        let candidate = &candidates[0];
+        assert_eq!(candidate.label, "FROM");
+        assert_eq!(candidate.insert_text, "FROM");
+        assert_eq!(candidate.kind, CompletionKind::Keyword);
+        assert_eq!(candidate.replace, TextRange::new(7, sql.len()));
+        assert_eq!(candidate.score.context, 4);
+    }
+}
+
+#[test]
+fn delete_where_keyword_completion() {
+    let index = CompletionIndex::new(&[]);
+    for preceding in [
+        "",
+        "SELECT * FROM all_types_test;\nUPDATE all_types_test SET id = 1 WHERE id = 2;\n",
+    ] {
+        for prefix in ["w", "wh"] {
+            let target = format!("{preceding}DELETE FROM all_types_test ");
+            let sql = format!("{target}{prefix}");
+            let candidates = complete(
+                &sql,
+                sql.len(),
+                SqlDialect::Postgres,
+                &index,
+                CompletionContext::default(),
+            );
+            assert_eq!(candidates.len(), 1, "{sql}: {candidates:?}");
+            let candidate = &candidates[0];
+            assert_eq!(candidate.label, "WHERE");
+            assert_eq!(candidate.insert_text, "WHERE");
+            assert_eq!(candidate.kind, CompletionKind::Keyword);
+            assert_eq!(candidate.replace, TextRange::new(target.len(), sql.len()));
+            assert_eq!(candidate.score.context, 4);
+        }
+    }
+}
+
+#[test]
+fn delete_where_offered_after_target_variants() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for sql in [
+        "DELETE FROM sys_user w",
+        "DELETE FROM public.sys_user w",
+        "DELETE FROM sys_user t w",
+        "DELETE FROM sys_user AS t w",
+        "DELETE FROM missing_table w",
+        "DELETE FROM \"where\" w",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(candidates.len(), 1, "{sql}: {candidates:?}");
+        let candidate = &candidates[0];
+        assert_eq!(candidate.label, "WHERE", "{sql}: {candidates:?}");
+        assert_eq!(candidate.insert_text, "WHERE");
+        assert_eq!(candidate.kind, CompletionKind::Keyword);
+        assert_eq!(candidate.replace, TextRange::new(sql.len() - 1, sql.len()));
+        assert_eq!(candidate.score.context, 4);
+    }
+
+    let sql = "DELETE FROM sys_user ";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(candidates.len(), 1, "{sql}: {candidates:?}");
+    let candidate = &candidates[0];
+    assert_eq!(candidate.label, "WHERE");
+    assert_eq!(candidate.insert_text, "WHERE");
+    assert_eq!(candidate.kind, CompletionKind::Keyword);
+    assert_eq!(candidate.replace, TextRange::new(sql.len(), sql.len()));
+    assert_eq!(candidate.score.context, 4);
+}
+
+#[test]
+fn delete_where_suppressed_during_alias_entry() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    for sql in [
+        "DELETE FROM sys_user AS",
+        "DELETE FROM sys_user AS ",
+        "DELETE FROM sys_user AS w",
+    ] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert!(candidates.is_empty(), "{sql}: {candidates:?}");
+    }
+}
+
+#[test]
+fn delete_target_completion_keeps_relation_suggestions() {
+    let index = CompletionIndex::new(&contextual_fixture());
+
+    for sql in ["DELETE FROM sys_u", "DELETE FROM sys_user"] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(candidates.len(), 1, "{sql}: {candidates:?}");
+        assert_eq!(candidates[0].label, "sys_user", "{sql}: {candidates:?}");
+        assert_eq!(
+            candidates[0].kind,
+            CompletionKind::Table,
+            "{sql}: {candidates:?}"
+        );
+    }
+
+    let sql = "DELETE FROM public.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(candidates.len(), 3, "{sql}: {candidates:?}");
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.label == "sys_user"),
+        "{sql}: {candidates:?}"
+    );
+    assert!(
+        candidates.iter().all(|candidate| {
+            candidate.label != "WHERE" && matches!(candidate.kind, CompletionKind::Table)
+        }),
+        "{sql}: {candidates:?}"
+    );
+}
+
+#[test]
+fn delete_where_keeps_target_column_completion() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let sql = "DELETE FROM sys_user WHERE u";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(
+        candidates
+            .iter()
+            .filter(|candidate| candidate.kind == CompletionKind::Column)
+            .count(),
+        5,
+        "{sql}: {candidates:?}"
+    );
+    for label in [
+        "update_time",
+        "update_user",
+        "update_user_phone",
+        "user_type",
+        "username",
+    ] {
+        assert!(
+            candidates.iter().any(|candidate| candidate.label == label),
+            "{sql}: missing {label} in {candidates:?}"
+        );
+    }
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.label != "WHERE"),
+        "{sql}: {candidates:?}"
+    );
+}
+
+#[test]
+fn delete_where_absent_with_qualified_predicate() {
+    let index = CompletionIndex::new(&contextual_fixture());
+    let sql = "DELETE FROM sys_user WHERE t.";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(candidates.is_empty(), "{sql}: {candidates:?}");
+}
+
+#[test]
+fn delete_completion_preserves_suffix_and_uses_document_relative_range() {
+    let index = CompletionIndex::new(&[]);
+    let sql = "SELECT 1;\n-- keep this\nDELETE FROM users wh AND id = 1";
+    let cursor = sql.find("wh AND").unwrap() + 2;
+    let candidates = complete(
+        sql,
+        cursor,
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    let candidate = &candidates[0];
+    assert_eq!(candidate.label, "WHERE");
+    assert_eq!(candidate.replace, TextRange::new(cursor - 2, cursor));
+    let mut completed = sql.to_owned();
+    completed.replace_range(
+        candidate.replace.start..candidate.replace.end,
+        &candidate.insert_text,
+    );
+    assert_eq!(
+        completed,
+        "SELECT 1;\n-- keep this\nDELETE FROM users WHERE AND id = 1"
+    );
+}
+
+#[test]
+fn delete_completion_ignores_comments_and_uses_unicode_byte_ranges() {
+    let mut entries = contextual_fixture();
+    let schema = entries
+        .iter()
+        .find(|entry| entry.kind == CatalogKind::Table)
+        .and_then(|entry| entry.parent_id.as_ref())
+        .unwrap()
+        .clone();
+    entries.push(
+        CatalogEntry::relation(
+            CatalogId::new(
+                schema.profile_id(),
+                CatalogKind::Table,
+                ["app", "public", "用户"],
+            ),
+            schema,
+            qualified("app", Some("public"), "用户"),
+            "table",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap(),
+    );
+    let index = CompletionIndex::new(&entries);
+    let sql = "-- 前置\nSELECT 1;\nDELETE FROM 用 AND id = 1";
+    let cursor = sql.find("用 AND").unwrap() + "用".len();
+    let candidates = complete(
+        sql,
+        cursor,
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    let candidate = &candidates[0];
+    assert_eq!(candidate.label, "用户");
+    assert_eq!(
+        candidate.replace,
+        TextRange::new(cursor - "用".len(), cursor)
+    );
+    assert_eq!(&sql[cursor..], " AND id = 1");
+}
+
+#[test]
+fn delete_completion_keeps_cte_and_nested_select_scopes_isolated() {
+    let index = CompletionIndex::new(&multi_relation_fixture());
+
+    let cte_sql = "WITH recent AS (SELECT * FROM users u) SELECT * FROM roles r WHERE u.";
+    let cte_candidates = complete(
+        cte_sql,
+        cte_sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(cte_candidates.is_empty(), "{cte_candidates:?}");
+
+    let nested_sql = "SELECT * FROM users u WHERE u.id IN (SELECT r.id FROM roles r WHERE r.";
+    let nested_candidates = complete(
+        nested_sql,
+        nested_sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(nested_candidates.iter().any(|candidate| {
+        candidate.kind == CompletionKind::Column && candidate.label == "role_name"
+    }));
+    assert!(
+        !nested_candidates
+            .iter()
+            .any(|candidate| candidate.label == "user_name")
+    );
+}
+
+#[test]
+fn completion_with_empty_index_keeps_delete_from_and_where_independent() {
+    let index = CompletionIndex::default();
+    for (sql, expected) in [("DELETE f", "FROM"), ("DELETE FROM users w", "WHERE")] {
+        let candidates = complete(
+            sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>(),
+            [expected]
+        );
+    }
+}
+
+#[test]
+fn delete_completion_dependencies_retain_target_relation_children() {
+    let entries = contextual_fixture();
+    let index = CompletionIndex::new(&entries);
+    let target = entries
+        .iter()
+        .find(|entry| entry.kind == CatalogKind::Table && entry.qualified_name.object == "sys_user")
+        .unwrap()
+        .id
+        .clone();
+    let dependencies = completion_dependencies(
+        "DELETE FROM sys_user WHERE ",
+        "DELETE FROM sys_user WHERE ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert_eq!(dependencies.relation_children, vec![target]);
+}
+
+#[test]
+fn delete_from_keyword_completion_across_dialects() {
+    let index = CompletionIndex::new(&[]);
+    for dialect in [
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+        SqlDialect::Generic,
+    ] {
+        for sql in [
+            "DELETE f",
+            "DELETE fr",
+            "DELETE fro",
+            "dElEtE FrO",
+            "DELETE ",
+        ] {
+            let candidates = complete(
+                sql,
+                sql.len(),
+                dialect,
+                &index,
+                CompletionContext::default(),
+            );
+            assert_eq!(candidates.len(), 1, "{sql} {dialect:?}: {candidates:?}");
+            let candidate = &candidates[0];
+            assert_eq!(candidate.label, "FROM");
+            assert_eq!(candidate.insert_text, "FROM");
+            assert_eq!(candidate.kind, CompletionKind::Keyword);
+            assert_eq!(candidate.replace, TextRange::new(7, sql.len()));
+            assert_eq!(candidate.score.context, 4);
+        }
+    }
+}
+
+#[test]
+fn delete_where_after_plain_target_across_dialects() {
+    let index = CompletionIndex::new(&[]);
+    for dialect in [
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+        SqlDialect::Generic,
+    ] {
+        for (sql, prefix_len) in [
+            ("DELETE FROM sys_user w", 1),
+            ("DELETE FROM sys_user wh", 2),
+            ("DELETE FROM sys_user ", 0),
+        ] {
+            let candidates = complete(
+                sql,
+                sql.len(),
+                dialect,
+                &index,
+                CompletionContext::default(),
+            );
+            assert_eq!(candidates.len(), 1, "{sql} {dialect:?}: {candidates:?}");
+            let candidate = &candidates[0];
+            assert_eq!(candidate.label, "WHERE");
+            assert_eq!(candidate.insert_text, "WHERE");
+            assert_eq!(candidate.kind, CompletionKind::Keyword);
+            assert_eq!(
+                candidate.replace,
+                TextRange::new(sql.len() - prefix_len, sql.len())
+            );
+            assert_eq!(candidate.score.context, 4);
+        }
+    }
+}
+
+#[test]
+fn delete_where_after_quoted_target_across_dialects() {
+    let index = CompletionIndex::new(&[]);
+    for dialect in [
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+        SqlDialect::Generic,
+    ] {
+        let target = match dialect {
+            SqlDialect::MySql => "`where`",
+            SqlDialect::SqlServer => "[where]",
+            _ => "\"where\"",
+        };
+        let sql = format!("DELETE FROM {target} w");
+        let candidates = complete(
+            &sql,
+            sql.len(),
+            dialect,
+            &index,
+            CompletionContext::default(),
+        );
+        assert_eq!(candidates.len(), 1, "{sql} {dialect:?}: {candidates:?}");
+        let candidate = &candidates[0];
+        assert_eq!(candidate.label, "WHERE");
+        assert_eq!(candidate.insert_text, "WHERE");
+        assert_eq!(candidate.kind, CompletionKind::Keyword);
+        assert_eq!(candidate.replace, TextRange::new(sql.len() - 1, sql.len()));
+        assert_eq!(candidate.score.context, 4);
+    }
+}
+
+#[test]
 fn insert_completion_offers_only_into_keyword() {
     let index = CompletionIndex::new(&contextual_fixture());
 
@@ -750,6 +1213,32 @@ fn automatic_completion_requires_an_identifier_prefix() {
 fn automatic_completion_ignores_non_identifier_dots_and_literals() {
     for sql in ["1.", "select 'users'", "-- users", "select * from users; "] {
         assert!(!should_offer_completion(sql, sql.len()), "{sql:?}");
+    }
+}
+
+#[test]
+fn automatic_completion_dialect_trigger_boundaries_remain_stable() {
+    for dialect in [
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::Sqlite,
+        SqlDialect::SqlServer,
+        SqlDialect::Generic,
+    ] {
+        for (sql, expected) in [
+            ("fro", true),
+            ("w", true),
+            ("-- fro", false),
+            ("SELECT 'w'", false),
+            ("   ", false),
+            ("\n\t", false),
+        ] {
+            assert_eq!(
+                lazydb::sql::should_offer_completion_for_dialect(sql, sql.len(), dialect),
+                expected,
+                "{dialect:?} {sql:?}"
+            );
+        }
     }
 }
 
