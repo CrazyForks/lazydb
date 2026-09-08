@@ -45,7 +45,6 @@ impl FakeLoader {
                 code: Some("catalog_target_unsupported".to_owned()),
                 message: message.to_owned(),
                 diagnostic: None,
-                diagnostic: None,
             }),
         );
     }
