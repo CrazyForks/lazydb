@@ -5271,9 +5271,87 @@ fn relation_help_documents_transaction_control_panel() {
 }
 
 #[test]
+fn relation_transaction_review_generates_local_sql_before_saving() {
+    use lazydb::model::relation::{OwnedSnapshot, RelationLoad, RelationView};
+    use lazydb::model::relation_edit::{EditableRowState, RelationEditSession};
+
+    for (row_state, expected) in [
+        (
+            EditableRowState::Updated {
+                changed_columns: [1].into(),
+            },
+            "UPDATE",
+        ),
+        (EditableRowState::InsertDraft, "INSERT INTO"),
+        (EditableRowState::Deleted, "DELETE FROM"),
+    ] {
+        let mut app = fixture();
+        let outcome = app.active_console().outcome.clone().unwrap();
+        let mut relation = RelationTab::new("review_target");
+        let mut edit =
+            RelationEditSession::from_rows(outcome.result_sets.last().unwrap().rows.clone());
+        edit.rows[0].state = row_state;
+        edit.rows[0].supplied_columns = [0, 1].into();
+        relation.edit = Some(edit);
+        // A stale cache must not override the current local edits, even from DDL view.
+        relation.transaction_review_sql = Some("STALE SQL".into());
+        relation.view = RelationView::Ddl;
+        relation.data = RelationLoad::Ready(OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "SELECT * FROM review_target".into(),
+                result: outcome,
+                pagination: lazydb::model::pagination::ResultPagination::from_page(
+                    lazydb::model::pagination::PageRequest::first(
+                        lazydb::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+                row_versions: None,
+            },
+            lazydb::identity::ConnectionIdentity {
+                profile_id: uuid::Uuid::nil(),
+                generation: 0,
+            },
+            lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        ));
+        app.tabs.push(WorkspaceTab::Relation(relation));
+        app.active_tab = app.tabs.len() - 1;
+        assert!(app.update(Action::OpenTransactionControl).is_empty());
+        let Some(Overlay::RelationTransactionConfirm { sql, .. }) = &app.overlay else {
+            panic!("expected transaction review");
+        };
+        assert!(sql.contains(expected), "{sql}");
+        assert!(!sql.contains("STALE SQL"));
+        let output = render(&app, 120, 36);
+        assert!(output.contains(expected), "{output}");
+    }
+}
+
+#[test]
+fn relation_transaction_review_preserves_active_sql_and_explains_missing_preview() {
+    use lazydb::model::transaction::TransactionState;
+    for cached in [Some("DELETE FROM review_target WHERE id = 1;"), None] {
+        let mut app = fixture();
+        let mut relation = RelationTab::new("review_target");
+        relation.transaction_state = TransactionState::Active;
+        relation.transaction_review_sql = cached.map(str::to_owned);
+        app.tabs.push(WorkspaceTab::Relation(relation));
+        app.active_tab = app.tabs.len() - 1;
+        assert!(app.update(Action::OpenTransactionControl).is_empty());
+        let output = render(&app, 120, 36);
+        assert!(
+            output.contains(cached.unwrap_or("SQL preview unavailable")),
+            "{output}"
+        );
+    }
+}
+
+#[test]
 fn relation_transaction_review_renders_highlighted_sql_and_survives_small_terminals() {
     let mut app = fixture();
-    let tab_id = uuid::Uuid::new_v4();
+    let relation = RelationTab::new("review_target");
+    let tab_id = relation.id;
+    app.tabs.push(WorkspaceTab::Relation(relation));
     app.overlay = Some(Overlay::RelationTransactionConfirm {
         tab_id,
         prompt: None,
@@ -5287,11 +5365,77 @@ fn relation_transaction_review_renders_highlighted_sql_and_survives_small_termin
     assert!(output.contains("TRANSACTION REVIEW"), "{output}");
     assert!(output.contains("UPDATE \"users\""), "{output}");
     assert!(output.contains("SET \"name\""), "{output}");
+    assert!(output.contains("TABLE  review_target"), "{output}");
+    assert!(output.contains("LOCAL CHANGES"), "{output}");
+    assert!(output.contains("SQL preview"), "{output}");
+    assert!(output.contains("Apply changes"), "{output}");
+    assert!(output.contains("Discard local edits"), "{output}");
+    assert!(!output.contains("REVIEW TABLE CHANGES"), "{output}");
 
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        render_with_state(&app, 40, 10);
-    }));
-    assert!(result.is_ok());
+    let (buffer, _) = render_buffer_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+    let table = find_text_cell(&buffer, "TABLE  review_target").unwrap();
+    let status = find_text_cell(&buffer, "LOCAL CHANGES").unwrap();
+    let preview = find_text_cell(&buffer, "SQL preview").unwrap();
+    let table_value = (table.0 + 7, table.1);
+    assert!(buffer[table_value].modifier.contains(Modifier::BOLD));
+    assert_ne!(buffer[table].fg, buffer[table_value].fg);
+    assert_ne!(buffer[status].fg, buffer[table].fg);
+    assert_ne!(buffer[(preview.0, preview.1 + 1)].bg, buffer[table].bg);
+
+    for (width, height) in [(40, 10), (60, 18), (80, 24), (120, 36)] {
+        let (output, state) = render_with_state(&app, width, height);
+        if width < 56 || height < 16 {
+            assert!(output.contains("TERMINAL TOO SMALL"), "{output}");
+            continue;
+        }
+        for label in ["Commit", "Rollback", "Cancel"] {
+            assert!(output.contains(label), "{width}x{height}: {output}");
+        }
+        for target in [
+            lazydb::ui::HitTarget::TransactionExitChoice(
+                lazydb::model::transaction::TransactionExitChoice::Commit,
+            ),
+            lazydb::ui::HitTarget::TransactionExitChoice(
+                lazydb::model::transaction::TransactionExitChoice::Rollback,
+            ),
+            lazydb::ui::HitTarget::TransactionExitCancel,
+        ] {
+            assert!(
+                state
+                    .hit_regions
+                    .iter()
+                    .any(|region| region.target == target)
+            );
+        }
+    }
+}
+
+#[test]
+fn relation_transaction_review_distinguishes_database_transaction_states() {
+    use lazydb::model::transaction::{TransactionExitChoice, TransactionState};
+
+    for (transaction_state, label) in [
+        (TransactionState::Active, "ACTIVE TRANSACTION"),
+        (TransactionState::Aborted, "ABORTED - rollback required"),
+    ] {
+        let mut app = fixture();
+        let mut relation = RelationTab::new("review_target");
+        relation.transaction_state = transaction_state;
+        app.overlay = Some(Overlay::RelationTransactionConfirm {
+            tab_id: relation.id,
+            prompt: None,
+            choice: TransactionExitChoice::Rollback,
+            sql: "ROLLBACK;".into(),
+            preview_offset: 0,
+            edit_snapshot: None,
+        });
+        app.tabs.push(WorkspaceTab::Relation(relation));
+
+        let output = render(&app, 120, 36);
+        assert!(output.contains(label), "{output}");
+        assert!(output.contains("Undo transaction"), "{output}");
+        assert!(!output.contains("Discard local edits"), "{output}");
+    }
 }
 
 #[test]

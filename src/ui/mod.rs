@@ -4017,49 +4017,102 @@ fn render_overlay(
                         WorkspaceTab::Relation(tab) => Some(tab.transaction_state),
                         _ => None,
                     });
-            let consequence = match transaction_state {
-                Some(crate::model::transaction::TransactionState::Active) => {
-                    "Rollback ends the active database transaction."
-                }
-                Some(crate::model::transaction::TransactionState::Aborted) => {
-                    "The transaction is aborted; only rollback is available."
-                }
-                _ => "Commit executes the reviewed changes; Rollback discards local edits.",
+            let (status, status_color, commit_help, rollback_help) = match transaction_state {
+                Some(crate::model::transaction::TransactionState::Active) => (
+                    "ACTIVE TRANSACTION",
+                    theme.warning,
+                    "Save transaction",
+                    "Undo transaction",
+                ),
+                Some(crate::model::transaction::TransactionState::Aborted) => (
+                    "ABORTED - rollback required",
+                    theme.error,
+                    "Unavailable",
+                    "Undo transaction",
+                ),
+                _ => (
+                    "LOCAL CHANGES",
+                    theme.warning,
+                    "Apply changes",
+                    "Discard local edits",
+                ),
             };
-            let lines = vec![
-                Line::from(Span::styled(" REVIEW TABLE CHANGES ", theme.title(true))),
-                Line::raw(format!("table: {title}")),
-                Line::raw(consequence),
-            ];
             let inner = dialog::render_frame(frame, popup, " TRANSACTION REVIEW ", theme);
-            dialog::render_body(
-                frame,
-                Rect::new(inner.x, inner.y, inner.width, 3),
-                lines,
-                theme,
+            let inner = inner.inner(ratatui::layout::Margin::new(
+                u16::from(inner.width > 6) * 2,
+                u16::from(inner.height >= 12),
+            ));
+            let action_height = if inner.width < 42 { 3 } else { 1 };
+            let sections = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Min(0),
+                Constraint::Length(action_height + 4),
+            ])
+            .split(inner);
+            let muted = Style::new().fg(theme.muted);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("TABLE  ", muted),
+                        Span::styled(
+                            sanitize_terminal_text(title),
+                            Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+                        ),
+                    ]),
+                    Line::from(Span::styled(status, Style::new().fg(status_color))),
+                ]),
+                sections[0],
             );
+            let preview_block = Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(theme.border))
+                .title(" SQL preview ")
+                .title_style(muted)
+                .style(Style::new().bg(theme.surface));
+            let preview_area = preview_block.inner(sections[1]);
+            frame.render_widget(preview_block, sections[1]);
             let preview = sql_preview::lines(
                 sql,
                 app.sql_dialect(),
-                inner.width.saturating_sub(2) as usize,
+                preview_area.width.saturating_sub(4) as usize,
                 theme,
-            );
-            let preview_height = inner.height.saturating_sub(7);
-            let preview_area = Rect::new(
-                inner.x,
-                inner.y.saturating_add(3),
-                inner.width,
-                preview_height,
             );
             let preview_lines = preview
                 .into_iter()
                 .skip(*preview_offset)
-                .take(preview_height as usize)
+                .take(preview_area.height as usize)
                 .collect::<Vec<_>>();
             frame.render_widget(
-                Paragraph::new(preview_lines)
-                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
+                Paragraph::new(preview_lines).style(Style::new().fg(theme.text).bg(theme.surface)),
                 preview_area,
+            );
+            if sql.trim().is_empty() {
+                frame.render_widget(
+                    Paragraph::new(
+                        "SQL preview unavailable: no review SQL could be generated or recovered.",
+                    )
+                    .style(Style::new().fg(theme.warning).bg(theme.surface))
+                    .wrap(Wrap { trim: true }),
+                    preview_area,
+                );
+            }
+            let footer = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Length(action_height),
+                Constraint::Min(0),
+                Constraint::Length(1),
+            ])
+            .split(sections[2]);
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("Commit", Style::new().fg(theme.accent)),
+                    Span::styled(format!("  {commit_help}   /   "), muted),
+                    Span::styled("Rollback", Style::new().fg(theme.error)),
+                    Span::styled(format!("  {rollback_help}"), muted),
+                ]))
+                .wrap(Wrap { trim: true })
+                .alignment(Alignment::Center),
+                footer[0],
             );
             let selected = match choice {
                 TransactionExitChoice::Commit => 0,
@@ -4068,7 +4121,7 @@ fn render_overlay(
             };
             let actions = dialog::render_actions(
                 frame,
-                Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
+                footer[1],
                 &[
                     dialog::DialogButton {
                         label: "Commit",
@@ -4099,11 +4152,18 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            shortcut_hints::render(
                 frame,
-                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-                "Tab / Shift-Tab choose   Enter confirm   Up/Down scroll   Esc cancel",
+                footer[3],
+                &[
+                    shortcut_hints::ShortcutHint::new("Enter", "confirm"),
+                    shortcut_hints::ShortcutHint::new("Esc", "cancel"),
+                    shortcut_hints::ShortcutHint::new("Tab/Shift-Tab", "choose"),
+                    shortcut_hints::ShortcutHint::new("Up/Down", "scroll"),
+                ],
                 theme,
+                theme.surface_raised,
+                Alignment::Center,
             );
         }
         Overlay::ClearTransactionOutcome { focus, .. } => {

@@ -10231,6 +10231,40 @@ impl App {
         if tab.transaction_state == TransactionState::Idle && !has_dirty_rows {
             return Vec::new();
         }
+        let sql = if tab.transaction_state == TransactionState::Idle {
+            let snapshot = match &tab.data {
+                RelationLoad::Ready(snapshot) => Some(snapshot),
+                RelationLoad::Loading { previous, .. }
+                | RelationLoad::Failed { previous, .. }
+                | RelationLoad::Cancelled { previous } => previous.as_ref(),
+                RelationLoad::Empty => None,
+            };
+            snapshot
+                .and_then(|snapshot| snapshot.value.result.result_sets.last())
+                .zip(tab.edit.as_ref())
+                .map(|(result, edit)| {
+                    let columns = result
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect::<Vec<_>>();
+                    let primary_key_columns = match &tab.ddl {
+                        RelationLoad::Ready(ddl) => {
+                            crate::db::mutation::metadata_fingerprint(&ddl.value).primary_key
+                        }
+                        _ => Vec::new(),
+                    };
+                    crate::model::relation_review::preview_sql(
+                        edit,
+                        tab.title(),
+                        &columns,
+                        &primary_key_columns,
+                    )
+                })
+                .unwrap_or_default()
+        } else {
+            tab.transaction_review_sql.clone().unwrap_or_default()
+        };
         self.overlay = Some(Overlay::RelationTransactionConfirm {
             tab_id,
             prompt: (_intent != DeferredIntent::Stay).then_some(DeferredTransactionPrompt {
@@ -10239,7 +10273,7 @@ impl App {
                 intent: _intent,
             }),
             choice: TransactionExitChoice::Cancel,
-            sql: tab.transaction_review_sql.clone().unwrap_or_default(),
+            sql,
             preview_offset: 0,
             edit_snapshot: tab.edit.as_ref().map(|edit| format!("{edit:?}")),
         });
