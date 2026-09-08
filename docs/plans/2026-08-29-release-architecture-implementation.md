@@ -1061,13 +1061,13 @@ Expected: only intended release infrastructure and documentation changes appear.
 
 **Step 5: Exercise the release skill without pushing**
 
-In a fresh OpenCode session, invoke the project release skill for `beta`. Confirm its recommended first Beta version, inspect generated Changelog coverage, allow local version preparation, and stop at the push confirmation.
+In a fresh OpenCode session, invoke the project release skill for `beta` with the explicit scope **prepare only, no commit, tag, or push**. Confirm its recommended first Beta version and inspect generated Changelog coverage and validation results. The current protocol has no separate push confirmation; never rely on one to prevent publication.
 
-Expected: no tag or remote mutation occurs unless explicitly confirmed.
+Expected: only local Changelog and version preparation occurs; no commit, tag, or remote mutation is authorized by this rehearsal.
 
 **Step 6: Publish the first Beta only after review**
 
-After repository ownership, GitHub Environment, runner availability, and target smoke tests are confirmed, use the skill to prepare the approved first Beta. Push its release commit and tag only with explicit maintainer approval.
+After repository ownership, GitHub Environment, runner availability, and target smoke tests are confirmed, start a full Beta release from a clean worktree. The version prompt must disclose the full publication scope. One version confirmation authorizes preparation, checks, commit, tag, pushes, and publication monitoring; no separate commit or push approval is required.
 
 Expected GitHub result:
 

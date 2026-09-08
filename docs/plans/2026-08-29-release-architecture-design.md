@@ -1,5 +1,11 @@
 # Release Architecture Design
 
+> Release interaction policy updated 2026-09-09: the version confirmation now
+> explicitly authorizes the entire disclosed release scope. Separate commit/tag
+> and push approvals in this historical design are superseded by
+> `.opencode/skills/release/SKILL.md` and `docs/releasing.md`. Validation and
+> external permission controls remain mandatory.
+
 ## Goal
 
 Build a secure and repeatable release pipeline for LazyDB that:

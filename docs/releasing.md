@@ -30,8 +30,31 @@ vMAJOR.MINOR.PATCH-beta.N
 
 Use the OpenCode skill with `release beta` or `release stable`. The skill
 reviews commits and the actual diff, recommends the next version, and asks for
-confirmation before editing. It creates a release commit and annotated tag
-only after tests pass and asks separately before pushing.
+one confirmation before editing. This prompt explicitly includes the release
+scope: update Changelog and Cargo versions, run all checks, create a release
+commit and annotated tag, push `main` and the tag, then wait for CI, Release,
+and Pages verification. Confirming the version authorizes that whole scope;
+there are no separate commit or push questions. A valid version override in
+response to the prompt authorizes the same scope for the selected version.
+Clear affirmative replies in the maintainer's language are accepted.
+
+For a non-publishing rehearsal, explicitly request **prepare only, no commit,
+tag, or push** before confirming. To permit a local commit and tag but no
+publication, explicitly request **no push**. Analysis-only requests never edit.
+
+New releases require a clean worktree and index. Preparation changes only
+`CHANGELOG.md`, `Cargo.toml`, and `Cargo.lock`; it does not bundle existing work
+or modify application code and tests to make validation pass. Failed checks,
+unexpected source/remote changes, and conflicting tags stop the workflow with
+an exact state report. No force-push, tag replacement, or automatic republication
+is allowed. Interrupted runs verify Git/GitHub state and resume the same
+authorized release without repeating completed operations or routine questions.
+
+OpenCode tool permissions, branch protection, and GitHub Environment reviewers
+are independent controls. The skill does not bypass or change them. If they
+block progress, it reports the required external action rather than claiming
+the release is complete. Completion requires all required CI, Release, and
+Pages jobs, including online installation checks for the exact version.
 
 Beta notes use the previous Beta for the same version line as their baseline.
 Stable notes use the previous stable tag, including changes already described
