@@ -204,6 +204,7 @@ pub struct ConsoleTab {
     pub transaction_state: TransactionState,
     pub last_execution: Option<LastExecution>,
     pub execution_target: Option<ExecutionTarget>,
+    pub target_error: Option<String>,
     pub query: DataQueryState,
     pub derived: Option<DerivedResultState>,
 }
@@ -289,6 +290,7 @@ impl ConsoleTab {
             transaction_state: TransactionState::Idle,
             last_execution: None,
             execution_target: None,
+            target_error: None,
             query: DataQueryState::default(),
             derived: None,
         }

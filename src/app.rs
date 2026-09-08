@@ -3771,7 +3771,12 @@ impl App {
                 self.clear_active_data_query_focus();
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 self.normalize_focus_after_tab_switch();
-                self.load_active_relation(false)
+                let commands = self.prepare_active_console_target();
+                if commands.is_empty() {
+                    self.load_active_relation(false)
+                } else {
+                    commands
+                }
             }
             Action::PreviousTab => {
                 if self.tabs.is_empty() {
@@ -3783,14 +3788,23 @@ impl App {
                     .checked_sub(1)
                     .unwrap_or(self.tabs.len() - 1);
                 self.normalize_focus_after_tab_switch();
-                self.load_active_relation(false)
+                let commands = self.prepare_active_console_target();
+                if commands.is_empty() {
+                    self.load_active_relation(false)
+                } else {
+                    commands
+                }
             }
             Action::ActivateTab(index) => {
                 if index < self.tabs.len() {
                     self.clear_active_data_query_focus();
                     self.active_tab = index;
                     self.normalize_focus();
-                    return self.load_active_relation(false);
+                    let mut commands = self.prepare_active_console_target();
+                    if commands.is_empty() {
+                        commands.extend(self.load_active_relation(false));
+                    }
+                    return commands;
                 }
                 Vec::new()
             }
@@ -8337,6 +8351,17 @@ impl App {
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
                 }
+                if let Some(console_id) = editor_target_switch
+                    .map(|(console_id, _, _)| console_id)
+                    .or_else(|| self.pending_target_console)
+                    && let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|tab| tab.id() == console_id)
+                        .and_then(WorkspaceTab::as_console_mut)
+                {
+                    tab.target_error = None;
+                }
                 if editor_target_switch.is_none() {
                     self.explorer.connection_changed();
                 }
@@ -8468,6 +8493,13 @@ impl App {
                     },
                 );
                 if self.pending_connection_matches(profile_id, generation) {
+                    let target_console = self
+                        .pending_editor_target_switch
+                        .filter(|(_, pending_profile_id, pending_generation)| {
+                            *pending_profile_id == profile_id && *pending_generation == generation
+                        })
+                        .map(|(console_id, _, _)| console_id)
+                        .or(self.pending_target_console);
                     self.connection_terminal_generation =
                         self.connection_terminal_generation.max(generation);
                     self.connection.pending_profile_id = None;
@@ -8481,6 +8513,15 @@ impl App {
                         ConnectionStatus::Failed
                     };
                     self.connection.error = Some(message.clone());
+                    if let Some(console_id) = target_console
+                        && let Some(tab) = self
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id() == console_id)
+                            .and_then(WorkspaceTab::as_console_mut)
+                    {
+                        tab.target_error = Some(message.clone());
+                    }
                     self.notify_error("Connection", message.clone());
                     if let Some(state) = self.explorer.normalized.profiles.get_mut(&profile_id) {
                         if is_editor_target_switch && self.connection.profile_id == Some(profile_id)
@@ -10485,7 +10526,41 @@ impl App {
         }
         self.focus = Focus::Editor;
         self.overlay = None;
-        vec![self.persist_workspace_command()]
+        let mut commands = self.prepare_active_console_target();
+        commands.push(self.persist_workspace_command());
+        commands
+    }
+
+    fn prepare_active_console_target(&mut self) -> Vec<Command> {
+        let Some(tab) = self.active_console_opt() else {
+            return Vec::new();
+        };
+        let Some(target) = tab.execution_target.clone() else {
+            return Vec::new();
+        };
+        if self.connection.status == ConnectionStatus::Connected
+            && self.connection.pending_generation.is_none()
+            && self.connection.target.as_ref() == Some(&target)
+        {
+            return Vec::new();
+        }
+        if self.connection.pending_generation.is_some() {
+            self.notify_warning(
+                "Connection",
+                "Wait for the current connection change to finish before activating another console",
+            );
+            return Vec::new();
+        }
+        if tab.transaction_mode == TransactionMode::Manual
+            && tab.transaction_state != TransactionState::Idle
+        {
+            self.notify_warning(
+                "Connection",
+                "Cannot activate this console target while its manual transaction is active",
+            );
+            return Vec::new();
+        }
+        self.request_connection_target_for_editor_target(target, tab.id)
     }
 
     fn request_clear_outcome(&mut self) -> Vec<Command> {
@@ -11925,8 +12000,11 @@ impl App {
             return Vec::new();
         };
         if self.connection.target.as_ref() != Some(&target) {
-            self.notify_target_mismatch(&target);
-            return Vec::new();
+            if self.connection.pending_generation.is_some() {
+                self.notify_target_mismatch(&target);
+                return Vec::new();
+            }
+            return self.request_connection_target_for_editor_target(target, tab_id);
         }
         match sql::classify_transaction_sql(&scope.sql, dialect) {
             sql::TransactionSqlClassification::Control(control) => {

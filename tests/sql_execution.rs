@@ -373,9 +373,10 @@ fn execution_fails_closed_when_console_target_is_missing_or_stale() {
 }
 
 #[test]
-fn target_mismatch_is_reported_before_query_or_transaction_dispatch() {
+fn target_mismatch_requests_the_console_target_before_query_dispatch() {
     let mut app = connected_app(ConfirmationPolicy::RiskyOnly);
     let profile_id = app.connection.profile_id.unwrap();
+    app.profiles[0].catalog_scope.databases = lazydb::profile::CatalogSelection::All;
     app.active_console_mut().execution_target =
         Some(lazydb::model::execution_target::ExecutionTarget {
             profile_id,
@@ -386,13 +387,16 @@ fn target_mismatch_is_reported_before_query_or_transaction_dispatch() {
 
     let commands = app.update(Action::RunActiveSql);
 
-    assert!(commands.is_empty());
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::Connect { target, .. }] if target.schema.as_deref() == Some("other")
+    ));
     assert!(app.overlay.is_none());
-    assert!(app.notifications.history().any(|notification| {
-        notification.level == lazydb::model::notification::NotificationLevel::Warning
-            && notification.body.contains("SQL was not executed")
-            && notification.body.contains("Space d")
-    }));
+    assert!(
+        !app.notifications
+            .history()
+            .any(|notification| { notification.body.contains("SQL was not executed") })
+    );
 
     app.update(Action::ReplaceEditor("BEGIN;".into()));
     let commands = app.update(Action::RunActiveSql);

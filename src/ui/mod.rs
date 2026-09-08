@@ -2880,9 +2880,17 @@ fn render_editor(
                     if app.connection.active_identity().is_some()
                         && app.connection.target.as_ref() == Some(target)
                     {
-                        target_label
+                        format!("{target_label} READY")
+                    } else if app.connection.pending_target.as_ref() == Some(target) {
+                        format!("{target_label} CONNECTING")
+                    } else if app
+                        .active_console_opt()
+                        .and_then(|tab| tab.target_error.as_ref())
+                        .is_some()
+                    {
+                        format!("{target_label} TARGET ERROR")
                     } else if app.connection.active_identity().is_some() {
-                        format!("{target_label} NOT CONNECTED")
+                        format!("{target_label} TARGET INACTIVE")
                     } else {
                         format!("{target_label} OFFLINE")
                     }
