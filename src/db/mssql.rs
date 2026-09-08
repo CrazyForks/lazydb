@@ -530,6 +530,7 @@ impl MsSqlAdapter {
                 message: crate::security::sanitize_terminal_text(&format!(
                     "SQL Server 2012 or newer is required; server version is {version}"
                 )),
+                diagnostic: None,
             });
         }
         Ok(ServerInfo {
@@ -2074,6 +2075,7 @@ async fn execute_pool(
         category: ErrorCategory::Sql,
         code: Some("sql_server_go_count_unsupported".to_owned()),
         message: crate::security::sanitize_terminal_text(&error.to_string()),
+        diagnostic: None,
     })?;
     let mut lease = pool.checkout().await?;
     let mut result_sets = Vec::new();
@@ -2723,6 +2725,7 @@ fn batch_error(batch: usize, error: DatabaseError) -> DatabaseError {
             "SQL Server batch {batch} failed: {}",
             error.message
         )),
+        diagnostic: error.diagnostic,
     }
 }
 
@@ -3141,6 +3144,7 @@ fn decode_error(message: impl AsRef<str>) -> DatabaseError {
         category: ErrorCategory::Internal,
         code: Some("sql_server_decode".to_owned()),
         message: crate::security::sanitize_terminal_text(message.as_ref()),
+        diagnostic: None,
     }
 }
 
@@ -3155,6 +3159,7 @@ fn validate_catalog_scope(scope: &CatalogScope) -> Result<(), DatabaseError> {
         category: ErrorCategory::Configuration,
         code: Some("invalid_catalog_request".to_owned()),
         message: crate::security::sanitize_terminal_text(&error.to_string()),
+        diagnostic: None,
     })
 }
 
@@ -3166,6 +3171,7 @@ fn catalog_target_not_found(target: &CatalogTarget) -> DatabaseError {
             "SQL Server catalog target was not found: {}",
             target.description()
         ),
+        diagnostic: None,
     }
 }
 
@@ -3174,6 +3180,7 @@ fn catalog_invariant(error: crate::db::catalog::CatalogValidationError) -> Datab
         category: ErrorCategory::Internal,
         code: Some("catalog_invariant".to_owned()),
         message: crate::security::sanitize_terminal_text(&error.to_string()),
+        diagnostic: None,
     }
 }
 
@@ -3586,6 +3593,7 @@ fn tiberius_error(error: tiberius::error::Error, default: ErrorCategory) -> Data
         category,
         code: code.map(|code| code.to_string()),
         message: crate::security::sanitize_terminal_text(&error.to_string()),
+        diagnostic: None,
     }
 }
 
@@ -3594,6 +3602,7 @@ fn network_error(error: impl fmt::Display) -> DatabaseError {
         category: ErrorCategory::Network,
         code: None,
         message: crate::security::sanitize_terminal_text(&error.to_string()),
+        diagnostic: None,
     }
 }
 
@@ -3602,6 +3611,7 @@ fn pool_closed_error() -> DatabaseError {
         category: ErrorCategory::Configuration,
         code: Some("sql_server_pool_closed".to_owned()),
         message: "SQL Server connection pool is closed".to_owned(),
+        diagnostic: None,
     }
 }
 
@@ -3610,6 +3620,7 @@ fn unsupported_operation<T>(code: &str, message: &str) -> Result<T, DatabaseErro
         category: ErrorCategory::Unsupported,
         code: Some(code.to_owned()),
         message: message.to_owned(),
+        diagnostic: None,
     })
 }
 

@@ -3047,6 +3047,7 @@ fn render_editor(
                 &snapshot,
                 line,
             ),
+            None,
         );
         let content = if line.selection_newline {
             let mut content = content;
@@ -3315,6 +3316,7 @@ pub(crate) fn editor_line_spans(
     syntax: bool,
     statement_background_cells: Option<(usize, usize)>,
     mouse_selection_cells: &[(usize, usize)],
+    output_style: Option<(crate::model::tab::OutputKind, usize)>,
 ) -> Vec<Span<'static>> {
     let selected = snapshot
         .selection_cells
@@ -3325,13 +3327,25 @@ pub(crate) fn editor_line_spans(
     let mut display_cell = 0usize;
     let mut result: Vec<Span<'static>> = Vec::new();
     for source_span in &line.spans {
-        let foreground = if syntax {
+        let default_foreground = if syntax {
             theme.syntax_color(editor_syntax_color(source_span.kind))
         } else {
             theme.text
         };
+        let mut source_offset = source_span.source_start;
         for character in source_span.text.chars() {
             let width = character.width().unwrap_or(0);
+            let foreground = if let Some((kind, timestamp_end)) = output_style {
+                if source_offset < timestamp_end {
+                    theme.muted
+                } else if kind == crate::model::tab::OutputKind::Error {
+                    theme.error
+                } else {
+                    default_foreground
+                }
+            } else {
+                default_foreground
+            };
             let highlighted = selected.iter().any(|(start, end)| {
                 display_cell < *end && display_cell.saturating_add(width) > *start
             });
@@ -3357,6 +3371,7 @@ pub(crate) fn editor_line_spans(
                 result.push(Span::styled(character.to_string(), style));
             }
             display_cell = display_cell.saturating_add(width);
+            source_offset += character.len_utf8();
         }
     }
     result
@@ -3807,6 +3822,8 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
                 &snapshot,
                 line,
             ),
+            app.active_console_opt()
+                .and_then(|tab| crate::app::output_line_style(tab, line.line)),
         );
         frame.render_widget(
             Paragraph::new(Line::from(content))

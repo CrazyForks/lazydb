@@ -2712,6 +2712,7 @@ pub fn validate_catalog_scope(scope: &CatalogScope) -> Result<(), DatabaseError>
                 "invalid MySQL catalog scope for database `{}`: mirrored schemas must use All",
                 database.name
             )),
+            diagnostic: None,
         });
     }
     Ok(())
@@ -3056,6 +3057,7 @@ fn catalog_target_not_found(target: &CatalogTarget) -> DatabaseError {
             "MySQL catalog target was not found: {}",
             target.description()
         )),
+        diagnostic: None,
     }
 }
 
@@ -3068,6 +3070,7 @@ fn catalog_internal(message: impl AsRef<str>) -> DatabaseError {
         category: ErrorCategory::Internal,
         code: Some("mysql_catalog_invariant".to_owned()),
         message: sanitize_terminal_text(message.as_ref()),
+        diagnostic: None,
     }
 }
 
@@ -3113,6 +3116,7 @@ fn unsupported_catalog_version(version: &str) -> DatabaseError {
         message: sanitize_terminal_text(&format!(
             "MySQL catalog pages require Oracle MySQL 8.0.13 or newer; server reported {version}"
         )),
+        diagnostic: None,
     }
 }
 

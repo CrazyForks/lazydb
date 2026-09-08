@@ -56,6 +56,7 @@ pub(crate) fn render(
                     true,
                     None,
                     &super::mouse_selection_cells(state, view.session_id, &snapshot, line),
+                    None,
                 ))
                 .style(Style::new().bg(theme.surface_raised)),
             )

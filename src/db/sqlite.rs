@@ -154,6 +154,7 @@ impl SqliteAdapter {
                 category: ErrorCategory::Internal,
                 code: Some("sqlite_operation_gate_closed".to_owned()),
                 message: sanitize_terminal_text(&error.to_string()),
+                diagnostic: None,
             })
     }
 
@@ -2064,6 +2065,7 @@ fn catalog_target_not_found(target: &CatalogTarget) -> DatabaseError {
             "SQLite catalog target was not found: {}",
             target.description()
         )),
+        diagnostic: None,
     }
 }
 
@@ -2093,6 +2095,7 @@ fn catalog_internal(message: impl AsRef<str>) -> DatabaseError {
         category: ErrorCategory::Internal,
         code: Some("sqlite_catalog_invariant".to_owned()),
         message: sanitize_terminal_text(message.as_ref()),
+        diagnostic: None,
     }
 }
 

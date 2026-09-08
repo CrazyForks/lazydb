@@ -183,6 +183,29 @@ fn output_sql_ranges(tab: &ConsoleTab) -> Vec<sql::TextRange> {
         .collect()
 }
 
+pub(crate) fn output_line_style(
+    tab: &ConsoleTab,
+    line_number: usize,
+) -> Option<(OutputKind, usize)> {
+    let mut line = 0;
+    for entry in &tab.output {
+        let mut line_start = 0;
+        for text in entry.message.split_inclusive('\n') {
+            if line == line_number {
+                let timestamp_end = entry
+                    .timestamp_ranges
+                    .iter()
+                    .find(|range| range.start >= line_start && range.end <= line_start + text.len())
+                    .map_or(0, |range| range.end - line_start);
+                return Some((entry.kind, timestamp_end));
+            }
+            line += 1;
+            line_start += text.len();
+        }
+    }
+    None
+}
+
 fn append_console_output_to_editor(
     editor: &mut EditorWorkspace,
     tab: &mut ConsoleTab,
@@ -16087,6 +16110,7 @@ fn format_sql_output_entry(
     let sql = crate::security::sanitize_terminal_text(&normalized_sql);
     let separator = if sql.contains('\n') { "\n" } else { " " };
     OutputEntry::sql(kind, format!("[{timestamp}] {target}>{separator}"), sql)
+        .with_timestamp(timestamp)
 }
 
 fn append_failed_execution_output(
@@ -16109,7 +16133,17 @@ fn append_failed_execution_output(
             format_sql_output_entry(OutputKind::Info, &timestamp, &target, &last.draft.sql),
         );
     }
-    append_console_output_to_editor(editor, tab, OutputEntry::plain(OutputKind::Error, message));
+    let timestamp = now_timestamp();
+    let message = message
+        .lines()
+        .map(|line| format!("[{timestamp}] {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    append_console_output_to_editor(
+        editor,
+        tab,
+        OutputEntry::plain(OutputKind::Error, message).with_timestamp(&timestamp),
+    );
 }
 
 fn format_execution_log(
@@ -17363,7 +17397,7 @@ mod tests {
             tab_id,
             generation,
             connection: app.connection.active_identity().unwrap(),
-            message: "relation \"sys_user1\" does not exist".into(),
+            message: "[42P01] ERROR: relation \"sys_user1\" does not exist\nPosition: 15".into(),
         });
 
         let tab = app.active_console();
@@ -17371,7 +17405,13 @@ mod tests {
         let entries = &tab.output;
         assert_eq!(entries.len(), 2);
         assert!(entries[0].message.contains("> SELECT * FROM sys_user1;"));
-        assert_eq!(entries[1].message, "relation \"sys_user1\" does not exist");
+        assert!(
+            entries[1]
+                .message
+                .contains("[42P01] ERROR: relation \"sys_user1\" does not exist")
+        );
+        assert!(entries[1].message.contains("Position: 15"));
+        assert_eq!(entries[1].kind, OutputKind::Error);
     }
 
     #[test]
@@ -17392,7 +17432,7 @@ mod tests {
         let range = entry.sql_range.expect("failed SQL output has a range");
         assert_eq!(range.get(&entry.message), Some(sql));
         assert!(entry.message.contains(">\nSELECT\n\t'a  b'"));
-        assert_eq!(tab.output[1].message, "table does not exist");
+        assert!(tab.output[1].message.ends_with("] table does not exist"));
     }
 
     #[test]

@@ -165,6 +165,7 @@ fn create_database_permission_detection_prefers_stable_mysql_codes() {
                 category: ErrorCategory::Sql,
                 code: Some(code.to_owned()),
                 message: "localized server message".to_owned(),
+                diagnostic: None,
             }
         ));
     }
@@ -173,6 +174,7 @@ fn create_database_permission_detection_prefers_stable_mysql_codes() {
             category: ErrorCategory::Sql,
             code: Some("1064".to_owned()),
             message: "syntax error".to_owned(),
+            diagnostic: None,
         }
     ));
 }

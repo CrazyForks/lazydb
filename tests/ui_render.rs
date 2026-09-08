@@ -3128,6 +3128,26 @@ fn output_log_follows_tail_on_first_draw_with_editor_focus() {
 }
 
 #[test]
+fn output_log_uses_muted_timestamps_and_error_foreground() {
+    let mut app = fixture();
+    app.active_console_mut().result_view = ResultView::Output;
+    app.focus = Focus::Results;
+    app.update(Action::QueryFailed {
+        tab_id: app.active_console().id,
+        generation: app.active_console().generation,
+        connection: app.connection.active_identity().unwrap(),
+        message: "[42P01] ERROR: relation \"sdfsdf\" does not exist\nPosition: 15".into(),
+    });
+
+    let (buffer, _) = render_buffer_with_icons(&app, 120, 30, IconSet::new(IconMode::Ascii));
+    let timestamp = find_text_cell(&buffer, "]").expect("timestamp marker");
+    let error = find_text_cell(&buffer, "ERROR").expect("error marker");
+
+    assert_eq!(buffer[timestamp].fg, Color::Rgb(105, 126, 146));
+    assert_eq!(buffer[error].fg, Color::Rgb(255, 107, 122));
+}
+
+#[test]
 fn output_log_manual_scroll_survives_redraw_until_next_execution() {
     let mut app = fixture();
     app.active_console_mut().result_view = ResultView::Output;
