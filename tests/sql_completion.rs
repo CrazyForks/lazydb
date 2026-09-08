@@ -5148,7 +5148,10 @@ fn update_set_value_offers_columns_and_expression_keywords() {
     }
     assert!(candidates.iter().all(|candidate| matches!(
         candidate.kind,
-        CompletionKind::Column | CompletionKind::Function | CompletionKind::Keyword
+        CompletionKind::Column
+            | CompletionKind::Function
+            | CompletionKind::Keyword
+            | CompletionKind::BuiltinExpression
     )));
 }
 
@@ -5313,7 +5316,7 @@ fn update_set_tuple_assignment_is_bounded_to_target_columns() {
     assert!(!labels.contains(&"role_name"), "{labels:?}");
     assert!(candidates.iter().all(|candidate| matches!(
         candidate.kind,
-        CompletionKind::Column | CompletionKind::Keyword
+        CompletionKind::Column | CompletionKind::Keyword | CompletionKind::BuiltinExpression
     )));
 }
 
