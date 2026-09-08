@@ -176,6 +176,7 @@ enum Context {
     Statement,
     Insert,
     Relation,
+    AssignmentTarget,
     Expression(ExpressionContext),
     Qualifier,
     Routine,
@@ -221,6 +222,7 @@ enum ExpressionContext {
     Grouping,
     Ordering,
     Returning,
+    AssignmentValue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -237,11 +239,14 @@ enum CompletionTokenKind {
     Word(String),
     Literal,
     Operator,
+    Equals,
     Star,
     Dot,
     Comma,
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -309,7 +314,37 @@ pub fn complete(
         index,
         completion_context,
     );
-    let candidate_indexes = if let Some((parent, child_kind)) = child_parent {
+    let candidate_indexes = if context == Context::AssignmentTarget {
+        let targets = assignment_target_ids(
+            &tokens,
+            statement_cursor,
+            dialect,
+            index,
+            completion_context,
+        );
+        let qualified = (!qualifiers.is_empty()).then(|| {
+            qualified_candidate_indices(
+                index,
+                &qualifiers,
+                &folded_prefix,
+                &bindings,
+                completion_context,
+            )
+        });
+        if dialect == SqlDialect::Postgres && qualified.is_some() {
+            Vec::new()
+        } else {
+            relation_child_candidate_indices(index, &targets)
+                .into_iter()
+                .filter(|position| {
+                    index.entries[*position].kind == CatalogKind::Column
+                        && qualified
+                            .as_ref()
+                            .is_none_or(|qualified| qualified.contains(position))
+                })
+                .collect()
+        }
+    } else if let Some((parent, child_kind)) = child_parent {
         index
             .children
             .get(&parent)
@@ -348,6 +383,7 @@ pub fn complete(
             continue;
         }
         if kind == CompletionKind::Column
+            && context != Context::AssignmentTarget
             && qualifiers.is_empty()
             && !bindings.is_empty()
             && !entry
@@ -369,6 +405,7 @@ pub fn complete(
         let context_score = match (context, kind) {
             (Context::Relation, CompletionKind::Table | CompletionKind::View)
             | (Context::Qualifier, CompletionKind::Column)
+            | (Context::AssignmentTarget, CompletionKind::Column)
             | (Context::Expression(_), CompletionKind::Column)
             | (Context::Routine, CompletionKind::Function | CompletionKind::Procedure) => 3,
             (_, CompletionKind::Keyword) => 1,
@@ -423,7 +460,7 @@ pub fn complete(
                             (Context::Statement | Context::Insert, _, _) => 4,
                             (Context::Expression(_), _, _) => 2,
                             (Context::Relation | Context::Routine, _, _) => 1,
-                            (Context::Qualifier, _, _) => 0,
+                            (Context::Qualifier | Context::AssignmentTarget, _, _) => 0,
                             (Context::Ddl(_), _, _) => 4,
                         },
                         name_match: 2,
@@ -489,7 +526,8 @@ pub fn completion_dependencies(
     completion_context: CompletionContext<'_>,
 ) -> CompletionDependencies {
     let cursor = cursor.min(text.len());
-    let (statement, statement_cursor) = current_statement(text, cursor, dialect);
+    let (replace, prefix, _) = identifier_at(text, cursor, dialect);
+    let (statement, statement_cursor) = current_statement(text, replace.start, dialect);
     let tokens = completion_tokens(statement, dialect);
     let active_scopes = active_scope_starts(&tokens, statement_cursor);
     let context = context_at(
@@ -497,10 +535,18 @@ pub fn completion_dependencies(
         statement_cursor,
         active_scopes.last().copied().flatten(),
         dialect,
-        "",
+        &prefix,
     );
     let mut relation_children = HashSet::new();
-    if let Some((relation, _)) = ddl_child_parent(
+    if context == Context::AssignmentTarget {
+        relation_children.extend(assignment_target_ids(
+            &tokens,
+            statement_cursor,
+            dialect,
+            index,
+            completion_context,
+        ));
+    } else if let Some((relation, _)) = ddl_child_parent(
         &tokens,
         statement_cursor,
         context,
@@ -829,6 +875,7 @@ fn completion_kind(kind: CatalogKind) -> Option<CompletionKind> {
 fn catalog_kind_allowed(context: Context, kind: CompletionKind) -> bool {
     match context {
         Context::Statement | Context::Insert => false,
+        Context::AssignmentTarget => kind == CompletionKind::Column,
         Context::Relation => matches!(
             kind,
             CompletionKind::Database
@@ -877,6 +924,141 @@ fn catalog_kind_allowed(context: Context, kind: CompletionKind) -> bool {
     }
 }
 
+fn assignment_context(
+    tokens: &[CompletionToken],
+    cursor: usize,
+    dialect: SqlDialect,
+) -> Option<(Context, RelationBinding)> {
+    // Parentheses inherit assignment expressions, but a nested query owns its context.
+    let scopes = active_scope_starts(tokens, cursor);
+    let command = scopes.iter().rev().find_map(|scope| {
+        tokens.iter().find(|token| {
+            token.end <= cursor
+                && token.scope_start == *scope
+                && !token.quoted
+                && token_word(Some(token)).is_some_and(|word| {
+                    matches!(
+                        word.to_ascii_lowercase().as_str(),
+                        "select"
+                            | "update"
+                            | "insert"
+                            | "delete"
+                            | "create"
+                            | "alter"
+                            | "drop"
+                            | "set"
+                            | "truncate"
+                            | "merge"
+                    )
+                })
+        })
+    })?;
+    if !token_word(Some(command))?.eq_ignore_ascii_case("update") {
+        return None;
+    }
+    let mut context = None;
+    let mut brackets: usize = 0;
+    for token in tokens.iter().filter(|token| {
+        token.start > command.start
+            && token.end <= cursor
+            && token.scope_start == command.scope_start
+    }) {
+        if token.quoted {
+            continue;
+        }
+        match &token.kind {
+            CompletionTokenKind::LeftBracket => brackets += 1,
+            CompletionTokenKind::RightBracket => brackets = brackets.saturating_sub(1),
+            CompletionTokenKind::Word(word)
+                if word.eq_ignore_ascii_case("set") && context.is_none() =>
+            {
+                context = Some(Context::AssignmentTarget);
+            }
+            CompletionTokenKind::Word(word)
+                if matches!(
+                    word.to_ascii_lowercase().as_str(),
+                    "where" | "from" | "returning" | "order" | "limit"
+                ) =>
+            {
+                return None;
+            }
+            CompletionTokenKind::Word(word)
+                if dialect == SqlDialect::SqlServer
+                    && context == Some(Context::Expression(ExpressionContext::AssignmentValue))
+                    && word.eq_ignore_ascii_case("output") =>
+            {
+                return None;
+            }
+            CompletionTokenKind::Equals if context == Some(Context::AssignmentTarget) => {
+                context = Some(Context::Expression(ExpressionContext::AssignmentValue));
+            }
+            CompletionTokenKind::Comma if context.is_some() && brackets == 0 => {
+                context = Some(Context::AssignmentTarget);
+            }
+            _ => {}
+        }
+    }
+    let position = tokens
+        .iter()
+        .position(|token| token.start == command.start)?;
+    let (target, _) = relation_binding_at(tokens, position + 1)?;
+    context.map(|context| (context, target))
+}
+
+fn assignment_target_ids(
+    tokens: &[CompletionToken],
+    cursor: usize,
+    dialect: SqlDialect,
+    index: &CompletionIndex,
+    completion_context: CompletionContext<'_>,
+) -> Vec<CatalogId> {
+    let Some((_, target)) = assignment_context(tokens, cursor, dialect) else {
+        return Vec::new();
+    };
+    if dialect == SqlDialect::SqlServer && target.name.len() == 1 {
+        // UPDATE alias resolves through same-query FROM/JOIN bindings before catalog names.
+        let sources = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| {
+                !token.quoted
+                    && token.scope_start == target.scope_start
+                    && token_word(Some(token)).is_some_and(|word| {
+                        word.eq_ignore_ascii_case("from") || word.eq_ignore_ascii_case("join")
+                    })
+            })
+            .filter_map(|(position, _)| {
+                relation_binding_at(tokens, position + 1).map(|(binding, _)| binding)
+            })
+            .filter(|binding| {
+                binding
+                    .alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&target.name[0]))
+            })
+            .collect::<Vec<_>>();
+        if !sources.is_empty() {
+            return sources
+                .iter()
+                .flat_map(|source| relation_ids(index, source, completion_context))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+        }
+    }
+    relation_ids(index, &target, completion_context)
+}
+
+fn relation_child_candidate_indices(
+    index: &CompletionIndex,
+    relations: &[CatalogId],
+) -> Vec<usize> {
+    relations
+        .iter()
+        .flat_map(|relation| index.children.get(relation).into_iter().flatten().copied())
+        .collect()
+}
+
 fn context_at(
     tokens: &[CompletionToken],
     cursor: usize,
@@ -884,6 +1066,9 @@ fn context_at(
     dialect: SqlDialect,
     prefix: &str,
 ) -> Context {
+    if let Some((context, _)) = assignment_context(tokens, cursor, dialect) {
+        return context;
+    }
     let is_ddl = tokens.iter().any(|token| {
         token.start < cursor
             && !token.quoted
@@ -1103,6 +1288,7 @@ fn order_by_keyword(
         matches!(
             token.kind,
             CompletionTokenKind::Operator
+                | CompletionTokenKind::Equals
                 | CompletionTokenKind::Comma
                 | CompletionTokenKind::LeftParen
         ) || token_word(Some(token)).is_some_and(|word| {
@@ -1183,7 +1369,9 @@ fn ordering_stage(
         Some("first") | Some("last") => OrderingStage::Complete,
         _ if matches!(
             last.kind,
-            CompletionTokenKind::Comma | CompletionTokenKind::Operator
+            CompletionTokenKind::Comma
+                | CompletionTokenKind::Operator
+                | CompletionTokenKind::Equals
         ) =>
         {
             OrderingStage::Expression
@@ -1376,7 +1564,8 @@ fn projection_is_complete(
     match &last.kind {
         CompletionTokenKind::Literal
         | CompletionTokenKind::Star
-        | CompletionTokenKind::RightParen => true,
+        | CompletionTokenKind::RightParen
+        | CompletionTokenKind::RightBracket => true,
         CompletionTokenKind::Word(word) => !matches!(
             word.to_ascii_lowercase().as_str(),
             "all"
@@ -1397,9 +1586,11 @@ fn projection_is_complete(
                 | "when"
         ),
         CompletionTokenKind::Operator
+        | CompletionTokenKind::Equals
         | CompletionTokenKind::Dot
         | CompletionTokenKind::Comma
-        | CompletionTokenKind::LeftParen => false,
+        | CompletionTokenKind::LeftParen
+        | CompletionTokenKind::LeftBracket => false,
     }
 }
 
@@ -1602,7 +1793,15 @@ fn relation_ids(
 fn current_statement(text: &str, cursor: usize, dialect: SqlDialect) -> (&str, usize) {
     let range = scan_statements(text, dialect)
         .into_iter()
-        .find(|range| range.start <= cursor && cursor <= range.end)
+        .filter(|range| range.start <= cursor)
+        .rfind(|range| {
+            cursor <= range.end
+                || (!text[..range.end].ends_with(';')
+                    && text
+                        .get(range.end..cursor)
+                        .is_some_and(|gap| gap.trim().is_empty()))
+        })
+        .map(|range| TextRange::new(range.start, range.end.max(cursor)))
         .unwrap_or_else(|| TextRange::new(0, text.len()));
     (
         text.get(range.start..range.end).unwrap_or(text),
@@ -1619,10 +1818,12 @@ fn relation_bindings(tokens: &[CompletionToken]) -> Vec<RelationBinding> {
             index += 1;
             continue;
         };
-        if !matches!(
-            word.to_ascii_lowercase().as_str(),
-            "from" | "join" | "update" | "into"
-        ) {
+        if token.quoted
+            || !matches!(
+                word.to_ascii_lowercase().as_str(),
+                "from" | "join" | "update" | "into"
+            )
+        {
             index += 1;
             continue;
         }
@@ -1667,13 +1868,17 @@ fn relation_binding_at(
         index += 2;
     }
     let mut alias = None;
-    if token_word(tokens.get(index)).is_some_and(|word| word.eq_ignore_ascii_case("as")) {
+    if tokens.get(index).is_some_and(|token| !token.quoted)
+        && token_word(tokens.get(index)).is_some_and(|word| word.eq_ignore_ascii_case("as"))
+    {
         alias = token_word(tokens.get(index + 1)).map(str::to_owned);
         if alias.is_some() {
             index += 2;
         }
     } else if let Some(candidate) = token_word(tokens.get(index))
-        && !is_relation_boundary(candidate)
+        && tokens
+            .get(index)
+            .is_some_and(|token| token.quoted || !is_relation_boundary(candidate))
         && tokens.get(index).is_some_and(|token| token.depth == depth)
     {
         alias = Some(candidate.to_owned());
@@ -1718,6 +1923,7 @@ fn is_relation_boundary(word: &str) -> bool {
     matches!(
         word.to_ascii_lowercase().as_str(),
         "where"
+            | "set"
             | "join"
             | "left"
             | "right"
@@ -1851,8 +2057,11 @@ fn completion_tokens(text: &str, dialect: SqlDialect) -> Vec<CompletionToken> {
             b',' => Some(CompletionTokenKind::Comma),
             b'(' => Some(CompletionTokenKind::LeftParen),
             b')' => Some(CompletionTokenKind::RightParen),
+            b'[' if dialect != SqlDialect::SqlServer => Some(CompletionTokenKind::LeftBracket),
+            b']' if dialect != SqlDialect::SqlServer => Some(CompletionTokenKind::RightBracket),
             b'*' => Some(CompletionTokenKind::Star),
-            b'+' | b'-' | b'/' | b'%' | b'=' | b'<' | b'>' | b'!' | b'|' | b'&' | b'^' | b':' => {
+            b'=' => Some(CompletionTokenKind::Equals),
+            b'+' | b'-' | b'/' | b'%' | b'<' | b'>' | b'!' | b'|' | b'&' | b'^' | b':' => {
                 Some(CompletionTokenKind::Operator)
             }
             _ => None,
@@ -1934,6 +2143,10 @@ fn keywords(
             ],
         },
         Context::Insert => &["INTO"],
+        Context::AssignmentTarget => &[],
+        Context::Expression(ExpressionContext::AssignmentValue) => {
+            &["CASE", "NULL", "TRUE", "FALSE", "DEFAULT"]
+        }
         Context::Ddl(DdlContext::CreateObjectKind) => ddl_object_keywords(dialect, true),
         Context::Ddl(DdlContext::AlterObjectKind) => &["TABLE", "VIEW", "INDEX", "SCHEMA"],
         Context::Ddl(DdlContext::DropObjectKind) => ddl_object_keywords(dialect, false),
