@@ -180,6 +180,63 @@ fn renamed_relation_is_marked_as_native_identity_stale() {
 }
 
 #[test]
+fn rebinding_relation_keeps_tab_state_and_invalidates_requests() {
+    let profile = Uuid::new_v4();
+    let old = CatalogId::new(profile, CatalogKind::Table, ["db", "public", "users"]);
+    let new = CatalogId::new(profile, CatalogKind::Table, ["db", "public", "accounts"]);
+    let mut tab = RelationTab::with_descriptor(descriptor(old, "users"), RelationView::Ddl);
+    let id = tab.id;
+    tab.generation = 7;
+    tab.next_request_id = 12;
+    tab.pagination.offset = 40;
+    tab.grid.selected_row = 3;
+    tab.stale_native_identity = false;
+
+    tab.rebind_descriptor(descriptor(new.clone(), "accounts"), false);
+
+    assert_eq!(tab.id, id);
+    assert_eq!(tab.view, RelationView::Ddl);
+    assert_eq!(tab.generation, 8);
+    assert_eq!(tab.next_request_id, 12);
+    assert_eq!(tab.pagination.offset, 40);
+    assert_eq!(tab.grid.selected_row, 3);
+    assert_eq!(tab.descriptor.key.object_id, new);
+    assert_eq!(tab.title(), "accounts");
+    assert!(!tab.stale_native_identity);
+    assert!(matches!(
+        tab.data,
+        lazydb::model::relation::RelationLoad::Failed { .. }
+    ));
+    assert!(matches!(
+        tab.ddl,
+        lazydb::model::relation::RelationLoad::Failed { .. }
+    ));
+}
+
+#[test]
+fn rebinding_dirty_relation_preserves_draft_and_blocks_writes() {
+    let profile = Uuid::new_v4();
+    let old = CatalogId::new(profile, CatalogKind::Table, ["users"]);
+    let new = CatalogId::new(profile, CatalogKind::Table, ["accounts"]);
+    let mut tab = RelationTab::with_descriptor(descriptor(old, "users"), RelationView::Data);
+    let mut edit =
+        lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![CellValue::Text(
+            "draft".into(),
+        )]]);
+    edit.rows[0].state = lazydb::model::relation_edit::EditableRowState::Updated {
+        changed_columns: [0].into_iter().collect(),
+    };
+    tab.edit = Some(edit.clone());
+    tab.transaction_generation = 4;
+
+    tab.rebind_descriptor(descriptor(new, "accounts"), true);
+
+    assert_eq!(tab.edit, Some(edit));
+    assert!(tab.stale_native_identity);
+    assert_eq!(tab.transaction_generation, 5);
+}
+
+#[test]
 fn schema_and_database_impacts_match_open_relation_namespace() {
     let profile = Uuid::new_v4();
     let id = CatalogId::new(profile, CatalogKind::Table, ["db", "public", "users"]);

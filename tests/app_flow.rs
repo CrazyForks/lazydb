@@ -20,6 +20,7 @@ use lazydb::{
 };
 use tempfile::TempDir;
 use tokio::{sync::mpsc, time::timeout};
+use uuid::Uuid;
 
 #[test]
 fn typing_refreshes_an_open_completion_without_flicker() {
@@ -43,6 +44,50 @@ fn typing_refreshes_an_open_completion_without_flicker() {
             .iter()
             .any(|command| { matches!(command, lazydb::action::Command::ScheduleCompletion(_)) })
     );
+}
+
+#[test]
+fn catalog_unavailable_relation_error_is_user_facing_and_terminal_safe() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::RelationFailed {
+        request: lazydb::model::relation::RelationRequest {
+            tab_id: Uuid::nil(),
+            tab_generation: 0,
+            request_id: 0,
+            connection: lazydb::identity::ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 0,
+            },
+            relation: lazydb::model::relation::RelationKey {
+                profile_id: Uuid::nil(),
+                object_id: lazydb::db::catalog::CatalogId::new(
+                    Uuid::nil(),
+                    lazydb::db::catalog::CatalogKind::Table,
+                    ["users"],
+                ),
+            },
+            kind: lazydb::model::relation::RelationRequestKind::Preview,
+            scope: lazydb::profile::CatalogScope::for_profile(
+                lazydb::profile::DatabaseKind::Sqlite,
+                "db",
+                None,
+            ),
+            options: Default::default(),
+            page: lazydb::model::pagination::PageRequest::first(Default::default()),
+        },
+        message: "relation is not present in the active catalog snapshot\nsecret".into(),
+    });
+    let notification = app
+        .notifications
+        .history()
+        .next()
+        .expect("unavailable object notification");
+    assert_eq!(
+        notification.body,
+        "Object is no longer available; refresh the catalog"
+    );
+    assert!(!notification.body.contains("active catalog snapshot"));
+    assert!(!notification.body.contains("secret"));
 }
 
 #[test]

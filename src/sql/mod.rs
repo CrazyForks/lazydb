@@ -6,6 +6,7 @@
 mod analysis;
 mod batch;
 mod builtins;
+mod catalog_change;
 mod completion;
 mod derived_result;
 mod diagnostics;
@@ -25,6 +26,10 @@ mod type_name;
 
 pub use analysis::{AnalysisKey, LineIndex};
 pub use batch::{SqlServerBatchError, split_sql_server_batches};
+pub use catalog_change::{
+    CatalogChange, CatalogChangeImpact, CatalogChangeKind, CatalogChangeName,
+    extract_catalog_change_impact,
+};
 pub use completion::{
     CompletionCandidate, CompletionContext, CompletionDependencies, CompletionIndex,
     CompletionInsertionMode, CompletionKind, CompletionScheduleKey, CompletionScore, complete,

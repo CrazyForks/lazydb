@@ -568,6 +568,20 @@ impl CatalogTree {
         Ok(removed)
     }
 
+    pub fn replace_entry(
+        &mut self,
+        old: &CatalogId,
+        entry: CatalogEntry,
+    ) -> Result<Vec<CatalogId>, CatalogTreeError> {
+        self.validate_profile(entry.id.profile_id())?;
+        let removed = self.collect_subtrees(std::slice::from_ref(old));
+        let removed_set = removed.iter().cloned().collect::<HashSet<_>>();
+        self.validate_batch(std::slice::from_ref(&entry), &removed_set)?;
+        self.remove_ids(&removed, &removed_set);
+        self.insert_validated(vec![entry]);
+        Ok(removed)
+    }
+
     fn validate_profile(&self, found: Uuid) -> Result<(), CatalogTreeError> {
         if found == self.profile_id {
             Ok(())
@@ -789,6 +803,7 @@ pub struct ExplorerProfileState {
     pub next_request_id: u64,
     pub load_states: HashMap<ExplorerOwnerId, ExplorerLoadState>,
     pub pending_requests: HashMap<ExplorerOwnerId, CatalogRequest>,
+    pub pending_identity_requests: HashMap<u64, CatalogId>,
     pub previous_load_states: HashMap<ExplorerOwnerId, ExplorerLoadState>,
     pub load_errors: HashMap<ExplorerOwnerId, String>,
     pub last_error: Option<String>,
@@ -817,6 +832,7 @@ impl ExplorerProfileState {
             next_request_id: 1,
             load_states: HashMap::new(),
             pending_requests: HashMap::new(),
+            pending_identity_requests: HashMap::new(),
             previous_load_states: HashMap::new(),
             load_errors: HashMap::new(),
             last_error: None,
@@ -1907,7 +1923,7 @@ impl ExplorerTreeState {
         }
     }
 
-    fn selection_fallback_chain(&self) -> Vec<ExplorerNodeId> {
+    pub(crate) fn selection_fallback_chain(&self) -> Vec<ExplorerNodeId> {
         let Some(selected) = self.selected.as_ref() else {
             return Vec::new();
         };
@@ -1969,7 +1985,7 @@ impl ExplorerTreeState {
         chain.push(ExplorerNodeId::Profile(id.profile_id()));
     }
 
-    fn reconcile_after_catalog_change(&mut self, fallback: Vec<ExplorerNodeId>) {
+    pub(crate) fn reconcile_after_catalog_change(&mut self, fallback: Vec<ExplorerNodeId>) {
         self.retain_existing_expansion();
         let visible = self.visible();
         if visible

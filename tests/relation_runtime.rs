@@ -517,6 +517,34 @@ async fn runtime_rejects_relation_before_adapter_when_catalog_identity_is_unknow
 }
 
 #[test]
+fn relation_resolution_request_uses_current_connection_and_catalog_epoch() {
+    let mut app = App::new(Vec::new());
+    let profile_id = Uuid::new_v4();
+    let mut profile = import_profile(profile_id);
+    profile.catalog_scope = CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None);
+    app.profiles.push(profile.clone());
+    app.explorer.normalized.add_profile(profile_id);
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 4;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    let relation = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        ["db", "public", "users", "42"],
+    );
+    let commands = app.command_for_catalog_relation_resolution(relation.clone());
+    assert!(matches!(
+        commands.as_slice(),
+        [lazydb::action::Command::ResolveCatalogRelation {
+            connection,
+            catalog_epoch: 0,
+            relation: candidate,
+            ..
+        }] if connection.profile_id == profile_id && candidate == &relation
+    ));
+}
+
+#[test]
 fn scope_mutation_does_not_change_request_snapshot_attribution() {
     let mut request = request();
     let mut app = relation_app(&request);

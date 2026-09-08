@@ -268,6 +268,22 @@ pub struct Runtime {
     dashboard_metadata_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_process_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     known_relations: Arc<StdMutex<HashSet<(ConnectionIdentity, crate::db::catalog::CatalogId)>>>,
+    known_relation_targets: Arc<
+        StdMutex<
+            HashMap<
+                (ConnectionIdentity, crate::db::catalog::CatalogId),
+                crate::db::catalog::CatalogTarget,
+            >,
+        >,
+    >,
+    latest_catalog_requests: Arc<
+        StdMutex<
+            HashMap<
+                (ConnectionIdentity, crate::db::catalog::CatalogTarget),
+                crate::db::catalog::CatalogRequestKey,
+            >,
+        >,
+    >,
     background_tasks: Vec<JoinHandle<()>>,
     update_check_task: Option<JoinHandle<()>>,
     update_install_task: Option<JoinHandle<()>>,
@@ -366,6 +382,8 @@ impl Runtime {
             dashboard_metadata_tasks: HashMap::new(),
             dashboard_process_tasks: HashMap::new(),
             known_relations: Arc::new(StdMutex::new(HashSet::new())),
+            known_relation_targets: Arc::new(StdMutex::new(HashMap::new())),
+            latest_catalog_requests: Arc::new(StdMutex::new(HashMap::new())),
             background_tasks: Vec::new(),
             update_check_task: None,
             update_install_task: None,
@@ -449,6 +467,17 @@ impl Runtime {
                 self.connect(profile_id, generation, target);
             }
             Command::LoadCatalogPage(request) => self.load_catalog_page(request),
+            Command::ResolveCatalogRelation {
+                connection,
+                catalog_epoch,
+                request_id,
+                relation,
+            } => self.resolve_catalog_relation(connection, catalog_epoch, request_id, relation),
+            Command::ReconcileCatalogRelation {
+                connection,
+                old_relation,
+                new_relation,
+            } => self.reconcile_catalog_relation(connection, old_relation, new_relation),
             Command::LoadCatalogObjectDefinition(request) => {
                 self.load_catalog_object_definition(request)
             }
@@ -1169,6 +1198,8 @@ impl Runtime {
         }
         let connection = Arc::clone(&self.connection);
         let known_relations = Arc::clone(&self.known_relations);
+        let known_relation_targets = Arc::clone(&self.known_relation_targets);
+        let latest_catalog_requests = Arc::clone(&self.latest_catalog_requests);
         let mutation = Arc::clone(&self.profile_mutation);
         let attempts = Arc::clone(&self.connection_attempts);
         let sender = self.event_sender.clone();
@@ -1195,6 +1226,12 @@ impl Runtime {
                 if let Ok(mut known) = known_relations.lock() {
                     known.clear();
                 }
+                if let Ok(mut targets) = known_relation_targets.lock() {
+                    targets.clear();
+                }
+                if let Ok(mut latest) = latest_catalog_requests.lock() {
+                    latest.retain(|(connection, _), _| *connection != expected);
+                }
                 active.database.close().await;
             }
             let _ = sender.send(Action::DisconnectCompleted {
@@ -1212,6 +1249,8 @@ impl Runtime {
         let connection = Arc::clone(&self.connection);
         let attempts = Arc::clone(&self.connection_attempts);
         let known_relations = Arc::clone(&self.known_relations);
+        let known_relation_targets = Arc::clone(&self.known_relation_targets);
+        let latest_catalog_requests = Arc::clone(&self.latest_catalog_requests);
         let expected = ConnectionIdentity {
             profile_id,
             generation,
@@ -1324,6 +1363,14 @@ impl Runtime {
                             if let Ok(mut known) = known_relations.lock() {
                                 known.clear();
                             }
+                            if let Ok(mut targets) = known_relation_targets.lock() {
+                                targets.clear();
+                            }
+                            if let Ok(mut latest) = latest_catalog_requests.lock() {
+                                latest.retain(|(connection, _), _| {
+                                    connection.profile_id != profile_id
+                                });
+                            }
                             Some(active.replace(ActiveConnection {
                                 profile_id,
                                 generation,
@@ -1373,6 +1420,14 @@ impl Runtime {
         let sender = self.event_sender.clone();
         let connection = Arc::clone(&self.connection);
         let known_relations = Arc::clone(&self.known_relations);
+        let known_relation_targets = Arc::clone(&self.known_relation_targets);
+        let latest_catalog_requests = Arc::clone(&self.latest_catalog_requests);
+        if let Ok(mut latest) = latest_catalog_requests.lock() {
+            latest.insert(
+                (request.key.connection, request.key.target.clone()),
+                request.key.clone(),
+            );
+        }
         self.background_tasks.push(tokio::spawn(async move {
             let key = request.key.clone();
             let database = {
@@ -1402,25 +1457,37 @@ impl Runtime {
                             message: format!("adapter returned invalid catalog page: {error}"),
                         });
                     } else {
+                        let accepted = latest_catalog_requests.lock().is_ok_and(|latest| {
+                            latest.get(&(request.key.connection, request.key.target.clone()))
+                                == Some(&request.key)
+                        });
                         let active =
                             active_database(Arc::clone(&connection), request.key.connection)
                                 .await
                                 .is_some();
-                        if !active {
+                        if !active || !accepted {
                             return;
                         }
-                        if let Ok(mut known) = known_relations.lock() {
-                            known.extend(
-                                page.entries
-                                    .iter()
-                                    .filter(|entry| entry.kind.is_relation())
-                                    .map(|entry| (request.key.connection, entry.id.clone())),
-                            );
-                        }
+                        reconcile_known_relations(
+                            &known_relations,
+                            &known_relation_targets,
+                            &request,
+                            &page,
+                        );
                         let _ = sender.send(Action::CatalogPageLoaded(page));
                     }
                 }
                 Err(error) => {
+                    let accepted = latest_catalog_requests.lock().is_ok_and(|latest| {
+                        latest.get(&(request.key.connection, request.key.target.clone()))
+                            == Some(&request.key)
+                    });
+                    let active = active_database(Arc::clone(&connection), request.key.connection)
+                        .await
+                        .is_some();
+                    if !active || !accepted {
+                        return;
+                    }
                     let _ = sender.send(Action::CatalogPageFailed {
                         key,
                         category: error.category,
@@ -1429,6 +1496,66 @@ impl Runtime {
                 }
             }
         }));
+    }
+
+    fn resolve_catalog_relation(
+        &mut self,
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+        request_id: u64,
+        relation: crate::db::catalog::CatalogId,
+    ) {
+        let sender = self.event_sender.clone();
+        let database = Arc::clone(&self.connection);
+        self.background_tasks.push(tokio::spawn(async move {
+            let Some(database) = active_database(Arc::clone(&database), connection).await else {
+                let _ = sender.send(Action::CatalogRelationResolutionFailed {
+                    connection,
+                    catalog_epoch,
+                    request_id,
+                    relation,
+                    category: crate::db::ErrorCategory::Internal,
+                    message: "catalog relation request connection is no longer active".to_owned(),
+                });
+                return;
+            };
+            match database.resolve_relation_identity(&relation).await {
+                Ok(entry) => {
+                    let _ = sender.send(Action::CatalogRelationResolved {
+                        connection,
+                        catalog_epoch,
+                        request_id,
+                        relation,
+                        entry,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::CatalogRelationResolutionFailed {
+                        connection,
+                        catalog_epoch,
+                        request_id,
+                        relation,
+                        category: error.category,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn reconcile_catalog_relation(
+        &self,
+        connection: ConnectionIdentity,
+        old_relation: crate::db::catalog::CatalogId,
+        new_relation: crate::db::catalog::CatalogId,
+    ) {
+        reconcile_catalog_relation(
+            &self.known_relations,
+            &self.known_relation_targets,
+            connection,
+            old_relation,
+            new_relation,
+        );
     }
 
     fn load_catalog_object_definition(
@@ -3308,6 +3435,103 @@ impl Runtime {
     }
 }
 
+fn reconcile_known_relations(
+    known_relations: &StdMutex<HashSet<(ConnectionIdentity, crate::db::catalog::CatalogId)>>,
+    known_relation_targets: &StdMutex<
+        HashMap<
+            (ConnectionIdentity, crate::db::catalog::CatalogId),
+            crate::db::catalog::CatalogTarget,
+        >,
+    >,
+    request: &crate::db::catalog::CatalogRequest,
+    page: &crate::db::catalog::CatalogPage,
+) {
+    let Some(relation_target) = relation_target_for(&request.key.target) else {
+        return;
+    };
+    let Some(mut known) = known_relations.lock().ok() else {
+        return;
+    };
+    let Some(mut targets) = known_relation_targets.lock().ok() else {
+        return;
+    };
+    // A relation-children response is only admissible while its owning relation
+    // is still known for this connection. This prevents a delayed response for
+    // an old OID from re-opening the old identity after a replacement page wins.
+    if matches!(
+        request.key.target,
+        crate::db::catalog::CatalogTarget::RelationChildren { .. }
+    ) && !known.contains(&(request.key.connection, relation_target.clone()))
+    {
+        return;
+    }
+    if request.key.cursor.is_none() {
+        let stale = targets
+            .iter()
+            .filter(|(key, target)| {
+                key.0 == request.key.connection && **target == request.key.target
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            known.remove(&key);
+            targets.remove(&key);
+        }
+    }
+    for entry in page.entries.iter().filter(|entry| entry.kind.is_relation()) {
+        let key = (request.key.connection, entry.id.clone());
+        known.insert(key.clone());
+        targets.insert(key, request.key.target.clone());
+    }
+}
+
+fn reconcile_catalog_relation(
+    known_relations: &StdMutex<HashSet<(ConnectionIdentity, crate::db::catalog::CatalogId)>>,
+    known_relation_targets: &StdMutex<
+        HashMap<
+            (ConnectionIdentity, crate::db::catalog::CatalogId),
+            crate::db::catalog::CatalogTarget,
+        >,
+    >,
+    connection: ConnectionIdentity,
+    old_relation: crate::db::catalog::CatalogId,
+    new_relation: crate::db::catalog::CatalogId,
+) {
+    let Ok(mut known) = known_relations.lock() else {
+        return;
+    };
+    let Ok(mut targets) = known_relation_targets.lock() else {
+        return;
+    };
+    let old_key = (connection, old_relation);
+    let target = targets.remove(&old_key);
+    known.remove(&old_key);
+    let new_key = (connection, new_relation);
+    known.insert(new_key.clone());
+    if let Some(target) = target {
+        targets.insert(new_key, target);
+    }
+}
+
+fn relation_target_for(
+    target: &crate::db::catalog::CatalogTarget,
+) -> Option<crate::db::catalog::CatalogId> {
+    match target {
+        crate::db::catalog::CatalogTarget::Objects { schema, group }
+            if [
+                crate::db::catalog::ObjectGroup::Tables,
+                crate::db::catalog::ObjectGroup::Views,
+                crate::db::catalog::ObjectGroup::MaterializedViews,
+            ]
+            .contains(group) =>
+        {
+            Some(schema.clone())
+        }
+        crate::db::catalog::CatalogTarget::RelationChildren { relation } => Some(relation.clone()),
+        _ => None,
+    }
+}
+
 async fn execute_catalog_drop_on_maintenance(
     plan: crate::db::catalog_drop::CatalogDropPlan,
     maintenance_database: String,
@@ -4827,6 +5051,44 @@ mod tests {
 
         assert_eq!(message, "Clipboard unavailable");
         assert!(!message.contains("secret"));
+    }
+
+    #[test]
+    fn catalog_relation_reconciliation_retires_old_and_admits_new_identity() {
+        let connection = ConnectionIdentity {
+            profile_id: Uuid::new_v4(),
+            generation: 1,
+        };
+        let old = crate::db::catalog::CatalogId::new(
+            connection.profile_id,
+            crate::db::catalog::CatalogKind::Table,
+            ["public", "users", "1"],
+        );
+        let new = crate::db::catalog::CatalogId::new(
+            connection.profile_id,
+            crate::db::catalog::CatalogKind::Table,
+            ["public", "accounts", "2"],
+        );
+        let known = StdMutex::new(HashSet::from([(connection, old.clone())]));
+        let target = crate::db::catalog::CatalogTarget::objects(
+            crate::db::catalog::CatalogId::new(
+                connection.profile_id,
+                crate::db::catalog::CatalogKind::Schema,
+                ["public"],
+            ),
+            crate::db::catalog::ObjectGroup::Tables,
+        )
+        .unwrap();
+        let targets = StdMutex::new(HashMap::from([((connection, old.clone()), target.clone())]));
+
+        reconcile_catalog_relation(&known, &targets, connection, old.clone(), new.clone());
+
+        assert!(!known.lock().unwrap().contains(&(connection, old)));
+        assert!(known.lock().unwrap().contains(&(connection, new.clone())));
+        assert_eq!(
+            targets.lock().unwrap().get(&(connection, new)),
+            Some(&target)
+        );
     }
 
     #[tokio::test]

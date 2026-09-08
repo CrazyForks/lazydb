@@ -222,6 +222,51 @@ fn execution_draft_classifies_and_preserves_exact_sql() {
 }
 
 #[test]
+fn execution_draft_carries_catalog_change_impact_but_not_select_impact() {
+    let draft = ExecutionDraft::new(
+        uuid::Uuid::nil(),
+        4,
+        ConnectionIdentity {
+            profile_id: uuid::Uuid::nil(),
+            generation: 2,
+        },
+        lazydb::model::execution_target::ExecutionTarget {
+            profile_id: uuid::Uuid::nil(),
+            database: "db".into(),
+            schema: Some("main".into()),
+        },
+        0,
+        7,
+        ScopeKind::CurrentStatement,
+        ScopeSource::Contiguous(TextRange::new(0, 38)),
+        "ALTER TABLE users RENAME TO accounts;".into(),
+        SqlDialect::Sqlite,
+        Default::default(),
+        Default::default(),
+    );
+    assert!(matches!(
+        draft.catalog_change_impact,
+        lazydb::sql::CatalogChangeImpact::Changed(_)
+    ));
+
+    let select = ExecutionDraft::new(
+        draft.console_id,
+        draft.query_generation,
+        draft.connection,
+        draft.target,
+        draft.transaction_generation,
+        draft.document_revision,
+        draft.scope,
+        draft.source,
+        "SELECT 1;".into(),
+        draft.dialect,
+        draft.transaction_mode,
+        draft.transaction_state,
+    );
+    assert!(select.catalog_change_impact.is_none());
+}
+
+#[test]
 fn confirmation_defaults_to_cancel_and_enter_does_not_execute() {
     let mut app = connected_app(ConfirmationPolicy::Always);
     app.update(Action::ReplaceEditor(

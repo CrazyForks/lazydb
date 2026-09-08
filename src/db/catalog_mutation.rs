@@ -681,6 +681,64 @@ pub struct CatalogMutationImpact {
     pub native_identity_changed: bool,
 }
 
+/// Neutral name for callers that handle catalog changes beyond editor mutations.
+pub type CatalogChangeImpact = CatalogMutationImpact;
+
+/// The structured result of reconciling a completed catalog change.
+///
+/// This is deliberately a transport-level contract only. Applying an
+/// `Applied` result to Explorer, completion, or relation state remains the
+/// responsibility of the caller that owns those states.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogMutationReconciliationResult {
+    Applied {
+        impact: Box<CatalogMutationImpact>,
+        refresh: Vec<CatalogTarget>,
+        selection: Option<CatalogSelectionHint>,
+    },
+    Stale {
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+    },
+    Rejected {
+        reason: String,
+    },
+}
+
+/// Neutral name for the shared catalog-change reconciliation contract.
+pub type CatalogReconciliationResult = CatalogMutationReconciliationResult;
+
+impl CatalogMutationReconciliationResult {
+    pub fn applied(
+        impact: CatalogMutationImpact,
+        refresh: Vec<CatalogTarget>,
+        selection: Option<CatalogSelectionHint>,
+    ) -> Self {
+        Self::Applied {
+            impact: Box::new(impact),
+            refresh,
+            selection,
+        }
+    }
+
+    pub const fn stale(connection: ConnectionIdentity, catalog_epoch: u64) -> Self {
+        Self::Stale {
+            connection,
+            catalog_epoch,
+        }
+    }
+
+    pub fn rejected(reason: impl Into<String>) -> Self {
+        Self::Rejected {
+            reason: reason.into(),
+        }
+    }
+
+    pub const fn is_applied(&self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogMutationPlan {
     pub request: CatalogMutationRequest,
@@ -957,5 +1015,78 @@ fn validate_entry(
             })
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connection() -> ConnectionIdentity {
+        ConnectionIdentity {
+            profile_id: Uuid::from_u128(1),
+            generation: 2,
+        }
+    }
+
+    fn impact() -> CatalogMutationImpact {
+        CatalogMutationImpact {
+            old_object_id: CatalogId::new(
+                connection().profile_id,
+                CatalogKind::Table,
+                ["db", "public", "users"],
+            ),
+            owning_relation_id: None,
+            namespace: CatalogMutationNamespace {
+                database: None,
+                schema: None,
+            },
+            native_identity_changed: false,
+        }
+    }
+
+    #[test]
+    fn applied_reconciliation_preserves_typed_refresh_and_selection() {
+        let target = CatalogTarget::Databases;
+        let selection = CatalogSelectionHint::Object(impact().old_object_id.clone());
+        let result = CatalogMutationReconciliationResult::applied(
+            impact().clone(),
+            vec![target.clone()],
+            Some(selection.clone()),
+        );
+
+        assert!(result.is_applied());
+        assert_eq!(
+            result,
+            CatalogMutationReconciliationResult::Applied {
+                impact: Box::new(impact()),
+                refresh: vec![target],
+                selection: Some(selection),
+            }
+        );
+    }
+
+    #[test]
+    fn stale_reconciliation_preserves_connection_and_epoch() {
+        let result = CatalogMutationReconciliationResult::stale(connection(), 7);
+
+        assert!(!result.is_applied());
+        assert_eq!(
+            result,
+            CatalogMutationReconciliationResult::Stale {
+                connection: connection(),
+                catalog_epoch: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn rejected_reconciliation_preserves_reason() {
+        assert_eq!(
+            CatalogMutationReconciliationResult::rejected("catalog identity changed"),
+            CatalogMutationReconciliationResult::Rejected {
+                reason: "catalog identity changed".into(),
+            }
+        );
     }
 }

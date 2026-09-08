@@ -3144,6 +3144,79 @@ LIMIT 2001
         .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))
     }
 
+    /// Resolve a relation whose stored name may be stale, using its stable PostgreSQL OID.
+    ///
+    /// This is intentionally separate from `verify_relation`: callers that need the old
+    /// identity to remain strict must continue using that method.
+    pub async fn resolve_relation_identity(
+        &self,
+        relation: &CatalogId,
+    ) -> Result<Option<CatalogEntry>, DatabaseError> {
+        let Some((database, oid)) = stale_relation_identity(self.connection_id, relation) else {
+            return Ok(None);
+        };
+        let mut connection = self.pool.acquire().await.map_err(sql_error)?;
+        let current: String = sqlx::query_scalar("SELECT current_database()")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(sql_error)?;
+        if current != database {
+            return Ok(None);
+        }
+
+        let row = sqlx::query(
+            "SELECT n.nspname AS schema_name, c.relname AS object_name, \
+                    c.relkind::text AS relkind, obj_description(c.oid, 'pg_class') AS comment \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE c.oid = $1::oid",
+        )
+        .bind(oid)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(sql_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let schema: String = row.try_get("schema_name").map_err(decode_error)?;
+        let name: String = row.try_get("object_name").map_err(decode_error)?;
+        let native_kind: String = row.try_get("relkind").map_err(decode_error)?;
+        let (kind, native_kind) = match native_kind.as_str() {
+            "r" | "p" => (CatalogKind::Table, "table"),
+            "v" => (CatalogKind::View, "view"),
+            "m" => (CatalogKind::MaterializedView, "materialized_view"),
+            _ => return Ok(None),
+        };
+        if !self.catalog_scope.allows_schema(database, &schema) {
+            return Ok(None);
+        }
+        let schema_id = CatalogId::new(
+            self.connection_id,
+            CatalogKind::Schema,
+            [database.to_owned(), schema.clone()],
+        );
+        let id = CatalogId::new(
+            self.connection_id,
+            kind,
+            [
+                database.to_owned(),
+                schema.clone(),
+                name.clone(),
+                oid.to_string(),
+            ],
+        );
+        CatalogEntry::relation(
+            id,
+            schema_id,
+            qualified_object(database, &schema, &name),
+            native_kind,
+            OptionalMetadata::Supported(row.try_get("comment").map_err(decode_error)?),
+            true,
+        )
+        .map(Some)
+        .map_err(catalog_invariant)
+    }
+
     pub async fn execute(&self, sql: &str) -> Result<QueryOutcome, DatabaseError> {
         self.execute_pool(sql).await
     }
@@ -6207,6 +6280,20 @@ fn candidate_relation_id(profile_id: Uuid, candidate: &PgSearchCandidate) -> Opt
     ))
 }
 
+fn stale_relation_identity(connection_id: Uuid, relation: &CatalogId) -> Option<(&str, i64)> {
+    if relation.connection_id != connection_id || !relation.kind.is_relation() {
+        return None;
+    }
+    let [database, schema, name, oid] = relation.native_path.as_slice() else {
+        return None;
+    };
+    if database.is_empty() || schema.is_empty() || name.is_empty() {
+        return None;
+    }
+    let oid = oid.parse::<i64>().ok()?;
+    (oid > 0).then_some((database.as_str(), oid))
+}
+
 fn candidate_relation_entry(
     profile_id: Uuid,
     candidate: &PgSearchCandidate,
@@ -7175,12 +7262,42 @@ fn monitor_timestamp(row: &PgRow, name: &str) -> Result<u64, DatabaseError> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::catalog::{CatalogId, CatalogKind};
     use super::{
         PgDdlColumn, PgDdlRelation, PgParameterMode, assemble_relation_ddl, column_definition,
         format_pg_array, format_pg_interval, parse_pg_interval, postgres_delete_sql,
-        postgres_placeholder, quote_identifier, quote_literal,
+        postgres_placeholder, quote_identifier, quote_literal, stale_relation_identity,
     };
     use sqlx::postgres::types::PgInterval;
+    use uuid::Uuid;
+
+    #[test]
+    fn stale_relation_identity_requires_matching_profile_and_relation_path() {
+        let profile = Uuid::from_u128(1);
+        let valid = CatalogId::new(profile, CatalogKind::Table, ["db", "public", "old", "42"]);
+        assert_eq!(stale_relation_identity(profile, &valid), Some(("db", 42)));
+
+        for invalid in [
+            CatalogId::new(
+                Uuid::from_u128(2),
+                CatalogKind::Table,
+                ["db", "public", "old", "42"],
+            ),
+            CatalogId::new(profile, CatalogKind::Column, ["db", "public", "old", "42"]),
+            CatalogId::new(profile, CatalogKind::Table, ["db", "public", "old"]),
+            CatalogId::new(
+                profile,
+                CatalogKind::Table,
+                ["db", "public", "old", "not-an-oid"],
+            ),
+            CatalogId::new(profile, CatalogKind::Table, ["db", "public", "old", "0"]),
+            CatalogId::new(profile, CatalogKind::Table, ["", "public", "old", "42"]),
+            CatalogId::new(profile, CatalogKind::Table, ["db", "", "old", "42"]),
+            CatalogId::new(profile, CatalogKind::Table, ["db", "public", "", "42"]),
+        ] {
+            assert_eq!(stale_relation_identity(profile, &invalid), None);
+        }
+    }
 
     #[test]
     fn postgres_placeholder_handles_numeric_typmods() {

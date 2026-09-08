@@ -166,6 +166,9 @@ Ensure `$HOME/.local/bin` is in `PATH`. To upgrade an offline installation,
   Schema, Table, Column, Index, Constraints, View, Materialized View, Sequence,
   Database, and Role. The Role node is not present in Explorer, so existing
   roles cannot currently be selected for editing.
+- **Catalog reconciliation:** Explorer `r` refreshes only the selected target;
+  PostgreSQL relation identities can be rebound after an external table rename,
+  while SQL catalog changes trigger a conservative database-catalog sync.
 - **SQL workspace:** Work with multiple console tabs, Vim-style Normal/Insert
   modes, search, formatting, syntax highlighting, and catalog-aware completion.
 - **Safe execution:** Run the current statement or full buffer with scoped
@@ -202,7 +205,7 @@ plugin configuration.
 
 | Database | Requirement | Catalog support |
 | --- | --- | --- |
-| PostgreSQL | 12 or newer | Databases, schemas, tables, columns, indexes, constraints, views, materialized views, sequences, functions, procedures, types; catalog editing also covers databases and roles |
+| PostgreSQL | 12 or newer | Databases, schemas, tables, columns, indexes, constraints, views, materialized views, sequences, functions, procedures, types; catalog editing also covers databases and roles; relation rename reconciliation uses readable `pg_class`/`pg_namespace` OIDs |
 | Oracle MySQL | 8.0.13 or newer | Databases, tables, views, functions, procedures, triggers |
 | SQL Server | SQL Server 2012 or newer | Databases, schemas, tables, views, functions, procedures, sequences, triggers, indexes, keys, foreign keys, and column metadata |
 | SQLite | Native SQLite schema support | Tables, views, indexes, foreign keys, and triggers |
