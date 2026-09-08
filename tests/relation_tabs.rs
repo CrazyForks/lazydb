@@ -513,14 +513,20 @@ fn temporal_relation_editor_uses_segmented_input_and_preserves_fraction() {
             Box::new(lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
-                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
-                    kind: lazydb::model::cell_editor::CellEditorKind::Timestamp,
-                    draft: lazydb::model::cell_editor::TypedDraft::Temporal(
-                        lazydb::model::cell_editor::TemporalDraft::from_timestamp(
-                            chrono::DateTime::parse_from_rfc3339("2026-08-28T10:20:31.1204+05:30")
+                input: lazydb::model::cell_editor::CellEditorBuffer {
+                    presence: lazydb::model::cell_editor::CellEditorPresence::Value,
+                    content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                        kind: lazydb::model::cell_editor::CellEditorKind::Timestamp,
+                        draft: lazydb::model::cell_editor::TypedDraft::Temporal(
+                            lazydb::model::cell_editor::TemporalDraft::from_timestamp(
+                                chrono::DateTime::parse_from_rfc3339(
+                                    "2026-08-28T10:20:31.1204+05:30",
+                                )
                                 .unwrap(),
+                            ),
                         ),
-                    ),
+                    },
+                    ..lazydb::model::cell_editor::CellEditorBuffer::default()
                 },
                 error: None,
             }),
@@ -552,11 +558,15 @@ fn boolean_relation_editor_actions_stay_local_until_confirmed() {
             Box::new(lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
-                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
-                    kind: lazydb::model::cell_editor::CellEditorKind::Boolean,
-                    draft: lazydb::model::cell_editor::TypedDraft::Boolean(
-                        lazydb::model::text_input::TextInput::from("false"),
-                    ),
+                input: lazydb::model::cell_editor::CellEditorBuffer {
+                    presence: lazydb::model::cell_editor::CellEditorPresence::Value,
+                    content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                        kind: lazydb::model::cell_editor::CellEditorKind::Boolean,
+                        draft: lazydb::model::cell_editor::TypedDraft::Boolean(
+                            lazydb::model::text_input::TextInput::from("false"),
+                        ),
+                    },
+                    ..lazydb::model::cell_editor::CellEditorBuffer::default()
                 },
                 error: None,
             }),
@@ -577,6 +587,167 @@ fn boolean_relation_editor_actions_stay_local_until_confirmed() {
         relation_tab(&app).edit.as_ref().unwrap().rows[0].current[0],
         CellValue::Boolean(true)
     );
+}
+
+#[test]
+fn inserted_boolean_cell_uses_the_typed_editor_before_a_value_is_supplied() {
+    let mut app = app_with_relation_columns_with_types(&[("active", "boolean")]);
+    configure_postgres_profile(&mut app);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(lazydb::model::relation_edit::RelationEditSession::from_rows(Vec::new()));
+    }
+
+    app.update(Action::RelationInsertRow);
+
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("insert should open the cell editor");
+    };
+    assert!(matches!(
+        state.input,
+        lazydb::model::cell_editor::CellEditorBuffer {
+            presence: lazydb::model::cell_editor::CellEditorPresence::Unprovided,
+            content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                kind: lazydb::model::cell_editor::CellEditorKind::Boolean,
+                draft: lazydb::model::cell_editor::TypedDraft::Boolean(_),
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(edit.rows[0].supplied_columns.is_empty());
+    assert_eq!(edit.rows[0].current[0], CellValue::Null);
+}
+
+#[test]
+fn presence_actions_map_null_value_and_default_without_emitting_commands() {
+    let mut app = app_with_relation_columns_with_types(&[("active", "boolean")]);
+    configure_postgres_profile(&mut app);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(lazydb::model::relation_edit::RelationEditSession::from_rows(Vec::new()));
+    }
+
+    app.update(Action::RelationInsertRow);
+    app.update(Action::RelationEditSetNull);
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("presence action should keep editor open");
+    };
+    assert_eq!(
+        state.input.presence,
+        lazydb::model::cell_editor::CellEditorPresence::Null
+    );
+    app.update(Action::RelationEditUseValue);
+    app.update(Action::RelationEditRestoreDefault);
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("default action should keep editor open");
+    };
+    assert_eq!(
+        state.input.presence,
+        lazydb::model::cell_editor::CellEditorPresence::Unprovided
+    );
+
+    app.update(Action::RelationEditConfirm);
+    assert!(matches!(
+        relation_tab(&app).edit.as_ref().unwrap().mode,
+        lazydb::model::relation_edit::RelationGridMode::Browse
+    ));
+    assert!(
+        relation_tab(&app).edit.as_ref().unwrap().rows[0]
+            .supplied_columns
+            .is_empty()
+    );
+}
+
+#[test]
+fn default_action_is_gated_for_existing_rows() {
+    let mut app = app_with_relation_columns_with_types(&[("active", "boolean")]);
+    configure_postgres_profile(&mut app);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Boolean(true),
+            ]]),
+        );
+    }
+    app.update(Action::RelationEditCell);
+    app.update(Action::RelationEditRestoreDefault);
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("existing row should remain editable");
+    };
+    assert_eq!(
+        state.input.presence,
+        lazydb::model::cell_editor::CellEditorPresence::Value
+    );
+}
+
+#[test]
+fn inserted_timestamp_cell_uses_the_typed_editor_when_reopened() {
+    let mut app =
+        app_with_relation_columns_with_types(&[("active", "boolean"), ("created_at", "timestamp")]);
+    configure_postgres_profile(&mut app);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(lazydb::model::relation_edit::RelationEditSession::from_rows(Vec::new()));
+    }
+
+    app.update(Action::RelationInsertRow);
+    app.update(Action::RelationEditCancel);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.grid.selected_column = 1;
+    }
+    app.update(Action::RelationEditCell);
+
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("reopening an inserted cell should open the editor");
+    };
+    assert!(matches!(
+        state.input,
+        lazydb::model::cell_editor::CellEditorBuffer {
+            presence: lazydb::model::cell_editor::CellEditorPresence::Unprovided,
+            content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                kind: lazydb::model::cell_editor::CellEditorKind::DateTime,
+                draft: lazydb::model::cell_editor::TypedDraft::Temporal(_),
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(edit.rows[0].supplied_columns.is_empty());
+}
+
+#[test]
+fn existing_null_boolean_cell_uses_the_typed_editor() {
+    let mut app = app_with_relation_columns_with_types(&[("active", "boolean")]);
+    configure_postgres_profile(&mut app);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        tab.edit = Some(
+            lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+                CellValue::Null,
+            ]]),
+        );
+    }
+
+    app.update(Action::RelationEditCell);
+
+    let edit = relation_tab(&app).edit.as_ref().unwrap();
+    let lazydb::model::relation_edit::RelationGridMode::EditCell(state) = &edit.mode else {
+        panic!("NULL cell should open the editor");
+    };
+    assert!(matches!(
+        state.input,
+        lazydb::model::cell_editor::CellEditorBuffer {
+            presence: lazydb::model::cell_editor::CellEditorPresence::Null,
+            content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                kind: lazydb::model::cell_editor::CellEditorKind::Boolean,
+                draft: lazydb::model::cell_editor::TypedDraft::Boolean(_),
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -1118,6 +1289,16 @@ fn import_profile(id: Uuid) -> lazydb::profile::ConnectionProfile {
     profile.id = id;
     profile.catalog_scope.databases = lazydb::profile::CatalogSelection::All;
     profile
+}
+
+fn configure_postgres_profile(app: &mut lazydb::app::App) {
+    let mut profile =
+        lazydb::profile::import_connection_url("postgres://localhost/app", Some("test"))
+            .unwrap()
+            .profile;
+    profile.id = Uuid::nil();
+    app.profiles.push(profile);
+    app.connection.profile_id = Some(Uuid::nil());
 }
 
 fn relation_view(app: &lazydb::app::App) -> RelationView {

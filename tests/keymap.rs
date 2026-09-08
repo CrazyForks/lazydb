@@ -154,13 +154,17 @@ fn temporal_editor_owns_field_and_month_navigation() {
             lazydb::model::relation_edit::CellEditorState {
                 row: 0,
                 column: 0,
-                input: lazydb::model::cell_editor::CellEditorBuffer::Typed {
-                    kind: lazydb::model::cell_editor::CellEditorKind::Date,
-                    draft: lazydb::model::cell_editor::TypedDraft::Temporal(
-                        lazydb::model::cell_editor::TemporalDraft::date(
-                            chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+                input: lazydb::model::cell_editor::CellEditorBuffer {
+                    presence: lazydb::model::cell_editor::CellEditorPresence::Value,
+                    content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                        kind: lazydb::model::cell_editor::CellEditorKind::Date,
+                        draft: lazydb::model::cell_editor::TypedDraft::Temporal(
+                            lazydb::model::cell_editor::TemporalDraft::date(
+                                chrono::NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+                            ),
                         ),
-                    ),
+                    },
+                    ..lazydb::model::cell_editor::CellEditorBuffer::default()
                 },
                 error: None,
             },
@@ -175,6 +179,61 @@ fn temporal_editor_owns_field_and_month_navigation() {
     assert_eq!(
         keymap.map(key(KeyCode::Char(']')), &app),
         Some(Action::RelationEditTemporalMonth(1))
+    );
+}
+
+#[test]
+fn cell_presence_shortcuts_do_not_override_json_or_relation_transaction_keys() {
+    let mut app = App::new(Vec::new());
+    app.tabs
+        .push(WorkspaceTab::Relation(RelationTab::new("users")));
+    app.active_tab = 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[1] {
+        let mut edit = lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![
+            lazydb::db::value::CellValue::Null,
+        ]]);
+        edit.mode = lazydb::model::relation_edit::RelationGridMode::EditCell(Box::new(
+            lazydb::model::relation_edit::CellEditorState {
+                row: 0,
+                column: 0,
+                input: lazydb::model::cell_editor::CellEditorBuffer {
+                    presence: lazydb::model::cell_editor::CellEditorPresence::Null,
+                    content: lazydb::model::cell_editor::CellEditorContent::Typed {
+                        kind: lazydb::model::cell_editor::CellEditorKind::Json,
+                        draft: lazydb::model::cell_editor::TypedDraft::Json(
+                            lazydb::model::cell_editor::JsonBuffer::new("null"),
+                        ),
+                    },
+                    presence_history: Vec::new(),
+                    presence_redo: Vec::new(),
+                },
+                error: None,
+            },
+        ));
+        tab.edit = Some(edit);
+    }
+
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT), &app),
+        Some(Action::RelationEditSetNull)
+    );
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT), &app),
+        Some(Action::RelationEditRestoreDefault)
+    );
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT), &app),
+        Some(Action::RelationEditUseValue)
+    );
+    assert_eq!(
+        keymap.map(control(KeyCode::Char('s')), &app),
+        Some(Action::RelationEditConfirm)
+    );
+    assert_eq!(
+        keymap.map(control(KeyCode::Char('f')), &app),
+        Some(Action::RelationEditJsonFormat)
     );
 }
 

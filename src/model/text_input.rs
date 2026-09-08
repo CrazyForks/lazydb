@@ -73,6 +73,15 @@ impl History {
 }
 
 impl TextInput {
+    pub(crate) fn without_history(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+            history: History::default(),
+        }
+    }
+
     pub fn apply(&mut self, edit: TextInputEdit) -> bool {
         let before = self.snapshot();
         match edit {

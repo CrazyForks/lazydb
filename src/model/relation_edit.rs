@@ -100,6 +100,17 @@ impl EditableRow {
         true
     }
 
+    pub fn restore_unprovided(&mut self, column: usize) -> bool {
+        if !matches!(self.state, EditableRowState::InsertDraft) {
+            return false;
+        }
+        if self.current.get(column).is_none() || !self.supplied_columns.remove(&column) {
+            return false;
+        }
+        self.current[column] = CellValue::Null;
+        true
+    }
+
     pub fn mark_deleted(&mut self) -> bool {
         if matches!(self.state, EditableRowState::Deleted) {
             return false;
@@ -210,6 +221,20 @@ impl RelationEditSession {
         }
         self.record_change();
         self.rows[row].update_cell(column, value)
+    }
+
+    pub fn restore_unprovided(&mut self, row: usize, column: usize) -> bool {
+        let Some(editable_row) = self.rows.get(row) else {
+            return false;
+        };
+        if !matches!(editable_row.state, EditableRowState::InsertDraft)
+            || editable_row.current.get(column).is_none()
+            || !editable_row.supplied_columns.contains(&column)
+        {
+            return false;
+        }
+        self.record_change();
+        self.rows[row].restore_unprovided(column)
     }
 
     pub fn delete_rows(&mut self, range: std::ops::RangeInclusive<usize>) -> bool {
@@ -463,6 +488,65 @@ mod tests {
     }
 
     #[test]
+    fn insert_draft_tracks_explicit_false_and_null() {
+        let mut session = RelationEditSession::default();
+        session.insert_row(0, vec![CellValue::Null, CellValue::Null]);
+
+        assert!(session.update_cell(0, 0, CellValue::Boolean(false)));
+        assert!(session.update_cell(0, 1, CellValue::Null));
+        assert_eq!(
+            session.rows[0].supplied_columns,
+            [0, 1].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn restore_unprovided_omits_only_the_selected_insert_column() {
+        let mut session = RelationEditSession::default();
+        session.insert_row(
+            0,
+            vec![
+                CellValue::Integer(1),
+                CellValue::Text("value".into()),
+                CellValue::Null,
+            ],
+        );
+        session.update_cell(0, 0, CellValue::Integer(7));
+        session.update_cell(0, 1, CellValue::Text("changed".into()));
+        let undo_depth = session.undo_depth;
+
+        assert!(session.restore_unprovided(0, 0));
+        assert_eq!(session.rows[0].current[0], CellValue::Null);
+        assert_eq!(session.rows[0].supplied_columns, [1].into_iter().collect());
+        assert_eq!(session.undo_depth, undo_depth + 1);
+
+        assert!(session.undo());
+        assert_eq!(session.rows[0].current[0], CellValue::Integer(7));
+        assert_eq!(
+            session.rows[0].supplied_columns,
+            [0, 1].into_iter().collect()
+        );
+        assert!(session.redo());
+        assert_eq!(session.rows[0].current[0], CellValue::Null);
+        assert_eq!(session.rows[0].supplied_columns, [1].into_iter().collect());
+    }
+
+    #[test]
+    fn restore_unprovided_rejects_existing_rows_and_invalid_columns_without_history() {
+        let mut session = RelationEditSession::from_rows(vec![vec![CellValue::Null]]);
+        let undo_depth = session.undo_depth;
+        assert!(!session.restore_unprovided(0, 0));
+        assert!(!session.restore_unprovided(0, 1));
+        assert_eq!(session.undo_depth, undo_depth);
+
+        session.insert_row(1, vec![CellValue::Null]);
+        let undo_depth = session.undo_depth;
+        assert!(!session.restore_unprovided(1, 0));
+        assert_eq!(session.undo_depth, undo_depth);
+        assert!(session.rows[1].supplied_columns.is_empty());
+    }
+
+    #[test]
     fn typed_mutation_history_moves_only_after_success() {
         let request = crate::db::mutation::RelationMutationRequest {
             tab_id: uuid::Uuid::nil(),
@@ -526,11 +610,15 @@ mod tests {
         session.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
             row: 0,
             column: 0,
-            input: CellEditorBuffer::Typed {
-                kind: crate::model::cell_editor::CellEditorKind::Boolean,
-                draft: crate::model::cell_editor::TypedDraft::Boolean(
-                    crate::model::text_input::TextInput::from("true"),
-                ),
+            input: CellEditorBuffer {
+                presence: crate::model::cell_editor::CellEditorPresence::Value,
+                content: crate::model::cell_editor::CellEditorContent::Typed {
+                    kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                    draft: crate::model::cell_editor::TypedDraft::Boolean(
+                        crate::model::text_input::TextInput::from("true"),
+                    ),
+                },
+                ..CellEditorBuffer::default()
             },
             error: None,
         }));

@@ -2496,14 +2496,22 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
         return None;
     }
     if let Some(RelationGridMode::EditCell(_)) = mode {
+        if event.modifiers == KeyModifiers::ALT {
+            return match event.code {
+                KeyCode::Char('d') => Some(Action::RelationEditRestoreDefault),
+                KeyCode::Char('n') => Some(Action::RelationEditSetNull),
+                KeyCode::Char('v') => Some(Action::RelationEditUseValue),
+                _ => None,
+            };
+        }
         let json = matches!(mode, Some(RelationGridMode::EditCell(state))
         if matches!(
             state.input,
-            crate::model::cell_editor::CellEditorBuffer::Typed {
+            crate::model::cell_editor::CellEditorBuffer { content: crate::model::cell_editor::CellEditorContent::Typed {
                 kind: crate::model::cell_editor::CellEditorKind::Json,
                 draft: crate::model::cell_editor::TypedDraft::Json(_),
                 ..
-            }
+            }, .. }
         ));
         if json {
             return match (event.modifiers, event.code) {
@@ -2533,11 +2541,11 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
         let boolean = matches!(mode, Some(RelationGridMode::EditCell(state))
         if matches!(
             state.input,
-            crate::model::cell_editor::CellEditorBuffer::Typed {
+            crate::model::cell_editor::CellEditorBuffer { content: crate::model::cell_editor::CellEditorContent::Typed {
                 kind: crate::model::cell_editor::CellEditorKind::Boolean,
                 draft: crate::model::cell_editor::TypedDraft::Boolean(_),
                 ..
-            }
+            }, .. }
         ));
         if boolean {
             return match (event.modifiers, event.code) {
@@ -2558,10 +2566,10 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
         let temporal = matches!(mode, Some(RelationGridMode::EditCell(state))
         if matches!(
             state.input,
-            crate::model::cell_editor::CellEditorBuffer::Typed {
+            crate::model::cell_editor::CellEditorBuffer { content: crate::model::cell_editor::CellEditorContent::Typed {
                 draft: crate::model::cell_editor::TypedDraft::Temporal(_),
                 ..
-            }
+            }, .. }
         ));
         if temporal {
             return match (event.modifiers, event.code) {
@@ -3856,7 +3864,7 @@ mod tests {
                     crate::model::relation_edit::CellEditorState {
                         row: 0,
                         column: 0,
-                        input: crate::model::cell_editor::CellEditorBuffer::Text(Default::default()),
+                        input: crate::model::cell_editor::CellEditorBuffer::default(),
                         error: None,
                     },
                 )))

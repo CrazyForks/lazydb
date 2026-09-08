@@ -61,7 +61,7 @@ pub(crate) fn render(
     {
         let popup_width = area.width.min(72);
         let json = editor.input.json_buffer();
-        let popup_height = area.height.min(if json.is_some() { 16 } else { 7 });
+        let popup_height = area.height.min(if json.is_some() { 17 } else { 8 });
         let popup = Rect::new(
             area.x
                 .saturating_add(area.width.saturating_sub(popup_width) / 2),
@@ -77,9 +77,12 @@ pub(crate) fn render(
         state.cursor = None;
         let is_boolean = matches!(
             &editor.input,
-            crate::model::cell_editor::CellEditorBuffer::Typed {
-                kind: crate::model::cell_editor::CellEditorKind::Boolean,
-                draft: crate::model::cell_editor::TypedDraft::Boolean(_),
+            crate::model::cell_editor::CellEditorBuffer {
+                content: crate::model::cell_editor::CellEditorContent::Typed {
+                    kind: crate::model::cell_editor::CellEditorKind::Boolean,
+                    draft: crate::model::cell_editor::TypedDraft::Boolean(_),
+                    ..
+                },
                 ..
             }
         );
@@ -90,30 +93,67 @@ pub(crate) fn render(
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Min(1),
             ])
             .split(inner);
+        let presence_label = match editor.input.presence() {
+            crate::model::cell_editor::CellEditorPresence::Unprovided => "DEFAULT (unprovided)",
+            crate::model::cell_editor::CellEditorPresence::Null => "NULL (explicit)",
+            crate::model::cell_editor::CellEditorPresence::Value => "VALUE / TEMPLATE",
+        };
+        frame.render_widget(
+            Paragraph::new(presence_label).style(Style::new().fg(theme.accent)),
+            sections[0],
+        );
+        let content_area = Rect::new(
+            sections[1].x,
+            sections[1].y,
+            sections[1].width,
+            inner.bottom().saturating_sub(sections[1].y),
+        );
         if let Some(json) = json {
             let row_id = tab
                 .edit
                 .as_ref()
                 .and_then(|edit| edit.rows.get(editor.row))
                 .map(|row| row.id);
-            render_json_editor(frame, inner, json, editor.error.as_deref(), theme, state);
+            render_json_editor(
+                frame,
+                content_area,
+                json,
+                editor.error.as_deref(),
+                theme,
+                state,
+            );
             if let Some(row_id) = row_id {
-                register_json_selection_target(state, tab.id, row_id, editor.column, inner, json);
+                register_json_selection_target(
+                    state,
+                    tab.id,
+                    row_id,
+                    editor.column,
+                    content_area,
+                    json,
+                );
             }
         } else if is_boolean {
-            render_boolean_editor(frame, sections[0], editor, theme);
+            render_boolean_editor(frame, sections[1], editor, theme);
             frame.render_widget(
-                Paragraph::new("Left/Right  Space  t/f").style(Style::new().fg(theme.muted)),
-                sections[1],
+                Paragraph::new(
+                    "Left/Right  Space  t/f  Alt-N NULL  Alt-D DEFAULT  Alt-V use value",
+                )
+                .style(Style::new().fg(theme.muted)),
+                sections[2],
             );
-        } else if let crate::model::cell_editor::CellEditorBuffer::Typed {
-            draft: crate::model::cell_editor::TypedDraft::Temporal(draft),
+        } else if let crate::model::cell_editor::CellEditorBuffer {
+            content:
+                crate::model::cell_editor::CellEditorContent::Typed {
+                    draft: crate::model::cell_editor::TypedDraft::Temporal(draft),
+                    ..
+                },
             ..
         } = &editor.input
         {
-            render_text_input(frame, sections[0], "", draft.input(), theme.base(), state);
+            render_text_input(frame, sections[1], "", draft.input(), theme.base(), state);
             if let Some(row_id) = tab
                 .edit
                 .as_ref()
@@ -126,7 +166,7 @@ pub(crate) fn render(
                         row_id,
                         column: editor.column,
                     },
-                    sections[0],
+                    sections[1],
                     "",
                     draft.input(),
                     super::text_input_horizontal_offset(sections[0], "", draft.input()),
@@ -135,16 +175,18 @@ pub(crate) fn render(
             if let Some(label) = draft.calendar_label() {
                 frame.render_widget(
                     Paragraph::new(label).style(Style::new().fg(theme.muted)),
-                    sections[1],
+                    sections[2],
                 );
             }
             frame.render_widget(
-                Paragraph::new("Left/Right field  [/] month  Enter apply")
-                    .style(Style::new().fg(theme.muted)),
-                sections[2],
+                Paragraph::new(
+                    "Left/Right field  [/] month  Alt-N NULL  Alt-D DEFAULT  Alt-V use value",
+                )
+                .style(Style::new().fg(theme.muted)),
+                sections[3],
             );
         } else if let Some(input) = editor.input.input() {
-            render_text_input(frame, sections[0], "", input, theme.base(), state);
+            render_text_input(frame, sections[1], "", input, theme.base(), state);
             if let Some(row_id) = tab
                 .edit
                 .as_ref()
@@ -157,7 +199,7 @@ pub(crate) fn render(
                         row_id,
                         column: editor.column,
                     },
-                    sections[0],
+                    sections[1],
                     "",
                     input,
                     super::text_input_horizontal_offset(sections[0], "", input),
@@ -168,10 +210,7 @@ pub(crate) fn render(
                 Paragraph::new("DEFAULT (unprovided)").style(Style::new().fg(theme.muted)),
                 sections[0],
             );
-        } else if matches!(
-            editor.input,
-            crate::model::cell_editor::CellEditorBuffer::Null(_)
-        ) {
+        } else if editor.input.is_null() {
             frame.render_widget(
                 Paragraph::new("NULL (explicit)").style(Style::new().fg(theme.muted)),
                 sections[0],
@@ -180,7 +219,7 @@ pub(crate) fn render(
         if let Some(error) = &editor.error {
             frame.render_widget(
                 Paragraph::new(Line::from(error.as_str()).style(Style::new().fg(theme.error))),
-                sections[3],
+                sections[4],
             );
         }
     }
@@ -1166,9 +1205,13 @@ mod tests {
             edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
-                input: CellEditorBuffer::Typed {
-                    kind: CellEditorKind::Json,
-                    draft: TypedDraft::Json(JsonBuffer::new(value)),
+                input: CellEditorBuffer {
+                    presence: crate::model::cell_editor::CellEditorPresence::Value,
+                    content: crate::model::cell_editor::CellEditorContent::Typed {
+                        kind: CellEditorKind::Json,
+                        draft: TypedDraft::Json(JsonBuffer::new(value)),
+                    },
+                    ..CellEditorBuffer::default()
                 },
                 error: None,
             }));
@@ -1199,11 +1242,15 @@ mod tests {
             edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
-                input: CellEditorBuffer::Typed {
-                    kind: CellEditorKind::Date,
-                    draft: TypedDraft::Temporal(TemporalDraft::date(
-                        NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
-                    )),
+                input: CellEditorBuffer {
+                    presence: crate::model::cell_editor::CellEditorPresence::Value,
+                    content: crate::model::cell_editor::CellEditorContent::Typed {
+                        kind: CellEditorKind::Date,
+                        draft: TypedDraft::Temporal(TemporalDraft::date(
+                            NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(),
+                        )),
+                    },
+                    ..CellEditorBuffer::default()
                 },
                 error: None,
             }));
@@ -1261,7 +1308,10 @@ mod tests {
             edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
                 row: 0,
                 column: 0,
-                input: CellEditorBuffer::Text(TextInput::from("hello")),
+                input: CellEditorBuffer::from_value(
+                    &crate::db::value::CellValue::Text("hello".into()),
+                    None,
+                ),
                 error: None,
             }));
             tab.edit = Some(edit);
@@ -1455,7 +1505,10 @@ mod tests {
         let editor = CellEditorState {
             row: 5,
             column: 8,
-            input: CellEditorBuffer::Text(TextInput::from("failed")),
+            input: CellEditorBuffer::from_value(
+                &crate::db::value::CellValue::Text("failed".into()),
+                None,
+            ),
             error: None,
         };
 
@@ -1467,19 +1520,31 @@ mod tests {
     #[test]
     fn typed_cell_editor_rendering_is_safe_in_tiny_areas() {
         let editors = [
-            CellEditorBuffer::Typed {
-                kind: CellEditorKind::Json,
-                draft: TypedDraft::Json(JsonBuffer::new("{}")),
+            CellEditorBuffer {
+                presence: crate::model::cell_editor::CellEditorPresence::Value,
+                content: crate::model::cell_editor::CellEditorContent::Typed {
+                    kind: CellEditorKind::Json,
+                    draft: TypedDraft::Json(JsonBuffer::new("{}")),
+                },
+                ..CellEditorBuffer::default()
             },
-            CellEditorBuffer::Typed {
-                kind: CellEditorKind::Date,
-                draft: TypedDraft::Temporal(TemporalDraft::date(
-                    NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
-                )),
+            CellEditorBuffer {
+                presence: crate::model::cell_editor::CellEditorPresence::Value,
+                content: crate::model::cell_editor::CellEditorContent::Typed {
+                    kind: CellEditorKind::Date,
+                    draft: TypedDraft::Temporal(TemporalDraft::date(
+                        NaiveDate::from_ymd_opt(2026, 8, 28).unwrap(),
+                    )),
+                },
+                ..CellEditorBuffer::default()
             },
-            CellEditorBuffer::Typed {
-                kind: CellEditorKind::Boolean,
-                draft: TypedDraft::Boolean(TextInput::from("true")),
+            CellEditorBuffer {
+                presence: crate::model::cell_editor::CellEditorPresence::Value,
+                content: crate::model::cell_editor::CellEditorContent::Typed {
+                    kind: CellEditorKind::Boolean,
+                    draft: TypedDraft::Boolean(TextInput::from("true")),
+                },
+                ..CellEditorBuffer::default()
             },
         ];
 

@@ -500,6 +500,9 @@ pub enum HelpShortcutId {
     RelationRollback,
     RelationEditText,
     RelationEditBoolean,
+    RelationEditSetNull,
+    RelationEditRestoreDefault,
+    RelationEditUseValue,
     RelationEditTemporal,
     RelationEditJson,
     RelationEditDeleteWord,
@@ -606,6 +609,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | ConsoleManagerCreate | HelpExecute | ProfileAccessClose | ExecutionToggle
         | ManualCancelToggle | TransactionToggle | ClearOutcomeToggle | TargetCancel
         | RelationEditText | RelationVisualDelete => 3,
+        RelationEditSetNull | RelationEditRestoreDefault | RelationEditUseValue => 3,
         ExplorerExpand
         | EditorCopyStatement
         | ResultsMoveRight
@@ -1681,6 +1685,30 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         [RelationDataEdit],
         "type / Backspace",
         "edit cell value",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditSetNull,
+        [RelationDataEdit],
+        "Alt-N",
+        "set explicit SQL NULL",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditRestoreDefault,
+        [RelationDataEdit],
+        "Alt-D",
+        "restore DEFAULT (insert drafts only)",
+        RelationEditAvailable,
+        display
+    ),
+    row!(
+        RelationEditUseValue,
+        [RelationDataEdit],
+        "Alt-V",
+        "use the current typed value/template",
         RelationEditAvailable,
         display
     ),
@@ -3059,7 +3087,10 @@ fn footer_rank(
             Id::RelationEditText => Some(3),
             Id::RelationEditBoolean => Some(4),
             Id::RelationEditTemporal => Some(5),
-            Id::RelationEditDeleteWord => Some(6),
+            Id::RelationEditSetNull => Some(6),
+            Id::RelationEditRestoreDefault => Some(7),
+            Id::RelationEditUseValue => Some(8),
+            Id::RelationEditDeleteWord => Some(9),
             _ => None,
         },
         ShortcutContext::RelationDataVisual => match id {
@@ -4127,6 +4158,9 @@ mod tests {
                 "type / Backspace",
                 "Left/Right Space t/f",
                 "Left/Right  [/]  type",
+                "Alt-N",
+                "Alt-D",
+                "Alt-V",
                 "Ctrl-w",
             ]
         );
