@@ -68,7 +68,12 @@ Each SQL console owns an `ExecutionTarget` containing profile UUID, database, an
 schema. `Space d` derives stable, sorted candidates from the active profile's
 normalized catalog and `CatalogScope`. App keeps a target change pending until a
 generation-matched connection succeeds, then updates and persists the console;
-failure preserves both the old console target and old active pool.
+failure preserves both the old console target and old active pool. Activating a
+console or running SQL on a console whose target is not the current active target
+requests that console target through the same generation-checked connection
+switch path instead of reporting a network disconnect. The current runtime still
+owns one active pool; per-target pool reuse and independent concurrent console
+connections remain a later architectural phase.
 
 ## Profile and Credential Boundary
 

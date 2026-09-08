@@ -554,6 +554,167 @@ fn target_selector_switches_only_after_matching_connection_success() {
 }
 
 #[test]
+fn switching_to_a_console_reconnects_its_target_before_execution() {
+    let mut profile = memory_profile("console-target");
+    profile.catalog_scope.databases = CatalogSelection::All;
+    let profile_id = profile.id;
+    let default = ExecutionTarget::from_profile(&profile);
+    let console_target = ExecutionTarget {
+        profile_id,
+        database: ":memory:".into(),
+        schema: Some("attached".into()),
+    };
+    let mut app = App::new(vec![profile]);
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 1;
+    app.connection.status = ConnectionStatus::Connected;
+    app.connection.target = Some(default.clone());
+    app.update(Action::NewConsole);
+    app.tabs[0]
+        .as_console_mut()
+        .expect("default console")
+        .execution_target = Some(console_target.clone());
+    app.tabs[1]
+        .as_console_mut()
+        .expect("new console")
+        .execution_target = Some(default.clone());
+    app.active_tab = 1;
+
+    let commands = app.update(Action::ActivateTab(0));
+
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::Connect { target, .. }] if target == &console_target
+    ));
+    assert_eq!(
+        app.connection.pending_target.as_ref(),
+        Some(&console_target)
+    );
+}
+
+#[test]
+fn console_target_reconnect_updates_the_active_target_before_sql_runs() {
+    let mut profile = memory_profile("console-target-success");
+    profile.catalog_scope.databases = CatalogSelection::All;
+    let profile_id = profile.id;
+    let default = ExecutionTarget::from_profile(&profile);
+    let console_target = ExecutionTarget {
+        profile_id,
+        database: ":memory:".into(),
+        schema: Some("attached".into()),
+    };
+    let mut app = App::new(vec![profile]);
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 1;
+    app.connection.status = ConnectionStatus::Connected;
+    app.connection.target = Some(default);
+    app.update(Action::NewConsole);
+    app.tabs[0]
+        .as_console_mut()
+        .expect("default console")
+        .execution_target = Some(console_target.clone());
+    app.active_tab = 0;
+
+    let connect = app.update(Action::ActivateTab(0));
+    let generation = match connect.as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        other => panic!("unexpected commands: {other:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: server(":memory:"),
+        mutation_capabilities: Default::default(),
+    });
+    assert_eq!(app.connection.target.as_ref(), Some(&console_target));
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+
+    assert!(matches!(
+        app.update(Action::RunActiveSql).as_slice(),
+        [Command::RunQueryPage { target, .. }] if target == &console_target
+    ));
+}
+
+#[test]
+fn failed_console_target_reconnect_preserves_old_connection_and_allows_retry() {
+    let mut profile = memory_profile("console-target-failure");
+    profile.catalog_scope.databases = CatalogSelection::All;
+    let profile_id = profile.id;
+    let active_target = ExecutionTarget::from_profile(&profile);
+    let console_target = ExecutionTarget {
+        profile_id,
+        database: ":memory:".into(),
+        schema: Some("attached".into()),
+    };
+    let mut app = App::new(vec![profile]);
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation: 1,
+        server: server(":memory:"),
+        mutation_capabilities: Default::default(),
+    });
+    app.connection.target = Some(active_target.clone());
+    app.active_console_mut().execution_target = Some(console_target.clone());
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+
+    let generation = match app.update(Action::RunActiveSql).as_slice() {
+        [
+            Command::Connect {
+                generation, target, ..
+            },
+        ] => {
+            assert_eq!(target, &console_target);
+            *generation
+        }
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionFailed {
+        profile_id,
+        generation,
+        message: "target unavailable".into(),
+    });
+
+    assert_eq!(app.connection.target.as_ref(), Some(&active_target));
+    assert_eq!(app.connection.status, ConnectionStatus::Connected);
+    assert!(app.connection.pending_target.is_none());
+    assert!(matches!(
+        app.update(Action::RunActiveSql).as_slice(),
+        [Command::Connect { target, .. }] if target == &console_target
+    ));
+}
+
+#[test]
+fn executing_while_console_target_is_connecting_does_not_start_a_second_connection() {
+    let mut profile = memory_profile("console-target-pending");
+    profile.catalog_scope.databases = CatalogSelection::All;
+    let profile_id = profile.id;
+    let active_target = ExecutionTarget::from_profile(&profile);
+    let console_target = ExecutionTarget {
+        profile_id,
+        database: ":memory:".into(),
+        schema: Some("attached".into()),
+    };
+    let mut app = App::new(vec![profile]);
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation: 1,
+        server: server(":memory:"),
+        mutation_capabilities: Default::default(),
+    });
+    app.connection.target = Some(active_target);
+    app.active_console_mut().execution_target = Some(console_target);
+    app.active_tab = 0;
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+
+    let first = app.update(Action::RunActiveSql);
+    assert!(matches!(first.as_slice(), [Command::Connect { .. }]));
+    let second = app.update(Action::RunActiveSql);
+
+    assert!(second.is_empty());
+    assert_eq!(app.connection.status, ConnectionStatus::Connecting);
+}
+
+#[test]
 fn target_selector_reconnects_when_console_target_matches_selection_but_connection_does_not() {
     let mut profile = memory_profile("target-reconnect");
     profile.catalog_scope.databases = CatalogSelection::All;
