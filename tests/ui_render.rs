@@ -6140,6 +6140,147 @@ fn relation_query_bar_uses_sql_syntax_colors() {
 }
 
 #[test]
+fn relation_query_bar_clicking_content_starts_input_selection() {
+    let mut app = fixture();
+    let mut relation = RelationTab::new("users");
+    relation.query.capability = DataQueryCapability::Relation;
+    relation.query.where_input.set("name = 'Ada'");
+    relation.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "SELECT id, name FROM users".into(),
+                result: app.active_console().outcome.clone().unwrap(),
+                pagination: lazydb::model::pagination::ResultPagination::from_page(
+                    lazydb::model::pagination::PageRequest::first(
+                        lazydb::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+                row_versions: None,
+            },
+            app.connection.active_identity().unwrap(),
+            lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(relation));
+    app.active_tab = 1;
+    app.focus = Focus::Explorer;
+
+    let (_, state) = render_with_state(&app, 120, 36);
+    let field = state
+        .hit_regions
+        .iter()
+        .find(|region| {
+            matches!(
+                region.target,
+                HitTarget::DataQueryInput(DataQueryInput::Where)
+            )
+        })
+        .expect("WHERE query field hit region");
+    let input_map = state
+        .input_selection_targets
+        .iter()
+        .find(|(target, _)| {
+            matches!(
+                target,
+                lazydb::ui::text_selection::InputSelectionTarget::DataQuery(DataQueryInput::Where)
+            )
+        })
+        .map(|(_, map)| map)
+        .expect("WHERE query input map")
+        .clone();
+    let event = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: field
+            .area
+            .x
+            .saturating_add(input_map.prefix_width as u16)
+            .saturating_add(7),
+        row: field.area.y,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    let action = map_mouse(event, &state, &app);
+
+    assert!(
+        matches!(
+            action,
+            Some(Action::BeginMouseInputSelection {
+                target: lazydb::ui::text_selection::InputSelectionTarget::DataQuery(
+                    DataQueryInput::Where,
+                ),
+                ..
+            })
+        ),
+        "expected content click to start input selection, got {action:?}"
+    );
+
+    app.update(action.expect("content click action"));
+    let query = match &app.tabs[app.active_tab] {
+        WorkspaceTab::Relation(tab) => &tab.query,
+        _ => panic!("expected relation tab"),
+    };
+    assert_eq!(query.focus, Some(DataQueryInput::Where));
+    assert_eq!(app.focus, Focus::Results);
+    assert_eq!(query.where_input.cursor(), 7);
+}
+
+#[test]
+fn relation_query_bar_label_and_underline_keep_focus_click_behavior() {
+    let mut app = fixture();
+    let mut relation = RelationTab::new("users");
+    relation.query.capability = DataQueryCapability::Relation;
+    relation.query.where_input.set("name = 'Ada'");
+    relation.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "SELECT id, name FROM users".into(),
+                result: app.active_console().outcome.clone().unwrap(),
+                pagination: lazydb::model::pagination::ResultPagination::from_page(
+                    lazydb::model::pagination::PageRequest::first(
+                        lazydb::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+                row_versions: None,
+            },
+            app.connection.active_identity().unwrap(),
+            lazydb::profile::CatalogScope::for_profile(DatabaseKind::Sqlite, "db", None),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(relation));
+    app.active_tab = 1;
+    app.focus = Focus::Explorer;
+
+    let (_, state) = render_with_state(&app, 120, 36);
+    let field = state
+        .hit_regions
+        .iter()
+        .find(|region| {
+            matches!(
+                region.target,
+                HitTarget::DataQueryInput(DataQueryInput::Where)
+            )
+        })
+        .expect("WHERE query field hit region");
+
+    for row in [field.area.y, field.area.y.saturating_add(1)] {
+        let action = map_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: field.area.x,
+                row,
+                modifiers: KeyModifiers::NONE,
+            },
+            &state,
+            &app,
+        );
+        assert_eq!(
+            action,
+            Some(Action::FocusDataQueryInput(DataQueryInput::Where))
+        );
+    }
+}
+
+#[test]
 fn query_bar_keeps_unicode_input_and_disabled_state_safe() {
     let mut app = fixture();
     app.active_console_mut().query.capability = DataQueryCapability::Sql;
@@ -6159,6 +6300,15 @@ fn query_bar_keeps_unicode_input_and_disabled_state_safe() {
             .hit_regions
             .iter()
             .any(|region| matches!(region.target, HitTarget::DataQueryInput(_)))
+    );
+    assert!(
+        !state
+            .input_selection_targets
+            .iter()
+            .any(|(target, _)| matches!(
+                target,
+                lazydb::ui::text_selection::InputSelectionTarget::DataQuery(_)
+            ))
     );
 }
 

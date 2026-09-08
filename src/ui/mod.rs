@@ -275,10 +275,6 @@ pub struct UiState {
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
     pub input_gesture: RefCell<Option<text_selection::InputGesture>>,
     pub text_selection_targets: Vec<text_selection::TextSelectionTarget>,
-    pub data_query_input_targets: Vec<(
-        crate::model::data_query::DataQueryInput,
-        text_selection::InputHitMap,
-    )>,
     pub profile_input_targets: Vec<(ProfileField, text_selection::InputHitMap)>,
     pub catalog_input_targets: Vec<(
         crate::action::CatalogEditorCursorTarget,
@@ -376,7 +372,6 @@ impl UiState {
             text_gesture: RefCell::new(None),
             input_gesture: RefCell::new(None),
             text_selection_targets: Vec::new(),
-            data_query_input_targets: Vec::new(),
             profile_input_targets: Vec::new(),
             catalog_input_targets: Vec::new(),
             input_selection_targets: Vec::new(),
@@ -427,20 +422,6 @@ impl UiState {
                 .source_at(column, row)
                 .map(|position| (target, position))
         })
-    }
-
-    pub fn data_query_input_at(
-        &self,
-        column: u16,
-        row: u16,
-    ) -> Option<(crate::model::data_query::DataQueryInput, usize)> {
-        self.data_query_input_targets
-            .iter()
-            .rev()
-            .find_map(|(input, map)| {
-                map.source_at(column, row)
-                    .map(|position| (*input, position))
-            })
     }
 
     pub fn profile_input_at(&self, column: u16, row: u16) -> Option<(ProfileField, usize)> {
@@ -793,7 +774,6 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.ddl_viewport = None;
     state.cursor = None;
     state.text_selection_targets.clear();
-    state.data_query_input_targets.clear();
     state.profile_input_targets.clear();
     state.catalog_input_targets.clear();
     state.input_selection_targets.clear();
@@ -1265,27 +1245,6 @@ pub(crate) fn render_text_input(
         style: CursorStyle::Bar,
     });
     Some(cursor)
-}
-
-pub(crate) fn register_data_query_input(
-    state: &mut UiState,
-    input: crate::model::data_query::DataQueryInput,
-    area: Rect,
-    prefix: &str,
-    value: &crate::model::text_input::TextInput,
-    offset: usize,
-) {
-    state.data_query_input_targets.push((
-        input,
-        text_selection::InputHitMap {
-            area,
-            source_to_display_cells: crate::security::project_editor_line(value.value())
-                .source_to_display_cells,
-            horizontal_offset: offset,
-            prefix_width: prefix.width(),
-            source_start: 0,
-        },
-    ));
 }
 
 pub(crate) fn register_input_selection_target(

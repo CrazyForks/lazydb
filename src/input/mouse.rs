@@ -387,28 +387,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     cursor,
                 });
             }
-            if let HitTarget::DataQueryInput(input) = target
-                && let Some((_, cursor)) = ui.data_query_input_at(event.column, event.row)
-            {
-                let target = crate::ui::text_selection::InputSelectionTarget::DataQuery(input);
-                ui.input_gesture
-                    .borrow_mut()
-                    .replace(crate::ui::text_selection::InputGesture {
-                        target: target.clone(),
-                        hit_map: ui
-                            .input_selection_targets
-                            .iter()
-                            .find(|(candidate, _)| candidate == &target)
-                            .map(|(_, map)| map.clone())?,
-                        start: cursor,
-                        end: cursor,
-                        has_dragged: false,
-                    });
-                ui.mouse_gesture
-                    .borrow_mut()
-                    .replace(crate::ui::text_selection::GestureOwner::Input);
-                return Some(Action::BeginMouseInputSelection { target, cursor });
-            }
             if let HitTarget::ProfileField(field) = target
                 && let Some((_, cursor)) = ui.profile_input_at(event.column, event.row)
             {
