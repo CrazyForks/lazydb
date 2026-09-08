@@ -1864,6 +1864,7 @@ impl App {
             |code| Action::EditorKey(KeyEvent::new(code, KeyModifiers::CONTROL));
         let actions = match id {
             Id::Help => unreachable!("help shortcut is handled before dispatch"),
+            Id::Quit => vec![Action::Quit],
             Id::FocusExplorer => vec![Action::Focus(Focus::Explorer)],
             Id::FocusExplorerLeader => vec![Action::Focus(Focus::Explorer)],
             Id::FocusResults | Id::FocusResultsFromL => vec![Action::Focus(Focus::Results)],
@@ -20668,6 +20669,68 @@ mod tests {
         assert!(matches!(app.overlay, Some(Overlay::Help(_))));
         app.update(Action::DismissOverlay);
         assert_eq!(app.overlay, None);
+    }
+
+    #[test]
+    fn help_quit_enter_saves_workspace_before_exiting() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(Vec::new());
+        app.focus = Focus::Explorer;
+        app.update(Action::ShowHelp);
+        app.update(Action::HelpPaste("ctrl-c".into()));
+        let action = crate::input::keymap::Keymap::default()
+            .map(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &app)
+            .expect("Enter executes selected shortcut");
+        assert_eq!(
+            action,
+            Action::ExecuteHelpShortcut(crate::help::HelpShortcutId::Quit)
+        );
+
+        let commands = app.update(action);
+        assert_eq!(app.overlay, None);
+        assert!(!app.should_quit);
+        let revision = match commands.as_slice() {
+            [
+                Command::PersistWorkspace { revision, .. },
+                Command::FlushWorkspace { revision: flushed },
+            ] if revision == flushed => *revision,
+            other => panic!("unexpected quit commands: {other:?}"),
+        };
+        finish_workspace_quit(&mut app, revision);
+    }
+
+    #[test]
+    fn help_quit_reviews_pending_transaction_before_exiting() {
+        use crate::model::transaction::DeferredIntent;
+
+        let mut app = App::new(Vec::new());
+        app.active_console_mut().transaction_mode = TransactionMode::Manual;
+        app.active_console_mut().transaction_state = TransactionState::Active;
+        app.focus = Focus::Explorer;
+        app.update(Action::ShowHelp);
+        app.update(Action::HelpPaste("quit".into()));
+        assert_eq!(
+            app.help_selected_id(),
+            Some(crate::help::HelpShortcutId::Quit)
+        );
+
+        let commands = app.update(Action::ExecuteHelpShortcut(
+            crate::help::HelpShortcutId::Quit,
+        ));
+
+        assert!(commands.is_empty());
+        assert!(!app.should_quit);
+        assert!(!app.workspace_save_closing);
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::TransactionExitConfirm { ref prompt, .. })
+                if prompt.intent == DeferredIntent::Quit
+        ));
+        assert_eq!(
+            app.active_console().transaction_state,
+            TransactionState::Active
+        );
     }
 
     #[test]

@@ -266,6 +266,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HelpShortcutId {
     Help,
+    Quit,
     TerminalSelection,
     FocusExplorer,
     FocusExplorerLeader,
@@ -798,6 +799,25 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "? (also F1)",
         "open this help panel",
         display
+    ),
+    row!(
+        Quit,
+        [
+            Explorer,
+            EditorNormal,
+            EditorInsert,
+            EditorVisual,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDataEdit,
+            RelationDataVisual,
+            RelationDataBusy,
+            RelationDdl,
+            Dashboard
+        ],
+        "Ctrl-c",
+        "quit LazyDB"
     ),
     row!(
         TerminalSelection,
@@ -3297,6 +3317,31 @@ mod tests {
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::HashSet;
+
+    #[test]
+    fn help_lists_selectable_quit_in_every_help_enabled_context() {
+        let contexts = shortcut_catalog()
+            .iter()
+            .find(|shortcut| shortcut.id == HelpShortcutId::Help)
+            .unwrap()
+            .contexts;
+        for &context in contexts {
+            let capabilities = ShortcutCapabilities::default();
+            let rows = shortcuts(context, capabilities);
+            let index = rows
+                .iter()
+                .position(|shortcut| shortcut.id == HelpShortcutId::Quit)
+                .expect("quit row should be visible");
+            assert_eq!(rows[index].sequence, "Ctrl-c");
+            assert!(shortcut_is_executable(HelpShortcutId::Quit));
+
+            let mut help = HelpState::new(context, capabilities);
+            help.move_selection(index as isize, rows.len());
+            assert_eq!(help.selected_id(), Some(HelpShortcutId::Quit));
+            help.paste("ctrl-c");
+            assert_eq!(help.selected_id(), Some(HelpShortcutId::Quit));
+        }
+    }
 
     #[test]
     fn help_search_applies_shared_cursor_and_deletion_edits() {
