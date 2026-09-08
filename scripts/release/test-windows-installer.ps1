@@ -26,7 +26,7 @@ function Invoke-TestHost([string] $Executable, [string] $ScriptPath) {
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $hostExe = (Get-Process -Id $PID).Path
 $windowsPowerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
-$temp = Join-Path ([IO.Path]::GetTempPath()) ('lazydb [fixtures] ' + [IO.Path]::GetRandomFileName())
+$temp = Join-Path ([IO.Path]::GetTempPath()) ('lazydb fixtures ' + [IO.Path]::GetRandomFileName())
 $oldPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $savedEnvironment = @{}
 $names = @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LAZYDB_INSTALL_DIR', 'LAZYDB_CHANNEL', 'LAZYDB_CHANNEL_BASE_URL', 'LAZYDB_MCP_SETUP', 'LAZYDB_FIXTURE_ROOT')
