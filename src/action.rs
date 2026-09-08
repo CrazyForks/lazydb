@@ -517,6 +517,9 @@ pub enum Action {
     ScrollExecutionConfirmation {
         rows: isize,
     },
+    ScrollRelationTransactionReview {
+        rows: isize,
+    },
     CancelActiveQuery,
     ConfirmManualCancellation,
     CancelManualCancellation,
@@ -526,6 +529,7 @@ pub enum Action {
     ConfirmTransactionExitChoice(crate::model::transaction::TransactionExitChoice),
     CancelTransactionExit,
     ToggleTransactionExitChoice,
+    TogglePreviousTransactionExitChoice,
     ConfirmClearTransactionOutcome,
     CancelClearTransactionOutcome,
     ToggleClearTransactionOutcomeFocus,

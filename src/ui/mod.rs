@@ -3989,9 +3989,19 @@ fn render_overlay(
         Overlay::TransactionExitConfirm { prompt, choice } => {
             render_transaction_exit_overlay(frame, area, app, prompt, *choice, theme, state);
         }
-        Overlay::RelationTransactionConfirm { tab_id, choice } => {
+        Overlay::RelationTransactionConfirm {
+            tab_id,
+            choice,
+            sql,
+            preview_offset,
+            ..
+        } => {
             use crate::model::transaction::TransactionExitChoice;
-            let popup = centered(area, 78, 10);
+            let popup = centered(
+                area,
+                area.width.saturating_sub(4).min(110),
+                18.min(area.height),
+            );
             frame.render_widget(Clear, popup);
             let title = app
                 .tabs
@@ -3999,16 +4009,57 @@ fn render_overlay(
                 .find(|tab| tab.id() == *tab_id)
                 .map(|tab| tab.title())
                 .unwrap_or("unknown");
+            let transaction_state =
+                app.tabs
+                    .iter()
+                    .find(|tab| tab.id() == *tab_id)
+                    .and_then(|tab| match tab {
+                        WorkspaceTab::Relation(tab) => Some(tab.transaction_state),
+                        _ => None,
+                    });
+            let consequence = match transaction_state {
+                Some(crate::model::transaction::TransactionState::Active) => {
+                    "Rollback ends the active database transaction."
+                }
+                Some(crate::model::transaction::TransactionState::Aborted) => {
+                    "The transaction is aborted; only rollback is available."
+                }
+                _ => "Commit executes the reviewed changes; Rollback discards local edits.",
+            };
             let lines = vec![
-                Line::from(Span::styled(" TRANSACTION ", theme.title(true))),
-                Line::raw(format!("console: {title}")),
+                Line::from(Span::styled(" REVIEW TABLE CHANGES ", theme.title(true))),
+                Line::raw(format!("table: {title}")),
+                Line::raw(consequence),
             ];
-            let inner = dialog::render_frame(frame, popup, " TRANSACTION CONTROL ", theme);
+            let inner = dialog::render_frame(frame, popup, " TRANSACTION REVIEW ", theme);
             dialog::render_body(
                 frame,
-                Rect::new(inner.x, inner.y, inner.width, 2),
+                Rect::new(inner.x, inner.y, inner.width, 3),
                 lines,
                 theme,
+            );
+            let preview = sql_preview::lines(
+                sql,
+                app.sql_dialect(),
+                inner.width.saturating_sub(2) as usize,
+                theme,
+            );
+            let preview_height = inner.height.saturating_sub(7);
+            let preview_area = Rect::new(
+                inner.x,
+                inner.y.saturating_add(3),
+                inner.width,
+                preview_height,
+            );
+            let preview_lines = preview
+                .into_iter()
+                .skip(*preview_offset)
+                .take(preview_height as usize)
+                .collect::<Vec<_>>();
+            frame.render_widget(
+                Paragraph::new(preview_lines)
+                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
+                preview_area,
             );
             let selected = match choice {
                 TransactionExitChoice::Commit => 0,
@@ -4017,7 +4068,7 @@ fn render_overlay(
             };
             let actions = dialog::render_actions(
                 frame,
-                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                Rect::new(inner.x, inner.bottom().saturating_sub(3), inner.width, 1),
                 &[
                     dialog::DialogButton {
                         label: "Commit",
@@ -4051,7 +4102,7 @@ fn render_overlay(
             dialog::render_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-                "Tab / Left / Right choose   Enter activate   Esc cancel",
+                "Tab / Shift-Tab choose   Enter confirm   Up/Down scroll   Esc cancel",
                 theme,
             );
         }

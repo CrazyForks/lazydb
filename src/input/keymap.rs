@@ -30,8 +30,6 @@ enum Pending {
     RecordViewGoto,
     ExplorerAlign,
     Goto,
-    RelationTransaction,
-    RelationTransactionChoice,
     LeaderTransaction,
 }
 
@@ -388,16 +386,15 @@ impl Keymap {
             self.pending = None;
             return match event.code {
                 KeyCode::Enter => Some(Action::ConfirmTransactionExit),
-                KeyCode::Char('r') => Some(Action::ConfirmTransactionExitChoice(
-                    crate::model::transaction::TransactionExitChoice::Rollback,
-                )),
-                KeyCode::Char('c') => Some(Action::ConfirmTransactionExitChoice(
-                    crate::model::transaction::TransactionExitChoice::Commit,
-                )),
                 KeyCode::Esc => Some(Action::CancelTransactionExit),
-                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                    Some(Action::ToggleTransactionExitChoice)
+                KeyCode::Tab | KeyCode::Right => Some(Action::ToggleTransactionExitChoice),
+                KeyCode::BackTab | KeyCode::Left => {
+                    Some(Action::TogglePreviousTransactionExitChoice)
                 }
+                KeyCode::Up => Some(Action::ScrollRelationTransactionReview { rows: -1 }),
+                KeyCode::Down => Some(Action::ScrollRelationTransactionReview { rows: 1 }),
+                KeyCode::PageUp => Some(Action::ScrollRelationTransactionReview { rows: -10 }),
+                KeyCode::PageDown => Some(Action::ScrollRelationTransactionReview { rows: 10 }),
                 _ => None,
             };
         }
@@ -984,19 +981,6 @@ impl Keymap {
                 );
                 return None;
             }
-            if pending == Pending::RelationTransaction
-                && event.modifiers.is_empty()
-                && event.code == KeyCode::Char('t')
-            {
-                self.continue_pending(
-                    Pending::RelationTransactionChoice,
-                    focus,
-                    editor_mode,
-                    tab_id,
-                    matches!(app.overlay, Some(Overlay::RecordView(_))),
-                );
-                return None;
-            }
             if pending == Pending::LeaderTransaction
                 && event.modifiers.is_empty()
                 && event.code == KeyCode::Char('c')
@@ -1214,13 +1198,6 @@ impl Keymap {
         }
 
         if is_relation_data_focus(app) {
-            if relation_grid_is_browse(app)
-                && event.modifiers.is_empty()
-                && event.code == KeyCode::Char(' ')
-            {
-                self.set_pending(Pending::RelationTransaction, app);
-                return None;
-            }
             if (event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT)
                 && relation_grid_is_browse(app)
             {
@@ -2207,10 +2184,6 @@ fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, Str
         Pending::RecordViewGoto => Some((ShortcutPrefix::RecordViewGoto, "g".into())),
         Pending::ExplorerAlign => Some((ShortcutPrefix::ExplorerAlign, "z".into())),
         Pending::Goto => Some((ShortcutPrefix::Goto, "g".into())),
-        Pending::RelationTransaction => Some((ShortcutPrefix::EditorLeader, "Space".into())),
-        Pending::RelationTransactionChoice => {
-            Some((ShortcutPrefix::EditorLeader, "Space t".into()))
-        }
         Pending::LeaderTransaction => Some((ShortcutPrefix::EditorLeader, "Space t".into())),
     }
 }
@@ -2250,10 +2223,6 @@ fn map_pending(
                 include_headers: true,
             })
         }
-        (Pending::RelationTransaction, KeyCode::Char('c')) => Some(Action::Focus(Focus::Explorer)),
-        (Pending::RelationTransaction, KeyCode::Char('s')) => Some(Action::OpenSqlEditorList),
-        (Pending::RelationTransaction, KeyCode::Char('q')) => Some(Action::CloseActiveTab),
-        (Pending::RelationTransaction, KeyCode::Char('m')) => Some(Action::OpenNotificationHistory),
         (Pending::RelationYank, KeyCode::Char('y')) => Some(Action::RelationYank),
         (Pending::Window { .. }, KeyCode::Char('w'))
             if event.modifiers == KeyModifiers::CONTROL =>
@@ -2299,10 +2268,6 @@ fn map_pending(
                 .then_some(Action::NextTab)
         }
         (Pending::Leader, KeyCode::Char('t')) => None,
-        (Pending::RelationTransactionChoice, KeyCode::Char('c' | 'r')) => {
-            Some(Action::OpenTransactionControl)
-        }
-        (Pending::RelationTransaction, KeyCode::Char('t')) => Some(Action::OpenTransactionControl),
         (Pending::RelationDelete, KeyCode::Char('d')) => Some(Action::RelationDeleteCurrent),
         (Pending::RecordViewGoto, KeyCode::Char('g')) => Some(Action::RecordViewJumpFirstField),
         (Pending::ExplorerAlign, KeyCode::Char('z')) => Some(Action::ExplorerAlignSelected(
@@ -2614,8 +2579,7 @@ fn map_relation_data(event: KeyEvent, app: &App) -> Option<Action> {
 
     if !event.modifiers.is_empty() {
         return match (event.modifiers, event.code) {
-            (KeyModifiers::CONTROL, KeyCode::Char('s')) => Some(Action::RelationCommit),
-            (KeyModifiers::CONTROL, KeyCode::Char('x')) => Some(Action::RelationRollback),
+            (KeyModifiers::CONTROL, KeyCode::Char('s')) => Some(Action::OpenTransactionControl),
             (KeyModifiers::CONTROL, KeyCode::Char('r')) => Some(Action::RelationRedo),
             _ => None,
         };
@@ -4100,14 +4064,14 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
                 &app,
             ),
-            Some(Action::RelationCommit)
+            Some(Action::OpenTransactionControl)
         );
         assert_eq!(
             keymap.map(
                 KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
                 &app,
             ),
-            Some(Action::RelationRollback)
+            None
         );
     }
 

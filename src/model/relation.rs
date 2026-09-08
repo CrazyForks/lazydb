@@ -183,6 +183,7 @@ pub struct RelationTab {
     pub transaction_state: TransactionState,
     pub transaction_generation: u64,
     pub transaction_snapshot: Option<RelationEditSession>,
+    pub transaction_review_sql: Option<String>,
     pub stale_native_identity: bool,
 }
 
@@ -327,6 +328,7 @@ impl RelationTab {
             transaction_state: TransactionState::Idle,
             transaction_generation: 0,
             transaction_snapshot: None,
+            transaction_review_sql: None,
             stale_native_identity: false,
         }
     }

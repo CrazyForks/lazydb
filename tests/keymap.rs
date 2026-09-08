@@ -2904,7 +2904,7 @@ fn transaction_exit_keys_carry_their_explicit_choice() {
 }
 
 #[test]
-fn relation_transaction_control_uses_space_tc_but_keeps_ctrl_commit_rollback() {
+fn relation_transaction_review_uses_ctrl_s_without_direct_rollback() {
     let mut keymap = Keymap::default();
     let mut app = App::new(Vec::new());
     app.tabs.push(lazydb::model::tab::WorkspaceTab::Relation(
@@ -2918,11 +2918,11 @@ fn relation_transaction_control_uses_space_tc_but_keeps_ctrl_commit_rollback() {
             crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL,),
             &app,
         ),
-        Some(Action::RelationCommit)
+        Some(Action::OpenTransactionControl)
     );
     assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Char('t')), &app), None);
-    assert_eq!(
+    assert_ne!(
         keymap.map(key(KeyCode::Char('c')), &app),
         Some(Action::OpenTransactionControl)
     );

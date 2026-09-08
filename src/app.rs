@@ -2069,7 +2069,7 @@ impl App {
             Id::RelationUndo => vec![Action::RelationUndo],
             Id::RelationRedo => vec![Action::RelationRedo],
             Id::RelationCommit => vec![Action::OpenTransactionControl],
-            Id::RelationRollback => vec![Action::RelationRollback],
+            Id::RelationRollback => vec![Action::OpenTransactionControl],
             Id::RelationYankRow => vec![Action::RelationYank],
             Id::RecordFirstField => vec![Action::RecordViewJumpFirstField],
             _ => unreachable!("display-only shortcut passed execution guard"),
@@ -7358,6 +7358,18 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ScrollRelationTransactionReview { rows } => {
+                if let Some(Overlay::RelationTransactionConfirm { preview_offset, .. }) =
+                    self.overlay.as_mut()
+                {
+                    if rows.is_negative() {
+                        *preview_offset = preview_offset.saturating_sub(rows.unsigned_abs());
+                    } else {
+                        *preview_offset = preview_offset.saturating_add(rows as usize);
+                    }
+                }
+                Vec::new()
+            }
             Action::CancelActiveQuery => {
                 let active_connection = self.connection.active_identity();
                 let Some(tab_id) = self.active_console_opt().map(|tab| tab.id) else {
@@ -7444,17 +7456,48 @@ impl App {
                 Vec::new()
             }
             Action::ConfirmTransactionExit => {
-                let choice = match self.overlay {
-                    Some(Overlay::TransactionExitConfirm { choice, .. }) => choice,
-                    Some(Overlay::RelationTransactionConfirm { choice, .. }) => choice,
+                let (choice, relation_tab_id, relation_snapshot) = match &self.overlay {
+                    Some(Overlay::TransactionExitConfirm { choice, .. }) => (*choice, None, None),
+                    Some(Overlay::RelationTransactionConfirm {
+                        tab_id,
+                        choice,
+                        edit_snapshot,
+                        ..
+                    }) => (*choice, Some(*tab_id), edit_snapshot.clone()),
                     _ => return Vec::new(),
                 };
                 if matches!(
                     self.overlay,
                     Some(Overlay::RelationTransactionConfirm { .. })
                 ) {
+                    if choice == TransactionExitChoice::Commit
+                        && self
+                            .tabs
+                            .iter()
+                            .find(|tab| Some(tab.id()) == relation_tab_id)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::Relation(tab) => {
+                                    tab.edit.as_ref().map(|edit| format!("{edit:?}"))
+                                }
+                                _ => None,
+                            })
+                            .as_ref()
+                            != relation_snapshot.as_ref()
+                    {
+                        self.notify_warning(
+                            "Relation",
+                            "The reviewed edits changed; review the changes again before committing",
+                        );
+                        return Vec::new();
+                    }
                     self.overlay = None;
-                    return self.relation_commit(choice == TransactionExitChoice::Commit);
+                    return match choice {
+                        TransactionExitChoice::Commit => self.relation_commit(true),
+                        TransactionExitChoice::Rollback => self.relation_commit(false),
+                        TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
+                            Vec::new()
+                        }
+                    };
                 }
                 self.resolve_transaction_exit(choice)
             }
@@ -7464,7 +7507,13 @@ impl App {
                     Some(Overlay::RelationTransactionConfirm { .. })
                 ) {
                     self.overlay = None;
-                    self.relation_commit(choice == TransactionExitChoice::Commit)
+                    match choice {
+                        TransactionExitChoice::Commit => self.relation_commit(true),
+                        TransactionExitChoice::Rollback => self.relation_commit(false),
+                        TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
+                            Vec::new()
+                        }
+                    }
                 } else {
                     self.resolve_transaction_exit(choice)
                 }
@@ -7487,9 +7536,26 @@ impl App {
                 {
                     *choice = match choice {
                         TransactionExitChoice::Commit => TransactionExitChoice::Rollback,
+                        TransactionExitChoice::Rollback => TransactionExitChoice::Cancel,
+                        TransactionExitChoice::Abandon | TransactionExitChoice::Cancel => {
+                            TransactionExitChoice::Commit
+                        }
+                    };
+                }
+                Vec::new()
+            }
+            Action::TogglePreviousTransactionExitChoice => {
+                if let Some(
+                    Overlay::TransactionExitConfirm { choice, .. }
+                    | Overlay::RelationTransactionConfirm { choice, .. },
+                ) = self.overlay.as_mut()
+                {
+                    *choice = match choice {
+                        TransactionExitChoice::Commit => TransactionExitChoice::Cancel,
                         TransactionExitChoice::Rollback => TransactionExitChoice::Commit,
-                        TransactionExitChoice::Abandon => TransactionExitChoice::Cancel,
-                        TransactionExitChoice::Cancel => TransactionExitChoice::Rollback,
+                        TransactionExitChoice::Abandon | TransactionExitChoice::Cancel => {
+                            TransactionExitChoice::Rollback
+                        }
                     };
                 }
                 Vec::new()
@@ -10030,9 +10096,50 @@ impl App {
                 self.notify_warning("Transaction", "No active relation transaction");
                 return Vec::new();
             }
+            let sql = tab.transaction_review_sql.clone().unwrap_or_else(|| {
+                tab.edit
+                    .as_ref()
+                    .map(|edit| {
+                        let columns = self
+                            .relation_result()
+                            .map(|result| {
+                                result
+                                    .columns
+                                    .iter()
+                                    .map(|column| column.name.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let primary_key_columns = match &tab.ddl {
+                            RelationLoad::Ready(ddl) => {
+                                crate::db::mutation::metadata_fingerprint(&ddl.value).primary_key
+                            }
+                            _ => Vec::new(),
+                        };
+                        let relation = [
+                            tab.descriptor.qualified_name.database.as_deref(),
+                            tab.descriptor.qualified_name.schema.as_deref(),
+                            Some(tab.descriptor.qualified_name.object.as_str()),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join("\".\"");
+                        crate::model::relation_review::preview_sql(
+                            edit,
+                            &relation,
+                            &columns,
+                            &primary_key_columns,
+                        )
+                    })
+                    .unwrap_or_default()
+            });
             self.overlay = Some(Overlay::RelationTransactionConfirm {
                 tab_id: tab.id,
-                choice: TransactionExitChoice::Rollback,
+                choice: TransactionExitChoice::Cancel,
+                sql,
+                preview_offset: 0,
+                edit_snapshot: tab.edit.as_ref().map(|edit| format!("{edit:?}")),
             });
             return Vec::new();
         }
@@ -14880,10 +14987,6 @@ impl App {
     }
 
     fn relation_commit(&mut self, commit: bool) -> Vec<Command> {
-        let connection = match self.database_command_identity() {
-            Some(c) => c,
-            None => return Vec::new(),
-        };
         if commit
             && self
                 .tabs
@@ -14892,6 +14995,7 @@ impl App {
         {
             return self.relation_save();
         }
+        let connection = self.database_command_identity();
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
             return Vec::new();
         };
@@ -14901,6 +15005,9 @@ impl App {
             }
             return Vec::new();
         }
+        let Some(connection) = connection else {
+            return Vec::new();
+        };
         if !matches!(
             tab.transaction_state,
             TransactionState::Active | TransactionState::Aborted
@@ -15151,6 +15258,34 @@ impl App {
         };
         if requests.is_empty() {
             return Vec::new();
+        }
+        let review_sql = self.tabs.get(self.active_tab).and_then(|tab| match tab {
+            WorkspaceTab::Relation(tab) => {
+                let edit = tab.edit.as_ref()?;
+                let columns = self.relation_result().map(|result| {
+                    result
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect::<Vec<_>>()
+                })?;
+                let primary_key_columns = match &tab.ddl {
+                    RelationLoad::Ready(ddl) => {
+                        crate::db::mutation::metadata_fingerprint(&ddl.value).primary_key
+                    }
+                    _ => Vec::new(),
+                };
+                Some(crate::model::relation_review::preview_sql(
+                    edit,
+                    tab.title(),
+                    &columns,
+                    &primary_key_columns,
+                ))
+            }
+            _ => None,
+        });
+        if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
+            tab.transaction_review_sql = review_sql.filter(|sql| !sql.is_empty());
         }
         let first = requests.remove(0);
         if let Some(edit) = self.relation_session_mut() {
@@ -15429,6 +15564,7 @@ impl App {
                     committed = true;
                 }
                 tab.transaction_snapshot = None;
+                tab.transaction_review_sql = None;
                 tab.transaction_state = TransactionState::Idle;
             } else {
                 tab.transaction_state = if error.as_ref().is_some_and(|(_, unknown)| *unknown) {

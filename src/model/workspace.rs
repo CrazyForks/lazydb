@@ -143,6 +143,9 @@ pub enum Overlay {
     RelationTransactionConfirm {
         tab_id: Uuid,
         choice: TransactionExitChoice,
+        sql: String,
+        preview_offset: usize,
+        edit_snapshot: Option<String>,
     },
     ClearTransactionOutcome {
         console_id: Uuid,

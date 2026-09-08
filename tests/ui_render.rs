@@ -5267,8 +5267,30 @@ fn relation_help_documents_transaction_control_panel() {
     app.update(Action::ShowHelp);
 
     let output = render(&app, 120, 40);
-    assert!(output.contains("Space tc"));
-    assert!(output.contains("commit or roll back transaction"));
+    assert!(!output.contains("Ctrl-x"));
+}
+
+#[test]
+fn relation_transaction_review_renders_highlighted_sql_and_survives_small_terminals() {
+    let mut app = fixture();
+    let tab_id = uuid::Uuid::new_v4();
+    app.overlay = Some(Overlay::RelationTransactionConfirm {
+        tab_id,
+        choice: lazydb::model::transaction::TransactionExitChoice::Cancel,
+        sql: "UPDATE \"users\" SET \"name\" = 'new' WHERE \"id\" = 1;".into(),
+        preview_offset: 0,
+        edit_snapshot: None,
+    });
+
+    let (output, _) = render_with_state(&app, 120, 36);
+    assert!(output.contains("TRANSACTION REVIEW"), "{output}");
+    assert!(output.contains("UPDATE \"users\""), "{output}");
+    assert!(output.contains("SET \"name\""), "{output}");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_with_state(&app, 40, 10);
+    }));
+    assert!(result.is_ok());
 }
 
 #[test]
