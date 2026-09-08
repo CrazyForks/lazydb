@@ -1234,16 +1234,28 @@ mod tests {
             panic!("relation tab")
         };
         let row_id = tab.edit.as_ref().unwrap().rows[0].id;
-        assert_eq!(state.input_selection_targets.len(), 1);
+        let (target, map) = state
+            .input_selection_targets
+            .iter()
+            .find(|(target, _)| {
+                matches!(
+                    target,
+                    super::super::text_selection::InputSelectionTarget::RelationTemporal {
+                        tab_id,
+                        row_id: candidate_row_id,
+                        column: 0,
+                    } if *tab_id == tab.id && *candidate_row_id == row_id
+                )
+            })
+            .expect("relation temporal input target");
         assert_eq!(
-            state.input_selection_targets[0].0,
-            super::super::text_selection::InputSelectionTarget::RelationTemporal {
+            target,
+            &super::super::text_selection::InputSelectionTarget::RelationTemporal {
                 tab_id: tab.id,
                 row_id,
                 column: 0,
             }
         );
-        let map = &state.input_selection_targets[0].1;
         assert_eq!(map.source_at(map.area.x, map.area.y), Some(0));
     }
 
@@ -1273,10 +1285,23 @@ mod tests {
             panic!("relation tab")
         };
         let row_id = tab.edit.as_ref().unwrap().rows[0].id;
-        assert_eq!(state.input_selection_targets.len(), 1);
+        let (target, _) = state
+            .input_selection_targets
+            .iter()
+            .find(|(target, _)| {
+                matches!(
+                    target,
+                    super::super::text_selection::InputSelectionTarget::RelationText {
+                        tab_id,
+                        row_id: candidate_row_id,
+                        column: 0,
+                    } if *tab_id == tab.id && *candidate_row_id == row_id
+                )
+            })
+            .expect("relation text input target");
         assert_eq!(
-            state.input_selection_targets[0].0,
-            super::super::text_selection::InputSelectionTarget::RelationText {
+            target,
+            &super::super::text_selection::InputSelectionTarget::RelationText {
                 tab_id: tab.id,
                 row_id,
                 column: 0,

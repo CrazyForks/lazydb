@@ -2379,13 +2379,36 @@ impl App {
             Action::BeginMouseInputSelection { target, cursor } => {
                 match target {
                     crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
-                        if let Some(query) = self.active_data_query_mut() {
+                        let focused = if let Some(query) = self.active_data_query_mut()
+                            && matches!(
+                                query.capability,
+                                DataQueryCapability::Relation | DataQueryCapability::Sql
+                            ) {
+                            if query.focus != Some(input) {
+                                match query.focus {
+                                    Some(DataQueryInput::Where) => {
+                                        query.where_input.finish_edit_group()
+                                    }
+                                    Some(DataQueryInput::OrderBy) => {
+                                        query.order_by_input.finish_edit_group()
+                                    }
+                                    None => {}
+                                }
+                            }
                             query.focus = Some(input);
+                            query.error = None;
                             let value = match input {
                                 DataQueryInput::Where => &mut query.where_input,
                                 DataQueryInput::OrderBy => &mut query.order_by_input,
                             };
                             value.begin_selection(cursor);
+                            true
+                        } else {
+                            false
+                        };
+                        if focused {
+                            self.focus = Focus::Results;
+                            self.refresh_active_data_query_completion();
                         }
                     }
                     crate::ui::text_selection::InputSelectionTarget::Profile(field) => {

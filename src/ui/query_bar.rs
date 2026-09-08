@@ -14,7 +14,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use super::{
     HitRegion, HitTarget, UiState,
     icons::IconSet,
-    register_data_query_input, text_input_horizontal_offset,
+    register_input_selection_target, text_input_horizontal_offset,
+    text_selection::InputSelectionTarget,
     theme::{self, Theme},
 };
 
@@ -148,7 +149,14 @@ pub(crate) fn render(
             0
         };
         if enabled {
-            register_data_query_input(state, input, field, &prefix, text_input, offset);
+            register_input_selection_target(
+                state,
+                InputSelectionTarget::DataQuery(input),
+                field,
+                &prefix,
+                text_input,
+                offset,
+            );
         }
         cursor = render_query_field(
             frame, field, &label, text_input, &spans, enabled, active, offset, theme, state,
