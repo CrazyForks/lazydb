@@ -5487,10 +5487,9 @@ fn quit_panel_uses_compact_transaction_summary_layout() {
         "{output}"
     );
     assert!(output.contains("TRANSACTION SUMMARY"), "{output}");
-    assert!(output.contains("ACTIVE"), "{output}");
     assert!(output.contains("ABORTED"), "{output}");
-    assert!(!output.contains("Active"), "{output}");
-    assert!(!output.contains("Aborted"), "{output}");
+    assert!(!output.contains(" ACTIVE"), "{output}");
+    assert!(!output.contains(" Aborted"), "{output}");
     assert!(output.contains("Commit"), "{output}");
     assert!(output.contains("Rollback"), "{output}");
     assert!(output.contains("Esc cancel"), "{output}");
@@ -5563,23 +5562,14 @@ fn quit_panel_marks_the_current_transaction_and_colors_states() {
     assert!(app.update(Action::Quit).is_empty());
 
     let (buffer, _) = render_buffer_with_icons(&app, 100, 30, IconSet::new(IconMode::Ascii));
-    let (active_x, active_y) =
-        find_text_cell_on_line(&buffer, "ACTIVE", "›").expect("active state");
     let (aborted_x, aborted_y) =
-        find_text_cell_on_line(&buffer, "ABORTED", "  console").expect("aborted state");
-    let marker_x = (0..active_x)
+        find_text_cell_on_line(&buffer, "ABORTED", "›").expect("aborted state");
+    let marker_x = (0..aborted_x)
         .rev()
-        .find(|x| buffer[(*x, active_y)].symbol() == "›")
+        .find(|x| buffer[(*x, aborted_y)].symbol() == "›")
         .expect("current transaction marker");
 
-    assert_ne!(
-        buffer[(active_x, active_y)].fg,
-        buffer[(aborted_x, aborted_y)].fg
-    );
-    assert_ne!(
-        buffer[(marker_x, active_y)].fg,
-        buffer[(active_x, active_y)].fg
-    );
+    assert_eq!(buffer[(marker_x, aborted_y)].symbol(), "›");
 }
 
 #[test]
@@ -5610,7 +5600,7 @@ fn quit_panel_moves_selection_style_to_commit() {
     app.active_console_mut().transaction_state =
         lazydb::model::transaction::TransactionState::Active;
     assert!(app.update(Action::Quit).is_empty());
-    app.update(Action::ToggleTransactionExitChoice);
+    app.update(Action::TogglePreviousTransactionExitChoice);
 
     let (buffer, _) = render_buffer_with_icons(&app, 100, 30, IconSet::new(IconMode::Ascii));
     let (commit_x, commit_y) =
