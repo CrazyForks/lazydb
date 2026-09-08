@@ -3325,7 +3325,13 @@ pub(crate) fn editor_line_spans(
     let mut display_cell = 0usize;
     let mut result: Vec<Span<'static>> = Vec::new();
     for source_span in &line.spans {
-        let foreground = if syntax {
+        let has_semantic_error = snapshot.semantic_diagnostics.iter().any(|diagnostic| {
+            diagnostic.range.start < source_span.source_end
+                && diagnostic.range.end > source_span.source_start
+        });
+        let foreground = if has_semantic_error {
+            theme.error
+        } else if syntax {
             theme.syntax_color(editor_syntax_color(source_span.kind))
         } else {
             theme.text

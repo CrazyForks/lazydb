@@ -74,7 +74,10 @@ use crate::{
     },
     profile::{ConnectionProfile, DatabaseKind, ProfileAccess},
     project::ProjectContext,
-    sql::{self, CompletionScheduleKey, ScopeSource, SqlDialect},
+    sql::{
+        self, CatalogCoverage, CatalogSnapshot, CompletionScheduleKey, ScopeSource,
+        SemanticContext, SqlDialect,
+    },
 };
 
 const RELATION_METADATA_SAVE_MESSAGE: &str = "Loading relation metadata before saving";
@@ -1259,12 +1262,88 @@ impl App {
                 sql::ScopeSource::Contiguous(range) => range,
                 sql::ScopeSource::Block(_) => unreachable!(),
             });
-        self.editor.render_snapshot_with_dialect_and_statement(
+        let mut snapshot = self.editor.render_snapshot_with_dialect_and_statement(
             tab.id,
             viewport,
             self.sql_dialect(),
             statement,
-        )
+        )?;
+        if let Some(target) = tab.execution_target.as_ref() {
+            let context = SemanticContext::new(
+                self.sql_dialect(),
+                Some(target.database.clone()),
+                target.schema.clone(),
+            );
+            let catalog = self.semantic_catalog_snapshot(target, &context);
+            snapshot.semantic_diagnostics =
+                sql::analyze_semantics(&text, &context, &catalog).diagnostics;
+        }
+        Ok(snapshot)
+    }
+
+    fn semantic_catalog_snapshot(
+        &self,
+        target: &ExecutionTarget,
+        context: &SemanticContext,
+    ) -> CatalogSnapshot {
+        let Some(profile) = self.explorer.normalized.profiles.get(&target.profile_id) else {
+            return CatalogSnapshot::default();
+        };
+        let entries = profile
+            .catalog
+            .entries()
+            .values()
+            .cloned()
+            .collect::<Vec<crate::db::catalog::CatalogEntry>>();
+        let namespace = context.default_namespace();
+        let coverage = profile
+            .load_states
+            .iter()
+            .filter_map(|(owner, state)| {
+                let ExplorerOwnerId::Group { parent, group } = owner else {
+                    return None;
+                };
+                if parent.native_path.as_slice()
+                    != [
+                        target.database.as_str(),
+                        target.schema.as_deref().unwrap_or_default(),
+                    ]
+                {
+                    return None;
+                }
+                if !group.contains_kind(crate::db::catalog::CatalogKind::Table)
+                    && !group.contains_kind(crate::db::catalog::CatalogKind::View)
+                    && !group.contains_kind(crate::db::catalog::CatalogKind::MaterializedView)
+                {
+                    return None;
+                }
+                let coverage = match state {
+                    ExplorerLoadState::Loaded { next_cursor: None } => CatalogCoverage::Complete,
+                    ExplorerLoadState::Loading { .. } => CatalogCoverage::Loading,
+                    ExplorerLoadState::Failed { .. }
+                    | ExplorerLoadState::PermissionDenied { .. } => CatalogCoverage::Failed,
+                    _ => CatalogCoverage::NotLoaded,
+                };
+                Some((namespace.clone(), coverage))
+            })
+            .collect::<Vec<_>>();
+        let column_coverage = entries
+            .iter()
+            .filter(|entry| entry.kind.is_relation())
+            .filter_map(|entry| {
+                let owner = ExplorerOwnerId::Catalog(entry.id.clone());
+                let state = profile.load_states.get(&owner)?;
+                let coverage = match state {
+                    ExplorerLoadState::Loaded { next_cursor: None } => CatalogCoverage::Complete,
+                    ExplorerLoadState::Loading { .. } => CatalogCoverage::Loading,
+                    ExplorerLoadState::Failed { .. }
+                    | ExplorerLoadState::PermissionDenied { .. } => CatalogCoverage::Failed,
+                    _ => CatalogCoverage::NotLoaded,
+                };
+                Some((entry.id.clone(), coverage))
+            })
+            .collect::<Vec<_>>();
+        CatalogSnapshot::new(entries, coverage).with_column_coverage(column_coverage)
     }
 
     pub fn active_output_editor_snapshot(

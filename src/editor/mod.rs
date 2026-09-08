@@ -1167,6 +1167,7 @@ impl EditorWorkspace {
                     .as_deref()
                     .map(|error| project_editor_line(error).text),
             }),
+            semantic_diagnostics: Vec::new(),
         })
     }
 
