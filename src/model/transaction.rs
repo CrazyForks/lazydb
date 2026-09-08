@@ -66,8 +66,14 @@ pub enum DeferredIntent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeferredTransactionTarget {
+    Console(Uuid),
+    Relation(Uuid),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DeferredTransactionPrompt {
-    pub console_id: Uuid,
+    pub target: DeferredTransactionTarget,
     pub transaction_generation: u64,
     pub intent: DeferredIntent,
 }

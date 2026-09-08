@@ -697,7 +697,7 @@ fn rendered_transaction_confirmation_buttons_map_to_safe_actions() {
     };
     app.overlay = Some(Overlay::TransactionExitConfirm {
         prompt: lazydb::model::transaction::DeferredTransactionPrompt {
-            console_id,
+            target: lazydb::model::transaction::DeferredTransactionTarget::Console(console_id),
             transaction_generation,
             intent: lazydb::model::transaction::DeferredIntent::Quit,
         },

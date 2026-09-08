@@ -4657,11 +4657,11 @@ fn render_transaction_exit_overlay(
 ) {
     use crate::model::transaction::{DeferredIntent, TransactionState};
 
-    let pending = std::iter::once(prompt.console_id)
+    let pending = std::iter::once(prompt.target)
         .chain(
             app.deferred_transaction_prompts()
                 .filter(|queued| queued.intent == prompt.intent)
-                .map(|queued| queued.console_id),
+                .map(|queued| queued.target),
         )
         .collect::<Vec<_>>();
     let popup = centered(area, 68, (pending.len() as u16).saturating_add(7).max(9));
@@ -4687,12 +4687,16 @@ fn render_transaction_exit_overlay(
     );
 
     let row_start = inner.y.saturating_add(2);
-    for (index, id) in pending.iter().enumerate() {
+    for (index, target) in pending.iter().enumerate() {
         let y = row_start.saturating_add(index as u16);
         if y >= inner.bottom().saturating_sub(2) {
             break;
         }
-        let tab = app.tabs.iter().find(|tab| tab.id() == *id);
+        let id = match target {
+            crate::model::transaction::DeferredTransactionTarget::Console(id)
+            | crate::model::transaction::DeferredTransactionTarget::Relation(id) => *id,
+        };
+        let tab = app.tabs.iter().find(|tab| tab.id() == id);
         let transaction_state = tab
             .and_then(|tab| tab.as_console())
             .map(|console| console.transaction_state);
@@ -4709,7 +4713,13 @@ fn render_transaction_exit_overlay(
     let current_console = app
         .tabs
         .iter()
-        .find(|tab| tab.id() == prompt.console_id)
+        .find(|tab| {
+            tab.id()
+                == match prompt.target {
+                    crate::model::transaction::DeferredTransactionTarget::Console(id)
+                    | crate::model::transaction::DeferredTransactionTarget::Relation(id) => id,
+                }
+        })
         .and_then(|tab| tab.as_console());
     let running =
         current_console.is_some_and(|console| console.query_status == QueryStatus::Running);

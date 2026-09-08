@@ -2935,7 +2935,9 @@ fn transaction_exit_keys_carry_their_explicit_choice() {
     let mut keymap = Keymap::default();
     let mut app = App::new(Vec::new());
     let prompt = lazydb::model::transaction::DeferredTransactionPrompt {
-        console_id: app.active_console().id,
+        target: lazydb::model::transaction::DeferredTransactionTarget::Console(
+            app.active_console().id,
+        ),
         transaction_generation: 0,
         intent: lazydb::model::transaction::DeferredIntent::CloseConsole,
     };

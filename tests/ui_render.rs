@@ -5276,6 +5276,7 @@ fn relation_transaction_review_renders_highlighted_sql_and_survives_small_termin
     let tab_id = uuid::Uuid::new_v4();
     app.overlay = Some(Overlay::RelationTransactionConfirm {
         tab_id,
+        prompt: None,
         choice: lazydb::model::transaction::TransactionExitChoice::Cancel,
         sql: "UPDATE \"users\" SET \"name\" = 'new' WHERE \"id\" = 1;".into(),
         preview_offset: 0,
@@ -5464,7 +5465,7 @@ fn quit_panel_replaces_transaction_actions_while_query_is_running() {
     };
     app.overlay = Some(Overlay::TransactionExitConfirm {
         prompt: lazydb::model::transaction::DeferredTransactionPrompt {
-            console_id,
+            target: lazydb::model::transaction::DeferredTransactionTarget::Console(console_id),
             transaction_generation,
             intent: lazydb::model::transaction::DeferredIntent::Quit,
         },
@@ -5492,7 +5493,7 @@ fn quit_panel_isolates_unknown_outcome_actions() {
     };
     app.overlay = Some(Overlay::TransactionExitConfirm {
         prompt: lazydb::model::transaction::DeferredTransactionPrompt {
-            console_id,
+            target: lazydb::model::transaction::DeferredTransactionTarget::Console(console_id),
             transaction_generation,
             intent: lazydb::model::transaction::DeferredIntent::Quit,
         },
