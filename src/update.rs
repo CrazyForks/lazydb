@@ -710,12 +710,12 @@ fn format_update_report(report: &UpdateReport) -> String {
     )
 }
 
-struct UpdateLock {
+pub(crate) struct UpdateLock {
     path: PathBuf,
 }
 
 impl UpdateLock {
-    fn acquire(data_dir: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn acquire(data_dir: &Path) -> anyhow::Result<Self> {
         let path = data_dir.join(".install.lock");
         fs::create_dir_all(data_dir)?;
         match fs::create_dir(&path) {
@@ -987,6 +987,7 @@ fn publish_native_state(
         path: state.path.clone(),
         bin_dir: state.bin_dir.clone(),
         installed_at: state.installed_at.clone(),
+        shell_profiles: state.shell_profiles.clone(),
     };
     let mut file = fs::File::create(&state_new)?;
     serde_json::to_writer_pretty(&mut file, &new_state)?;
@@ -1038,6 +1039,14 @@ pub struct InstallationState {
     pub bin_dir: Option<PathBuf>,
     #[serde(default)]
     pub installed_at: Option<String>,
+    #[serde(default)]
+    pub shell_profiles: Vec<ShellProfileState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ShellProfileState {
+    pub path: PathBuf,
+    pub block_sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1318,6 +1327,7 @@ mod tests {
             path: bin.clone(),
             bin_dir: None,
             installed_at: None,
+            shell_profiles: Vec::new(),
         };
         let mut probe = FakeProbe::default();
         probe.paths.insert(bin.clone(), release.clone());
@@ -1689,6 +1699,7 @@ mod tests {
             path: bin,
             bin_dir: None,
             installed_at: None,
+            shell_profiles: Vec::new(),
         };
         let archive_path = dir.path().join("archive.tar.xz");
         let archive = archive_for("1.3.0", SUPPORTED_TARGETS[0], &archive_path);
@@ -1751,6 +1762,7 @@ mod tests {
             path: bin,
             bin_dir: None,
             installed_at: None,
+            shell_profiles: Vec::new(),
         };
         let archive = b"not an archive".to_vec();
         let manifest = update_manifest("1.3.0", "0".repeat(64));
@@ -1791,6 +1803,7 @@ mod tests {
             path: bin,
             bin_dir: None,
             installed_at: None,
+            shell_profiles: Vec::new(),
         };
         let archive_path = dir.path().join("archive.tar.xz");
         let archive = archive_for_reported("1.3.0", "1.3.1", SUPPORTED_TARGETS[0], &archive_path);

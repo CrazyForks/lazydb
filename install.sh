@@ -153,11 +153,12 @@ os.replace(path, sys.argv[1])
 PY
 printf 'lazydb %s installed (%s)\n' "$RELEASE_VERSION" "$CHANNEL"
 # This child process can configure future shells, but cannot change the caller's PATH.
-python3 - "$INSTALL_DIR" "$OS" "$MODIFY_PATH" <<'PY'
+SHELL_PROFILE_RECORD="$TMP/shell-profile"
+python3 - "$INSTALL_DIR" "$OS" "$MODIFY_PATH" "$SHELL_PROFILE_RECORD" <<'PY'
 import os, shlex, shutil, sys
 from pathlib import Path
 
-directory, system, modify = sys.argv[1:]
+directory, system, modify, record_path = sys.argv[1:]
 shell = Path(os.environ.get('SHELL', '')).name
 home = Path.home()
 profile = None
@@ -207,6 +208,9 @@ if modify == '1' and profile is not None:
             with target.open('w') as stream:
                 stream.write(new)
         configured = True
+        import hashlib
+        block_hash = hashlib.sha256(block.encode()).hexdigest()
+        Path(record_path).write_text(str(profile) + '\n' + block_hash + '\n')
         print('PATH configured in: ' + str(profile))
     except (OSError, ValueError) as error:
         print('WARNING: PATH setup needs attention: ' + str(error), file=sys.stderr)
@@ -225,5 +229,30 @@ if configured:
     print('Future shells that load this file will include the installation directory on PATH.')
 elif not ready:
     print('Add the installation directory to your shell startup configuration for future sessions.')
+PY
+python3 - "$STATE" "$SHELL_PROFILE_RECORD" <<'PY'
+import json, os, sys, tempfile
+state_path, record_path = sys.argv[1:]
+try:
+    record = open(record_path, encoding='utf-8').read().splitlines()
+    profile = record[0] if record else ''
+    block_hash = record[1] if len(record) > 1 else ''
+except OSError:
+    profile = ''
+if profile:
+    with open(state_path, encoding='utf-8') as stream:
+        state = json.load(stream)
+    profiles = state.get('shell_profiles', [])
+    entry = {'path': profile, 'block_sha256': block_hash}
+    if entry not in profiles:
+        profiles.append(entry)
+    state['shell_profiles'] = profiles
+    fd, temporary = tempfile.mkstemp(prefix='.install.json.', dir=os.path.dirname(state_path))
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(state, stream, indent=2)
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, state_path)
 PY
 printf '%s\n' 'To configure database access for Claude Code, Codex, or OpenCode, run `lazydb mcp setup` inside your project.'

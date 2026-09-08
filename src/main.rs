@@ -52,6 +52,9 @@ async fn main() -> Result<()> {
                 lazydb::lsp::run(args, cli.config, cli.profile).await?;
             }
             Command::Update(args) => println!("{}", lazydb::update::run(args, cli.config).await?),
+            Command::Uninstall(args) => {
+                println!("{}", lazydb::uninstall::run(args, cli.config).await?);
+            }
             command => println!("{}", render_command(&command)?),
         }
         return Ok(());
