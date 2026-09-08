@@ -1998,28 +1998,6 @@ impl Runtime {
             });
             return;
         }
-        let active = self.connection.try_lock().ok().and_then(|guard| {
-            guard.as_ref().map(|active| ConnectionIdentity {
-                profile_id: active.profile_id,
-                generation: active.generation,
-            })
-        }) == Some(request.connection);
-        if !active {
-            let _ = self.event_sender.send(Action::RelationFailed {
-                request,
-                message: "No active database connection".to_owned(),
-            });
-            return;
-        }
-        if !self.known_relations.lock().is_ok_and(|known| {
-            known.contains(&(request.connection, request.relation.object_id.clone()))
-        }) {
-            let _ = self.event_sender.send(Action::RelationFailed {
-                request,
-                message: "relation is not present in the active catalog snapshot".to_owned(),
-            });
-            return;
-        }
         if self.relation_tasks.contains_key(&request) {
             return;
         }
