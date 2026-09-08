@@ -60,8 +60,9 @@ use crate::{
             ResultView, WorkspaceTab,
         },
         transaction::{
-            self, DeferredIntent, DeferredIntentQueue, DeferredTransactionPrompt, TransactionEvent,
-            TransactionExitChoice, TransactionMode, TransactionState,
+            self, DeferredIntent, DeferredIntentQueue, DeferredTransactionPrompt,
+            DeferredTransactionTarget, TransactionEvent, TransactionExitChoice, TransactionMode,
+            TransactionState,
         },
         workspace::{
             ConnectionIdentity, ConnectionState, ConnectionStatus, ConnectionWorkspace,
@@ -7471,20 +7472,22 @@ impl App {
                 Vec::new()
             }
             Action::ConfirmTransactionExit => {
-                let (choice, relation_tab_id, relation_snapshot) = match &self.overlay {
-                    Some(Overlay::TransactionExitConfirm { choice, .. }) => (*choice, None, None),
+                let overlay = self.overlay.take();
+                let (choice, relation_prompt, relation_tab_id, relation_snapshot) = match overlay {
+                    Some(Overlay::TransactionExitConfirm { prompt, choice }) => {
+                        self.overlay = Some(Overlay::TransactionExitConfirm { prompt, choice });
+                        return self.resolve_transaction_exit(choice);
+                    }
                     Some(Overlay::RelationTransactionConfirm {
                         tab_id,
+                        prompt,
                         choice,
                         edit_snapshot,
                         ..
-                    }) => (*choice, Some(*tab_id), edit_snapshot.clone()),
+                    }) => (choice, prompt, Some(tab_id), edit_snapshot),
                     _ => return Vec::new(),
                 };
-                if matches!(
-                    self.overlay,
-                    Some(Overlay::RelationTransactionConfirm { .. })
-                ) {
+                {
                     if choice == TransactionExitChoice::Commit
                         && self
                             .tabs
@@ -7505,40 +7508,52 @@ impl App {
                         );
                         return Vec::new();
                     }
-                    self.overlay = None;
-                    return match choice {
-                        TransactionExitChoice::Commit => self.relation_commit(true),
-                        TransactionExitChoice::Rollback => self.relation_commit(false),
+                    let commands = match choice {
+                        TransactionExitChoice::Commit => {
+                            self.relation_commit_for_tab(true, relation_tab_id)
+                        }
+                        TransactionExitChoice::Rollback => {
+                            self.relation_commit_for_tab(false, relation_tab_id)
+                        }
                         TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
                             Vec::new()
                         }
                     };
+                    self.finish_relation_deferred(relation_prompt, choice, commands)
                 }
-                self.resolve_transaction_exit(choice)
             }
-            Action::ConfirmTransactionExitChoice(choice) => {
-                if matches!(
-                    self.overlay,
-                    Some(Overlay::RelationTransactionConfirm { .. })
-                ) {
-                    self.overlay = None;
-                    match choice {
-                        TransactionExitChoice::Commit => self.relation_commit(true),
-                        TransactionExitChoice::Rollback => self.relation_commit(false),
+            Action::ConfirmTransactionExitChoice(choice) => match self.overlay.take() {
+                Some(Overlay::RelationTransactionConfirm { tab_id, prompt, .. }) => {
+                    let commands = match choice {
+                        TransactionExitChoice::Commit => {
+                            self.relation_commit_for_tab(true, Some(tab_id))
+                        }
+                        TransactionExitChoice::Rollback => {
+                            self.relation_commit_for_tab(false, Some(tab_id))
+                        }
                         TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
                             Vec::new()
                         }
-                    }
-                } else {
+                    };
+                    self.finish_relation_deferred(prompt, choice, commands)
+                }
+                other => {
+                    self.overlay = other;
                     self.resolve_transaction_exit(choice)
                 }
-            }
+            },
             Action::CancelTransactionExit => {
                 if matches!(
                     self.overlay,
                     Some(Overlay::RelationTransactionConfirm { .. })
                 ) {
-                    self.overlay = None;
+                    let prompt = match self.overlay.take() {
+                        Some(Overlay::RelationTransactionConfirm { prompt, .. }) => prompt,
+                        _ => None,
+                    };
+                    if let Some(prompt) = prompt {
+                        self.cancel_deferred(prompt.intent);
+                    }
                     return Vec::new();
                 }
                 self.resolve_transaction_exit(TransactionExitChoice::Cancel)
@@ -9777,76 +9792,128 @@ impl App {
                 tab_id,
                 generation,
                 connection,
-            } => {
-                self.relation_transaction_finished(tab_id, generation, connection, true, None);
-                Vec::new()
-            }
+            } => self.relation_transaction_finished(tab_id, generation, connection, true, None),
             Action::RelationCommitFailed {
                 tab_id,
                 generation,
                 connection,
                 message,
                 unknown,
-            } => {
-                self.relation_transaction_finished(
-                    tab_id,
-                    generation,
-                    connection,
-                    false,
-                    Some((message, unknown)),
-                );
-                Vec::new()
-            }
+            } => self.relation_transaction_finished(
+                tab_id,
+                generation,
+                connection,
+                false,
+                Some((message, unknown)),
+            ),
             Action::RelationRolledBack {
                 tab_id,
                 generation,
                 connection,
-            } => {
-                self.relation_transaction_finished(tab_id, generation, connection, true, None);
-                Vec::new()
-            }
+            } => self.relation_transaction_finished(tab_id, generation, connection, true, None),
             Action::RelationRollbackFailed {
                 tab_id,
                 generation,
                 connection,
                 message,
                 unknown,
-            } => {
-                self.relation_transaction_finished(
-                    tab_id,
-                    generation,
-                    connection,
-                    false,
-                    Some((message, unknown)),
-                );
-                Vec::new()
+            } => self.relation_transaction_finished(
+                tab_id,
+                generation,
+                connection,
+                false,
+                Some((message, unknown)),
+            ),
+            Action::Quit => {
+                if matches!(
+                    self.overlay,
+                    Some(
+                        Overlay::TransactionExitConfirm { .. }
+                            | Overlay::RelationTransactionConfirm { .. }
+                    )
+                ) {
+                    return Vec::new();
+                }
+                if self.resolving_deferred.is_some()
+                    || self
+                        .deferred
+                        .prompts
+                        .iter()
+                        .any(|prompt| prompt.intent == DeferredIntent::Quit)
+                {
+                    return Vec::new();
+                }
+                let mut ordered_indices = Vec::with_capacity(self.tabs.len());
+                if self.active_tab < self.tabs.len() {
+                    ordered_indices.push(self.active_tab);
+                }
+                ordered_indices
+                    .extend((0..self.tabs.len()).filter(|index| *index != self.active_tab));
+                if let Some(target) = ordered_indices.into_iter().find_map(|index| {
+                    let tab = self.tabs.get(index)?;
+                    match tab {
+                        WorkspaceTab::Relation(relation)
+                            if relation.transaction_state != TransactionState::Idle
+                                || relation.edit.as_ref().is_some_and(|edit| {
+                                    edit.rows.iter().any(|row| {
+                                        !matches!(
+                                            row.state,
+                                            crate::model::relation_edit::EditableRowState::Clean
+                                        )
+                                    })
+                                }) =>
+                        {
+                            Some(DeferredTransactionTarget::Relation(relation.id))
+                        }
+                        WorkspaceTab::Sql(console)
+                            if console.transaction_state != TransactionState::Idle =>
+                        {
+                            Some(DeferredTransactionTarget::Console(console.id))
+                        }
+                        _ => None,
+                    }
+                }) {
+                    match target {
+                        DeferredTransactionTarget::Relation(tab_id) => {
+                            self.notify_warning(
+                                "LazyDB",
+                                "Commit or roll back relation edits before quitting",
+                            );
+                            self.open_relation_transaction_control(tab_id, DeferredIntent::Quit);
+                        }
+                        DeferredTransactionTarget::Console(console_id) => {
+                            self.defer_intent(DeferredIntent::Quit, [console_id]);
+                        }
+                    }
+                    return Vec::new();
+                }
+                match self.workspace_exit_check() {
+                    WorkspaceExitCheck::Ready => {
+                        let command = self.persist_workspace_command();
+                        let revision = self.workspace_save.current_revision;
+                        self.workspace_save_closing = true;
+                        self.workspace_save.begin_closing();
+                        vec![command, Command::FlushWorkspace { revision }]
+                    }
+                    WorkspaceExitCheck::Running => {
+                        self.notify_warning(
+                            "LazyDB",
+                            "Wait for running SQL or relation loads to finish before quitting",
+                        );
+                        Vec::new()
+                    }
+                    WorkspaceExitCheck::RelationTransaction => {
+                        self.notify_warning(
+                            "LazyDB",
+                            "Commit or roll back relation edits before quitting",
+                        );
+                        Vec::new()
+                    }
+                    WorkspaceExitCheck::ConsoleTransactions(ids) => {
+                        self.defer_intent(DeferredIntent::Quit, ids)
+                    }
+                }
             }
-            Action::Quit => match self.workspace_exit_check() {
-                WorkspaceExitCheck::Ready => {
-                    let command = self.persist_workspace_command();
-                    let revision = self.workspace_save.current_revision;
-                    self.workspace_save_closing = true;
-                    self.workspace_save.begin_closing();
-                    vec![command, Command::FlushWorkspace { revision }]
-                }
-                WorkspaceExitCheck::Running => {
-                    self.notify_warning(
-                        "LazyDB",
-                        "Wait for running SQL or relation loads to finish before quitting",
-                    );
-                    Vec::new()
-                }
-                WorkspaceExitCheck::RelationTransaction => {
-                    self.notify_warning(
-                        "LazyDB",
-                        "Commit or roll back relation edits before quitting",
-                    );
-                    Vec::new()
-                }
-                WorkspaceExitCheck::ConsoleTransactions(ids) => {
-                    self.defer_intent(DeferredIntent::Quit, ids)
-                }
-            },
             Action::ToggleTerminalSelection => Vec::new(),
         }
     }
@@ -10088,7 +10155,7 @@ impl App {
                 continue;
             };
             self.deferred.push(DeferredTransactionPrompt {
-                console_id,
+                target: DeferredTransactionTarget::Console(console_id),
                 transaction_generation: tab.transaction_generation,
                 intent,
             });
@@ -10098,66 +10165,18 @@ impl App {
     }
 
     fn open_transaction_control(&mut self) -> Vec<Command> {
-        if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) {
-            let has_dirty_rows = tab.edit.as_ref().is_some_and(|edit| {
-                edit.rows.iter().any(|row| {
-                    !matches!(
-                        row.state,
-                        crate::model::relation_edit::EditableRowState::Clean
-                    )
-                })
-            });
-            if tab.transaction_state == TransactionState::Idle && !has_dirty_rows {
-                self.notify_warning("Transaction", "No active relation transaction");
-                return Vec::new();
-            }
-            let sql = tab.transaction_review_sql.clone().unwrap_or_else(|| {
-                tab.edit
-                    .as_ref()
-                    .map(|edit| {
-                        let columns = self
-                            .relation_result()
-                            .map(|result| {
-                                result
-                                    .columns
-                                    .iter()
-                                    .map(|column| column.name.clone())
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-                        let primary_key_columns = match &tab.ddl {
-                            RelationLoad::Ready(ddl) => {
-                                crate::db::mutation::metadata_fingerprint(&ddl.value).primary_key
-                            }
-                            _ => Vec::new(),
-                        };
-                        let relation = [
-                            tab.descriptor.qualified_name.database.as_deref(),
-                            tab.descriptor.qualified_name.schema.as_deref(),
-                            Some(tab.descriptor.qualified_name.object.as_str()),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join("\".\"");
-                        crate::model::relation_review::preview_sql(
-                            edit,
-                            &relation,
-                            &columns,
-                            &primary_key_columns,
-                        )
-                    })
-                    .unwrap_or_default()
-            });
-            self.overlay = Some(Overlay::RelationTransactionConfirm {
-                tab_id: tab.id,
-                choice: TransactionExitChoice::Cancel,
-                sql,
-                preview_offset: 0,
-                edit_snapshot: tab.edit.as_ref().map(|edit| format!("{edit:?}")),
-            });
-            return Vec::new();
+        if let Some(tab_id) = self.tabs.get(self.active_tab).map(WorkspaceTab::id)
+            && matches!(
+                self.tabs.get(self.active_tab),
+                Some(WorkspaceTab::Relation(_))
+            )
+        {
+            return self.open_relation_transaction_control(tab_id, DeferredIntent::Stay);
         }
+        self.open_console_transaction_control()
+    }
+
+    fn open_console_transaction_control(&mut self) -> Vec<Command> {
         let Some(tab) = self.active_console_opt() else {
             return Vec::new();
         };
@@ -10174,8 +10193,42 @@ impl App {
             );
             return Vec::new();
         }
-        let id = tab.id;
-        self.defer_intent(DeferredIntent::Stay, [id])
+        self.defer_intent(DeferredIntent::Stay, [tab.id])
+    }
+
+    fn open_relation_transaction_control(
+        &mut self,
+        tab_id: Uuid,
+        _intent: DeferredIntent,
+    ) -> Vec<Command> {
+        let Some(WorkspaceTab::Relation(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Vec::new();
+        };
+        let has_dirty_rows = tab.edit.as_ref().is_some_and(|edit| {
+            edit.rows.iter().any(|row| {
+                !matches!(
+                    row.state,
+                    crate::model::relation_edit::EditableRowState::Clean
+                )
+            })
+        });
+        if tab.transaction_state == TransactionState::Idle && !has_dirty_rows {
+            return Vec::new();
+        }
+        self.overlay = Some(Overlay::RelationTransactionConfirm {
+            tab_id,
+            prompt: (_intent != DeferredIntent::Stay).then_some(DeferredTransactionPrompt {
+                target: DeferredTransactionTarget::Relation(tab_id),
+                transaction_generation: tab.transaction_generation,
+                intent: _intent,
+            }),
+            choice: TransactionExitChoice::Cancel,
+            sql: tab.transaction_review_sql.clone().unwrap_or_default(),
+            preview_offset: 0,
+            edit_snapshot: tab.edit.as_ref().map(|edit| format!("{edit:?}")),
+        });
+        Vec::new()
     }
 
     fn show_next_deferred(&mut self) {
@@ -10185,15 +10238,18 @@ impl App {
         let Some(prompt) = self.deferred.pop() else {
             return;
         };
-        let choice = self
-            .tabs
-            .iter()
-            .find(|tab| tab.id() == prompt.console_id)
-            .and_then(WorkspaceTab::as_console)
-            .filter(|tab| tab.transaction_state == TransactionState::OutcomeUnknown)
-            .map_or(TransactionExitChoice::Rollback, |_| {
-                TransactionExitChoice::Abandon
-            });
+        let choice = match prompt.target {
+            DeferredTransactionTarget::Console(console_id) => self
+                .tabs
+                .iter()
+                .find(|tab| tab.id() == console_id)
+                .and_then(WorkspaceTab::as_console)
+                .filter(|tab| tab.transaction_state == TransactionState::OutcomeUnknown)
+                .map_or(TransactionExitChoice::Rollback, |_| {
+                    TransactionExitChoice::Abandon
+                }),
+            DeferredTransactionTarget::Relation(_) => TransactionExitChoice::Cancel,
+        };
         self.overlay = Some(Overlay::TransactionExitConfirm { prompt, choice });
     }
 
@@ -10201,10 +10257,14 @@ impl App {
         let Some(Overlay::TransactionExitConfirm { prompt, .. }) = self.overlay.take() else {
             return Vec::new();
         };
+        let DeferredTransactionTarget::Console(console_id) = prompt.target else {
+            self.overlay = Some(Overlay::TransactionExitConfirm { prompt, choice });
+            return Vec::new();
+        };
         let Some(tab) = self
             .tabs
             .iter()
-            .find(|tab| tab.id() == prompt.console_id)
+            .find(|tab| tab.id() == console_id)
             .and_then(WorkspaceTab::as_console)
         else {
             self.show_next_deferred();
@@ -10243,7 +10303,6 @@ impl App {
             return Vec::new();
         }
         if tab.transaction_state == TransactionState::OutcomeUnknown {
-            let console_id = prompt.console_id;
             if let Some(tab) = self
                 .tabs
                 .iter_mut()
@@ -10284,7 +10343,7 @@ impl App {
         let tab = self
             .tabs
             .iter_mut()
-            .find(|tab| tab.id() == prompt.console_id)
+            .find(|tab| tab.id() == console_id)
             .and_then(WorkspaceTab::as_console_mut)
             .unwrap();
         let event = if commit {
@@ -10310,29 +10369,33 @@ impl App {
             );
         }
         tab.result_view = ResultView::Output;
-        self.transaction_op_started_at = Some((prompt.console_id, Instant::now()));
+        self.transaction_op_started_at = Some((console_id, Instant::now()));
         self.resolving_deferred = Some(prompt);
         if commit {
             vec![Command::ManualCommit {
                 connection,
-                tab_id: prompt.console_id,
+                tab_id: console_id,
                 query_generation,
                 transaction_generation,
             }]
         } else {
             vec![Command::ManualRollback {
                 connection,
-                tab_id: prompt.console_id,
+                tab_id: console_id,
                 query_generation,
                 transaction_generation,
             }]
         }
     }
 
-    fn finish_deferred(&mut self, _console_id: Uuid) -> Vec<Command> {
-        let Some(prompt) = self.resolving_deferred.take() else {
+    fn finish_deferred(&mut self, console_id: Uuid) -> Vec<Command> {
+        let Some(prompt) = self.resolving_deferred else {
             return Vec::new();
         };
+        if prompt.target != DeferredTransactionTarget::Console(console_id) {
+            return Vec::new();
+        }
+        let prompt = self.resolving_deferred.take().expect("checked above");
         if self
             .deferred
             .prompts
@@ -10343,6 +10406,63 @@ impl App {
             return Vec::new();
         }
         self.replay_deferred(prompt.intent)
+    }
+
+    fn finish_relation_deferred(
+        &mut self,
+        prompt: Option<DeferredTransactionPrompt>,
+        choice: TransactionExitChoice,
+        commands: Vec<Command>,
+    ) -> Vec<Command> {
+        let Some(prompt) = prompt else {
+            return commands;
+        };
+        if choice == TransactionExitChoice::Cancel {
+            self.cancel_deferred(prompt.intent);
+        } else if commands.is_empty() {
+            let local_rollback_finished = choice == TransactionExitChoice::Rollback
+                && matches!(prompt.target, DeferredTransactionTarget::Relation(_))
+                && self.tabs.iter().any(|tab| {
+                    matches!(tab, WorkspaceTab::Relation(relation) if Some(relation.id) == match prompt.target {
+                        DeferredTransactionTarget::Relation(tab_id) => Some(tab_id),
+                        _ => None,
+                    }
+                    && relation.transaction_state == TransactionState::Idle
+                    && relation.edit.as_ref().is_none_or(|edit| {
+                        edit.rows.iter().all(|row| matches!(
+                            row.state,
+                            crate::model::relation_edit::EditableRowState::Clean
+                        ))
+                    }))
+                });
+            if local_rollback_finished {
+                return self.continue_deferred(prompt.intent);
+            }
+            self.resolving_deferred = None;
+        } else {
+            self.resolving_deferred = Some(prompt);
+        }
+        commands
+    }
+
+    fn cancel_deferred(&mut self, intent: DeferredIntent) {
+        self.deferred
+            .prompts
+            .retain(|prompt| prompt.intent != intent);
+        if self
+            .resolving_deferred
+            .is_some_and(|prompt| prompt.intent == intent)
+        {
+            self.resolving_deferred = None;
+        }
+    }
+
+    fn continue_deferred(&mut self, intent: DeferredIntent) -> Vec<Command> {
+        match intent {
+            DeferredIntent::Quit => self.update(Action::Quit),
+            DeferredIntent::Stay => Vec::new(),
+            _ => self.replay_deferred(intent),
+        }
     }
 
     fn retain_failed_deferred(&mut self) {
@@ -10407,10 +10527,7 @@ impl App {
                 profile_id,
             }],
             DeferredIntent::Disconnect { connection } => vec![Command::Disconnect { connection }],
-            DeferredIntent::Quit => {
-                self.should_quit = true;
-                vec![Command::Quit]
-            }
+            DeferredIntent::Quit => self.update(Action::Quit),
             DeferredIntent::Restart => {
                 let Some(inspection) = self.update_inspection().cloned() else {
                     self.notify_error("Update", "The updated launcher path is unavailable");
@@ -15001,6 +15118,20 @@ impl App {
         Vec::new()
     }
 
+    fn relation_commit_for_tab(&mut self, commit: bool, tab_id: Option<Uuid>) -> Vec<Command> {
+        let Some(tab_id) = tab_id else {
+            return self.relation_commit(commit);
+        };
+        let Some(index) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
+            return Vec::new();
+        };
+        let previous = self.active_tab;
+        self.active_tab = index;
+        let commands = self.relation_commit(commit);
+        self.active_tab = previous;
+        commands
+    }
+
     fn relation_commit(&mut self, commit: bool) -> Vec<Command> {
         if commit
             && self
@@ -15501,6 +15632,7 @@ impl App {
                 }
             }
             Err((message, diagnostic)) => {
+                self.resolving_deferred = None;
                 edit.pending_mutation_history = None;
                 edit.pending_save.clear();
                 let ids = match &request.operation {
@@ -15563,12 +15695,14 @@ impl App {
         _connection: ConnectionIdentity,
         success: bool,
         error: Option<(String, bool)>,
-    ) {
+    ) -> Vec<Command> {
         let mut committed = false;
+        let mut matched = false;
         if let Some(WorkspaceTab::Relation(tab)) = self.tabs.iter_mut().find(|t| t.id() == tab_id) {
             if tab.transaction_generation != generation {
-                return;
+                return Vec::new();
             }
+            matched = true;
             if success {
                 if tab.transaction_state == TransactionState::RollingBack {
                     tab.edit = tab.transaction_snapshot.clone();
@@ -15589,14 +15723,24 @@ impl App {
                 };
             }
         }
-        if let Some((message, _)) = error {
-            self.notify_error("Relation", &message);
+        if let Some((ref message, _)) = error {
+            self.notify_error("Relation", message.as_str());
         } else if committed {
             if self.connection.error.as_deref() == Some(RELATION_METADATA_SAVE_MESSAGE) {
                 self.connection.error = None;
             }
             self.notify_success("Relation", "Relation changes committed");
         }
+        if matched && success {
+            if let Some(prompt) = self.resolving_deferred.take()
+                && matches!(prompt.target, DeferredTransactionTarget::Relation(id) if id == tab_id)
+            {
+                return self.continue_deferred(prompt.intent);
+            }
+        } else if matched && error.is_some() {
+            self.resolving_deferred = None;
+        }
+        Vec::new()
     }
 
     fn relation_edit_cancel(&mut self) {

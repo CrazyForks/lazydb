@@ -142,6 +142,7 @@ pub enum Overlay {
     },
     RelationTransactionConfirm {
         tab_id: Uuid,
+        prompt: Option<DeferredTransactionPrompt>,
         choice: TransactionExitChoice,
         sql: String,
         preview_offset: usize,
