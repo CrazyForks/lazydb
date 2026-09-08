@@ -11,8 +11,12 @@ struct LspProcess {
 
 impl LspProcess {
     fn start() -> Self {
+        Self::start_with_args(&["lsp", "--stdio"])
+    }
+
+    fn start_with_args(args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_lazydb"))
-            .args(["lsp", "--stdio"])
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -186,5 +190,163 @@ fn xml_sql_region_uses_sql_completion_and_reports_static_sql_errors() {
             .expect("completion list")
             .iter()
             .any(|item| item["label"] == "SELECT")
+    );
+}
+
+#[test]
+fn real_sqlite_catalog_completion_inserts_only_object_name() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    std::fs::create_dir(&project).expect("project dir");
+    let db_path = project.join("app.db");
+    block_on_async({
+        let db_path = db_path.clone();
+        async move {
+            let pool = sqlx::SqlitePool::connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("open sqlite");
+            sqlx::query("CREATE TABLE sys_user (id INTEGER PRIMARY KEY, name TEXT)")
+                .execute(&pool)
+                .await
+                .expect("create table");
+            pool.close().await;
+        }
+    });
+
+    let config_path = temp.path().join("profiles.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "version = 6\n[[profiles]]\nid = \"{id}\"\nname = \"lsp-sqlite\"\nkind = \"sqlite\"\nsqlite_path = \"{path}\"\ndatabase = \"main\"\n[profiles.catalog_scope]\ndatabases = {{ mode = \"all\" }}\n",
+            id = uuid::Uuid::new_v4(),
+            path = db_path.display(),
+        ),
+    )
+    .expect("write profile");
+
+    let mut server = LspProcess::start_with_args(&[
+        "lsp",
+        "--stdio",
+        "--project",
+        project.to_str().expect("project path"),
+        "--config",
+        config_path.to_str().expect("config path"),
+    ]);
+    let _ = server.request(
+        1,
+        "initialize",
+        json!({
+            "processId": null,
+            "rootUri": null,
+            "capabilities": {},
+        }),
+    );
+    server.notify("initialized", json!({}));
+    let uri = "file:///tmp/sqlite.sql";
+    server.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "sql",
+                "version": 1,
+                "text": "select * from sys_"
+            }
+        }),
+    );
+    let response = server.request(
+        2,
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 18}
+        }),
+    );
+    let items = response["result"]["items"].as_array().expect("items");
+    let table = items
+        .iter()
+        .find(|item| item["label"] == "sys_user")
+        .expect("real sqlite catalog must complete sys_user");
+    assert_eq!(
+        table["textEdit"]["newText"], "sys_user",
+        "accepting the table must insert only the object name"
+    );
+    assert_eq!(
+        response["result"]["isIncomplete"], false,
+        "fully loaded sqlite catalog must not be incomplete"
+    );
+
+    server.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": uri, "version": 2},
+            "contentChanges": [{"text": "select * from main."}]
+        }),
+    );
+    let qualified = server.request(
+        3,
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 19}
+        }),
+    );
+    let qualified_items = qualified["result"]["items"].as_array().expect("items");
+    assert!(
+        qualified_items
+            .iter()
+            .any(|item| item["label"] == "sys_user"),
+        "main. qualifier must resolve sqlite tables"
+    );
+
+    server.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": uri, "version": 3},
+            "contentChanges": [{"text": "select u. from sys_user u"}]
+        }),
+    );
+    let aliased = server.request(
+        4,
+        "textDocument/completion",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 9}
+        }),
+    );
+    let alias_items = aliased["result"]["items"].as_array().expect("items");
+    assert!(
+        alias_items.iter().any(|item| item["label"] == "id"),
+        "alias completion must offer the relation columns"
+    );
+}
+
+fn block_on_async<F: std::future::Future>(future: F) -> F::Output {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(future)
+}
+
+#[test]
+fn lsp_through_jsonrpc_trigger_characters_are_dot() {
+    let mut server = LspProcess::start();
+    let response = server.request(
+        1,
+        "initialize",
+        json!({
+            "processId": null,
+            "rootUri": null,
+            "capabilities": {},
+        }),
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["completionProvider"]["triggerCharacters"][0],
+        "."
     );
 }

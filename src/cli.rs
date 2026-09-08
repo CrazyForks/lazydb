@@ -153,6 +153,17 @@ pub enum LspDialect {
     Generic,
 }
 
+impl From<crate::profile::DatabaseKind> for LspDialect {
+    fn from(kind: crate::profile::DatabaseKind) -> Self {
+        match kind {
+            crate::profile::DatabaseKind::Postgres => Self::Postgres,
+            crate::profile::DatabaseKind::MySql => Self::MySql,
+            crate::profile::DatabaseKind::SqlServer => Self::SqlServer,
+            crate::profile::DatabaseKind::Sqlite => Self::Sqlite,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
     /// Check for an update without applying one.

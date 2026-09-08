@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tower_lsp_server::jsonrpc::Result as LspResult;
@@ -10,12 +11,11 @@ use tower_lsp_server::ls_types::{
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
-use super::catalog::CatalogCache;
-use super::catalog::CatalogProvider;
-use super::completion::complete_document_with_embedded_sql;
+use super::catalog::{CatalogProvider, CatalogTargetLoader, CatalogTargetService};
+use super::completion::{complete_document_with_catalog, complete_document_with_embedded_sql};
 use super::diagnostics::diagnostics_for_document;
 use super::document::Documents;
-use crate::sql::{CompletionIndex, SqlDialect};
+use crate::sql::{CompletionContext, CompletionIndex, SqlDialect};
 
 #[derive(Debug)]
 struct LanguageServerState {
@@ -23,8 +23,7 @@ struct LanguageServerState {
     project: Option<PathBuf>,
     dialect: crate::cli::LspDialect,
     documents: tokio::sync::Mutex<Documents>,
-    catalog_cache: CatalogCache,
-    catalog_provider: Option<CatalogProvider>,
+    catalog_service: Option<std::sync::Arc<CatalogTargetService>>,
 }
 
 impl LanguageServer for LanguageServerState {
@@ -59,57 +58,37 @@ impl LanguageServer for LanguageServerState {
     }
 
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
-        let documents = self.documents.lock().await;
-        let Some(document) = documents.get(&params.text_document_position.text_document.uri) else {
-            return Ok(None);
+        let document = {
+            let documents = self.documents.lock().await;
+            let Some(document) = documents.get(&params.text_document_position.text_document.uri)
+            else {
+                return Ok(None);
+            };
+            document.clone()
         };
-        let key = super::catalog::CatalogKey {
-            connection: self.catalog_provider.as_ref().map_or_else(
-                || "offline".into(),
-                |provider| provider.profile_id().to_string(),
+        let position = params.text_document_position.position;
+        let dialect = sql_dialect(self.dialect);
+        let response = match &self.catalog_service {
+            Some(service) => {
+                complete_document_with_catalog(
+                    &document,
+                    position,
+                    dialect,
+                    service,
+                    self.context(),
+                )
+                .await
+            }
+            None => complete_document_with_embedded_sql(
+                &document,
+                position,
+                dialect,
+                &CompletionIndex::new(&[]),
+                true,
+                CompletionContext::default(),
             ),
-            database: None,
-            schema: None,
         };
-        let snapshot = self
-            .catalog_cache
-            .snapshot(key, || async {
-                let index = match &self.catalog_provider {
-                    Some(provider) => match provider.load_index().await {
-                        Ok(index) => {
-                            eprintln!(
-                                "lazydb lsp: catalog index loaded with {} entries",
-                                index.entries().len()
-                            );
-                            index
-                        }
-                        Err(error) => {
-                            eprintln!("lazydb lsp: catalog load failed: {error:#}");
-                            self.client
-                                .log_message(
-                                    tower_lsp_server::ls_types::MessageType::WARNING,
-                                    format!("LazyDB catalog load failed: {error}"),
-                                )
-                                .await;
-                            CompletionIndex::new(&[])
-                        }
-                    },
-                    None => CompletionIndex::new(&[]),
-                };
-                super::catalog::CatalogSnapshot {
-                    generation: 0,
-                    index: std::sync::Arc::new(index),
-                    complete: self.catalog_provider.is_some(),
-                }
-            })
-            .await;
-        Ok(Some(complete_document_with_embedded_sql(
-            document,
-            params.text_document_position.position,
-            sql_dialect(self.dialect),
-            &snapshot.index,
-            !snapshot.complete,
-        )))
+        Ok(Some(response))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -142,6 +121,14 @@ impl LanguageServerState {
             .publish_diagnostics(document.uri.clone(), diagnostics, Some(document.version))
             .await;
     }
+
+    fn context(&self) -> CompletionContext<'_> {
+        self.catalog_service
+            .as_ref()
+            .map_or(CompletionContext::default(), |service| {
+                service.completion_context()
+            })
+    }
 }
 
 pub async fn run(
@@ -169,7 +156,14 @@ pub async fn run(
                 None
             }
         };
-    run_server_with_provider(args.project, args.dialect.unwrap_or_default(), provider).await
+    let dialect = match args.dialect {
+        Some(dialect) => dialect,
+        None => provider
+            .as_ref()
+            .map(|provider| provider.dialect())
+            .unwrap_or_default(),
+    };
+    run_server_with_provider(args.project, dialect, provider).await
 }
 
 pub async fn run_server(
@@ -187,13 +181,20 @@ async fn run_server_with_provider(
 ) -> Result<()> {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(|client| LanguageServerState {
+    let catalog_service = catalog_provider.map(|provider| {
+        let scope = provider.catalog_scope().clone();
+        let context = provider.completion_context();
+        let database = context.database.map(str::to_owned);
+        let schema = context.schema.map(str::to_owned);
+        let loader: Arc<dyn CatalogTargetLoader> = std::sync::Arc::new(provider);
+        CatalogTargetService::new(loader, scope, database, schema)
+    });
+    let (service, socket) = LspService::new(move |client| LanguageServerState {
         client,
         project,
         dialect,
         documents: tokio::sync::Mutex::new(Documents::default()),
-        catalog_cache: CatalogCache::default(),
-        catalog_provider,
+        catalog_service,
     });
     Server::new(stdin, stdout, socket)
         .concurrency_level(8)

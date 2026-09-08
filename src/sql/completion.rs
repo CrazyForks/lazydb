@@ -25,6 +25,15 @@ pub struct CompletionContext<'a> {
     pub schema: Option<&'a str>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CompletionInsertionMode {
+    /// Prepend missing database/schema components based on the connection context.
+    #[default]
+    Contextual,
+    /// Only insert the object name, never rewriting the surrounding path.
+    CurrentSegment,
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CompletionKind {
     Keyword,
@@ -269,8 +278,26 @@ pub fn complete(
     index: &CompletionIndex,
     completion_context: CompletionContext<'_>,
 ) -> Vec<CompletionCandidate> {
+    complete_with_mode(
+        text,
+        cursor,
+        dialect,
+        index,
+        completion_context,
+        CompletionInsertionMode::Contextual,
+    )
+}
+
+pub fn complete_with_mode(
+    text: &str,
+    cursor: usize,
+    dialect: SqlDialect,
+    index: &CompletionIndex,
+    completion_context: CompletionContext<'_>,
+    insertion_mode: CompletionInsertionMode,
+) -> Vec<CompletionCandidate> {
     let cursor = cursor.min(text.len());
-    let (replace, prefix, qualifiers) = identifier_at(text, cursor, dialect);
+    let (replace, prefix, qualifiers, quoted_segment) = identifier_at(text, cursor, dialect);
     let (statement, statement_cursor) = current_statement(text, replace.start, dialect);
     let tokens = completion_tokens(statement, dialect);
     let active_scopes = active_scope_starts(&tokens, statement_cursor);
@@ -327,6 +354,7 @@ pub fn complete(
             &folded_prefix,
             &bindings,
             completion_context,
+            dialect,
         )
     };
     for node_index in candidate_indexes {
@@ -362,6 +390,19 @@ pub fn complete(
         {
             continue;
         }
+        if matches!(dialect, SqlDialect::MySql | SqlDialect::Sqlite)
+            && kind == CompletionKind::Schema
+            && entry.kind == CatalogKind::Schema
+            && entry.id.native_path.len() == 2
+            && entry
+                .id
+                .native_path
+                .first()
+                .zip(entry.id.native_path.get(1))
+                .is_some_and(|(database, schema)| database.eq_ignore_ascii_case(schema))
+        {
+            continue;
+        }
         let name = &entry.qualified_name.object;
         let Some(name_match) = identifier_match(name, &prefix) else {
             continue;
@@ -384,13 +425,26 @@ pub fn complete(
         candidates.push(CompletionCandidate {
             label: display_text(name),
             insert_text: if matches!(kind, CompletionKind::Table | CompletionKind::View) {
-                relation_insert_text(entry, completion_context, dialect, &qualifiers)
+                match insertion_mode {
+                    CompletionInsertionMode::Contextual => {
+                        relation_insert_text(entry, completion_context, dialect, &qualifiers)
+                    }
+                    CompletionInsertionMode::CurrentSegment => {
+                        if quoted_segment {
+                            quote_identifier(name, dialect)
+                        } else {
+                            quote_relation_component(name, dialect)
+                        }
+                    }
+                }
             } else {
                 quote_identifier(name, dialect)
             },
             kind,
             detail: if matches!(kind, CompletionKind::Table | CompletionKind::View) {
                 relation_detail(entry)
+            } else if kind == CompletionKind::Schema {
+                schema_detail(entry)
             } else {
                 completion_detail(entry).map(|detail| display_text(&detail))
             },
@@ -556,6 +610,11 @@ fn relation_after_keyword(
     .next()
 }
 
+pub fn qualifier_segments_at(text: &str, cursor: usize, dialect: SqlDialect) -> Vec<String> {
+    let (_, _, qualifiers, _) = identifier_at(text, cursor, dialect);
+    qualifiers
+}
+
 pub fn relation_ids_for_completion(
     text: &str,
     cursor: usize,
@@ -584,6 +643,14 @@ fn relation_detail(entry: &CatalogEntry) -> Option<String> {
     .collect::<Vec<_>>();
     parts.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     (!parts.is_empty()).then(|| format!("({})", parts.join(".")))
+}
+
+fn schema_detail(entry: &CatalogEntry) -> Option<String> {
+    entry
+        .qualified_name
+        .database
+        .as_ref()
+        .map(|database| format!("({})", display_text(database)))
 }
 
 fn relation_insert_text(
@@ -1407,33 +1474,59 @@ fn identifier_at(
     text: &str,
     cursor: usize,
     dialect: SqlDialect,
-) -> (TextRange, String, Vec<String>) {
-    let mut start = cursor;
-    while start > 0 && is_identifier_byte(text.as_bytes()[start - 1], dialect) {
-        start -= 1;
+) -> (TextRange, String, Vec<String>, bool) {
+    let tokens = completion_tokens(text, dialect);
+    let segment = tokens.iter().enumerate().find_map(|(index, token)| {
+        (matches!(token.kind, CompletionTokenKind::Word(_))
+            && token.start < cursor
+            && cursor <= token.end)
+            .then_some((index, token))
+    });
+    if let Some((index, token)) = segment {
+        let prefix = text[token.start..cursor]
+            .trim_matches(['"', '`', '[', ']'])
+            .to_owned();
+        let qualifiers = qualifiers_before(&tokens, index);
+        return (
+            TextRange::new(token.start, token.end),
+            prefix,
+            qualifiers,
+            token.quoted,
+        );
     }
-    let prefix = text[start..cursor].to_owned();
-    let qualifiers = if start > 0 && text.as_bytes()[start - 1] == b'.' {
-        let mut q = start - 1;
-        while q > 0
-            && (is_identifier_byte(text.as_bytes()[q - 1], dialect)
-                || text.as_bytes()[q - 1] == b'.')
-        {
-            q -= 1;
-        }
-        text[q..start - 1]
-            .split('.')
-            .map(|value| value.trim_matches(['"', '`', '[', ']']).to_owned())
-            .filter(|value| !value.is_empty())
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let after_dot = tokens.iter().enumerate().find_map(|(index, token)| {
+        (token.kind == CompletionTokenKind::Dot && cursor > token.start && cursor <= token.end)
+            .then_some(index)
+    });
+    if let Some(index) = after_dot {
+        return (
+            TextRange::new(cursor, cursor),
+            String::new(),
+            qualifiers_before(&tokens, index + 1),
+            false,
+        );
+    }
     (
-        TextRange::new(start, cursor),
-        prefix.trim_matches(['"', '`', '[', ']']).to_owned(),
-        qualifiers,
+        TextRange::new(cursor, cursor),
+        String::new(),
+        Vec::new(),
+        false,
     )
+}
+
+fn qualifiers_before(tokens: &[CompletionToken], stop: usize) -> Vec<String> {
+    let mut qualifiers = Vec::new();
+    let mut index = stop;
+    while index >= 2 && tokens[index - 1].kind == CompletionTokenKind::Dot {
+        let Some(word) = token_word(tokens.get(index - 2)) else {
+            break;
+        };
+        qualifiers.push(word.to_owned());
+        index -= 2;
+    }
+    qualifiers.reverse();
+    qualifiers.retain(|value| !value.is_empty());
+    qualifiers
 }
 
 fn qualified_candidate_indices(
@@ -1442,42 +1535,64 @@ fn qualified_candidate_indices(
     prefix: &str,
     bindings: &[RelationBinding],
     completion_context: CompletionContext<'_>,
+    dialect: SqlDialect,
 ) -> Vec<usize> {
     if qualifiers.is_empty() {
         return candidate_indices(index, None, prefix);
     }
     let qualifier = &qualifiers[0];
-    let alias_parents = bindings
-        .iter()
-        .filter(|binding| {
-            binding
-                .alias
-                .as_deref()
-                .is_some_and(|alias| alias.eq_ignore_ascii_case(qualifier))
-        })
-        .flat_map(|binding| relation_ids(index, binding, completion_context))
-        .collect::<Vec<_>>();
-    if !alias_parents.is_empty() {
-        return alias_parents
-            .into_iter()
-            .flat_map(|parent| index.children.get(&parent).into_iter().flatten().copied())
-            .collect();
+    if qualifiers.len() == 1 {
+        let alias_parents = bindings
+            .iter()
+            .filter(|binding| {
+                binding
+                    .alias
+                    .as_deref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(qualifier))
+            })
+            .flat_map(|binding| relation_ids(index, binding, completion_context))
+            .collect::<Vec<_>>();
+        if !alias_parents.is_empty() {
+            return alias_parents
+                .into_iter()
+                .flat_map(|parent| index.children.get(&parent).into_iter().flatten().copied())
+                .collect();
+        }
     }
     let mut parents = index
         .entries
         .iter()
         .enumerate()
         .filter(|(_, entry)| {
-            entry
-                .qualified_name
-                .object
-                .eq_ignore_ascii_case(&qualifiers[0])
+            entry.qualified_name.object.eq_ignore_ascii_case(qualifier)
                 && (entry.kind == CatalogKind::Database
                     || entry.kind == CatalogKind::Schema
                     || entry.kind.is_relation())
         })
+        .filter(|(_, entry)| catalog_entry_navigable(entry, dialect, completion_context))
         .map(|(_, entry)| entry.id.clone())
         .collect::<Vec<_>>();
+    if let Some(current_database) = completion_context.database
+        && dialect != SqlDialect::Postgres
+    {
+        let preferred = parents
+            .iter()
+            .filter(|parent| {
+                index.entries.iter().any(|entry| {
+                    entry.id == **parent
+                        && entry
+                            .qualified_name
+                            .database
+                            .as_deref()
+                            .is_some_and(|database| database.eq_ignore_ascii_case(current_database))
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !preferred.is_empty() {
+            parents = preferred;
+        }
+    }
     for qualifier in &qualifiers[1..] {
         parents = parents
             .into_iter()
@@ -1492,10 +1607,58 @@ fn qualified_candidate_indices(
             })
             .collect();
     }
-    parents
+    let children = parents
         .into_iter()
         .flat_map(|parent| index.children.get(&parent).into_iter().flatten().copied())
-        .collect()
+        .collect::<Vec<_>>();
+    if matches!(dialect, SqlDialect::MySql | SqlDialect::Sqlite) && qualifiers.len() == 1 {
+        return fold_mirrored_schema_children(index, children);
+    }
+    children
+}
+
+fn catalog_entry_navigable(
+    entry: &CatalogEntry,
+    dialect: SqlDialect,
+    completion_context: CompletionContext<'_>,
+) -> bool {
+    if dialect != SqlDialect::Postgres {
+        return true;
+    }
+    let database = entry.qualified_name.database.as_deref();
+    match completion_context.database {
+        Some(current) => {
+            if entry.kind == CatalogKind::Database {
+                database.is_some_and(|value| value.eq_ignore_ascii_case(current))
+            } else {
+                database.is_none_or(|value| value.eq_ignore_ascii_case(current))
+            }
+        }
+        None => true,
+    }
+}
+
+fn fold_mirrored_schema_children(index: &CompletionIndex, children: Vec<usize>) -> Vec<usize> {
+    let mut result = Vec::new();
+    for position in children {
+        let entry = &index.entries[position];
+        let mirrored = entry.kind == CatalogKind::Schema
+            && entry.id.native_path.len() == 2
+            && entry
+                .id
+                .native_path
+                .first()
+                .zip(entry.id.native_path.get(1))
+                .is_some_and(|(database, schema)| database.eq_ignore_ascii_case(schema));
+        if mirrored {
+            result.extend(index.children.get(&entry.id).into_iter().flatten().copied());
+        } else {
+            result.push(position);
+        }
+    }
+    result.sort_unstable();
+    result.dedup();
+    result
 }
 
 fn ddl_candidate_indices(

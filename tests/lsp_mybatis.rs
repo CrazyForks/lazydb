@@ -1,7 +1,7 @@
 use lazydb::lsp::completion::complete_document_with_embedded_sql;
 use lazydb::lsp::diagnostics::diagnostics_for_document;
 use lazydb::lsp::document::Document;
-use lazydb::sql::{CompletionIndex, SqlDialect};
+use lazydb::sql::{CompletionContext, CompletionIndex, SqlDialect};
 use tower_lsp_server::ls_types::{CompletionResponse, Position, Uri};
 
 fn xml(text: &str) -> Document {
@@ -30,6 +30,7 @@ fn non_sql_xml_position_returns_no_sql_completion() {
         SqlDialect::Generic,
         &CompletionIndex::new(&[]),
         false,
+        CompletionContext::default(),
     ) else {
         panic!("expected completion list")
     };
