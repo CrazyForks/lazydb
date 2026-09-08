@@ -257,7 +257,7 @@ fn update_set_column_completion_returns_text_edit_range() {
         .expect("name completion");
     let edit = name.text_edit.as_ref().expect("text edit");
     let encoded = serde_json::to_value(edit).expect("serialize edit");
-    assert_eq!(encoded["newText"], "\"name\"");
+    assert_eq!(encoded["newText"], "name");
     assert_eq!(encoded["range"]["start"]["line"], 0);
     assert_eq!(encoded["range"]["start"]["character"], 17);
     assert_eq!(encoded["range"]["end"]["line"], 0);

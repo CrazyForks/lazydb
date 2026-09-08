@@ -220,6 +220,9 @@ enum DdlContext {
     ReferenceRelation,
     ReferenceColumn,
     DefaultValue,
+    NewColumnName,
+    RenameColumnTo,
+    NewObjectName,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -494,7 +497,7 @@ pub fn complete_with_mode(
                     }
                 }
             } else {
-                quote_identifier(name, dialect)
+                column_insert_text(name, dialect, quoted_segment)
             },
             kind,
             detail: if matches!(kind, CompletionKind::Table | CompletionKind::View) {
@@ -872,6 +875,56 @@ fn quote_relation_component(value: &str, dialect: SqlDialect) -> String {
     }
 }
 
+fn column_insert_text(value: &str, dialect: SqlDialect, quoted: bool) -> String {
+    if dialect == SqlDialect::SqlServer
+        || quoted
+        || !is_bare_identifier(value)
+        || is_reserved_word(value, dialect)
+    {
+        quote_identifier(value, dialect)
+    } else {
+        value.to_owned()
+    }
+}
+
+fn is_bare_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn is_reserved_word(value: &str, dialect: SqlDialect) -> bool {
+    let word = value.to_ascii_uppercase();
+    let common = [
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "TABLE",
+        "ALTER",
+        "DROP",
+        "CREATE",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "NULL",
+        "DEFAULT",
+        "PRIMARY",
+        "KEY",
+        "UNIQUE",
+        "CHECK",
+        "REFERENCES",
+    ];
+    common.contains(&word.as_str())
+        || matches!(
+            (dialect, word.as_str()),
+            (SqlDialect::MySql, "MODIFY" | "CHANGE" | "INDEX")
+                | (SqlDialect::Postgres, "RETURNING" | "ILIKE")
+                | (SqlDialect::SqlServer, "TOP" | "IDENTITY")
+        )
+}
+
 pub fn should_offer_completion(text: &str, cursor: usize) -> bool {
     should_offer_completion_for_dialect(text, cursor, SqlDialect::Generic)
 }
@@ -879,6 +932,13 @@ pub fn should_offer_completion(text: &str, cursor: usize) -> bool {
 pub fn should_offer_completion_for_dialect(text: &str, cursor: usize, dialect: SqlDialect) -> bool {
     let cursor = cursor.min(text.len());
     if cursor == 0 || cursor_is_in_comment_or_literal(&text[..cursor], dialect) {
+        return false;
+    }
+    if text[..cursor]
+        .rsplit('\n')
+        .next()
+        .is_none_or(|line| line.trim().is_empty())
+    {
         return false;
     }
     let bytes = text.as_bytes();
@@ -1109,6 +1169,8 @@ fn catalog_kind_allowed(context: Context, kind: CompletionKind) -> bool {
             DdlContext::ExistingIndex => kind == CompletionKind::Index,
             DdlContext::ReferenceRelation => kind == CompletionKind::Table,
             DdlContext::ReferenceColumn => kind == CompletionKind::Column,
+            DdlContext::NewColumnName => false,
+            DdlContext::RenameColumnTo | DdlContext::NewObjectName => false,
             _ => false,
         },
     }
@@ -1906,6 +1968,60 @@ fn ddl_context_from_words(
     }
     if let Some(target) = target {
         if target == DdlObjectTarget::Table && first == "alter" {
+            if let Some((position, action)) =
+                words.iter().enumerate().skip(3).find(|(_, word)| {
+                    matches!(word.as_str(), "add" | "modify" | "change" | "rename")
+                })
+            {
+                let action = action.as_str();
+                let column_offset = 2;
+                if words.get(position + 1).map(String::as_str) == Some("column") {
+                    if matches!(action, "modify" | "change") {
+                        return Context::Ddl(DdlContext::ExistingColumn);
+                    }
+                    if action == "rename" {
+                        return match words.get(position + 2).map(String::as_str) {
+                            None => Context::Ddl(DdlContext::ExistingColumn),
+                            Some(_)
+                                if words.get(position + 3).map(String::as_str) == Some("to") =>
+                            {
+                                Context::Ddl(DdlContext::NewObjectName)
+                            }
+                            Some(_) if words.len() == position + 3 && prefix.is_empty() => {
+                                Context::Ddl(DdlContext::RenameColumnTo)
+                            }
+                            Some(_) => Context::Ddl(DdlContext::ExistingColumn),
+                        };
+                    }
+                    let name_position = position + column_offset;
+                    if words.len() <= name_position
+                        || (words.len() == name_position + 1 && !prefix.is_empty())
+                    {
+                        return if prefix.is_empty() {
+                            Context::Ddl(DdlContext::NewColumnName)
+                        } else {
+                            Context::Ddl(DdlContext::ColumnType)
+                        };
+                    }
+                    let definition = &words[name_position + 1..];
+                    if definition.is_empty() {
+                        return Context::Ddl(DdlContext::ColumnType);
+                    }
+                    if definition
+                        .first()
+                        .is_some_and(|word| is_column_type_word(word, dialect))
+                    {
+                        return Context::Ddl(DdlContext::ColumnConstraint);
+                    }
+                    if definition
+                        .iter()
+                        .any(|word| is_column_constraint_word(word))
+                    {
+                        return Context::Ddl(DdlContext::ColumnConstraint);
+                    }
+                    return Context::Ddl(DdlContext::ColumnType);
+                }
+            }
             let action_position =
                 words.iter().enumerate().skip(3).find(|(_, word)| {
                     matches!(word.as_str(), "drop" | "alter" | "modify" | "change")
@@ -1945,6 +2061,19 @@ fn ddl_context_from_words(
         "drop" => Context::Ddl(DdlContext::DropObjectKind),
         _ => fallback,
     }
+}
+
+fn is_column_type_word(word: &str, dialect: SqlDialect) -> bool {
+    data_types_for_context(Context::Ddl(DdlContext::ColumnType), dialect)
+        .iter()
+        .any(|data_type| data_type.eq_ignore_ascii_case(word))
+}
+
+fn is_column_constraint_word(word: &str) -> bool {
+    matches!(
+        word,
+        "null" | "not" | "default" | "primary" | "unique" | "references" | "check"
+    )
 }
 
 fn projection_is_complete(
@@ -2681,6 +2810,9 @@ fn keywords(
         Context::Ddl(DdlContext::ExistingObject(_)) => &[],
         Context::Ddl(DdlContext::CreateIndexTarget) => &[],
         Context::Ddl(DdlContext::ColumnType) => &[],
+        Context::Ddl(DdlContext::NewColumnName) => &[],
+        Context::Ddl(DdlContext::RenameColumnTo) => &["TO"],
+        Context::Ddl(DdlContext::NewObjectName) => &[],
         Context::Ddl(DdlContext::TableConstraint) => &[
             "CONSTRAINT",
             "PRIMARY KEY",
