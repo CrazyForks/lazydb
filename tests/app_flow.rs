@@ -614,6 +614,89 @@ fn accepting_completion_places_cursor_after_inserted_text() {
 }
 
 #[test]
+fn accepting_completion_before_existing_whitespace_ends_current_request() {
+    for prefix in ["", "select 1;\n"] {
+        for suffix in [" ", "\n", "\t"] {
+            let mut app = connected_completion_app();
+            app.update(Action::ReplaceEditor(format!("{suffix}select 2;")));
+            editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+            app.update(Action::EditorPaste(format!("{prefix}sel")));
+            assert_eq!(
+                app.active_editor_text().unwrap(),
+                format!("{prefix}sel{suffix}select 2;")
+            );
+            assert_completion_cursor(&app, usize::from(!prefix.is_empty()), 3);
+            app.update(Action::CompletionExplicit);
+            select_completion(&mut app, "SELECT");
+
+            let commands = app.update(Action::CompletionAccept);
+
+            assert_eq!(
+                app.active_editor_text().unwrap(),
+                format!("{prefix}SELECT{suffix}select 2;")
+            );
+            assert_completion_cursor(&app, usize::from(!prefix.is_empty()), 6);
+            assert!(app.active_console().completion.is_none());
+            assert!(
+                app.active_console().completion_request.is_none(),
+                "prefix={prefix:?}, suffix={suffix:?}: {commands:?}"
+            );
+            assert!(
+                !commands
+                    .iter()
+                    .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+            );
+        }
+    }
+}
+
+fn connected_completion_app() -> App {
+    let profile = import_connection_url("postgres://localhost/app", Some("completion"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id: profile.id,
+        generation,
+        server: lazydb::db::ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Postgres,
+            version: "17".into(),
+            database: "app".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+    assert!(app.connection.active_identity().is_some());
+    app
+}
+
+fn select_completion(app: &mut App, insert_text: &str) {
+    let popup = app.active_console_mut().completion.as_mut().unwrap();
+    popup.selected = popup
+        .candidates
+        .iter()
+        .position(|candidate| candidate.insert_text == insert_text)
+        .unwrap_or_else(|| panic!("missing {insert_text:?}: {:?}", popup.candidates));
+}
+
+fn assert_completion_cursor(app: &App, line: usize, column: usize) {
+    let snapshot = app
+        .active_editor_render_snapshot(lazydb::model::editor::EditorViewport {
+            width: 80,
+            height: 5,
+        })
+        .unwrap();
+    assert_eq!(
+        snapshot.cursor,
+        lazydb::model::editor::EditorPosition { line, column }
+    );
+}
+
+#[test]
 fn accepting_completion_does_not_add_space_before_ddl_punctuation() {
     for (text, replacement, insert_text) in [
         ("CREATE TABLE t (id IN)", TextRange::new(19, 21), "INTEGER"),
@@ -625,7 +708,7 @@ fn accepting_completion_does_not_add_space_before_ddl_punctuation() {
         ),
         ("DROP TABLE us;", TextRange::new(11, 13), "users"),
     ] {
-        let mut app = App::new(Vec::new());
+        let mut app = connected_completion_app();
         app.update(Action::ReplaceEditor(text.to_owned()));
         editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         app.active_console_mut().completion = Some(CompletionPopup {
@@ -643,7 +726,7 @@ fn accepting_completion_does_not_add_space_before_ddl_punctuation() {
             }],
             selected: 0,
         });
-        app.update(Action::CompletionAccept);
+        let commands = app.update(Action::CompletionAccept);
         let expected = format!(
             "{}{}{}",
             &text[..replacement.start],
@@ -651,6 +734,189 @@ fn accepting_completion_does_not_add_space_before_ddl_punctuation() {
             &text[replacement.end..]
         );
         assert_eq!(app.active_editor_text().unwrap(), expected);
+        assert!(app.active_console().completion.is_none());
+        assert!(app.active_console().completion_request.is_none());
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+        );
+    }
+}
+
+#[test]
+fn accepting_completion_preserves_ordering_continuation() {
+    for suffix in ["", " "] {
+        let mut app = connected_completion_app();
+        app.update(Action::ReplaceEditor(suffix.into()));
+        editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        app.update(Action::EditorPaste("select 1 order by 1 des".into()));
+        app.update(Action::CompletionExplicit);
+        select_completion(&mut app, "DESC");
+
+        let commands = app.update(Action::CompletionAccept);
+
+        assert_eq!(
+            app.active_editor_text().unwrap(),
+            "select 1 order by 1 DESC "
+        );
+        assert!(app.active_console().completion.is_none());
+        if suffix.is_empty() {
+            assert_completion_cursor(&app, 0, "select 1 order by 1 DESC ".len());
+            let key = commands
+                .iter()
+                .find_map(|command| match command {
+                    Command::ScheduleCompletion(key) => Some(*key),
+                    _ => None,
+                })
+                .expect("next ordering position must be scheduled");
+            assert!(app.active_console().completion_request.is_some());
+            app.update(Action::CompletionDue(key));
+            let candidates = &app.active_console().completion.as_ref().unwrap().candidates;
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.insert_text == "NULLS FIRST")
+            );
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.insert_text == "NULLS LAST")
+            );
+            assert!(
+                !candidates
+                    .iter()
+                    .any(|candidate| candidate.insert_text == "DESC")
+            );
+        } else {
+            assert_completion_cursor(&app, 0, "select 1 order by 1 DESC".len());
+            assert!(app.active_console().completion_request.is_none());
+            assert!(
+                !commands
+                    .iter()
+                    .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+            );
+        }
+    }
+}
+
+#[test]
+fn accepting_completion_does_not_suppress_later_input_or_explicit_requests() {
+    for code in [KeyCode::Backspace, KeyCode::Char('x')] {
+        let mut app = connected_completion_app();
+        app.update(Action::ReplaceEditor(" ".into()));
+        editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        app.update(Action::EditorPaste("sel".into()));
+        app.update(Action::CompletionExplicit);
+        select_completion(&mut app, "SELECT");
+        app.update(Action::CompletionAccept);
+        assert!(app.active_console().completion_request.is_none());
+
+        app.update(Action::CompletionExplicit);
+        select_completion(&mut app, "SELECT");
+        assert!(
+            app.active_console()
+                .completion_request
+                .as_ref()
+                .unwrap()
+                .explicit
+        );
+        app.update(Action::CompletionDismiss);
+        let commands = app.update(Action::EditorKey(KeyEvent::new(code, KeyModifiers::NONE)));
+        let key = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::ScheduleCompletion(key) => Some(*key),
+                _ => None,
+            })
+            .expect("later editing must schedule completion");
+        let expected = if code == KeyCode::Backspace {
+            "SELEC "
+        } else {
+            "SELECTx "
+        };
+        assert_eq!(app.active_editor_text().unwrap(), expected);
+        let request = app.active_console().completion_request.as_ref().unwrap();
+        assert_eq!(request.revision, app.active_editor_revision());
+        assert_eq!(request.cursor, expected.len() - 1);
+        app.update(Action::CompletionDue(key));
+        if code == KeyCode::Backspace {
+            select_completion(&mut app, "SELECT");
+            let popup = app.active_console().completion.as_ref().unwrap();
+            assert_eq!(
+                popup.candidates[popup.selected].replace,
+                TextRange::new(0, 5)
+            );
+        } else {
+            assert!(app.active_console().completion.is_none());
+        }
+    }
+}
+
+#[test]
+fn accepting_completion_without_text_change_ends_current_request() {
+    let mut app = connected_completion_app();
+    app.update(Action::ReplaceEditor(" ".into()));
+    editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+    app.update(Action::EditorPaste("SELECT".into()));
+    app.update(Action::CompletionExplicit);
+    select_completion(&mut app, "SELECT");
+    assert!(app.active_console().completion_request.is_some());
+    let revision = app.active_editor_revision();
+
+    let commands = app.update(Action::CompletionAccept);
+
+    assert_eq!(app.active_editor_text().unwrap(), "SELECT ");
+    assert_eq!(app.active_editor_revision(), revision);
+    assert_completion_cursor(&app, 0, 6);
+    assert!(app.active_console().completion.is_none());
+    assert!(app.active_console().completion_request.is_none());
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::ScheduleCompletion(_)))
+    );
+}
+
+#[test]
+fn accepting_completion_ignores_pre_accept_due_event() {
+    for word in ["sel", "SELECT"] {
+        let mut app = connected_completion_app();
+        app.update(Action::ReplaceEditor(" ".into()));
+        editor_key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        for character in word[..word.len() - 1].chars() {
+            editor_key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
+        }
+        let commands = app.update(Action::EditorKey(KeyEvent::new(
+            KeyCode::Char(word.chars().last().unwrap()),
+            KeyModifiers::NONE,
+        )));
+        let key = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::ScheduleCompletion(key) => Some(*key),
+                _ => None,
+            })
+            .expect("actual input must schedule the pre-accept timer");
+        assert_eq!(key.document_revision, app.active_editor_revision());
+        assert_eq!(key.cursor, word.len());
+        assert!(app.active_console().completion_request.is_some());
+        app.update(Action::CompletionExplicit);
+        select_completion(&mut app, "SELECT");
+        app.update(Action::CompletionAccept);
+        let revision = app.active_editor_revision();
+        if word == "SELECT" {
+            assert_eq!(key.document_revision, revision);
+        }
+
+        let commands = app.update(Action::CompletionDue(key));
+
+        assert!(commands.is_empty());
+        assert_eq!(app.active_editor_text().unwrap(), "SELECT ");
+        assert_eq!(app.active_editor_revision(), revision);
+        assert_completion_cursor(&app, 0, 6);
+        assert!(app.active_console().completion.is_none());
+        assert!(app.active_console().completion_request.is_none());
     }
 }
 
