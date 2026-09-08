@@ -572,6 +572,26 @@ pub fn complete_with_mode(
                 });
             }
         }
+        if context == Context::Ddl(DdlContext::AlterTableAction)
+            && let Some(keyword) =
+                alter_table_action_continuation(&tokens, statement_cursor, &prefix)
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.label == keyword)
+        {
+            candidates.push(CompletionCandidate {
+                label: keyword.to_owned(),
+                insert_text: keyword.to_owned(),
+                kind: CompletionKind::Keyword,
+                detail: None,
+                replace,
+                score: CompletionScore {
+                    context: 4,
+                    name_match: 2,
+                    schema: 0,
+                },
+            });
+        }
         if let Some(keyword) = order_by_keyword(
             &tokens,
             statement_cursor,
@@ -869,13 +889,36 @@ pub fn should_offer_completion_for_dialect(text: &str, cursor: usize, dialect: S
         return true;
     }
     if *previous != b'.' || cursor < 2 {
-        return should_offer_ordering_completion(text, cursor, dialect);
+        return should_offer_alter_table_completion(text, cursor, dialect)
+            || should_offer_ordering_completion(text, cursor, dialect);
     }
     let mut qualifier_start = cursor - 2;
     while qualifier_start > 0 && is_identifier_byte(bytes[qualifier_start - 1], dialect) {
         qualifier_start -= 1;
     }
     !bytes[qualifier_start].is_ascii_digit()
+}
+
+fn should_offer_alter_table_completion(text: &str, cursor: usize, dialect: SqlDialect) -> bool {
+    let (statement, statement_cursor) = current_statement(text, cursor.min(text.len()), dialect);
+    let tokens = completion_tokens(statement, dialect);
+    let active_scopes = active_scope_starts(&tokens, statement_cursor);
+    let context = context_at(
+        &tokens,
+        statement_cursor,
+        active_scopes.last().copied().flatten(),
+        dialect,
+        "",
+    );
+    matches!(
+        context,
+        Context::Ddl(
+            DdlContext::AlterTableAction
+                | DdlContext::ExistingColumn
+                | DdlContext::ExistingConstraint
+                | DdlContext::ExistingIndex
+        )
+    )
 }
 
 fn should_offer_ordering_completion(text: &str, cursor: usize, dialect: SqlDialect) -> bool {
@@ -1863,11 +1906,10 @@ fn ddl_context_from_words(
     }
     if let Some(target) = target {
         if target == DdlObjectTarget::Table && first == "alter" {
-            let action_position = words
-                .iter()
-                .enumerate()
-                .skip(3)
-                .find(|(_, word)| matches!(word.as_str(), "drop" | "alter"));
+            let action_position =
+                words.iter().enumerate().skip(3).find(|(_, word)| {
+                    matches!(word.as_str(), "drop" | "alter" | "modify" | "change")
+                });
             if action_position.is_some_and(|(position, _)| {
                 words.get(position + 1).map(String::as_str) == Some("column")
             }) {
@@ -1883,9 +1925,13 @@ fn ddl_context_from_words(
             }) {
                 return Context::Ddl(DdlContext::ExistingIndex);
             }
-            if words.len() <= 3
+            if (words.len() == 3 && prefix.is_empty())
+                || (words.len() >= 3 && !prefix.is_empty())
                 || words.get(3).is_some_and(|word| {
-                    matches!(word.as_str(), "add" | "drop" | "alter" | "rename")
+                    matches!(
+                        word.as_str(),
+                        "add" | "drop" | "alter" | "rename" | "modify" | "change"
+                    )
                 })
             {
                 return Context::Ddl(DdlContext::AlterTableAction);
@@ -2642,7 +2688,7 @@ fn keywords(
             "FOREIGN KEY",
             "CHECK",
         ],
-        Context::Ddl(DdlContext::AlterTableAction) => &["ADD", "DROP", "ALTER", "RENAME"],
+        Context::Ddl(DdlContext::AlterTableAction) => alter_table_action_keywords(dialect),
         Context::Ddl(
             DdlContext::ExistingColumn
             | DdlContext::ExistingConstraint
@@ -2708,6 +2754,65 @@ fn ddl_object_keywords(dialect: SqlDialect, _create: bool) -> &'static [&'static
         ],
         SqlDialect::Sqlite => &["TABLE", "VIEW", "INDEX", "TRIGGER"],
         SqlDialect::Generic => &["TABLE", "VIEW", "INDEX", "SCHEMA", "DATABASE"],
+    }
+}
+
+fn alter_table_action_continuation(
+    tokens: &[CompletionToken],
+    cursor: usize,
+    prefix: &str,
+) -> Option<&'static str> {
+    if !"column".starts_with(&prefix.to_ascii_lowercase()) {
+        return None;
+    }
+    let previous = tokens
+        .iter()
+        .rev()
+        .find(|token| token.end <= cursor)
+        .and_then(|token| token_word(Some(token)))?;
+    matches!(
+        previous.to_ascii_lowercase().as_str(),
+        "add" | "modify" | "change"
+    )
+    .then_some("COLUMN")
+}
+
+fn alter_table_action_keywords(dialect: SqlDialect) -> &'static [&'static str] {
+    match dialect {
+        SqlDialect::MySql => &[
+            "ADD COLUMN",
+            "MODIFY COLUMN",
+            "CHANGE COLUMN",
+            "DROP COLUMN",
+            "ADD INDEX",
+            "DROP INDEX",
+            "ADD CONSTRAINT",
+            "DROP FOREIGN KEY",
+        ],
+        SqlDialect::Postgres => &[
+            "ADD COLUMN",
+            "ALTER COLUMN",
+            "DROP COLUMN",
+            "RENAME COLUMN",
+            "RENAME TO",
+            "ADD CONSTRAINT",
+            "DROP CONSTRAINT",
+        ],
+        SqlDialect::Sqlite => &["ADD COLUMN", "DROP COLUMN", "RENAME COLUMN", "RENAME TO"],
+        SqlDialect::SqlServer => &[
+            "ADD",
+            "ALTER COLUMN",
+            "DROP COLUMN",
+            "ADD CONSTRAINT",
+            "DROP CONSTRAINT",
+        ],
+        SqlDialect::Generic => &[
+            "ADD COLUMN",
+            "ALTER COLUMN",
+            "DROP COLUMN",
+            "ADD CONSTRAINT",
+            "DROP CONSTRAINT",
+        ],
     }
 }
 
