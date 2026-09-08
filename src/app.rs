@@ -8460,7 +8460,7 @@ impl App {
                 }
                 if let Some(console_id) = editor_target_switch
                     .map(|(console_id, _, _)| console_id)
-                    .or_else(|| self.pending_target_console)
+                    .or(self.pending_target_console)
                     && let Some(tab) = self
                         .tabs
                         .iter_mut()

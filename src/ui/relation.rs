@@ -1118,7 +1118,7 @@ fn render_ddl_editor(
             state,
             tab.ddl_editor_id,
             Rect::new(inner.x, inner.y, inner.width, inner.height),
-            &snapshot,
+            snapshot,
         );
         Some(tab.ddl_editor_id)
     } else {
@@ -1129,14 +1129,14 @@ fn render_ddl_editor(
         let y = inner.y.saturating_add(row as u16);
         let spans = super::editor_line_spans(
             line,
-            &snapshot,
+            snapshot,
             theme,
             true,
             None,
             &super::mouse_selection_cells(
                 state,
                 ddl_session_id.unwrap_or_default(),
-                &snapshot,
+                snapshot,
                 line,
             ),
             None,
@@ -1160,7 +1160,7 @@ fn render_ddl_editor(
         frame,
         area,
         ddl_session_id,
-        &snapshot,
+        snapshot,
         theme,
         state,
         Some(Rect::new(
