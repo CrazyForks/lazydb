@@ -19,14 +19,33 @@ pub(crate) struct ColumnEditorDescription {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum CellEditorBuffer {
+pub enum CellEditorPresence {
+    Unprovided,
+    Null,
+    Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CellEditorContent {
     Text(TextInput),
     Typed {
         kind: CellEditorKind,
         draft: TypedDraft,
     },
-    Null(TextInput),
-    Unprovided(TextInput),
+}
+
+#[derive(Clone, Debug)]
+pub struct CellEditorBuffer {
+    pub presence: CellEditorPresence,
+    pub content: CellEditorContent,
+    pub presence_history: Vec<CellEditorSnapshot>,
+    pub presence_redo: Vec<CellEditorSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CellEditorSnapshot {
+    presence: CellEditorPresence,
+    content: CellEditorContent,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -94,6 +113,17 @@ impl JsonBuffer {
 
     pub fn value(&self) -> &str {
         &self.value
+    }
+
+    fn without_history(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+            sql_null: self.sql_null,
+            history: Vec::new(),
+            redo: Vec::new(),
+        }
     }
     pub fn is_sql_null(&self) -> bool {
         self.sql_null
@@ -208,6 +238,77 @@ impl JsonBuffer {
             self.history.push(self.snapshot());
             self.restore(snapshot);
         }
+    }
+
+    pub fn apply(&mut self, edit: crate::model::text_input::TextInputEdit) -> bool {
+        let before = self.without_history();
+        match edit {
+            crate::model::text_input::TextInputEdit::Insert(c) => self.insert(c),
+            crate::model::text_input::TextInputEdit::Backspace => self.backspace(),
+            crate::model::text_input::TextInputEdit::Delete => self.delete(),
+            crate::model::text_input::TextInputEdit::MoveLeft => self.move_left(),
+            crate::model::text_input::TextInputEdit::MoveRight => self.move_right(),
+            crate::model::text_input::TextInputEdit::MoveHome => self.move_home(),
+            crate::model::text_input::TextInputEdit::MoveEnd => self.move_end(),
+            crate::model::text_input::TextInputEdit::DeletePreviousWord => {
+                if self.cursor == 0 {
+                    return false;
+                }
+                self.record();
+                let end = self.byte_index(self.cursor);
+                let mut start = self.cursor;
+                while start > 0
+                    && self.value[..self.byte_index(start)]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_whitespace)
+                {
+                    start -= 1;
+                }
+                while start > 0
+                    && !self.value[..self.byte_index(start)]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_whitespace)
+                {
+                    start -= 1;
+                }
+                self.value.replace_range(self.byte_index(start)..end, "");
+                self.cursor = start;
+                self.anchor = None;
+            }
+            crate::model::text_input::TextInputEdit::DeleteToStart => {
+                if self.cursor == 0 {
+                    return false;
+                }
+                self.record();
+                self.value.replace_range(..self.byte_index(self.cursor), "");
+                self.cursor = 0;
+                self.anchor = None;
+            }
+            crate::model::text_input::TextInputEdit::Clear => {
+                if self.value.is_empty() {
+                    return false;
+                }
+                self.record();
+                self.value.clear();
+                self.cursor = 0;
+                self.anchor = None;
+            }
+            crate::model::text_input::TextInputEdit::Undo => {
+                return {
+                    self.undo();
+                    true
+                };
+            }
+            crate::model::text_input::TextInputEdit::Redo => {
+                return {
+                    self.redo();
+                    true
+                };
+            }
+        }
+        self.without_history() != before
     }
 
     pub fn validate(&self) -> Result<(), JsonValidationError> {
@@ -453,6 +554,22 @@ impl TemporalDraft {
         }
     }
 
+    pub fn from_kind_and_text(kind: CellEditorKind, value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        let value = if value.is_empty() {
+            match kind {
+                CellEditorKind::Date => "1970-01-01".into(),
+                CellEditorKind::Time => "00:00:00".into(),
+                CellEditorKind::DateTime => "1970-01-01 00:00:00".into(),
+                CellEditorKind::Timestamp => "1970-01-01 00:00:00 +00:00".into(),
+                _ => return None,
+            }
+        } else {
+            value
+        };
+        Some(Self::new(kind, value))
+    }
+
     pub fn kind(&self) -> CellEditorKind {
         self.kind
     }
@@ -643,75 +760,281 @@ impl TemporalDraft {
 
 impl Default for CellEditorBuffer {
     fn default() -> Self {
-        Self::Text(TextInput::default())
+        Self::text(CellEditorPresence::Value, TextInput::default())
+    }
+}
+
+impl PartialEq for CellEditorBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.presence == other.presence && self.content == other.content
     }
 }
 
 impl CellEditorBuffer {
+    fn text(presence: CellEditorPresence, input: TextInput) -> Self {
+        Self {
+            presence,
+            content: CellEditorContent::Text(input),
+            presence_history: Vec::new(),
+            presence_redo: Vec::new(),
+        }
+    }
+
+    fn typed(presence: CellEditorPresence, kind: CellEditorKind, draft: TypedDraft) -> Self {
+        Self {
+            presence,
+            content: CellEditorContent::Typed { kind, draft },
+            presence_history: Vec::new(),
+            presence_redo: Vec::new(),
+        }
+    }
+
     pub(crate) fn from_value(
         value: &CellValue,
         description: Option<ColumnEditorDescription>,
     ) -> Self {
         match value {
-            CellValue::Null
-                if description
-                    .is_some_and(|description| description.kind == CellEditorKind::Json) =>
-            {
-                Self::Typed {
-                    kind: CellEditorKind::Json,
-                    draft: TypedDraft::Json(JsonBuffer {
-                        sql_null: true,
-                        ..JsonBuffer::new("null")
-                    }),
-                }
-            }
-            CellValue::Null => Self::Null(TextInput::from("null")),
-            _ => {
-                let input = TextInput::from(value.clipboard_text());
-                match description {
-                    Some(description) => Self::typed(description.kind, input, value),
-                    None => Self::Text(input),
-                }
-            }
+            CellValue::Null => description.map_or_else(
+                || Self::text(CellEditorPresence::Null, TextInput::from("null")),
+                |description| Self::typed_null(description.kind),
+            ),
+            _ => description.map_or_else(
+                || {
+                    Self::text(
+                        CellEditorPresence::Value,
+                        TextInput::from(value.clipboard_text()),
+                    )
+                },
+                |description| Self::typed_from_value(description.kind, value),
+            ),
         }
     }
 
     pub(crate) fn unprovided() -> Self {
-        Self::Unprovided(TextInput::default())
+        Self::text(CellEditorPresence::Unprovided, TextInput::default())
+    }
+
+    pub(crate) fn typed_unprovided(kind: CellEditorKind) -> Self {
+        Self::typed_from_text(CellEditorPresence::Unprovided, kind, "")
+    }
+
+    pub(crate) fn typed_null(kind: CellEditorKind) -> Self {
+        Self::typed_from_text(CellEditorPresence::Null, kind, "")
+    }
+
+    pub(crate) fn presence(&self) -> CellEditorPresence {
+        self.presence.clone()
+    }
+
+    pub(crate) fn is_null(&self) -> bool {
+        self.presence == CellEditorPresence::Null
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_boolean(&self) -> bool {
+        matches!(
+            self.content,
+            CellEditorContent::Typed {
+                kind: CellEditorKind::Boolean,
+                ..
+            }
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn temporal_draft(&self) -> Option<&TemporalDraft> {
+        match &self.content {
+            CellEditorContent::Typed {
+                draft: TypedDraft::Temporal(draft),
+                ..
+            } => Some(draft),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn activate_value(&mut self) {
+        self.presence = CellEditorPresence::Value;
+    }
+
+    pub(crate) fn set_unprovided(&mut self) {
+        self.presence = CellEditorPresence::Unprovided;
+    }
+
+    pub(crate) fn set_null(&mut self) {
+        self.presence = CellEditorPresence::Null;
+    }
+
+    fn snapshot(&self) -> CellEditorSnapshot {
+        let content = match &self.content {
+            CellEditorContent::Text(input) => CellEditorContent::Text(input.without_history()),
+            CellEditorContent::Typed { kind, draft } => CellEditorContent::Typed {
+                kind: *kind,
+                draft: match draft {
+                    TypedDraft::Boolean(input) => TypedDraft::Boolean(input.without_history()),
+                    TypedDraft::Temporal(draft) => {
+                        let mut draft = draft.clone();
+                        draft.input = draft.input.without_history();
+                        TypedDraft::Temporal(draft)
+                    }
+                    TypedDraft::Json(buffer) => TypedDraft::Json(buffer.without_history()),
+                },
+            },
+        };
+        CellEditorSnapshot {
+            presence: self.presence.clone(),
+            content,
+        }
+    }
+
+    fn restore_snapshot(&mut self, snapshot: CellEditorSnapshot) {
+        self.presence = snapshot.presence;
+        self.content = snapshot.content;
+    }
+
+    fn record_presence_transition(&mut self, before: CellEditorSnapshot) {
+        if self.presence_history.len() == 100 {
+            self.presence_history.remove(0);
+        }
+        self.presence_history.push(before);
+        self.presence_redo.clear();
+    }
+
+    pub(crate) fn apply_text_edit(
+        &mut self,
+        edit: crate::model::text_input::TextInputEdit,
+    ) -> bool {
+        if matches!(edit, crate::model::text_input::TextInputEdit::Undo) {
+            return self.undo();
+        }
+        if matches!(edit, crate::model::text_input::TextInputEdit::Redo) {
+            return self.redo();
+        }
+        let before = self.snapshot();
+        let changed = match &mut self.content {
+            CellEditorContent::Text(input) => input.apply(edit),
+            CellEditorContent::Typed { draft, .. } => match draft {
+                TypedDraft::Boolean(input) => input.apply(edit),
+                TypedDraft::Temporal(draft) => match edit {
+                    crate::model::text_input::TextInputEdit::Insert(character) => {
+                        let before = draft.render().to_owned();
+                        draft.insert(character);
+                        draft.render() != before
+                    }
+                    _ => draft.input_mut().apply(edit),
+                },
+                TypedDraft::Json(buffer) => buffer.apply(edit),
+            },
+        };
+        let is_navigation = matches!(
+            edit,
+            crate::model::text_input::TextInputEdit::MoveLeft
+                | crate::model::text_input::TextInputEdit::MoveRight
+                | crate::model::text_input::TextInputEdit::MoveHome
+                | crate::model::text_input::TextInputEdit::MoveEnd
+        );
+        if changed && !is_navigation {
+            self.record_presence_transition(before);
+            self.presence = CellEditorPresence::Value;
+        }
+        changed
+    }
+
+    pub(crate) fn undo(&mut self) -> bool {
+        if let Some(snapshot) = self.presence_history.last().cloned()
+            && self.snapshot().content != snapshot.content
+        {
+            let current = self.snapshot();
+            self.presence_history.pop();
+            self.presence_redo.push(current);
+            self.restore_snapshot(snapshot);
+            return true;
+        }
+        let before = self.snapshot();
+        let changed = match &mut self.content {
+            CellEditorContent::Text(input) => input.undo(),
+            CellEditorContent::Typed { draft, .. } => match draft {
+                TypedDraft::Boolean(input) => input.undo(),
+                TypedDraft::Temporal(draft) => draft.input_mut().undo(),
+                TypedDraft::Json(buffer) => {
+                    buffer.undo();
+                    true
+                }
+            },
+        };
+        if !changed {
+            return false;
+        }
+        if let Some(snapshot) = self.presence_history.last().cloned()
+            && self.snapshot().content == snapshot.content
+        {
+            self.presence_history.pop();
+            self.presence_redo.push(before);
+            self.restore_snapshot(snapshot);
+        }
+        true
+    }
+
+    pub(crate) fn redo(&mut self) -> bool {
+        if let Some(snapshot) = self.presence_redo.last().cloned() {
+            let current = self.snapshot();
+            self.presence_redo.pop();
+            self.presence_history.push(current);
+            self.restore_snapshot(snapshot);
+            return true;
+        }
+        let changed = match &mut self.content {
+            CellEditorContent::Text(input) => input.redo(),
+            CellEditorContent::Typed { draft, .. } => match draft {
+                TypedDraft::Boolean(input) => input.redo(),
+                TypedDraft::Temporal(draft) => draft.input_mut().redo(),
+                TypedDraft::Json(buffer) => {
+                    buffer.redo();
+                    true
+                }
+            },
+        };
+        if !changed {
+            return false;
+        }
+        true
     }
 
     pub(crate) fn input(&self) -> Option<&TextInput> {
         match self {
-            Self::Text(input) => Some(input),
-            Self::Typed { draft, .. } => match draft {
+            Self {
+                content: CellEditorContent::Text(input),
+                ..
+            } => Some(input),
+            Self {
+                content: CellEditorContent::Typed { draft, .. },
+                ..
+            } => match draft {
                 TypedDraft::Boolean(input) => Some(input),
                 TypedDraft::Temporal(draft) => Some(draft.input()),
                 TypedDraft::Json(_) => None,
             },
-            Self::Null(input) => Some(input),
-            Self::Unprovided(_) => None,
         }
     }
 
     pub(crate) fn input_mut(&mut self) -> &mut TextInput {
-        if matches!(self, Self::Unprovided(_)) {
-            *self = Self::Text(TextInput::default());
-        }
-        match self {
-            Self::Text(input) => input,
-            Self::Typed { draft, .. } => match draft {
+        match &mut self.content {
+            CellEditorContent::Text(input) => input,
+            CellEditorContent::Typed { draft, .. } => match draft {
                 TypedDraft::Boolean(input) => input,
                 TypedDraft::Temporal(draft) => draft.input_mut(),
                 TypedDraft::Json(_) => unreachable!("JSON uses its multiline buffer API"),
             },
-            Self::Null(input) | Self::Unprovided(input) => input,
         }
     }
 
     pub(crate) fn json_buffer(&self) -> Option<&JsonBuffer> {
         match self {
-            Self::Typed {
-                draft: TypedDraft::Json(buffer),
+            Self {
+                content:
+                    CellEditorContent::Typed {
+                        draft: TypedDraft::Json(buffer),
+                        ..
+                    },
                 ..
             } => Some(buffer),
             _ => None,
@@ -720,8 +1043,12 @@ impl CellEditorBuffer {
 
     pub(crate) fn json_buffer_mut(&mut self) -> Option<&mut JsonBuffer> {
         match self {
-            Self::Typed {
-                draft: TypedDraft::Json(buffer),
+            Self {
+                content:
+                    CellEditorContent::Typed {
+                        draft: TypedDraft::Json(buffer),
+                        ..
+                    },
                 ..
             } => Some(buffer),
             _ => None,
@@ -730,24 +1057,76 @@ impl CellEditorBuffer {
 
     pub fn value(&self) -> Option<&str> {
         match self {
-            Self::Text(input) | Self::Null(input) => Some(input.value()),
-            Self::Typed { draft, .. } => Some(match draft {
+            Self {
+                content: CellEditorContent::Text(input),
+                ..
+            } => Some(input.value()),
+            Self {
+                content: CellEditorContent::Typed { draft, .. },
+                ..
+            } => Some(match draft {
                 TypedDraft::Boolean(input) => input.value(),
                 TypedDraft::Temporal(draft) => draft.render(),
                 TypedDraft::Json(buffer) => buffer.value(),
             }),
-            Self::Unprovided(_) => None,
         }
     }
 
     pub(crate) fn is_unprovided(&self) -> bool {
-        matches!(self, Self::Unprovided(_))
+        self.presence == CellEditorPresence::Unprovided
+    }
+
+    /// Parse a typed draft without consulting the value that originally populated it.
+    pub(crate) fn typed_value(&self) -> Option<Result<CellValue, String>> {
+        let result = match &self.content {
+            CellEditorContent::Typed { kind, draft } => match (kind, draft) {
+                (CellEditorKind::Boolean, TypedDraft::Boolean(input)) => {
+                    match input.value().trim().to_ascii_lowercase().as_str() {
+                        "true" | "t" => Ok(CellValue::Boolean(true)),
+                        "false" | "f" => Ok(CellValue::Boolean(false)),
+                        _ => Err("invalid boolean".into()),
+                    }
+                }
+                (_, TypedDraft::Temporal(draft)) => draft.parse(),
+                (_, TypedDraft::Json(json)) => json
+                    .validate()
+                    .map(|_| {
+                        if json.is_sql_null() {
+                            CellValue::Null
+                        } else {
+                            CellValue::Text(json.value().to_owned())
+                        }
+                    })
+                    .map_err(|error| {
+                        format!("{} at {}:{}", error.message, error.line, error.column)
+                    }),
+                _ => return None,
+            },
+            CellEditorContent::Text(_) => return None,
+        };
+        Some(result)
+    }
+
+    /// Extract the value represented by the editor's presence state.
+    pub(crate) fn value_for_presence(&self) -> Result<Option<CellValue>, String> {
+        match self.presence {
+            CellEditorPresence::Unprovided => Ok(None),
+            CellEditorPresence::Null => Ok(Some(CellValue::Null)),
+            CellEditorPresence::Value => self
+                .typed_value()
+                .unwrap_or_else(|| Ok(CellValue::Text(self.value().unwrap_or_default().into())))
+                .map(Some),
+        }
     }
 
     pub(crate) fn boolean_selection(&self) -> Option<bool> {
-        let Self::Typed {
-            kind: CellEditorKind::Boolean,
-            draft: TypedDraft::Boolean(input),
+        let Self {
+            content:
+                CellEditorContent::Typed {
+                    kind: CellEditorKind::Boolean,
+                    draft: TypedDraft::Boolean(input),
+                },
+            ..
         } = self
         else {
             return None;
@@ -760,12 +1139,22 @@ impl CellEditorBuffer {
     }
 
     pub(crate) fn set_boolean(&mut self, value: bool) {
-        if let Self::Typed {
-            kind: CellEditorKind::Boolean,
-            draft: TypedDraft::Boolean(input),
+        let before = self.snapshot();
+        if let Self {
+            content:
+                CellEditorContent::Typed {
+                    kind: CellEditorKind::Boolean,
+                    draft: TypedDraft::Boolean(input),
+                },
+            ..
         } = self
         {
-            *input = TextInput::from(if value { "true" } else { "false" });
+            let next = if value { "true" } else { "false" };
+            if input.value() != next {
+                *input = TextInput::from(next);
+                self.presence = CellEditorPresence::Value;
+                self.record_presence_transition(before);
+            }
         }
     }
 
@@ -777,15 +1166,15 @@ impl CellEditorBuffer {
         }
     }
 
-    fn typed(kind: CellEditorKind, input: TextInput, value: &CellValue) -> Self {
+    fn typed_from_value(kind: CellEditorKind, value: &CellValue) -> Self {
         let draft = match (kind, value) {
-            (CellEditorKind::Boolean, _) => TypedDraft::Boolean(input),
+            (CellEditorKind::Boolean, _) => {
+                TypedDraft::Boolean(TextInput::from(value.clipboard_text()))
+            }
             (CellEditorKind::Json, CellValue::Text(value)) => {
-                TypedDraft::Json(JsonBuffer::new(value.clone()))
+                TypedDraft::Json(JsonBuffer::new(value))
             }
-            (CellEditorKind::Json, _) => {
-                TypedDraft::Json(JsonBuffer::new(input.value().to_owned()))
-            }
+            (CellEditorKind::Json, _) => TypedDraft::Json(JsonBuffer::new(value.clipboard_text())),
             (CellEditorKind::Date, CellValue::Date(value)) => {
                 TypedDraft::Temporal(TemporalDraft::date(*value))
             }
@@ -798,14 +1187,47 @@ impl CellEditorBuffer {
             (CellEditorKind::Timestamp, CellValue::Timestamp(value)) => {
                 TypedDraft::Temporal(TemporalDraft::from_timestamp(*value))
             }
-            _ => TypedDraft::Boolean(input),
+            _ => {
+                return Self::typed_from_text(
+                    CellEditorPresence::Value,
+                    kind,
+                    value.clipboard_text(),
+                );
+            }
         };
-        Self::Typed { kind, draft }
+        Self::typed(CellEditorPresence::Value, kind, draft)
+    }
+
+    fn typed_from_text(
+        presence: CellEditorPresence,
+        kind: CellEditorKind,
+        text: impl Into<String>,
+    ) -> Self {
+        let text = text.into();
+        let input = TextInput::from(text.clone());
+        let draft = match kind {
+            CellEditorKind::Boolean => TypedDraft::Boolean(input),
+            CellEditorKind::Json => TypedDraft::Json(JsonBuffer {
+                sql_null: presence == CellEditorPresence::Null,
+                ..JsonBuffer::new(if text.is_empty() { "null" } else { &text })
+            }),
+            CellEditorKind::Date
+            | CellEditorKind::Time
+            | CellEditorKind::DateTime
+            | CellEditorKind::Timestamp => TypedDraft::Temporal(
+                TemporalDraft::from_kind_and_text(kind, text).expect("temporal kind"),
+            ),
+        };
+        Self::typed(presence, kind, draft)
     }
 
     pub(crate) fn temporal_move_to(&mut self, segment: isize) {
-        if let Self::Typed {
-            draft: TypedDraft::Temporal(draft),
+        if let Self {
+            content:
+                CellEditorContent::Typed {
+                    draft: TypedDraft::Temporal(draft),
+                    ..
+                },
             ..
         } = self
         {
@@ -814,33 +1236,60 @@ impl CellEditorBuffer {
     }
 
     pub(crate) fn temporal_shift_month(&mut self, direction: isize) {
-        if let Self::Typed {
-            draft: TypedDraft::Temporal(draft),
+        let before = self.snapshot();
+        if let Self {
+            content:
+                CellEditorContent::Typed {
+                    draft: TypedDraft::Temporal(draft),
+                    ..
+                },
             ..
         } = self
         {
+            let old = draft.render().to_owned();
             draft.shift_month(direction);
+            if draft.render() != old {
+                self.presence = CellEditorPresence::Value;
+                self.record_presence_transition(before);
+            }
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn temporal_insert(&mut self, character: char) {
-        if let Self::Typed {
-            draft: TypedDraft::Temporal(draft),
+        let before = self.snapshot();
+        if let Self {
+            content:
+                CellEditorContent::Typed {
+                    draft: TypedDraft::Temporal(draft),
+                    ..
+                },
             ..
         } = self
         {
+            let old = draft.render().to_owned();
             draft.insert(character);
+            if draft.render() != old {
+                self.presence = CellEditorPresence::Value;
+                self.record_presence_transition(before);
+            }
         }
     }
 
-    pub(crate) fn temporal_parse(&self) -> Option<Result<CellValue, String>> {
-        match self {
-            Self::Typed {
-                draft: TypedDraft::Temporal(draft),
-                ..
-            } => Some(draft.parse()),
-            _ => None,
+    pub(crate) fn replace_json_value(&mut self, value: String) -> bool {
+        let before = self.snapshot();
+        let Some(buffer) = self.json_buffer_mut() else {
+            return false;
+        };
+        if buffer.value() == value {
+            return false;
         }
+        buffer.replace_value(value);
+        if self.presence != CellEditorPresence::Value {
+            self.presence = CellEditorPresence::Value;
+            self.record_presence_transition(before);
+        }
+        true
     }
 }
 
@@ -925,8 +1374,8 @@ mod tests {
     use chrono::{DateTime, NaiveDate, NaiveTime};
 
     use super::{
-        CellEditorBuffer, CellEditorKind, JsonBuffer, JsonTokenKind, TemporalDraft,
-        classify_column_type, format_json, validate_json,
+        CellEditorBuffer, CellEditorContent, CellEditorKind, CellEditorPresence, JsonBuffer,
+        JsonTokenKind, TemporalDraft, classify_column_type, format_json, validate_json,
     };
 
     #[test]
@@ -1023,7 +1472,7 @@ mod tests {
         buffer.temporal_move_to(1);
         buffer.temporal_insert('9');
         assert_eq!(buffer.value(), Some("2026-98-28"));
-        assert!(!matches!(buffer, CellEditorBuffer::Text(_)));
+        assert!(matches!(buffer.content, CellEditorContent::Typed { .. }));
     }
 
     #[test]
@@ -1101,15 +1550,27 @@ mod tests {
         let description = classify_column_type(DatabaseKind::Postgres, "text");
         assert_eq!(
             CellEditorBuffer::from_value(&CellValue::Text("NULL".into()), description),
-            CellEditorBuffer::Text(TextInput::from("NULL"))
+            CellEditorBuffer {
+                presence: CellEditorPresence::Value,
+                content: CellEditorContent::Text(TextInput::from("NULL")),
+                ..CellEditorBuffer::default()
+            }
         );
         assert_eq!(
             CellEditorBuffer::from_value(&CellValue::Null, description),
-            CellEditorBuffer::Null(TextInput::from("null"))
+            CellEditorBuffer {
+                presence: CellEditorPresence::Null,
+                content: CellEditorContent::Text(TextInput::from("null")),
+                ..CellEditorBuffer::default()
+            }
         );
         assert_eq!(
             CellEditorBuffer::unprovided(),
-            CellEditorBuffer::Unprovided(TextInput::default())
+            CellEditorBuffer {
+                presence: CellEditorPresence::Unprovided,
+                content: CellEditorContent::Text(TextInput::default()),
+                ..CellEditorBuffer::default()
+            }
         );
     }
 
@@ -1118,6 +1579,55 @@ mod tests {
         let mut unprovided = CellEditorBuffer::unprovided();
         unprovided.input_mut().insert('x');
         assert_eq!(unprovided.value(), Some("x"));
+    }
+
+    #[test]
+    fn semantic_text_edit_activates_presence_but_navigation_and_noop_do_not() {
+        use crate::model::text_input::TextInputEdit;
+
+        let mut input = CellEditorBuffer::unprovided();
+        input.apply_text_edit(TextInputEdit::MoveRight);
+        assert_eq!(input.presence(), CellEditorPresence::Unprovided);
+        input.apply_text_edit(TextInputEdit::Backspace);
+        assert_eq!(input.presence(), CellEditorPresence::Unprovided);
+        input.apply_text_edit(TextInputEdit::Insert('x'));
+        assert_eq!(input.presence(), CellEditorPresence::Value);
+    }
+
+    #[test]
+    fn cell_undo_and_redo_restore_presence_and_content() {
+        use crate::model::text_input::TextInputEdit;
+
+        let mut input = CellEditorBuffer::typed_unprovided(CellEditorKind::Boolean);
+        input.apply_text_edit(TextInputEdit::Insert('t'));
+        assert_eq!(input.presence(), CellEditorPresence::Value);
+        assert_eq!(input.value(), Some("t"));
+        input.undo();
+        assert_eq!(input.presence(), CellEditorPresence::Unprovided);
+        assert_eq!(input.value(), Some(""));
+        input.redo();
+        assert_eq!(input.presence(), CellEditorPresence::Value);
+    }
+
+    #[test]
+    fn null_stays_null_until_an_actual_mutation() {
+        use crate::model::text_input::TextInputEdit;
+
+        let mut input = CellEditorBuffer::typed_null(CellEditorKind::Date);
+        input.temporal_move_to(1);
+        input.apply_text_edit(TextInputEdit::MoveRight);
+        assert_eq!(input.presence(), CellEditorPresence::Null);
+        input.temporal_insert('9');
+        assert_eq!(input.presence(), CellEditorPresence::Value);
+    }
+
+    #[test]
+    fn temporal_month_navigation_only_activates_when_date_changes() {
+        let mut input = CellEditorBuffer::typed_unprovided(CellEditorKind::Date);
+        input.temporal_move_to(1);
+        assert_eq!(input.presence(), CellEditorPresence::Unprovided);
+        input.temporal_shift_month(1);
+        assert_eq!(input.presence(), CellEditorPresence::Value);
     }
 
     #[test]
@@ -1143,5 +1653,90 @@ mod tests {
         assert_eq!(value.boolean_selection(), Some(true));
         value.move_boolean(-1);
         assert_eq!(value.boolean_selection(), Some(false));
+    }
+
+    #[test]
+    fn typed_unprovided_and_null_retain_editor_kind_without_becoming_values() {
+        for kind in [
+            CellEditorKind::Boolean,
+            CellEditorKind::Date,
+            CellEditorKind::Time,
+            CellEditorKind::DateTime,
+            CellEditorKind::Timestamp,
+            CellEditorKind::Json,
+        ] {
+            let mut unprovided = CellEditorBuffer::typed_unprovided(kind);
+            assert_eq!(unprovided.presence(), CellEditorPresence::Unprovided);
+            assert!(!unprovided.is_boolean() || kind == CellEditorKind::Boolean);
+            assert!(unprovided.input().is_some() || kind == CellEditorKind::Json);
+            assert_eq!(unprovided.presence(), CellEditorPresence::Unprovided);
+            if kind != CellEditorKind::Json {
+                let _ = unprovided.input_mut();
+                assert_eq!(unprovided.presence(), CellEditorPresence::Unprovided);
+            }
+
+            let null = CellEditorBuffer::typed_null(kind);
+            assert_eq!(null.presence(), CellEditorPresence::Null);
+            assert!(
+                null.temporal_draft().is_some()
+                    || !matches!(
+                        kind,
+                        CellEditorKind::Date
+                            | CellEditorKind::Time
+                            | CellEditorKind::DateTime
+                            | CellEditorKind::Timestamp
+                    )
+            );
+        }
+    }
+
+    #[test]
+    fn populated_typed_values_keep_existing_drafts_and_presence() {
+        let value = CellValue::Date(NaiveDate::from_ymd_opt(2026, 8, 28).unwrap());
+        let buffer = CellEditorBuffer::from_value(
+            &value,
+            classify_column_type(DatabaseKind::Postgres, "date"),
+        );
+        assert_eq!(buffer.presence(), CellEditorPresence::Value);
+        assert_eq!(buffer.value(), Some("2026-08-28"));
+        assert!(buffer.temporal_draft().is_some());
+    }
+
+    #[test]
+    fn presence_aware_extraction_parses_typed_values_without_an_old_cell() {
+        let mut boolean = CellEditorBuffer::typed_unprovided(CellEditorKind::Boolean);
+        boolean.set_boolean(false);
+        assert_eq!(
+            boolean.value_for_presence().unwrap(),
+            Some(CellValue::Boolean(false))
+        );
+
+        let null = CellEditorBuffer::typed_null(CellEditorKind::Timestamp);
+        assert_eq!(null.value_for_presence().unwrap(), Some(CellValue::Null));
+
+        let json_null = CellEditorBuffer::typed_unprovided(CellEditorKind::Json);
+        assert_eq!(json_null.value_for_presence().unwrap(), None);
+    }
+
+    #[test]
+    fn typed_temporal_and_json_extraction_preserves_precision_and_null_literal() {
+        let timestamp = DateTime::parse_from_rfc3339("2026-08-28T10:20:31.120400+05:30").unwrap();
+        let timestamp = CellEditorBuffer::from_value(
+            &CellValue::Timestamp(timestamp),
+            classify_column_type(DatabaseKind::Postgres, "timestamptz"),
+        );
+        assert_eq!(
+            timestamp.value_for_presence().unwrap(),
+            Some(CellValue::Timestamp(
+                DateTime::parse_from_rfc3339("2026-08-28T10:20:31.120400+05:30").unwrap()
+            ))
+        );
+
+        let json = CellEditorBuffer::typed_unprovided(CellEditorKind::Json);
+        assert_eq!(
+            json.value_for_presence().unwrap(),
+            None,
+            "unprovided JSON must not become the JSON literal null"
+        );
     }
 }

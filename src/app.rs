@@ -2180,6 +2180,9 @@ impl App {
                         | Action::RelationEditBooleanMove(_)
                         | Action::RelationEditBooleanToggle
                         | Action::RelationEditBooleanSet(_)
+                        | Action::RelationEditSetNull
+                        | Action::RelationEditRestoreDefault
+                        | Action::RelationEditUseValue
                         | Action::RelationEditInsert(_)
                         | Action::RelationEditBackspace
                         | Action::RelationEditDeletePreviousWord
@@ -2466,11 +2469,11 @@ impl App {
                                     if edit.rows.get(state.row).is_some_and(|row| {
                                         row.id == row_id && state.column == column
                                     }) => match &mut state.input {
-                                    crate::model::cell_editor::CellEditorBuffer::Typed {
+                                    crate::model::cell_editor::CellEditorBuffer { content: crate::model::cell_editor::CellEditorContent::Typed {
                                         draft:
                                             crate::model::cell_editor::TypedDraft::Temporal(draft),
                                         ..
-                                    } => Some(draft.input_mut()),
+                                    }, .. } => Some(draft.input_mut()),
                                     _ => None,
                                 },
                                 _ => None,
@@ -2626,11 +2629,11 @@ impl App {
                                     if edit.rows.get(state.row).is_some_and(|row| {
                                         row.id == row_id && state.column == column
                                     }) => match &mut state.input {
-                                    crate::model::cell_editor::CellEditorBuffer::Typed {
+                                    crate::model::cell_editor::CellEditorBuffer { content: crate::model::cell_editor::CellEditorContent::Typed {
                                         draft:
                                             crate::model::cell_editor::TypedDraft::Temporal(draft),
                                         ..
-                                    } => Some(draft.input_mut()),
+                                    }, .. } => Some(draft.input_mut()),
                                     _ => None,
                                 },
                                 _ => None,
@@ -9649,6 +9652,18 @@ impl App {
                 self.relation_edit_boolean(|input| input.set_boolean(value));
                 Vec::new()
             }
+            Action::RelationEditSetNull => {
+                self.relation_edit_presence(crate::model::cell_editor::CellEditorPresence::Null);
+                Vec::new()
+            }
+            Action::RelationEditRestoreDefault => {
+                self.relation_edit_restore_default();
+                Vec::new()
+            }
+            Action::RelationEditUseValue => {
+                self.relation_edit_presence(crate::model::cell_editor::CellEditorPresence::Value);
+                Vec::new()
+            }
             Action::RelationEditTemporalMove(direction) => {
                 self.relation_edit_boolean(|input| input.temporal_move_to(direction));
                 Vec::new()
@@ -12865,29 +12880,36 @@ impl App {
                 row_id,
                 column,
             } => {
-                if let Some(input) = self
-                    .tabs
-                    .get_mut(self.active_tab)
-                    .and_then(|tab| match tab {
-                        WorkspaceTab::Relation(tab) if tab.id == *tab_id => tab.edit.as_mut(),
-                        _ => None,
-                    })
-                    .and_then(|edit| match &mut edit.mode {
-                        RelationGridMode::EditCell(state)
-                            if edit.rows.get(state.row).is_some_and(|row| {
-                                row.id == *row_id && state.column == *column
-                            }) =>
-                        {
-                            match &mut state.input {
-                                crate::model::cell_editor::CellEditorBuffer::Typed {
-                                    draft: crate::model::cell_editor::TypedDraft::Temporal(draft),
-                                    ..
-                                } => Some(draft.input_mut()),
-                                _ => None,
+                if let Some(input) =
+                    self.tabs
+                        .get_mut(self.active_tab)
+                        .and_then(|tab| match tab {
+                            WorkspaceTab::Relation(tab) if tab.id == *tab_id => tab.edit.as_mut(),
+                            _ => None,
+                        })
+                        .and_then(|edit| match &mut edit.mode {
+                            RelationGridMode::EditCell(state)
+                                if edit.rows.get(state.row).is_some_and(|row| {
+                                    row.id == *row_id && state.column == *column
+                                }) =>
+                            {
+                                match &mut state.input {
+                                    crate::model::cell_editor::CellEditorBuffer {
+                                        content:
+                                            crate::model::cell_editor::CellEditorContent::Typed {
+                                                draft:
+                                                    crate::model::cell_editor::TypedDraft::Temporal(
+                                                        draft,
+                                                    ),
+                                                ..
+                                            },
+                                        ..
+                                    } => Some(draft.input_mut()),
+                                    _ => None,
+                                }
                             }
-                        }
-                        _ => None,
-                    })
+                            _ => None,
+                        })
                 {
                     input.clear_selection();
                 }
@@ -14783,7 +14805,12 @@ impl App {
             })
         });
         let input = if is_unprovided {
-            crate::model::cell_editor::CellEditorBuffer::unprovided()
+            description.map_or_else(
+                crate::model::cell_editor::CellEditorBuffer::unprovided,
+                |description| {
+                    crate::model::cell_editor::CellEditorBuffer::typed_unprovided(description.kind)
+                },
+            )
         } else {
             crate::model::cell_editor::CellEditorBuffer::from_value(value, description)
         };
@@ -14801,13 +14828,9 @@ impl App {
         if let Some(edit) = self.relation_session_mut()
             && let RelationGridMode::EditCell(state) = &mut edit.mode
         {
-            if let Some(json) = state.input.json_buffer_mut() {
-                json.insert(character);
-            } else if state.input.temporal_parse().is_some() {
-                state.input.temporal_insert(character);
-            } else {
-                state.input.input_mut().insert(character);
-            }
+            state
+                .input
+                .apply_text_edit(crate::model::text_input::TextInputEdit::Insert(character));
         }
     }
 
@@ -14866,27 +14889,7 @@ impl App {
         if let Some(edit_session) = self.relation_session_mut()
             && let RelationGridMode::EditCell(state) = &mut edit_session.mode
         {
-            if let Some(json) = state.input.json_buffer_mut() {
-                match edit {
-                    crate::model::text_input::TextInputEdit::Insert(character) => {
-                        json.insert(character)
-                    }
-                    crate::model::text_input::TextInputEdit::Backspace => json.backspace(),
-                    crate::model::text_input::TextInputEdit::Delete => json.delete(),
-                    crate::model::text_input::TextInputEdit::MoveLeft => json.move_left(),
-                    crate::model::text_input::TextInputEdit::MoveRight => json.move_right(),
-                    crate::model::text_input::TextInputEdit::MoveHome => json.move_home(),
-                    crate::model::text_input::TextInputEdit::MoveEnd => json.move_end(),
-                    crate::model::text_input::TextInputEdit::Undo => json.undo(),
-                    crate::model::text_input::TextInputEdit::Redo => json.redo(),
-                    crate::model::text_input::TextInputEdit::DeletePreviousWord
-                    | crate::model::text_input::TextInputEdit::DeleteToStart
-                    | crate::model::text_input::TextInputEdit::Clear => {}
-                }
-            } else {
-                let input = state.input.input_mut();
-                input.apply(edit);
-            }
+            state.input.apply_text_edit(edit);
         }
     }
 
@@ -14909,7 +14912,7 @@ impl App {
             && let Some(json) = state.input.json_buffer_mut()
         {
             if let Ok(formatted) = json.format() {
-                json.replace_value(formatted);
+                state.input.replace_json_value(formatted);
                 state.error = None;
             } else {
                 state.error = json
@@ -14928,6 +14931,38 @@ impl App {
             && let RelationGridMode::EditCell(state) = &mut edit.mode
         {
             operation(&mut state.input);
+        }
+    }
+
+    fn relation_edit_presence(&mut self, presence: crate::model::cell_editor::CellEditorPresence) {
+        if let Some(edit) = self.relation_session_mut()
+            && let RelationGridMode::EditCell(state) = &mut edit.mode
+        {
+            match presence {
+                crate::model::cell_editor::CellEditorPresence::Null => state.input.set_null(),
+                crate::model::cell_editor::CellEditorPresence::Value => {
+                    state.input.activate_value()
+                }
+                crate::model::cell_editor::CellEditorPresence::Unprovided => {
+                    state.input.set_unprovided()
+                }
+            }
+            state.error = None;
+        }
+    }
+
+    fn relation_edit_restore_default(&mut self) {
+        if let Some(edit) = self.relation_session_mut()
+            && let RelationGridMode::EditCell(state) = &mut edit.mode
+            && edit.rows.get(state.row).is_some_and(|row| {
+                matches!(
+                    row.state,
+                    crate::model::relation_edit::EditableRowState::InsertDraft
+                )
+            })
+        {
+            state.input.set_unprovided();
+            state.error = None;
         }
     }
 
@@ -14954,33 +14989,33 @@ impl App {
         else {
             return Vec::new();
         };
-        if state.input.is_unprovided() {
-            if let Some(edit) = self.relation_session_mut() {
-                edit.mode = RelationGridMode::Browse;
+        let value = match state.input.presence() {
+            crate::model::cell_editor::CellEditorPresence::Unprovided => {
+                if let Some(edit) = self.relation_session_mut() {
+                    let is_insert = edit.rows.get(state.row).is_some_and(|row| {
+                        matches!(
+                            row.state,
+                            crate::model::relation_edit::EditableRowState::InsertDraft
+                        )
+                    });
+                    if is_insert {
+                        edit.restore_unprovided(state.row, state.column);
+                        edit.mode = RelationGridMode::Browse;
+                    }
+                }
+                return Vec::new();
             }
-            return Vec::new();
-        }
-        let value = match state
-            .input
-            .json_buffer()
-            .map(|json| {
-                json.validate()
-                    .map(|_| {
-                        if json.is_sql_null() && json.value() == "null" {
-                            crate::db::value::CellValue::Null
-                        } else {
-                            crate::db::value::CellValue::Text(json.value().to_owned())
-                        }
-                    })
-                    .map_err(|error| {
-                        format!("{} at {}:{}", error.message, error.line, error.column)
-                    })
-            })
-            .unwrap_or_else(|| {
-                state.input.temporal_parse().unwrap_or_else(|| {
+            crate::model::cell_editor::CellEditorPresence::Null => state
+                .input
+                .value_for_presence()
+                .and_then(|value| value.ok_or_else(|| "null value was not provided".into())),
+            crate::model::cell_editor::CellEditorPresence::Value => {
+                state.input.typed_value().unwrap_or_else(|| {
                     parse_relation_value(state.input.value().unwrap_or(""), &old, &type_name)
                 })
-            }) {
+            }
+        };
+        let value = match value {
             Ok(value) => value,
             Err(message) => {
                 if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
@@ -15751,12 +15786,9 @@ impl App {
         edit.insert_row(row, vec![crate::db::value::CellValue::Null; columns]);
         tab.grid.selected_row = row;
         tab.grid.selected_column = 0;
-        edit.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
-            row,
-            column: 0,
-            input: crate::model::cell_editor::CellEditorBuffer::unprovided(),
-            error: None,
-        }));
+        // Drop the tab/edit borrow before reopening through the canonical cell path.
+        let _ = tab;
+        self.relation_edit_cell();
         Vec::new()
     }
     fn relation_undo(&mut self) -> Vec<Command> {
@@ -18122,12 +18154,12 @@ mod tests {
         let result = ResultSet {
             columns: vec![
                 crate::db::query::ColumnMeta {
-                    name: "id".into(),
-                    type_name: "bigint".into(),
-                },
-                crate::db::query::ColumnMeta {
                     name: "name".into(),
                     type_name: "text".into(),
+                },
+                crate::db::query::ColumnMeta {
+                    name: "id".into(),
+                    type_name: "bigint".into(),
                 },
             ],
             rows: Vec::new(),
@@ -18165,10 +18197,11 @@ mod tests {
             },
         });
         let mut edit = RelationEditSession::from_rows(Vec::new());
-        let first = edit.insert_row(0, vec![CellValue::Null, CellValue::Text("one".into())]);
-        edit.update_cell(0, 1, CellValue::Text("one".into()));
-        let second = edit.insert_row(1, vec![CellValue::Null, CellValue::Text("two".into())]);
-        edit.update_cell(1, 1, CellValue::Text("two".into()));
+        let first = edit.insert_row(0, vec![CellValue::Boolean(false), CellValue::Null]);
+        edit.update_cell(0, 0, CellValue::Boolean(false));
+        edit.update_cell(0, 1, CellValue::Null);
+        let second = edit.insert_row(1, vec![CellValue::Text("two".into()), CellValue::Null]);
+        edit.update_cell(1, 0, CellValue::Text("two".into()));
         assert_ne!(first, second);
         tab.edit = Some(edit);
         tab.ddl = RelationLoad::Ready(OwnedSnapshot {
@@ -18189,8 +18222,12 @@ mod tests {
                     && matches!(
                         &request.operation,
                         RelationMutation::InsertRow(mutation)
-                            if mutation.columns == vec![1]
-                                && mutation.values == vec![InputValue::Value(CellValue::Text("one".into()))]
+                            if mutation.columns == vec![1, 0]
+                                && mutation.values
+                                    == vec![
+                                        InputValue::Value(CellValue::Boolean(false)),
+                                        InputValue::Null,
+                                    ]
                     ) =>
             {
                 request.clone()
@@ -18200,7 +18237,7 @@ mod tests {
         let second_commands = app.update(Action::RelationMutationSucceeded {
             request: first_request.clone(),
             result: MutationResult::Inserted {
-                row: vec![CellValue::Integer(1), CellValue::Text("one".into())],
+                row: vec![CellValue::Boolean(false), CellValue::Integer(1)],
                 version: None,
             },
         });
@@ -18220,7 +18257,7 @@ mod tests {
         let commit_commands = app.update(Action::RelationMutationSucceeded {
             request: second_request,
             result: MutationResult::Inserted {
-                row: vec![CellValue::Integer(2), CellValue::Text("two".into())],
+                row: vec![CellValue::Text("two".into()), CellValue::Integer(2)],
                 version: None,
             },
         });
