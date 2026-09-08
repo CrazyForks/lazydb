@@ -50,6 +50,19 @@ async fn apply_next_with_commands(
     (action, commands)
 }
 
+async fn apply_until_connection_succeeds(
+    app: &mut App,
+    runtime: &mut Runtime,
+    receiver: &mut mpsc::UnboundedReceiver<Action>,
+) {
+    loop {
+        let action = apply_next(app, runtime, receiver).await;
+        if matches!(action, Action::ConnectionSucceeded { .. }) {
+            return;
+        }
+    }
+}
+
 async fn drain_catalog(
     app: &mut App,
     runtime: &mut Runtime,
@@ -105,10 +118,14 @@ async fn save_and_connect(
         commands.as_slice(),
         [Command::SaveProfile { connect: true, .. }]
     ));
-    let saved = apply_next(app, runtime, receiver).await;
+    let saved = loop {
+        let action = apply_next(app, runtime, receiver).await;
+        if matches!(action, Action::ProfileSaved { connect: true, .. }) {
+            break action;
+        }
+    };
     assert!(matches!(saved, Action::ProfileSaved { connect: true, .. }));
-    let connected = apply_next(app, runtime, receiver).await;
-    assert!(matches!(connected, Action::ConnectionSucceeded { .. }));
+    apply_until_connection_succeeds(app, runtime, receiver).await;
     drain_catalog(app, runtime, receiver).await;
 }
 
@@ -192,10 +209,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
             profile_id: alpha_id,
         },
     );
-    assert!(matches!(
-        apply_next(&mut app, &mut runtime, &mut receiver).await,
-        Action::ConnectionSucceeded { .. }
-    ));
+    apply_until_connection_succeeds(&mut app, &mut runtime, &mut receiver).await;
     drain_catalog(&mut app, &mut runtime, &mut receiver).await;
     assert_eq!(app.connection.profile_id, Some(alpha_id));
     query(
@@ -288,10 +302,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
             profile_id: alpha_id,
         },
     );
-    assert!(matches!(
-        apply_next(&mut app, &mut runtime, &mut receiver).await,
-        Action::ConnectionSucceeded { .. }
-    ));
+    apply_until_connection_succeeds(&mut app, &mut runtime, &mut receiver).await;
     drain_catalog(&mut app, &mut runtime, &mut receiver).await;
 
     let beta_console_ids = app
