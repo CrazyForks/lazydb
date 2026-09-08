@@ -195,7 +195,7 @@ not expose every session. Filtering applies to the bounded visible snapshot.
 | `e` | Edit the directly selected PostgreSQL catalog object when supported |
 | `c/x` | Connect/disconnect selected profile |
 | `d` | Request profile deletion |
-| `r` | Refresh catalog |
+| `r` | Refresh the selected catalog target; for a relation or relation child, re-resolve the current PostgreSQL identity before reloading its children |
 | `p` | Open relation Data preview |
 | `D` | Open relation DDL |
 | `s` | Open Profile Access |
@@ -212,6 +212,14 @@ not shown for unsupported drivers, synthetic/status rows, or objects without
 an adapter-provided create/edit capability. The Catalog Editor picker, form,
 preview, and busy pages expose their own contextual rows; busy `Esc` dismisses
 the editor and late responses are rejected by request identity and stale checks.
+
+Explorer refresh is target-scoped. Refreshing a profile, schema, or relation
+does not discard unrelated catalog rows; previous rows remain visible as stale
+while the replacement request is pending. A relation refresh uses the stored
+native identity where the adapter supports it, so a PostgreSQL table renamed
+outside LazyDB can be rebound to its current name before its children load. If
+the identity cannot be resolved, LazyDB keeps the existing snapshot and reports
+that the object is unavailable or inaccessible.
 
 ## Catalog Editor
 

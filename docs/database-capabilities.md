@@ -31,6 +31,14 @@ PostgreSQL, MySQL, and SQLite advertise lazy children. SQLite opens a pool with
 exactly one physical connection; SQL Server loads its supported catalog groups
 without lazy child requests.
 
+PostgreSQL relation catalog identities include the database, schema, object name,
+and `pg_class.oid`. The OID is used only to reconcile a stale relation after an
+external rename; the adapter still checks the active database, catalog scope,
+relation kind, and permissions before returning the replacement entry. OIDs are
+not permanent identifiers: after a relation is dropped, an OID may be reused,
+so an unavailable or out-of-scope result is treated as a failed reconciliation
+rather than a rename.
+
 SQL Server catalog reads are scoped to databases and schemas and use native
 `sys.*` catalog views. SQL Server does not currently use lazy child requests.
 The adapter gates connections at SQL Server 2012, supports SQL username/password
@@ -91,6 +99,29 @@ not write database state.
 
 ## Relations
 
+### Refresh And Catalog Synchronization
+
+Explorer `r` refreshes the selected catalog target and advances the catalog
+epoch. Requests from an older epoch, duplicate pages, malformed pages, and
+responses for another connection are ignored. Existing rows remain visible as
+stale until the replacement page succeeds; a failed refresh does not erase the
+last known snapshot.
+
+After SQL changes that can alter catalog structure, LazyDB conservatively
+refreshes the active profile's database catalog. The refresh is deduplicated,
+completion data is rebuilt from accepted pages, and the UI reports either
+`Catalog synchronized` or `SQL succeeded, but catalog synchronization failed;
+refresh to retry`. Ambiguous or multi-statement SQL is not used to infer a
+smaller target. Catalog synchronization does not claim that unrelated external
+changes have been detected; use Explorer `r` when another client changes the
+database.
+
+For a selected PostgreSQL relation or relation child, `r` first resolves the
+stored OID. A successful resolution replaces the stale catalog entry, rebinds
+an open relation tab in place, invalidates its pending requests, and reloads
+the relation children. This path preserves the tab's view and local state, but
+a dirty relation remains write-blocked until its new identity is verified.
+
 Opening a table, view, materialized view, or supported relation child creates or
 activates a relation workspace tab. It has independent `Data` and `DDL` pages.
 Data is an adapter-owned read-only preview with a hard `LIMIT 500`; callers do
@@ -111,6 +142,11 @@ Driver-specific DDL behavior is:
   `pg_get_indexdef`, and `pg_get_triggerdef`. It assembles tables, views, and
   materialized views with columns, identity/default/generated clauses,
   constraints, comments, indexes, and non-internal triggers where available.
+- PostgreSQL relation rename reconciliation requires access to `pg_class` and
+  `pg_namespace` for the stored OID and the active profile's selected schema.
+  It does not require database or role creation privileges. A dropped object,
+  an OID reused for another relation kind, or an object hidden by permissions
+  is not treated as a rename.
 - Oracle MySQL reads the main table/view and each trigger through `SHOW CREATE`,
   discovers triggers through `information_schema`, and assembles the native
   object statement with sorted trigger statements. MariaDB is not part of this

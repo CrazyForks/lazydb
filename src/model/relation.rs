@@ -217,6 +217,17 @@ impl RelationTab {
         self.ddl = mutation_stale(std::mem::replace(&mut self.ddl, RelationLoad::Empty));
         self.stale_native_identity |= native_identity_changed;
     }
+
+    pub fn rebind_descriptor(&mut self, descriptor: RelationDescriptor, stale_edits: bool) {
+        self.descriptor = descriptor;
+        self.generation = self.generation.saturating_add(1);
+        self.data = mutation_stale(std::mem::replace(&mut self.data, RelationLoad::Empty));
+        self.ddl = mutation_stale(std::mem::replace(&mut self.ddl, RelationLoad::Empty));
+        self.stale_native_identity = stale_edits;
+        if stale_edits {
+            self.transaction_generation = self.transaction_generation.saturating_add(1);
+        }
+    }
     pub fn provenance(
         &self,
         view: RelationView,

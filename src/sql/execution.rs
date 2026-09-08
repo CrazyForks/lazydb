@@ -27,6 +27,7 @@ pub struct ExecutionDraft {
     pub risks: Vec<SqlRisk>,
     pub transaction_mode: TransactionMode,
     pub transaction_state: TransactionState,
+    pub catalog_change_impact: crate::sql::CatalogChangeImpact,
 }
 
 impl ExecutionDraft {
@@ -45,6 +46,7 @@ impl ExecutionDraft {
         transaction_state: TransactionState,
     ) -> Self {
         let analysis = classify_sql(&sql, dialect);
+        let catalog_change_impact = crate::sql::extract_catalog_change_impact(&sql, dialect);
         Self {
             console_id,
             query_generation,
@@ -60,6 +62,7 @@ impl ExecutionDraft {
             risks: analysis.risks,
             transaction_mode,
             transaction_state,
+            catalog_change_impact,
         }
     }
 

@@ -483,6 +483,26 @@ impl ExplorerState {
         }
     }
 
+    pub fn replace_catalog_entry(
+        &mut self,
+        old: &crate::db::catalog::CatalogId,
+        entry: crate::db::catalog::CatalogEntry,
+    ) -> Result<Vec<crate::db::catalog::CatalogId>, String> {
+        let profile_id = old.profile_id();
+        let fallback = self.normalized.selection_fallback_chain();
+        let profile = self
+            .normalized
+            .profiles
+            .get_mut(&profile_id)
+            .ok_or_else(|| format!("catalog profile {profile_id} is unavailable"))?;
+        let removed = profile
+            .catalog
+            .replace_entry(old, entry)
+            .map_err(|error| error.to_string())?;
+        self.normalized.reconcile_after_catalog_change(fallback);
+        Ok(removed)
+    }
+
     pub fn apply_catalog_selection(&mut self, id: ExplorerNodeId) {
         self.normalized.selected = Some(id);
         self.normalized.ensure_selected_visible();

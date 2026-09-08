@@ -155,6 +155,85 @@ fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
+#[tokio::test]
+async fn postgres_relation_identity_resolves_oid_after_rename() {
+    let Ok(url) = std::env::var("LAZYDB_TEST_POSTGRES_URL") else {
+        eprintln!(
+            "skipping PostgreSQL relation identity regression: LAZYDB_TEST_POSTGRES_URL is not set"
+        );
+        return;
+    };
+    let imported = import_connection_url(&url, Some("postgres-relation-identity")).unwrap();
+    let profile_id = imported.profile.id;
+    let database =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap();
+    let database_name = database.probe().await.unwrap().database;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let schema = format!("lazydb_identity_{suffix}");
+    let old_name = format!("before_{suffix}");
+    let new_name = format!("after_{suffix}");
+    let qschema = quote_identifier(&schema);
+    let qold = quote_identifier(&old_name);
+    let qnew = quote_identifier(&new_name);
+    database
+        .execute(&format!(
+            "CREATE SCHEMA {qschema}; CREATE TABLE {qschema}.{qold} (id integer)"
+        ))
+        .await
+        .unwrap();
+    let mut profile = imported.profile.clone();
+    profile.catalog_scope = test_scope(&database_name, &schema);
+    let scoped = DatabaseConnection::connect(&profile, imported.transient_password.as_ref())
+        .await
+        .unwrap();
+    let stale = find_relation(
+        &scoped,
+        profile_id,
+        &profile.catalog_scope,
+        &old_name,
+        CatalogKind::Table,
+    )
+    .await;
+    scoped
+        .execute(&format!("ALTER TABLE {qschema}.{qold} RENAME TO {qnew}"))
+        .await
+        .unwrap();
+
+    let resolved = scoped
+        .resolve_relation_identity(&stale)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.qualified_name.object, new_name);
+    assert_eq!(
+        resolved.qualified_name.schema.as_deref(),
+        Some(schema.as_str())
+    );
+    assert_eq!(resolved.id.native_path[2], new_name);
+    assert!(
+        scoped
+            .preview_relation(
+                &stale,
+                &Default::default(),
+                PageRequest::first(PageSize::Ten)
+            )
+            .await
+            .is_err()
+    );
+
+    scoped.close().await;
+    database.close().await;
+    let cleanup =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap()
+            .execute(&format!("DROP SCHEMA IF EXISTS {qschema} CASCADE"))
+            .await;
+    cleanup.unwrap();
+}
+
 fn count_rows(outcome: &lazydb::db::query::QueryOutcome) -> i64 {
     match &outcome.result_sets.last().unwrap().rows[0][0] {
         CellValue::Integer(value) => *value,

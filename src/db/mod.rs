@@ -458,6 +458,16 @@ impl DatabaseConnection {
         }
     }
 
+    pub async fn resolve_relation_identity(
+        &self,
+        relation: &CatalogId,
+    ) -> Result<Option<catalog::CatalogEntry>, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => adapter.resolve_relation_identity(relation).await,
+            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+        }
+    }
+
     pub async fn load_catalog_object_definition(
         &self,
         request: &CatalogObjectDefinitionRequest,

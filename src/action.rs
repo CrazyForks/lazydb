@@ -13,8 +13,8 @@ use crate::db::catalog_mutation::{
 use crate::db::{
     ErrorCategory, ServerInfo,
     catalog::{
-        CatalogCapabilities, CatalogDiscovery, CatalogPage, CatalogRequest, CatalogRequestKey,
-        CatalogSearchPage, CatalogSearchRequest, CatalogTarget,
+        CatalogCapabilities, CatalogDiscovery, CatalogEntry, CatalogId, CatalogPage,
+        CatalogRequest, CatalogRequestKey, CatalogSearchPage, CatalogSearchRequest, CatalogTarget,
     },
     catalog_drop::{CatalogDropError, CatalogDropPlan, CatalogDropRequest},
     query::QueryOutcome,
@@ -774,6 +774,21 @@ pub enum Action {
         category: ErrorCategory,
         message: String,
     },
+    CatalogRelationResolved {
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+        request_id: u64,
+        relation: CatalogId,
+        entry: Option<CatalogEntry>,
+    },
+    CatalogRelationResolutionFailed {
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+        request_id: u64,
+        relation: CatalogId,
+        category: ErrorCategory,
+        message: String,
+    },
     CatalogSearchSucceeded(CatalogSearchPage),
     CatalogSearchFailed {
         connection: ConnectionIdentity,
@@ -1080,6 +1095,17 @@ pub enum Command {
         target: ExecutionTarget,
     },
     LoadCatalogPage(CatalogRequest),
+    ResolveCatalogRelation {
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+        request_id: u64,
+        relation: CatalogId,
+    },
+    ReconcileCatalogRelation {
+        connection: ConnectionIdentity,
+        old_relation: CatalogId,
+        new_relation: CatalogId,
+    },
     LoadCatalogObjectDefinition(CatalogObjectDefinitionRequest),
     LoadCatalogOwnerContext(CatalogOwnerContextRequest),
     SearchCatalog(CatalogSearchRequest),

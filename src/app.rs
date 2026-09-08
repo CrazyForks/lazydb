@@ -273,6 +273,18 @@ pub struct App {
     dashboard_refresh_interval_millis: u64,
     default_connection_access: crate::config::ConnectionAccessDefault,
     pub(crate) key_bindings: crate::config::KeyBindings,
+    pending_identity_refreshes: HashMap<u64, IdentityRefresh>,
+    pending_parent_recoveries: HashMap<CatalogTarget, crate::db::catalog::CatalogId>,
+    catalog_sync_pending: bool,
+}
+
+#[derive(Clone, Debug)]
+enum IdentityRefresh {
+    Explorer {
+        parent: CatalogTarget,
+        retry_identity: bool,
+    },
+    ActiveRelation {},
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -313,6 +325,14 @@ fn selection_target_contains(target: &CatalogTarget, selection: &CatalogSelectio
             object.native_path.starts_with(&relation.native_path)
                 && object.native_path.len() == relation.native_path.len() + 1
         }
+    }
+}
+
+fn relation_failure_message(message: &str) -> String {
+    if message.starts_with("relation is not present in the active catalog snapshot") {
+        "Object is no longer available; refresh the catalog".to_owned()
+    } else {
+        crate::security::sanitize_terminal_text(message)
     }
 }
 
@@ -660,6 +680,9 @@ impl App {
                 .keybindings
                 .key_bindings()
                 .expect("embedded default keybindings must be valid"),
+            pending_identity_refreshes: HashMap::new(),
+            pending_parent_recoveries: HashMap::new(),
+            catalog_sync_pending: false,
         }
     }
 
@@ -8018,7 +8041,7 @@ impl App {
                 }
                 self.load_active_relation(false)
             }
-            Action::RefreshActiveRelation => self.load_active_relation(true),
+            Action::RefreshActiveRelation => self.refresh_active_relation(),
             Action::RelationFirstPage
             | Action::RelationPreviousPage
             | Action::RelationNextPage
@@ -8357,7 +8380,16 @@ impl App {
                 commands
             }
             Action::RelationFailed { request, message } => {
-                self.accept_relation(request, Err(message))
+                let message = relation_failure_message(&message);
+                let unavailable = message == "Object is no longer available; refresh the catalog";
+                let commands = self.accept_relation(request, Err(message));
+                if unavailable {
+                    self.notify_warning(
+                        "Catalog",
+                        "Object is no longer available; refresh the catalog",
+                    );
+                }
+                commands
             }
             Action::RequestProfileConnect { profile_id } => self.request_connection(profile_id),
             Action::RequestConnect(profile_id) => self.request_connection(profile_id),
@@ -8737,17 +8769,161 @@ impl App {
                 vec![self.persist_workspace_command()]
             }
             Action::CatalogPageLoaded(page) => {
+                let target = page.key.target.clone();
+                let profile_id = page.key.connection.profile_id;
                 let commands = self.accept_catalog_page(page);
                 self.refresh_active_data_query_completion();
-                commands
+                if self.catalog_sync_pending
+                    && self
+                        .explorer
+                        .normalized
+                        .profiles
+                        .get(&profile_id)
+                        .is_some_and(|state| state.pending_requests.is_empty())
+                {
+                    self.catalog_sync_pending = false;
+                    self.notify_success("Catalog", "Catalog synchronized");
+                }
+                if let Some(relation) = self.pending_parent_recoveries.remove(&target) {
+                    let mut commands = commands;
+                    let resolution = self.command_for_catalog_relation_resolution(relation);
+                    if let [Command::ResolveCatalogRelation { request_id, .. }] =
+                        resolution.as_slice()
+                    {
+                        self.pending_identity_refreshes.insert(
+                            *request_id,
+                            IdentityRefresh::Explorer {
+                                parent: target,
+                                retry_identity: true,
+                            },
+                        );
+                    }
+                    commands.extend(resolution);
+                    commands
+                } else {
+                    commands
+                }
             }
             Action::CatalogPageFailed {
                 key,
                 category,
                 message,
             } => {
+                self.pending_parent_recoveries.remove(&key.target);
                 self.fail_catalog_page(&key, category, message);
+                if self.catalog_sync_pending {
+                    self.catalog_sync_pending = false;
+                    self.notify_warning(
+                        "Catalog",
+                        "SQL succeeded, but catalog synchronization failed; refresh to retry",
+                    );
+                }
                 Vec::new()
+            }
+            Action::CatalogRelationResolved {
+                connection,
+                catalog_epoch,
+                request_id,
+                relation,
+                entry: Some(entry),
+            } => {
+                let current = self
+                    .connection
+                    .active_identity()
+                    .is_some_and(|active| active == connection)
+                    && self
+                        .explorer
+                        .normalized
+                        .profiles
+                        .get(&connection.profile_id)
+                        .is_some_and(|state| state.catalog_epoch == catalog_epoch);
+                if !current {
+                    return Vec::new();
+                }
+                let Some(state) = self
+                    .explorer
+                    .normalized
+                    .profiles
+                    .get_mut(&connection.profile_id)
+                else {
+                    return Vec::new();
+                };
+                if state.pending_identity_requests.remove(&request_id) != Some(relation.clone()) {
+                    return Vec::new();
+                }
+                let new_relation = entry.id.clone();
+                let renamed_object = entry.qualified_name.object.clone();
+                let descriptor = RelationDescriptor {
+                    key: RelationKey {
+                        profile_id: connection.profile_id,
+                        object_id: new_relation.clone(),
+                    },
+                    qualified_name: entry.qualified_name.clone(),
+                    kind: entry.kind,
+                    title: entry.qualified_name.object.clone(),
+                };
+                let _ = self.explorer.replace_catalog_entry(&relation, entry);
+                self.explorer.catalog_generation =
+                    self.explorer.catalog_generation.saturating_add(1);
+                self.explorer.refresh_frontend_search();
+                let mut commands = self.rebind_relation_tabs(&relation, descriptor, connection);
+                self.notify_success(
+                    "Catalog",
+                    format!("Catalog rename confirmed: {renamed_object}"),
+                );
+                if let Some(refresh) = self.pending_identity_refreshes.remove(&request_id) {
+                    match refresh {
+                        IdentityRefresh::Explorer { .. } => {
+                            if let Ok(target) =
+                                CatalogTarget::relation_children(new_relation.clone())
+                            {
+                                commands.extend(self.start_catalog_request(
+                                    target,
+                                    None,
+                                    CatalogRequestIntent::Refresh,
+                                ));
+                            }
+                        }
+                        IdentityRefresh::ActiveRelation {} => {}
+                    }
+                }
+                commands.push(Command::ReconcileCatalogRelation {
+                    connection,
+                    old_relation: relation,
+                    new_relation,
+                });
+                commands
+            }
+            Action::CatalogRelationResolved {
+                connection,
+                catalog_epoch,
+                request_id,
+                relation: _,
+                entry: None,
+            } => {
+                self.notify_warning(
+                    "Catalog",
+                    "Object is no longer available; refresh the catalog",
+                );
+                self.catalog_relation_resolution_failed(connection, catalog_epoch, request_id)
+            }
+            Action::CatalogRelationResolutionFailed {
+                connection,
+                catalog_epoch,
+                request_id,
+                relation: _,
+                category,
+                message: _,
+            } => {
+                self.notify_warning(
+                    "Catalog",
+                    if category == crate::db::ErrorCategory::Permission {
+                        "Object is inaccessible; check permissions or refresh the catalog"
+                    } else {
+                        "Object is no longer available; refresh the catalog"
+                    },
+                );
+                self.catalog_relation_resolution_failed(connection, catalog_epoch, request_id)
             }
             Action::CatalogSearchSucceeded(page) => {
                 if self.database_command_identity() == Some(page.connection) {
@@ -8787,7 +8963,17 @@ impl App {
                 if !valid {
                     return Vec::new();
                 }
+                let impact = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id() == tab_id)
+                    .and_then(WorkspaceTab::as_console)
+                    .and_then(|tab| tab.last_execution.as_ref())
+                    .map(|last| last.draft.catalog_change_impact.clone());
                 self.finish_query(tab_id, generation, outcome, false);
+                if let Some(impact) = impact {
+                    return self.reconcile_catalog_change(tab_id, impact);
+                }
                 Vec::new()
             }
             Action::QueryFailed {
@@ -8836,6 +9022,13 @@ impl App {
                 if !valid {
                     return Vec::new();
                 }
+                let impact = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id() == tab_id)
+                    .and_then(WorkspaceTab::as_console)
+                    .and_then(|tab| tab.last_execution.as_ref())
+                    .map(|last| last.draft.catalog_change_impact.clone());
                 self.finish_query(tab_id, generation, outcome, false);
                 if let Some(tab) = self
                     .tabs
@@ -8854,7 +9047,10 @@ impl App {
                         last.result = ExecutionResult::Succeeded;
                     }
                 }
-                Vec::new()
+                self.reconcile_catalog_change(
+                    tab_id,
+                    impact.unwrap_or(sql::CatalogChangeImpact::None),
+                )
             }
             Action::QueryPageFailed {
                 tab_id,
@@ -9109,7 +9305,23 @@ impl App {
                     connection,
                     TransactionState::Active,
                 ) {
+                    let impact = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id() == tab_id)
+                        .and_then(WorkspaceTab::as_console)
+                        .and_then(|tab| tab.last_execution.as_ref())
+                        .map(|last| last.draft.catalog_change_impact.clone());
                     self.finish_query(tab_id, query_generation, outcome, true);
+                    if let Some(impact) = impact
+                        && let Some(tab) = self
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id() == tab_id)
+                            .and_then(WorkspaceTab::as_console_mut)
+                    {
+                        tab.pending_catalog_change_impact.merge(impact);
+                    }
                 }
                 Vec::new()
             }
@@ -9128,6 +9340,13 @@ impl App {
                     connection,
                     TransactionState::Active,
                 ) {
+                    let impact = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id() == tab_id)
+                        .and_then(WorkspaceTab::as_console)
+                        .and_then(|tab| tab.last_execution.as_ref())
+                        .map(|last| last.draft.catalog_change_impact.clone());
                     self.finish_query(tab_id, query_generation, outcome, true);
                     if let Some(tab) = self
                         .tabs
@@ -9143,6 +9362,15 @@ impl App {
                             tab.pagination.total =
                                 crate::model::pagination::TotalRows::Exact(total);
                         }
+                    }
+                    if let Some(impact) = impact
+                        && let Some(tab) = self
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| tab.id() == tab_id)
+                            .and_then(WorkspaceTab::as_console_mut)
+                    {
+                        tab.pending_catalog_change_impact.merge(impact);
                     }
                 }
                 Vec::new()
@@ -9209,6 +9437,14 @@ impl App {
                             },
                         )
                     {
+                        let impact = if event == TransactionEvent::OutcomeUnknown {
+                            std::mem::replace(
+                                &mut tab.pending_catalog_change_impact,
+                                sql::CatalogChangeImpact::None,
+                            )
+                        } else {
+                            sql::CatalogChangeImpact::None
+                        };
                         apply_transaction_snapshot(tab, next);
                         if event == TransactionEvent::RolledBack
                             && let Ok(next) = transaction::transition(
@@ -9217,6 +9453,9 @@ impl App {
                             )
                         {
                             apply_transaction_snapshot(tab, next);
+                        }
+                        if event == TransactionEvent::OutcomeUnknown {
+                            return self.reconcile_catalog_change(tab_id, impact);
                         }
                     }
                 }
@@ -9271,6 +9510,19 @@ impl App {
                         TransactionEvent::ImplicitlyEnded,
                     ) {
                         apply_transaction_snapshot(tab, next);
+                        let impact = std::mem::replace(
+                            &mut tab.pending_catalog_change_impact,
+                            sql::CatalogChangeImpact::None,
+                        );
+                        append_console_output_to_editor(
+                            &mut self.editor,
+                            tab,
+                            OutputEntry::plain(
+                                OutputKind::Info,
+                                "Transaction ended implicitly; prior work may have committed",
+                            ),
+                        );
+                        return self.reconcile_catalog_change(tab_id, impact);
                     }
                     append_console_output_to_editor(
                         &mut self.editor,
@@ -9306,6 +9558,10 @@ impl App {
                     if let Ok(next) =
                         transaction::transition(tab_snapshot(tab), TransactionEvent::Committed)
                     {
+                        let impact = std::mem::replace(
+                            &mut tab.pending_catalog_change_impact,
+                            sql::CatalogChangeImpact::None,
+                        );
                         apply_transaction_snapshot(tab, next);
                         append_transaction_status(
                             &mut self.editor,
@@ -9313,7 +9569,9 @@ impl App {
                             "transaction committed",
                             elapsed,
                         );
-                        return self.finish_deferred(tab_id);
+                        let mut commands = self.reconcile_catalog_change(tab_id, impact);
+                        commands.extend(self.finish_deferred(tab_id));
+                        return commands;
                     }
                 }
                 self.retain_failed_deferred();
@@ -9335,6 +9593,7 @@ impl App {
                     TransactionState::Committing,
                 ) {
                     self.clear_transaction_op_timing(tab_id);
+                    let mut reconcile = None;
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9347,7 +9606,16 @@ impl App {
                         TransactionEvent::CommitFailed
                     };
                     if let Ok(next) = transaction::transition(tab_snapshot(tab), event) {
+                        let impact = if unknown || event == TransactionEvent::OutcomeUnknown {
+                            std::mem::replace(
+                                &mut tab.pending_catalog_change_impact,
+                                sql::CatalogChangeImpact::None,
+                            )
+                        } else {
+                            sql::CatalogChangeImpact::None
+                        };
                         apply_transaction_snapshot(tab, next);
+                        reconcile = Some(impact);
                     }
                     append_console_output_to_editor(
                         &mut self.editor,
@@ -9355,6 +9623,14 @@ impl App {
                         OutputEntry::plain(OutputKind::Error, message),
                     );
                     self.retain_failed_deferred();
+                    if unknown || event == TransactionEvent::OutcomeUnknown {
+                        return self.reconcile_catalog_change(
+                            tab_id,
+                            reconcile.unwrap_or(sql::CatalogChangeImpact::MultipleStatements {
+                                statement_count: 0,
+                            }),
+                        );
+                    }
                 }
                 Vec::new()
             }
@@ -9381,6 +9657,7 @@ impl App {
                     if let Ok(next) =
                         transaction::transition(tab_snapshot(tab), TransactionEvent::RolledBack)
                     {
+                        tab.pending_catalog_change_impact = sql::CatalogChangeImpact::None;
                         apply_transaction_snapshot(tab, next);
                         append_transaction_status(
                             &mut self.editor,
@@ -9410,6 +9687,7 @@ impl App {
                     TransactionState::RollingBack,
                 ) {
                     self.clear_transaction_op_timing(tab_id);
+                    let mut reconcile = None;
                     let tab = self
                         .tabs
                         .iter_mut()
@@ -9422,7 +9700,16 @@ impl App {
                         TransactionEvent::RollbackFailed
                     };
                     if let Ok(next) = transaction::transition(tab_snapshot(tab), event) {
+                        let impact = if unknown || event == TransactionEvent::OutcomeUnknown {
+                            std::mem::replace(
+                                &mut tab.pending_catalog_change_impact,
+                                sql::CatalogChangeImpact::None,
+                            )
+                        } else {
+                            sql::CatalogChangeImpact::None
+                        };
                         apply_transaction_snapshot(tab, next);
+                        reconcile = Some(impact);
                     }
                     append_console_output_to_editor(
                         &mut self.editor,
@@ -9430,6 +9717,14 @@ impl App {
                         OutputEntry::plain(OutputKind::Error, message),
                     );
                     self.retain_failed_deferred();
+                    if unknown || event == TransactionEvent::OutcomeUnknown {
+                        return self.reconcile_catalog_change(
+                            tab_id,
+                            reconcile.unwrap_or(sql::CatalogChangeImpact::MultipleStatements {
+                                statement_count: 0,
+                            }),
+                        );
+                    }
                 }
                 Vec::new()
             }
@@ -12059,6 +12354,10 @@ impl App {
         let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
             return Vec::new();
         };
+        let waiting_for_relation_children = self
+            .active_console_opt()
+            .and_then(|tab| tab.completion_request.as_ref())
+            .is_some_and(|request| !request.relation_children.is_empty());
         let Some(popup) = self.active_console_mut().completion.take() else {
             return Vec::new();
         };
@@ -12102,7 +12401,8 @@ impl App {
             .chars()
             .last()
             .is_some_and(|character| character.is_whitespace() || character == '.');
-        let completion = if starts_next_completion
+        let completion = if !waiting_for_relation_children
+            && starts_next_completion
             && crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
         {
             CompletionAfterEdit::Schedule
@@ -13163,6 +13463,114 @@ impl App {
         commands
     }
 
+    fn reconcile_catalog_change(
+        &mut self,
+        tab_id: Uuid,
+        impact: sql::CatalogChangeImpact,
+    ) -> Vec<Command> {
+        if impact.is_none() {
+            return Vec::new();
+        }
+        let Some(connection) = self.database_command_identity() else {
+            return Vec::new();
+        };
+        let Some(tab) = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id() == tab_id)
+            .and_then(WorkspaceTab::as_console)
+        else {
+            return Vec::new();
+        };
+        if tab.execution_target.is_none() || self.connection.active_identity() != Some(connection) {
+            return Vec::new();
+        }
+        self.catalog_sync_pending = true;
+        self.notify_info("Catalog", "Syncing catalog after SQL change");
+        self.commands_for_catalog_targets(connection.profile_id, &[CatalogTarget::Databases])
+    }
+
+    pub fn command_for_catalog_relation_resolution(
+        &mut self,
+        relation: crate::db::catalog::CatalogId,
+    ) -> Vec<Command> {
+        let Some(connection) = self.database_command_identity() else {
+            return Vec::new();
+        };
+        if relation.profile_id() != connection.profile_id {
+            return Vec::new();
+        }
+        let Some(state) = self
+            .explorer
+            .normalized
+            .profiles
+            .get_mut(&connection.profile_id)
+        else {
+            return Vec::new();
+        };
+        let Some(request_id) = state.allocate_request_id() else {
+            state.last_error = Some("catalog request ID exhausted".to_owned());
+            return Vec::new();
+        };
+        state
+            .pending_identity_requests
+            .insert(request_id, relation.clone());
+        vec![Command::ResolveCatalogRelation {
+            connection,
+            catalog_epoch: state.catalog_epoch,
+            request_id,
+            relation,
+        }]
+    }
+
+    fn catalog_relation_resolution_failed(
+        &mut self,
+        connection: ConnectionIdentity,
+        catalog_epoch: u64,
+        request_id: u64,
+    ) -> Vec<Command> {
+        let current = self
+            .connection
+            .active_identity()
+            .is_some_and(|active| active == connection)
+            && self
+                .explorer
+                .normalized
+                .profiles
+                .get(&connection.profile_id)
+                .is_some_and(|state| state.catalog_epoch == catalog_epoch);
+        if !current {
+            return Vec::new();
+        }
+        let Some(state) = self
+            .explorer
+            .normalized
+            .profiles
+            .get_mut(&connection.profile_id)
+        else {
+            return Vec::new();
+        };
+        state.pending_identity_requests.remove(&request_id);
+        if let Some(IdentityRefresh::Explorer {
+            parent,
+            retry_identity,
+        }) = self.pending_identity_refreshes.remove(&request_id)
+        {
+            if !retry_identity {
+                self.pending_parent_recoveries.insert(
+                    parent.clone(),
+                    match &parent {
+                        CatalogTarget::RelationChildren { relation } => relation.clone(),
+                        _ => return Vec::new(),
+                    },
+                );
+                return self.start_catalog_request(parent, None, CatalogRequestIntent::Refresh);
+            }
+        }
+        self.pending_identity_refreshes.remove(&request_id);
+        Vec::new()
+    }
+
     fn accept_catalog_page(&mut self, page: CatalogPage) -> Vec<Command> {
         let profile_id = page.key.connection.profile_id;
         if self.connection.active_identity() != Some(page.key.connection) {
@@ -14156,6 +14564,38 @@ impl App {
     }
 
     fn refresh_explorer_selected(&mut self) -> Vec<Command> {
+        let Some(selected) = self.explorer.selected_id().cloned() else {
+            return Vec::new();
+        };
+        let Some(profile_id) = selected.profile_id() else {
+            return Vec::new();
+        };
+        let relation = match &selected {
+            ExplorerNodeId::Catalog(id) if id.kind.is_relation() => Some(id.clone()),
+            ExplorerNodeId::Catalog(id) => self
+                .explorer
+                .normalized
+                .profiles
+                .get(&profile_id)
+                .and_then(|state| state.catalog.owning_relation_id(id).cloned()),
+            _ => None,
+        };
+        if let Some(relation) = relation {
+            let Some(parent) = CatalogTarget::relation_children(relation.clone()).ok() else {
+                return Vec::new();
+            };
+            let command = self.command_for_catalog_relation_resolution(relation.clone());
+            if let [Command::ResolveCatalogRelation { request_id, .. }] = command.as_slice() {
+                self.pending_identity_refreshes.insert(
+                    *request_id,
+                    IdentityRefresh::Explorer {
+                        parent,
+                        retry_identity: false,
+                    },
+                );
+            }
+            return command;
+        }
         self.selected_catalog_target()
             .map_or_else(Vec::new, |target| {
                 self.start_catalog_request(target, None, CatalogRequestIntent::Refresh)
@@ -16116,6 +16556,102 @@ impl App {
         self.load_active_relation_with_page(refresh, None)
     }
 
+    fn refresh_active_relation(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        let relation = tab.descriptor.key.object_id.clone();
+        if !tab.stale_native_identity {
+            return self.load_active_relation(true);
+        }
+        let command = self.command_for_catalog_relation_resolution(relation.clone());
+        if command.is_empty() {
+            return Vec::new();
+        }
+        if let [Command::ResolveCatalogRelation { request_id, .. }] = command.as_slice() {
+            self.pending_identity_refreshes
+                .insert(*request_id, IdentityRefresh::ActiveRelation {});
+        }
+        command
+    }
+
+    fn rebind_relation_tabs(
+        &mut self,
+        old_relation: &crate::db::catalog::CatalogId,
+        descriptor: RelationDescriptor,
+        connection: ConnectionIdentity,
+    ) -> Vec<Command> {
+        let Some(scope) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == connection.profile_id)
+            .map(|profile| profile.catalog_scope.clone())
+        else {
+            return Vec::new();
+        };
+        let mut commands = Vec::new();
+        for workspace_tab in &mut self.tabs {
+            let WorkspaceTab::Relation(tab) = workspace_tab else {
+                continue;
+            };
+            if tab.descriptor.key.object_id != *old_relation
+                || tab.descriptor.key.profile_id != connection.profile_id
+            {
+                continue;
+            }
+            let dirty =
+                relation_has_pending_edits(tab) || tab.transaction_state != TransactionState::Idle;
+            let old_data_request = cancel_pending_relation(&mut tab.data);
+            let old_ddl_request = cancel_pending_relation(&mut tab.ddl);
+            tab.rebind_descriptor(descriptor.clone(), dirty);
+            if let Some(request) = old_data_request {
+                commands.push(Command::CancelRelationRequest(request));
+            }
+            if let Some(request) = old_ddl_request {
+                commands.push(Command::CancelRelationRequest(request));
+            }
+            if dirty || !relation_is_in_scope(tab, &scope) {
+                continue;
+            }
+            let kind = match tab.view {
+                RelationView::Data => RelationRequestKind::Preview,
+                RelationView::Ddl => RelationRequestKind::Ddl,
+            };
+            let request = RelationRequest {
+                tab_id: tab.id,
+                tab_generation: tab.generation,
+                request_id: tab.next_request_id,
+                connection,
+                relation: tab.descriptor.key.clone(),
+                kind,
+                scope: scope.clone(),
+                options: tab.query.submitted.clone(),
+                page: crate::model::pagination::PageRequest::at(
+                    tab.pagination.page_size,
+                    tab.pagination.offset,
+                ),
+            };
+            tab.next_request_id = tab.next_request_id.saturating_add(1);
+            match kind {
+                RelationRequestKind::Preview => {
+                    tab.data = RelationLoad::Loading {
+                        request: request.clone(),
+                        previous: None,
+                    };
+                    commands.push(Command::LoadRelationPreview(request));
+                }
+                RelationRequestKind::Ddl => {
+                    tab.ddl = RelationLoad::Loading {
+                        request: request.clone(),
+                        previous: None,
+                    };
+                    commands.push(Command::LoadRelationDdl(request));
+                }
+            }
+        }
+        commands
+    }
+
     fn load_active_relation_with_page(
         &mut self,
         refresh: bool,
@@ -16989,7 +17525,9 @@ mod tests {
 
     use uuid::Uuid;
 
-    use super::{App, format_sql_output_entry, output_sql_ranges, output_text};
+    use super::{
+        App, format_sql_output_entry, output_sql_ranges, output_text, relation_failure_message,
+    };
     use crate::{
         action::{Action, Command},
         db::{
@@ -17030,6 +17568,19 @@ mod tests {
         profile::import_connection_url,
         profile::{CatalogScope, DatabaseKind},
     };
+
+    #[test]
+    fn relation_failure_message_hides_internal_catalog_snapshot_wording() {
+        let message = relation_failure_message(
+            "relation is not present in the active catalog snapshot\nsecret",
+        );
+        assert_eq!(
+            message,
+            "Object is no longer available; refresh the catalog"
+        );
+        assert!(!message.contains("active catalog snapshot"));
+        assert!(!message.contains("relation-children"));
+    }
 
     fn empty_outcome() -> QueryOutcome {
         QueryOutcome {

@@ -126,6 +126,35 @@ fn transaction_menu_renders_state_aware_disabled_reasons() {
 }
 
 #[test]
+fn catalog_sync_notifications_are_concise_and_terminal_safe() {
+    let mut app = fixture();
+    app.notifications.push(
+        lazydb::model::notification::NotificationLevel::Info,
+        "Catalog",
+        "Syncing catalog after SQL change",
+        std::time::Instant::now(),
+    );
+    app.notifications.push(
+        lazydb::model::notification::NotificationLevel::Warning,
+        "Catalog",
+        "SQL succeeded, but catalog synchronization failed; refresh to retry\x1b[31m",
+        std::time::Instant::now(),
+    );
+
+    let output = render(&app, 100, 30);
+    assert!(
+        output.contains("Syncing catalog after SQL change"),
+        "{output}"
+    );
+    assert!(
+        output.contains("catalog synchronization failed"),
+        "{output}"
+    );
+    assert!(output.contains("<ESC>[31m"), "{output}");
+    assert!(!output.contains("relation-children"), "{output}");
+}
+
+#[test]
 fn transaction_menu_selected_row_uses_readable_selection_style() {
     let mut app = fixture();
     app.update(Action::OpenTransactionMenu);

@@ -13,6 +13,8 @@ use lazydb::{
     },
     model::{
         explorer::{ExplorerLoadState, ExplorerNodeId, ExplorerOwnerId},
+        relation::{RelationDescriptor, RelationKey, RelationTab, RelationView},
+        tab::WorkspaceTab,
         workspace::Overlay,
     },
     profile::{ConnectionProfile, DatabaseKind, import_connection_url},
@@ -122,6 +124,165 @@ fn accepting_completion_does_not_reopen_on_late_relation_children() {
             .iter()
             .any(|command| matches!(command, Command::ScheduleCompletion(_)))
     );
+}
+
+#[test]
+fn refreshing_a_relation_node_resolves_identity_before_loading_children() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let relation = install_table(&mut app, &profile, &schema, "users");
+    app.explorer
+        .normalized
+        .select(ExplorerNodeId::Catalog(relation.id.clone()));
+
+    let commands = app.update(Action::ExplorerRefresh);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::ResolveCatalogRelation { relation: found, .. }] if found == &relation.id
+    ));
+}
+
+#[test]
+fn refreshing_a_relation_child_resolves_its_current_relation_before_loading_children() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let relation = install_table(&mut app, &profile, &schema, "users");
+    let child = CatalogEntry::relation_child(
+        id(
+            profile.id,
+            CatalogKind::Column,
+            &["app", "public", "users", "id"],
+        ),
+        relation.id.clone(),
+        QualifiedName {
+            database: Some("app".into()),
+            schema: Some("public".into()),
+            object: "id".into(),
+        },
+        "id",
+        OptionalMetadata::Unsupported,
+        lazydb::db::catalog::CatalogMetadata::Column(lazydb::db::catalog::ColumnMetadata::new(
+            1, "integer", false,
+        )),
+    )
+    .unwrap();
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&profile.id)
+        .unwrap()
+        .catalog
+        .insert(child.clone())
+        .unwrap();
+    app.explorer
+        .normalized
+        .select(ExplorerNodeId::Catalog(child.id));
+
+    let commands = app.update(Action::ExplorerRefresh);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::ResolveCatalogRelation { relation: found, .. }] if found == &relation.id
+    ));
+}
+
+#[test]
+fn refreshing_a_stale_active_relation_resolves_then_reloads_preview() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let relation = install_table(&mut app, &profile, &schema, "users");
+    let tab = RelationTab::with_descriptor(
+        RelationDescriptor {
+            key: RelationKey {
+                profile_id: profile.id,
+                object_id: relation.id.clone(),
+            },
+            qualified_name: relation.qualified_name.clone(),
+            kind: relation.kind,
+            title: "users".into(),
+        },
+        RelationView::Data,
+    );
+    app.tabs.push(WorkspaceTab::Relation(tab));
+    app.active_tab = app.tabs.len() - 1;
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[app.active_tab] {
+        tab.stale_native_identity = true;
+    }
+
+    let commands = app.update(Action::RefreshActiveRelation);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::ResolveCatalogRelation { relation: found, .. }] if found == &relation.id
+    ));
+}
+
+#[test]
+fn relation_refresh_parent_recovery_is_bounded_to_one_retry() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let relation = install_table(&mut app, &profile, &schema, "users");
+    app.explorer
+        .normalized
+        .select(ExplorerNodeId::Catalog(relation.id.clone()));
+    let command = app.update(Action::ExplorerRefresh);
+    let request = match command.as_slice() {
+        [Command::ResolveCatalogRelation { .. }] => command,
+        commands => panic!("unexpected initial commands: {commands:?}"),
+    };
+    let (connection, catalog_epoch, request_id) = match &request[0] {
+        Command::ResolveCatalogRelation {
+            connection,
+            catalog_epoch,
+            request_id,
+            ..
+        } => (*connection, *catalog_epoch, *request_id),
+        _ => unreachable!(),
+    };
+    let parent = CatalogTarget::relation_children(relation.id.clone()).unwrap();
+    let failed = app.update(Action::CatalogRelationResolutionFailed {
+        connection,
+        catalog_epoch,
+        request_id,
+        relation: relation.id.clone(),
+        category: ErrorCategory::Internal,
+        message: "old relation".into(),
+    });
+    let page_request = match failed.as_slice() {
+        [Command::LoadCatalogPage(request)] => request.clone(),
+        commands => panic!("unexpected recovery commands: {commands:?}"),
+    };
+    assert_eq!(page_request.key.target, parent);
+    let retry = app.update(Action::CatalogPageLoaded(page(&page_request, vec![], None)));
+    let retry_request = match retry.as_slice() {
+        [Command::ResolveCatalogRelation { request_id, .. }] => *request_id,
+        commands => panic!("unexpected retry commands: {commands:?}"),
+    };
+    assert!(
+        app.update(Action::CatalogRelationResolutionFailed {
+            connection,
+            catalog_epoch,
+            request_id: retry_request,
+            relation: relation.id.clone(),
+            category: ErrorCategory::Internal,
+            message: "still missing".into(),
+        })
+        .is_empty()
+    );
+    assert!(
+        app.update(Action::CatalogRelationResolutionFailed {
+            connection,
+            catalog_epoch,
+            request_id: retry_request,
+            relation: relation.id.clone(),
+            category: ErrorCategory::Internal,
+            message: "duplicate".into(),
+        })
+        .is_empty()
+    );
+    let _ = profile;
 }
 
 #[test]
@@ -243,6 +404,130 @@ fn targeted_refresh_invalidates_one_owner_and_preserves_stale_rows() {
         ),
         ExplorerLoadState::Loading { .. }
     ));
+}
+
+#[test]
+fn stale_relation_resolution_is_ignored_after_catalog_epoch_changes() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let old = install_table(&mut app, &profile, &schema, "users");
+    let command = app.command_for_catalog_relation_resolution(old.id.clone());
+    let (connection, epoch, request_id) = match command.as_slice() {
+        [
+            Command::ResolveCatalogRelation {
+                connection,
+                catalog_epoch,
+                request_id,
+                ..
+            },
+        ] => (*connection, *catalog_epoch, *request_id),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&profile.id)
+        .unwrap()
+        .advance_catalog_epoch();
+    let replacement = relation(profile.id, &schema.id, "accounts");
+    app.update(Action::CatalogRelationResolved {
+        connection,
+        catalog_epoch: epoch,
+        request_id,
+        relation: old.id.clone(),
+        entry: Some(replacement),
+    });
+    assert!(catalog(&app, profile.id).get(&old.id).is_some());
+}
+
+#[test]
+fn relation_resolution_replaces_old_identity_without_waiting_for_page() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let old = install_table(&mut app, &profile, &schema, "users");
+    let command = app.command_for_catalog_relation_resolution(old.id.clone());
+    let (connection, catalog_epoch, request_id) = match command.as_slice() {
+        [
+            Command::ResolveCatalogRelation {
+                connection,
+                catalog_epoch,
+                request_id,
+                ..
+            },
+        ] => (*connection, *catalog_epoch, *request_id),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    let replacement = relation(profile.id, &schema.id, "accounts");
+    app.update(Action::CatalogRelationResolved {
+        connection,
+        catalog_epoch,
+        request_id,
+        relation: old.id.clone(),
+        entry: Some(replacement.clone()),
+    });
+    assert!(catalog(&app, profile.id).get(&old.id).is_none());
+    assert_eq!(
+        catalog(&app, profile.id).get(&replacement.id),
+        Some(&replacement)
+    );
+}
+
+#[test]
+fn relation_resolution_rebinds_open_tab_in_place() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let old = install_table(&mut app, &profile, &schema, "users");
+    let tab = RelationTab::with_descriptor(
+        RelationDescriptor {
+            key: RelationKey {
+                profile_id: profile.id,
+                object_id: old.id.clone(),
+            },
+            qualified_name: old.qualified_name.clone(),
+            kind: old.kind,
+            title: "users".into(),
+        },
+        RelationView::Data,
+    );
+    let tab_id = tab.id;
+    app.tabs.push(WorkspaceTab::Relation(tab));
+    let command = app.command_for_catalog_relation_resolution(old.id.clone());
+    let (connection, catalog_epoch, request_id) = match command.as_slice() {
+        [
+            Command::ResolveCatalogRelation {
+                connection,
+                catalog_epoch,
+                request_id,
+                ..
+            },
+        ] => (*connection, *catalog_epoch, *request_id),
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    let replacement = relation(profile.id, &schema.id, "accounts");
+    let commands = app.update(Action::CatalogRelationResolved {
+        connection,
+        catalog_epoch,
+        request_id,
+        relation: old.id,
+        entry: Some(replacement.clone()),
+    });
+
+    let WorkspaceTab::Relation(tab) = &app.tabs.last().unwrap() else {
+        panic!("expected relation tab");
+    };
+    assert_eq!(tab.id, tab_id);
+    assert_eq!(tab.descriptor.key.object_id, replacement.id);
+    assert_eq!(tab.title(), "accounts");
+    assert_eq!(tab.generation, 1);
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        Command::LoadRelationPreview(request) if request.tab_id == tab_id
+            && request.relation.object_id == replacement.id
+            && request.tab_generation == 1
+    )));
 }
 
 #[test]
