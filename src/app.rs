@@ -11550,12 +11550,17 @@ impl App {
             return Vec::new();
         }
         let (text, cursor) = self.active_editor_text_and_cursor();
-        let completion =
-            if crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect()) {
-                CompletionAfterEdit::Schedule
-            } else {
-                CompletionAfterEdit::Suppress
-            };
+        let starts_next_completion = insert_text
+            .chars()
+            .last()
+            .is_some_and(|character| character.is_whitespace() || character == '.');
+        let completion = if starts_next_completion
+            && crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
+        {
+            CompletionAfterEdit::Schedule
+        } else {
+            CompletionAfterEdit::Suppress
+        };
         self.apply_editor_effects(completion)
     }
 
