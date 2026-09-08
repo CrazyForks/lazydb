@@ -357,9 +357,13 @@ impl IconSet {
     pub const fn completion(self, kind: CompletionKind) -> &'static str {
         match kind {
             CompletionKind::Keyword => match self.mode {
-                IconMode::NerdFont => md::MD_CODE_BRACES,
-                IconMode::Unicode => "·",
+                IconMode::NerdFont => md::MD_ALPHABETICAL,
+                IconMode::Unicode => "K",
                 IconMode::Ascii => "KW",
+            },
+            CompletionKind::BuiltinExpression => match self.mode {
+                IconMode::NerdFont | IconMode::Unicode => self.catalog(CatalogKind::Function),
+                IconMode::Ascii => "EX",
             },
             CompletionKind::DataType => self.catalog(CatalogKind::Type),
             CompletionKind::Database => self.catalog(CatalogKind::Database),
@@ -509,6 +513,26 @@ mod tests {
         assert_eq!(icons.group(ObjectGroup::Tables, true), md::MD_FOLDER_OPEN);
         assert_eq!(icons.query_filter(), md::MD_FILTER);
         assert_eq!(icons.query_sort(), md::MD_SORT);
+    }
+
+    #[test]
+    fn completion_icons_distinguish_keywords_and_expression_candidates() {
+        for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
+            let icons = IconSet::new(mode);
+            let keyword = icons.completion(CompletionKind::Keyword);
+            let function = icons.completion(CompletionKind::Function);
+            let expression = icons.completion(CompletionKind::BuiltinExpression);
+
+            assert_ne!(keyword, function);
+            assert_ne!(keyword, expression);
+            if mode == IconMode::Ascii {
+                assert_eq!(keyword, "KW");
+                assert_eq!(function, "FN");
+                assert_eq!(expression, "EX");
+            } else {
+                assert_eq!(function, expression);
+            }
+        }
     }
 
     #[test]

@@ -9,19 +9,19 @@ pub(super) struct Builtin {
 
 const CURRENT_DATE: Builtin = Builtin {
     name: "CURRENT_DATE",
-    kind: CompletionKind::Keyword,
+    kind: CompletionKind::BuiltinExpression,
     detail: "built-in expression",
 };
 
 const CURRENT_TIME: Builtin = Builtin {
     name: "CURRENT_TIME",
-    kind: CompletionKind::Keyword,
+    kind: CompletionKind::BuiltinExpression,
     detail: "built-in expression",
 };
 
 const CURRENT_TIMESTAMP: Builtin = Builtin {
     name: "CURRENT_TIMESTAMP",
-    kind: CompletionKind::Keyword,
+    kind: CompletionKind::BuiltinExpression,
     detail: "built-in expression",
 };
 

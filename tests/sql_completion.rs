@@ -30,7 +30,7 @@ fn builtin_default_current_timestamp_without_catalog() {
         .find(|candidate| candidate.label == "CURRENT_TIMESTAMP")
         .expect("CURRENT_TIMESTAMP completion");
     assert_eq!(candidate.insert_text, "CURRENT_TIMESTAMP");
-    assert_eq!(candidate.kind, CompletionKind::Keyword);
+    assert_eq!(candidate.kind, CompletionKind::BuiltinExpression);
     assert_eq!(
         candidate.replace,
         TextRange::new(cursor - "CURRENT_TIM".len(), cursor)
@@ -212,7 +212,11 @@ fn builtin_default_expression_scope_handles_parentheses_and_boundaries() {
         let cursor = sql.find(needle).unwrap() + needle.len();
         let candidates = complete(sql, cursor, dialect, &index, CompletionContext::default());
         assert!(
-            has_builtin(&candidates, "CURRENT_TIMESTAMP", CompletionKind::Keyword),
+            has_builtin(
+                &candidates,
+                "CURRENT_TIMESTAMP",
+                CompletionKind::BuiltinExpression,
+            ),
             "{sql}: {candidates:?}"
         );
     }
