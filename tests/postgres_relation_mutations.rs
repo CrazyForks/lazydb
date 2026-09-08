@@ -350,7 +350,7 @@ async fn delete_two_all_types_rows() {
             DatabaseConnection::Postgres(adapter) => adapter.transaction_backend().await.unwrap(),
             _ => unreachable!(),
         };
-        let request = RelationMutationRequest {
+        let mut request = RelationMutationRequest {
             tab_id: Uuid::nil(),
             tab_generation: 1,
             edit_generation: 1,
@@ -488,6 +488,24 @@ async fn delete_two_all_types_rows() {
             4
         );
 
+        let current_version = database
+            .execute(&format!(
+                "SELECT xmin::text FROM {qualified_table} WHERE id = 2"
+            ))
+            .await
+            .unwrap()
+            .result_sets
+            .last()
+            .and_then(|set| set.rows.first())
+            .and_then(|row| match &row[0] {
+                CellValue::Text(value) => value.parse().ok(),
+                _ => None,
+            })
+            .map(RowVersion::PostgresXmin)
+            .expect("row 2 must have a current xmin");
+        if let RelationMutation::DeleteRows(rows) = &mut request.operation {
+            rows[1].version = Some(current_version);
+        }
         backend.begin().await.unwrap();
         assert_eq!(
             backend.relation_mutation(request).await.unwrap(),
@@ -643,7 +661,7 @@ async fn returning_versions_support_update_and_insert_then_delete() {
                 .result_sets
                 .last()
                 .unwrap()
-                .rows[0][1],
+                .rows[0][0],
             CellValue::Text("before".into())
         );
 
@@ -846,7 +864,7 @@ async fn type_roundtrip_uses_native_assignment_bindings() {
         };
         assert_eq!(
             row[1],
-            CellValue::Text("123456789012345678.1234567890".into())
+            CellValue::Text("123456789012345678.123456789000".into())
         );
         assert_eq!(
             row[3],

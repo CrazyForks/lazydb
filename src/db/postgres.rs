@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    net::IpAddr,
     str::FromStr,
     time::{Duration, Instant},
 };
@@ -4976,9 +4977,6 @@ LIMIT 2001
         };
         let (database, schema, name, relation_oid, native_kind, _) =
             self.verify_relation(connection, relation, &target).await?;
-        if !self.catalog_scope.allows_schema(&database, &schema) {
-            return Err(catalog_target_not_found(&target));
-        }
         let relation_entry = CatalogEntry::relation(
             relation.clone(),
             CatalogId::new(
@@ -5003,12 +5001,22 @@ LIMIT 2001
                 target,
                 cursor: None,
             },
-            scope: self.catalog_scope.clone(),
+            scope: CatalogScope::for_profile(DatabaseKind::Postgres, &database, Some(&schema)),
             page_size: RELATION_PREVIEW_LIMIT,
         };
-        let children = self
-            .load_relation_children_page(connection, &request, relation)
+        let mut children_entries = self
+            .load_relation_children_entries(connection, &database, &schema, relation_oid, relation)
             .await?;
+        let children_total = exact_count(children_entries.len())?;
+        let children_cursor = paginate_in_memory(
+            &mut children_entries,
+            &request,
+            child_sort_key,
+            child_tie_breaker,
+        )?;
+        let children =
+            CatalogPage::new(&request, children_entries, children_total, children_cursor)
+                .map_err(catalog_invariant)?;
         let ddl = self
             .load_relation_ddl_parts(connection, relation_oid, &schema, &name)
             .await?;
@@ -6632,7 +6640,12 @@ fn bind_cell<'q>(
                 Uuid::parse_str(value)
                     .map_err(|_| TransactionError("PostgreSQL UUID value is malformed".into()))?,
             ),
-            PgParameterType::Inet | PgParameterType::Cidr => {
+            PgParameterType::Inet => {
+                query.bind(value.parse::<IpAddr>().map_err(|_| {
+                    TransactionError("PostgreSQL network value is malformed".into())
+                })?)
+            }
+            PgParameterType::Cidr => {
                 query.bind(IpNet::from_str(value).map_err(|_| {
                     TransactionError("PostgreSQL network value is malformed".into())
                 })?)

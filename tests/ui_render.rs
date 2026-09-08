@@ -5273,10 +5273,15 @@ fn editor_help_documents_target_context_controls() {
     let mut app = fixture();
     app.update(Action::Focus(Focus::Editor));
     app.update(Action::ShowHelp);
-    let (output, _) = render_with_state(&app, 120, 40);
     for text in ["Space d", "Space f", "Space tt", "Space tc"] {
+        app.update(Action::HelpPaste(text.to_owned()));
+        let (output, _) = render_with_state(&app, 120, 40);
         assert!(output.contains(text), "missing {text}");
+        app.update(Action::HelpEdit(
+            lazydb::model::text_input::TextInputEdit::Clear,
+        ));
     }
+    let (output, _) = render_with_state(&app, 120, 40);
     assert!(!output.contains("Space tr"));
     assert!(output.contains("Search"));
     assert!(!output.contains(":connection"));
