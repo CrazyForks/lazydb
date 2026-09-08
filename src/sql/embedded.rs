@@ -27,6 +27,48 @@ pub struct EmbeddedSqlUnit {
 }
 
 impl EmbeddedSqlUnit {
+    /// Diagnostic spans may cover replacements; completion edits must not.
+    pub fn source_diagnostic(&self, range: TextRange) -> Option<TextRange> {
+        let map = |offset: usize, end: bool| {
+            let segment = self
+                .segments
+                .iter()
+                .find(|segment| {
+                    if end {
+                        segment.generated.start < offset && offset <= segment.generated.end
+                    } else {
+                        segment.generated.start <= offset && offset < segment.generated.end
+                    }
+                })
+                .or_else(|| {
+                    self.segments
+                        .last()
+                        .filter(|segment| offset == segment.generated.end)
+                })?;
+            if segment.kind == SourceSegmentKind::Original {
+                Some(segment.source.start + offset - segment.generated.start)
+            } else if matches!(
+                segment.kind,
+                SourceSegmentKind::Parameter | SourceSegmentKind::EntityDecoded
+            ) {
+                Some(if end || offset == segment.generated.end {
+                    segment.source.end
+                } else {
+                    segment.source.start
+                })
+            } else {
+                None
+            }
+        };
+        let start = map(range.start, false)?;
+        let end = if range.start == range.end {
+            start
+        } else {
+            map(range.end, true)?
+        };
+        Some(TextRange::new(start, end))
+    }
+
     pub fn source_offset(&self, generated: usize) -> Option<usize> {
         self.segments.iter().find_map(|segment| {
             if generated < segment.generated.start || generated > segment.generated.end {

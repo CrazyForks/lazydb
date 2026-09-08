@@ -6,15 +6,27 @@ fn valid_sql_has_no_diagnostics() {
 }
 
 #[test]
-fn parser_failures_are_reported_over_the_statement_when_unlocated() {
+fn parser_eof_failures_are_reported_at_the_end_of_sql() {
     let diagnostics = diagnose_sql("select *\nfrom users\nwhere", SqlDialect::Generic);
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, "sql-parser");
-    assert_eq!(diagnostics[0].range.start, 0);
+    assert_eq!(
+        diagnostics[0].range.start,
+        "select *\nfrom users\nwhere".len()
+    );
     assert_eq!(
         diagnostics[0].range.end,
         "select *\nfrom users\nwhere".len()
     );
+}
+
+#[test]
+fn parser_locations_use_utf8_character_boundaries() {
+    let text = "SELECT '\u{1f600}' FROM users WHERE )";
+    let diagnostics = diagnose_sql(text, SqlDialect::Postgres);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].range.start, text.find(')').unwrap());
+    assert_eq!(diagnostics[0].range.end, text.len());
 }
 
 #[test]

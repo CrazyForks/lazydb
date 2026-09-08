@@ -1,5 +1,5 @@
 use super::{EmbeddedSqlUnit, SourceSegment, SourceSegmentKind};
-use crate::sql::TextRange;
+use crate::sql::{SqlDialect, TextRange};
 
 const STATEMENT_TAGS: [&str; 4] = ["select", "insert", "update", "delete"];
 const DYNAMIC_TAGS: [&str; 10] = [
@@ -16,6 +16,10 @@ const DYNAMIC_TAGS: [&str; 10] = [
 ];
 
 pub fn extract_units(source: &str) -> Vec<EmbeddedSqlUnit> {
+    extract_units_for_dialect(source, SqlDialect::Generic)
+}
+
+pub fn extract_units_for_dialect(source: &str, dialect: SqlDialect) -> Vec<EmbeddedSqlUnit> {
     let mut units = Vec::new();
     let mut cursor = 0;
     while let Some((open_start, open_end, name)) = next_statement_tag(source, cursor) {
@@ -30,7 +34,7 @@ pub fn extract_units(source: &str) -> Vec<EmbeddedSqlUnit> {
             break;
         };
         let content = &source[open_end..close_start];
-        let (sql, segments, trusted) = normalize_content(content, open_end);
+        let (sql, segments, trusted) = normalize_content(content, open_end, dialect);
         units.push(EmbeddedSqlUnit {
             source: TextRange::new(open_start, close_end),
             sql,
@@ -64,10 +68,15 @@ fn next_statement_tag(source: &str, from: usize) -> Option<(usize, usize, String
     None
 }
 
-fn normalize_content(content: &str, source_offset: usize) -> (String, Vec<SourceSegment>, bool) {
+fn normalize_content(
+    content: &str,
+    source_offset: usize,
+    dialect: SqlDialect,
+) -> (String, Vec<SourceSegment>, bool) {
     let mut sql = String::new();
     let mut segments = Vec::new();
     let mut trusted = true;
+    let mut parameter_count = 0;
     let mut cursor = 0;
     while cursor < content.len() {
         if content[cursor..].starts_with("<![CDATA[") {
@@ -82,6 +91,8 @@ fn normalize_content(content: &str, source_offset: usize) -> (String, Vec<Source
                 &mut sql,
                 &mut segments,
                 &mut trusted,
+                dialect,
+                &mut parameter_count,
             );
             cursor = (body_end + 3).min(content.len());
             continue;
@@ -123,6 +134,8 @@ fn normalize_content(content: &str, source_offset: usize) -> (String, Vec<Source
             &mut sql,
             &mut segments,
             &mut trusted,
+            dialect,
+            &mut parameter_count,
         );
         cursor = next;
     }
@@ -135,6 +148,8 @@ fn append_text(
     sql: &mut String,
     segments: &mut Vec<SourceSegment>,
     trusted: &mut bool,
+    dialect: SqlDialect,
+    parameter_count: &mut usize,
 ) {
     let mut cursor = 0;
     while cursor < text.len() {
@@ -178,10 +193,15 @@ fn append_text(
                 break;
             };
             let generated_start = sql.len();
-            sql.push('?');
+            *parameter_count += 1;
+            match dialect {
+                SqlDialect::Postgres => sql.push_str(&format!("${parameter_count}")),
+                SqlDialect::SqlServer => sql.push_str(&format!("@p{parameter_count}")),
+                _ => sql.push('?'),
+            }
             segments.push(SourceSegment {
                 source: TextRange::new(source_start + special, source_start + end),
-                generated: TextRange::new(generated_start, generated_start + 1),
+                generated: TextRange::new(generated_start, sql.len()),
                 kind: if needle == "#{" {
                     SourceSegmentKind::Parameter
                 } else {

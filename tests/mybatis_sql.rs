@@ -1,4 +1,64 @@
 use lazydb::sql::embedded::mybatis::extract_units;
+use lazydb::sql::embedded::mybatis::extract_units_for_dialect;
+use lazydb::sql::{SqlDialect, TextRange, diagnose_sql};
+
+#[test]
+fn dialect_parameters_preserve_source_spans_across_cdata_and_double_digits() {
+    for dialect in [
+        SqlDialect::Postgres,
+        SqlDialect::MySql,
+        SqlDialect::SqlServer,
+        SqlDialect::Sqlite,
+        SqlDialect::Generic,
+    ] {
+        let parameters = (1..=12)
+            .map(|n| format!("#{{p{n},jdbcType=INTEGER}}"))
+            .collect::<Vec<_>>();
+        let source = format!(
+            "<select>SELECT {}, <![CDATA[{}]]> FROM users</select>",
+            parameters[..6].join(", "),
+            parameters[6..].join(", ")
+        );
+        let unit = extract_units_for_dialect(&source, dialect).remove(0);
+        assert!(unit.trusted_diagnostics);
+        assert!(
+            diagnose_sql(&unit.sql, dialect).is_empty(),
+            "{dialect:?}: {}",
+            unit.sql
+        );
+        let segments = unit
+            .segments
+            .iter()
+            .filter(|s| s.kind == lazydb::sql::embedded::SourceSegmentKind::Parameter)
+            .collect::<Vec<_>>();
+        assert_eq!(segments.len(), 12);
+        for (n, segment) in segments.iter().enumerate() {
+            let expected = match dialect {
+                SqlDialect::Postgres => format!("${}", n + 1),
+                SqlDialect::SqlServer => format!("@p{}", n + 1),
+                _ => "?".into(),
+            };
+            assert_eq!(
+                &unit.sql[segment.generated.start..segment.generated.end],
+                expected
+            );
+            assert_eq!(
+                unit.source_diagnostic(segment.generated),
+                Some(segment.source)
+            );
+            assert_eq!(
+                &source[segment.source.start..segment.source.end],
+                parameters[n]
+            );
+        }
+        let generated = unit.sql.find("FROM").unwrap();
+        let original = source.find("FROM").unwrap();
+        assert_eq!(
+            unit.source_edit(TextRange::new(generated, generated + 4)),
+            Some(TextRange::new(original, original + 4))
+        );
+    }
+}
 
 #[test]
 fn extracts_static_mapper_sql_and_parameters() {

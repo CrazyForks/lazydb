@@ -5,25 +5,20 @@ use super::{document::Document, position::PositionIndex};
 
 pub fn diagnostics_for_document(document: &Document, dialect: SqlDialect) -> Vec<Diagnostic> {
     if document.language_id == "xml" {
-        return crate::sql::embedded::mybatis::extract_units(&document.text)
+        let positions = PositionIndex::new(document.text.clone());
+        return crate::sql::embedded::mybatis::extract_units_for_dialect(&document.text, dialect)
             .into_iter()
             .filter(|unit| unit.trusted_diagnostics)
             .flat_map(|unit| {
-                let mut virtual_document = document.clone();
-                virtual_document.language_id = "sql".into();
-                virtual_document.text = unit.sql.clone();
-                diagnostics_for_document(&virtual_document, dialect)
+                let positions = &positions;
+                diagnose_sql(&unit.sql, dialect)
                     .into_iter()
                     .filter_map(move |mut diagnostic| {
-                        let positions = PositionIndex::new(unit.sql.clone());
-                        let start = positions.offset(diagnostic.range.start);
-                        let end = positions.offset(diagnostic.range.end);
-                        let source_range =
-                            unit.source_edit(crate::sql::TextRange::new(start, end))?;
-                        let source_positions = PositionIndex::new(document.text.clone());
-                        diagnostic.range =
-                            source_positions.range(source_range.start, source_range.end);
-                        Some(diagnostic)
+                        diagnostic.range = unit.source_diagnostic(diagnostic.range)?;
+                        if let Some((message, _)) = diagnostic.message.rsplit_once(" at Line: ") {
+                            diagnostic.message = message.to_owned();
+                        }
+                        Some(to_lsp_diagnostic(positions, diagnostic))
                     })
             })
             .collect();
