@@ -3,7 +3,7 @@ use super::{panel_block, render_text_input, theme::Theme};
 use crate::{
     app::App,
     model::{
-        editor::EditorViewport,
+        editor::{EditorRenderSnapshot, EditorViewport},
         relation::{RelationLoad, RelationSnapshotProvenance, RelationView},
         tab::WorkspaceTab,
         workspace::Focus,
@@ -184,6 +184,30 @@ pub(crate) fn render(
             );
         }
     }
+}
+
+pub(crate) fn ddl_editor_viewport(area: Rect, app: &App) -> Option<(uuid::Uuid, EditorViewport)> {
+    let Some(WorkspaceTab::Relation(tab)) = app.tabs.get(app.active_tab) else {
+        return None;
+    };
+    if tab.view != RelationView::Ddl {
+        return None;
+    }
+    let status = !matches!(tab.ddl, RelationLoad::Ready(_));
+    let layout = relation_ddl_layout(area, status);
+    let inner = panel_block(
+        " RELATION DDL ",
+        app.focus == Focus::Results,
+        Theme::default(),
+    )
+    .inner(layout[1]);
+    Some((
+        tab.ddl_editor_id,
+        EditorViewport {
+            width: inner.width as usize,
+            height: inner.height as usize,
+        },
+    ))
 }
 
 fn register_json_selection_target(
@@ -902,6 +926,15 @@ fn render_ddl(
         RelationLoad::Empty => Some(("No DDL available", false, false)),
     };
     let mut block = panel_block(" RELATION DDL ", app.focus == Focus::Results, theme);
+    let chunks = relation_ddl_layout(area, status.is_some());
+    let viewport = {
+        let inner = block.inner(chunks[1]);
+        EditorViewport {
+            width: inner.width as usize,
+            height: inner.height as usize,
+        }
+    };
+    let editor_snapshot = app.active_ddl_editor_snapshot(viewport).ok();
     let snapshot = match &tab.ddl {
         RelationLoad::Ready(snapshot)
         | RelationLoad::Loading {
@@ -930,18 +963,35 @@ fn render_ddl(
             )
             .map(provenance_label)
             .unwrap_or("UNKNOWN");
-        let position = format!(
-            "ROW {}  COL {}",
-            tab.ddl_viewport.row_offset.saturating_add(1),
-            tab.ddl_viewport.column_offset.saturating_add(1)
+        let position = Some(
+            editor_snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    format!(
+                        "ROW {}  COL {}",
+                        snapshot.cursor.line.saturating_add(1),
+                        snapshot.cursor.column.saturating_add(1)
+                    )
+                })
+                .unwrap_or_else(|| {
+                    format!(
+                        "ROW {}  COL {}",
+                        tab.ddl_viewport.row_offset.saturating_add(1),
+                        tab.ddl_viewport.column_offset.saturating_add(1)
+                    )
+                }),
         );
         let available = usize::from(area.width.saturating_sub(2));
         let left_width = UnicodeWidthStr::width(" RELATION DDL ");
         let retain_provenance = provenance != "LIVE";
-        let full_context = format!("{source}  {position}  {provenance}");
+        let full_context = position
+            .as_ref()
+            .map(|position| format!("{source}  {position}  {provenance}"));
         let source_and_provenance = format!("{source}  {provenance}");
-        let parts = if left_width + UnicodeWidthStr::width(full_context.as_str()) + 2 <= available {
-            full_context
+        let parts = if full_context.as_ref().is_some_and(|context| {
+            left_width + UnicodeWidthStr::width(context.as_str()) + 2 <= available
+        }) {
+            full_context.unwrap_or_default()
         } else if retain_provenance
             && left_width + UnicodeWidthStr::width(source_and_provenance.as_str()) + 2 <= available
         {
@@ -954,10 +1004,6 @@ fn render_ddl(
         block = block.title_top(Line::raw(format!(" {parts} ")).right_aligned());
     }
     if let Some((message, retry, cancel)) = status {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(area);
         if cancel {
             render_loading_status(
                 frame,
@@ -971,10 +1017,38 @@ fn render_ddl(
         } else {
             render_status(frame, chunks[0], message, retry, cancel, theme, _state);
         }
-        render_ddl_editor(frame, chunks[1], app, theme, _state, block);
+        render_ddl_editor(
+            frame,
+            chunks[1],
+            app,
+            theme,
+            _state,
+            block,
+            editor_snapshot.as_ref(),
+        );
         return;
     }
-    render_ddl_editor(frame, area, app, theme, _state, block);
+    render_ddl_editor(
+        frame,
+        chunks[1],
+        app,
+        theme,
+        _state,
+        block,
+        editor_snapshot.as_ref(),
+    );
+}
+
+fn relation_ddl_layout(area: Rect, has_status: bool) -> [Rect; 2] {
+    if has_status {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .split(area);
+        [chunks[0], chunks[1]]
+    } else {
+        [Rect::default(), area]
+    }
 }
 
 fn render_ddl_editor(
@@ -984,14 +1058,17 @@ fn render_ddl_editor(
     theme: Theme,
     state: &mut super::UiState,
     block: ratatui::widgets::Block<'_>,
+    supplied_snapshot: Option<&EditorRenderSnapshot>,
 ) {
     let inner = block.inner(area);
     let viewport = EditorViewport {
         width: inner.width as usize,
         height: inner.height as usize,
     };
-    state.editor_viewport = Some(viewport);
-    let Ok(snapshot) = app.active_ddl_editor_snapshot(viewport) else {
+    let snapshot = supplied_snapshot
+        .cloned()
+        .or_else(|| app.active_ddl_editor_snapshot(viewport).ok());
+    let Some(snapshot) = snapshot.as_ref() else {
         frame.render_widget(block, area);
         return;
     };
@@ -1077,6 +1154,17 @@ fn clean(value: &str) -> String {
 #[cfg(test)]
 mod relation_status_tests {
     use super::*;
+
+    #[test]
+    fn relation_ddl_layout_reserves_status_rows_only_when_needed() {
+        let area = Rect::new(2, 3, 40, 12);
+        let without_status = relation_ddl_layout(area, false);
+        assert_eq!(without_status[1], area);
+
+        let with_status = relation_ddl_layout(area, true);
+        assert_eq!(with_status[0], Rect::new(2, 3, 40, 2));
+        assert_eq!(with_status[1], Rect::new(2, 5, 40, 10));
+    }
 
     #[test]
     fn relation_error_detail_keeps_retry_and_cancel_targets_independent() {

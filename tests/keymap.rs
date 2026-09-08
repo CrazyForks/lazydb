@@ -3392,6 +3392,12 @@ fn ddl_view_maps_navigation_without_using_grid_move() {
         KeyCode::Char('g'),
         KeyCode::Char('G'),
         KeyCode::Char('V'),
+        KeyCode::Char('f'),
+        KeyCode::Char('b'),
+        KeyCode::Char('d'),
+        KeyCode::Char('u'),
+        KeyCode::PageUp,
+        KeyCode::PageDown,
     ] {
         assert_eq!(
             keymap.map(key(code), &app),

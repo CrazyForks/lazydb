@@ -78,6 +78,12 @@ impl TerminalSession {
         self.mouse_captured
     }
 
+    pub fn size(&self) -> io::Result<ratatui::layout::Rect> {
+        self.terminal
+            .size()
+            .map(|area| ratatui::layout::Rect::new(0, 0, area.width, area.height))
+    }
+
     pub fn set_mouse_capture(&mut self, enabled: bool) -> io::Result<()> {
         if enabled == self.mouse_captured {
             return Ok(());

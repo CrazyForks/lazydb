@@ -285,6 +285,57 @@ fn normal_mode_page_keys_scroll_the_editor_without_editing_text() {
 }
 
 #[test]
+fn normal_mode_half_page_keys_keep_cursor_visible_without_editing_text() {
+    let text = (0..40)
+        .map(|line| format!("line-{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut workspace, id) = read_only_fixture(&text);
+    let viewport = EditorViewport {
+        width: 20,
+        height: 5,
+    };
+    workspace.set_viewport(id, viewport).unwrap();
+    let original = workspace.text(id).unwrap();
+    let revision = workspace.revision(id).unwrap();
+
+    for key in [EditorKey::Control('d'), EditorKey::Control('u')] {
+        workspace.press(id, key).unwrap();
+        let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+        assert!(snapshot.cursor_screen_cell.is_some(), "key={key:?}");
+        assert!(snapshot.cursor.line >= snapshot.first_line);
+        assert!(snapshot.cursor.line < snapshot.first_line + viewport.height);
+    }
+
+    assert_eq!(workspace.text(id).unwrap(), original);
+    assert_eq!(workspace.revision(id).unwrap(), revision);
+}
+
+#[test]
+fn navigation_keeps_unicode_and_tab_cursor_visible_at_horizontal_edges() {
+    let text = "short\n\t数据数据数据数据数据数据数据数据\nend";
+    let (mut workspace, id) = read_only_fixture(text);
+    let viewport = EditorViewport {
+        width: 8,
+        height: 2,
+    };
+    workspace.set_viewport(id, viewport).unwrap();
+
+    for _ in 0..2 {
+        workspace.press(id, EditorKey::Character('j')).unwrap();
+    }
+    for _ in 0..20 {
+        workspace.press(id, EditorKey::Character('l')).unwrap();
+    }
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert!(snapshot.cursor_screen_cell.is_some());
+
+    workspace.press(id, EditorKey::Character('h')).unwrap();
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert!(snapshot.cursor_screen_cell.is_some());
+}
+
+#[test]
 fn forward_search_starts_after_a_unicode_cursor_boundary() {
     let (mut workspace, id) = read_only_fixture("数据 数据");
     workspace.move_cursor_to_end(id).unwrap();
