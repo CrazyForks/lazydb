@@ -8,7 +8,7 @@ $baseUrl = if ($env:LAZYDB_CHANNEL_BASE_URL) { $env:LAZYDB_CHANNEL_BASE_URL.Trim
 $target = 'x86_64-pc-windows-msvc'
 $installDir = if ($env:LAZYDB_INSTALL_DIR) { $env:LAZYDB_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'LazyDB\bin' }
 $manifestPath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
-$archivePath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+$archivePath = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName() + '.zip')
 $extractDir = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 
 try {
@@ -25,7 +25,7 @@ try {
     $actual = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
     if ($actual -ne $asset.sha256.ToLowerInvariant()) { throw 'checksum mismatch' }
 
-    Expand-Archive -Path $archivePath -DestinationPath $extractDir -Force
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
     $binary = Get-ChildItem -Path $extractDir -Filter lazydb.exe -File -Recurse | Select-Object -First 1
     if ($null -eq $binary) { throw 'archive does not contain lazydb.exe' }
     $versionJson = & $binary.FullName version --json
@@ -35,10 +35,15 @@ try {
     Copy-Item $binary.FullName (Join-Path $installDir 'lazydb.exe') -Force
     $configDir = Join-Path $env:APPDATA 'lazydb'
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-    @{ schema = 1; product = 'lazydb'; manager = 'native'; channel = $channel; version = $manifest.version; target = $target; path = (Join-Path $installDir 'lazydb.exe') } |
-        ConvertTo-Json | Set-Content (Join-Path $configDir 'install.json') -Encoding UTF8
+    $state = @{ schema = 1; product = 'lazydb'; manager = 'native'; channel = $channel; version = $manifest.version; target = $target; path = (Join-Path $installDir 'lazydb.exe') } |
+        ConvertTo-Json
+    [IO.File]::WriteAllText(
+        (Join-Path $configDir 'install.json'),
+        $state,
+        [Text.UTF8Encoding]::new($false)
+    )
 
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $userPath = [string][Environment]::GetEnvironmentVariable('Path', 'User')
     if (-not (($userPath -split ';') -contains $installDir)) {
         [Environment]::SetEnvironmentVariable('Path', (($userPath.TrimEnd(';') + ';' + $installDir).Trim(';')), 'User')
         Write-Host "Added $installDir to the user PATH. Open a new terminal to use lazydb."

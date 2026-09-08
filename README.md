@@ -62,12 +62,31 @@ curl -fsSL https://lazydb.yelog.org/install.sh | sh -s -- --no-modify-path
 Run the following on Windows to install LazyDB:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://lazydb.yelog.org/install.ps1 | iex"
+& {
+    $ErrorActionPreference = 'Stop'
+    $installer = Join-Path ([IO.Path]::GetTempPath()) (
+        [IO.Path]::GetRandomFileName() + '.ps1'
+    )
+    try {
+        Invoke-WebRequest -Uri 'https://lazydb.yelog.org/install.ps1' `
+            -UseBasicParsing -OutFile $installer
+        if ((Get-Item -LiteralPath $installer).Length -eq 0) {
+            throw 'Downloaded installer is empty.'
+        }
+        powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer
+        if ($LASTEXITCODE -ne 0) {
+            throw "LazyDB installer failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    }
+}
 ```
 
 The Windows installer supports 64-bit Windows (MSVC), downloads the release
-release metadata and ZIP archive over HTTPS, verifies the SHA-256 checksum, and
-adds `%LOCALAPPDATA%\LazyDB\bin` to the user `PATH`. Open a new terminal after
+metadata and ZIP archive over HTTPS, verifies the SHA-256 checksum, and adds
+`%LOCALAPPDATA%\LazyDB\bin` to the user `PATH`. The command does not require
+administrator privileges. Open a new terminal after
 installation. To install the beta channel, set `$env:LAZYDB_CHANNEL = "beta"`
 before running the command. You can also download the Windows ZIP from the
 [latest GitHub Release](https://github.com/yelog/lazydb/releases/latest).

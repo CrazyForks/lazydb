@@ -70,6 +70,14 @@ channel associated with the newly published Release. It intentionally deploys
 only the two manifests, `CNAME`, and the three installer scripts; release
 archives are not copied to Pages.
 
+The Windows installer is checked in both Windows PowerShell 5.1 and PowerShell
+7. The documented Windows bootstrap downloads `install.ps1` to a temporary file
+and executes it with `-File`; it does not pipe a web response to
+`Invoke-Expression`. The installer writes its temporary archive with a `.zip`
+extension and writes `install.json` as UTF-8 without a BOM for compatibility
+with the Rust JSON parser. The Pages workflow runs the same installation against
+the public endpoint after deployment, using isolated `windows-2022` runners.
+
 ## Assets
 
 Binary targets are:
@@ -171,6 +179,22 @@ git diff --check
 sh scripts/release/test-channel-manifest.sh
 sh scripts/release/test-pages.sh
 sh scripts/release/test-installer.sh
+```
+
+On Windows, run the installer contracts with both supported PowerShell hosts:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/test-windows-installer.ps1
+pwsh -NoProfile -File scripts/release/test-windows-installer.ps1
+```
+
+After Pages deployment, the Windows online smoke test is run by CI for both
+hosts. To reproduce it manually, use the channel and version selected by the
+Pages workflow:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION
+pwsh -NoProfile -File scripts/release/smoke-online-install.ps1 -Channel stable -Version VERSION
 ```
 
 ## First Release Checklist
