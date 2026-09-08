@@ -694,6 +694,200 @@ fn fixture() -> Vec<CatalogEntry> {
     ]
 }
 
+fn fixture_with_column_names(names: &[&str]) -> Vec<CatalogEntry> {
+    let mut entries = fixture();
+    let connection = entries[0].id.profile_id();
+    let table = entries[2].id.clone();
+    for name in names {
+        entries.push(
+            CatalogEntry::relation_child(
+                CatalogId::new(
+                    connection,
+                    CatalogKind::Column,
+                    ["app", "public", "users", name],
+                ),
+                table.clone(),
+                qualified("app", Some("public"), name),
+                "column",
+                OptionalMetadata::Unsupported,
+                CatalogMetadata::Column(ColumnMetadata::new(2, "bigint", false)),
+            )
+            .unwrap(),
+        );
+    }
+    entries
+}
+
+#[test]
+fn alter_add_column_matches_create_definition() {
+    let index = CompletionIndex::default();
+    for (suffix, expected) in [("age b", "BIGINT"), ("age BIGINT n", "NOT NULL")] {
+        let create = format!("CREATE TABLE draft ({suffix}");
+        let alter = format!("ALTER TABLE users ADD COLUMN {suffix}");
+        let project = |sql: &str| {
+            complete(
+                sql,
+                sql.len(),
+                SqlDialect::Postgres,
+                &index,
+                CompletionContext::default(),
+            )
+            .into_iter()
+            .map(|candidate| (candidate.label, candidate.kind, candidate.insert_text))
+            .collect::<Vec<_>>()
+        };
+        let create_candidates = project(&create);
+        let alter_candidates = project(&alter);
+        assert!(
+            create_candidates
+                .iter()
+                .any(|candidate| candidate.0 == expected),
+            "CREATE {create}: {create_candidates:?}"
+        );
+        assert!(
+            alter_candidates
+                .iter()
+                .any(|candidate| candidate.0 == expected),
+            "ALTER {alter}: {alter_candidates:?}"
+        );
+        assert_eq!(alter_candidates, create_candidates);
+    }
+}
+
+#[test]
+fn alter_add_column_offers_constraints_after_completed_type() {
+    let index = CompletionIndex::default();
+    let sql = "ALTER TABLE users ADD COLUMN age BIGINT n";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::Keyword && candidate.label == "NOT NULL"
+        }),
+        "{candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.kind == CompletionKind::Keyword)
+    );
+}
+
+#[test]
+fn alter_rename_column_suggests_target_columns() {
+    let entries = fixture_with_column_names(&["age", "archived"]);
+    let index = CompletionIndex::new(&entries);
+    let sql = "ALTER TABLE users RENAME COLUMN a";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        candidates.iter().any(|candidate| {
+            candidate.kind == CompletionKind::Column && candidate.label == "age"
+        }),
+        "{candidates:?}"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.kind == CompletionKind::Column),
+        "{candidates:?}"
+    );
+}
+
+#[test]
+fn alter_rename_column_transitions_to_and_new_name() {
+    let index = CompletionIndex::new(&fixture_with_column_names(&["age", "archived"]));
+    let to = complete(
+        "ALTER TABLE users RENAME COLUMN age ",
+        "ALTER TABLE users RENAME COLUMN age ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(to.iter().any(|candidate| candidate.label == "TO"), "{to:?}");
+
+    let new_name = complete(
+        "ALTER TABLE users RENAME COLUMN age TO ",
+        "ALTER TABLE users RENAME COLUMN age TO ".len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    assert!(
+        new_name
+            .iter()
+            .all(|candidate| candidate.kind != CompletionKind::Column),
+        "{new_name:?}"
+    );
+}
+
+#[test]
+fn completion_trigger_rejects_blank_current_line() {
+    for sql in ["ALTER TABLE users\n  ", "SELECT * FROM users ORDER BY\n\t"] {
+        assert!(
+            !lazydb::sql::should_offer_completion_for_dialect(sql, sql.len(), SqlDialect::Postgres,),
+            "{sql:?}"
+        );
+    }
+}
+
+#[test]
+fn column_insertion_keeps_plain_names() {
+    let entries = fixture_with_column_names(&["small_num"]);
+    let index = CompletionIndex::new(&entries);
+    let sql = "SELECT small";
+    let candidates = complete(
+        sql,
+        sql.len(),
+        SqlDialect::Postgres,
+        &index,
+        CompletionContext::default(),
+    );
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.label == "small_num")
+        .expect("small_num column completion");
+    assert_eq!(candidate.insert_text, "small_num");
+}
+
+#[test]
+fn column_insertion_quotes_reserved_and_special_names() {
+    let entries = fixture_with_column_names(&["select", "odd name"]);
+    let index = CompletionIndex::new(&entries);
+    for (prefix, expected) in [("sele", "\"select\""), ("odd", "\"odd name\"")] {
+        let sql = format!("SELECT {prefix}");
+        let candidates = complete(
+            &sql,
+            sql.len(),
+            SqlDialect::Postgres,
+            &index,
+            CompletionContext::default(),
+        );
+        let candidate = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.label
+                    == if prefix == "sele" {
+                        "select"
+                    } else {
+                        "odd name"
+                    }
+            })
+            .expect("identifier completion");
+        assert_eq!(candidate.insert_text, expected);
+    }
+}
+
 fn compact_match_fixture() -> Vec<CatalogEntry> {
     let mut entries = fixture();
     let connection = entries[0].id.profile_id();
@@ -4707,7 +4901,7 @@ fn update_set_target_completion_matches_prefix_and_replaces_only_it() {
         assert_eq!(candidate.kind, CompletionKind::Column);
         assert_eq!(candidate.replace.start, sql.len() - "update_".len());
         assert_eq!(candidate.replace.end, sql.len());
-        assert_eq!(candidate.insert_text, format!("\"{}\"", candidate.label));
+        assert_eq!(candidate.insert_text, candidate.label);
         assert_eq!(candidate.detail.as_deref(), Some("text"));
     }
 }
