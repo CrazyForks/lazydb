@@ -7194,7 +7194,7 @@ impl App {
             Action::Osc52Clipboard { .. } => Vec::new(),
             Action::EditorViewportChanged(viewport) => {
                 let id = match self.tabs.get(self.active_tab) {
-                    Some(WorkspaceTab::Sql(tab)) if self.focus == Focus::Results => tab.id,
+                    Some(WorkspaceTab::Sql(tab)) => tab.id,
                     Some(WorkspaceTab::Relation(tab))
                         if self.focus == Focus::Results && tab.view == RelationView::Ddl =>
                     {
@@ -18764,6 +18764,86 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, Command::PersistWorkspace { .. }))
         );
+    }
+
+    #[test]
+    fn editor_viewport_changed_keeps_paging_and_navigation_visible() {
+        use crate::model::editor::EditorViewport;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = App::new(Vec::new());
+        let id = app.active_console().id;
+        let output_id = app.active_console().output_editor_id;
+        let output_viewport = app.editor.viewport(output_id).unwrap();
+        let text = (0..80)
+            .map(|_| "SELECT abcdefghijklmnopqrstuvwxyz;")
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.editor.set_text(id, &text).unwrap();
+        app.focus = Focus::Editor;
+        app.update(Action::EditorKey(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+
+        for viewport in [
+            EditorViewport {
+                width: 20,
+                height: 8,
+            },
+            EditorViewport {
+                width: 10,
+                height: 4,
+            },
+        ] {
+            app.update(Action::EditorViewportChanged(viewport));
+            assert_eq!(app.active_editor_viewport().unwrap(), viewport);
+            assert_eq!(app.editor.viewport(output_id).unwrap(), output_viewport);
+            assert!(
+                app.active_editor_render_snapshot(viewport)
+                    .unwrap()
+                    .cursor_screen_cell
+                    .is_some()
+            );
+
+            for (key, delta) in [
+                ('f', viewport.height as isize - 2),
+                ('b', -(viewport.height as isize - 2)),
+                ('d', viewport.height as isize / 2),
+                ('u', -(viewport.height as isize / 2)),
+            ] {
+                let before = app.editor.position(id).unwrap();
+                app.update(Action::EditorKey(KeyEvent::new(
+                    KeyCode::Char(key),
+                    KeyModifiers::CONTROL,
+                )));
+                assert_eq!(
+                    app.editor.position(id).unwrap().line,
+                    before.line.saturating_add_signed(delta)
+                );
+                assert!(
+                    app.active_editor_render_snapshot(viewport)
+                        .unwrap()
+                        .cursor_screen_cell
+                        .is_some()
+                );
+            }
+
+            for key in "jjjjjjjjjjjjllllllllllllllllllllllllhhhhhhhhkkkk".chars() {
+                app.update(Action::EditorKey(KeyEvent::new(
+                    KeyCode::Char(key),
+                    KeyModifiers::NONE,
+                )));
+                assert!(
+                    app.active_editor_render_snapshot(viewport)
+                        .unwrap()
+                        .cursor_screen_cell
+                        .is_some(),
+                    "cursor hidden after {key}"
+                );
+            }
+        }
+        assert_eq!(app.active_editor_text().unwrap(), text);
     }
 
     #[test]
