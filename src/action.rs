@@ -587,6 +587,10 @@ pub enum Action {
         total_rows: usize,
         max_line_width: usize,
     },
+    DdlEditorViewportChanged {
+        session_id: Uuid,
+        viewport: crate::model::editor::EditorViewport,
+    },
     FocusDataQueryInput(crate::model::data_query::DataQueryInput),
     SetDataQueryCursor {
         input: crate::model::data_query::DataQueryInput,

@@ -2134,6 +2134,7 @@ impl App {
                         | Action::DdlScrollToStart
                         | Action::DdlScrollToEnd
                         | Action::SetDdlViewportMetrics { .. }
+                        | Action::DdlEditorViewportChanged { .. }
                         | Action::RelationFirstPage
                         | Action::RelationPreviousPage
                         | Action::RelationNextPage
@@ -7240,6 +7241,20 @@ impl App {
                     _ => return Vec::new(),
                 };
                 let _ = self.editor.set_viewport(id, viewport);
+                Vec::new()
+            }
+            Action::DdlEditorViewportChanged {
+                session_id,
+                viewport,
+            } => {
+                if matches!(
+                    self.tabs.get(self.active_tab),
+                    Some(WorkspaceTab::Relation(tab))
+                        if tab.view == RelationView::Ddl && tab.ddl_editor_id == session_id
+                ) {
+                    self.ensure_read_only_session(session_id);
+                    let _ = self.editor.set_viewport(session_id, viewport);
+                }
                 Vec::new()
             }
             Action::OutputViewportChanged {

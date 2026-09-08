@@ -10,6 +10,7 @@ use lazydb::{
     db::value::CellValue,
     model::{
         data_query::DataQueryCapability,
+        editor::EditorViewport,
         explorer::CatalogTree,
         relation::{
             RelationDescriptor, RelationKey, RelationSnapshotProvenance, RelationTab, RelationView,
@@ -252,6 +253,24 @@ fn ddl_scroll_saturates_and_clamps_to_viewport_bounds() {
         columns: -100,
     });
     assert_eq!(ddl_offsets(&app), (0, 0));
+}
+
+#[test]
+fn ddl_editor_viewport_sync_uses_explicit_session_without_results_focus() {
+    let mut app = app_with_relation(RelationView::Ddl);
+    app.focus = lazydb::model::workspace::Focus::Explorer;
+    let session_id = relation_tab(&app).ddl_editor_id;
+    let viewport = EditorViewport {
+        width: 24,
+        height: 8,
+    };
+
+    app.update(Action::DdlEditorViewportChanged {
+        session_id,
+        viewport,
+    });
+
+    assert_eq!(app.active_ddl_editor_viewport().unwrap(), viewport);
 }
 
 #[test]

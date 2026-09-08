@@ -4305,6 +4305,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         if let Some(cursor) = ui_state.cursor {
             terminal.set_cursor_style(cursor.style)?;
         }
+        sync_ddl_editor_viewport(&mut app, &mut runtime, terminal.size()?);
         sync_editor_viewport(&mut app, &mut runtime, &ui_state);
         sync_output_viewport(&mut app, &mut runtime, &ui_state);
         sync_pane_layout(&mut app, &mut runtime, &ui_state);
@@ -4474,6 +4475,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
             if redraw && !app.should_quit {
                 let sequence = keymap.sequence_state(&app, std::time::Instant::now());
                 rendered_sequence = sequence.clone();
+                sync_ddl_editor_viewport(&mut app, &mut runtime, terminal.size()?);
                 terminal.draw(|frame| {
                     ui::render_with_state_using_icons_sequence_and_theme(
                         frame,
@@ -4494,7 +4496,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
                 sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
                 sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
-            }
+                }
         }
 
         Ok(app.restart_path.take())
@@ -4637,6 +4639,24 @@ mod workspace_save_tests {
             Some(2)
         );
         assert_eq!(queue.next_revision, 2);
+    }
+}
+
+fn sync_ddl_editor_viewport(app: &mut App, runtime: &mut Runtime, area: ratatui::layout::Rect) {
+    if let Some((session_id, viewport)) = ui::relation::ddl_editor_viewport(area, app)
+        && app
+            .active_ddl_editor_viewport()
+            .ok()
+            .is_none_or(|current| current != viewport)
+    {
+        apply_action(
+            app,
+            runtime,
+            Action::DdlEditorViewportChanged {
+                session_id,
+                viewport,
+            },
+        );
     }
 }
 
