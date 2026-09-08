@@ -19,6 +19,7 @@ mod range;
 mod relation_filter;
 mod risk;
 mod scope;
+mod semantic;
 mod transaction;
 mod type_name;
 
@@ -52,6 +53,10 @@ pub use relation_filter::{
 pub use risk::{SqlRisk, SqlRiskAggregate, SqlRiskAnalysis, classify_sql};
 pub use scope::{
     ResolvedScope, ScopeKind, ScopeSelection, ScopeSource, resolve_scope, scan_statements,
+};
+pub use semantic::{
+    CatalogCoverage, CatalogNamespace, CatalogSnapshot, RelationResolution, SemanticAnalysis,
+    SemanticContext, analyze_semantics,
 };
 pub use transaction::{
     BeginRequest, TransactionControl, TransactionSqlClassification, TransactionSqlError,

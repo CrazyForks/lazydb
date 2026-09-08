@@ -106,6 +106,7 @@ pub struct EditorRenderSnapshot {
     pub selections: Vec<EditorSelection>,
     pub selection_cells: Vec<(usize, usize, usize)>,
     pub prompt: Option<EditorPromptSnapshot>,
+    pub semantic_diagnostics: Vec<crate::sql::SqlDiagnostic>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
