@@ -63,6 +63,35 @@ This authorization does not bypass higher-priority instructions, OpenCode tool
 permissions, branch protection, or GitHub Environment approval. Report such
 restrictions as blockers; never change permissions or protection to avoid them.
 
+## Version Policy
+
+- Use the project's decimal rollover policy, not SemVer change classification.
+  Starting from the highest published stable tag, increment PATCH when below 9;
+  at PATCH 9, reset PATCH to 0 and increment MINOR. Examples: `v0.1.1 -> v0.1.2`,
+  `v0.1.8 -> v0.1.9`, `v0.1.9 -> v0.2.0`.
+- Never choose a larger default bump because of `feat`, `fix`, `BREAKING CHANGE`,
+  or change size. Analyze those only for changelog content and compatibility
+  warnings. A risk warning must not silently change the candidate.
+- No stable tag, MINOR/PATCH already above 9, or a rollover across MAJOR (such as
+  `v0.9.9`) requires an explicit version; do not guess or automatically enter 1.0.
+- A new Beta uses the next stable base plus `-beta.1`. Continue the same line by
+  increasing only its Beta counter (`beta.9 -> beta.10`). Stable promotion removes
+  the suffix without another bump. A different unpublished Beta line blocks the
+  default recommendation until the maintainer explicitly chooses a version.
+- Explicit versions may override the default policy, but must match the channel,
+  be newer than the highest stable tag, and not exist locally or remotely. Beta
+  overrides must also advance the same-line Beta counter. Never skip an existing
+  target by silently incrementing again. Version format remains unchanged.
+- Run `python3 scripts/release/next-version.py CHANNEL` after fetching tags.
+  For an explicit selection, add `--override VERSION`. This read-only script is
+  the source of truth for candidate calculation; do not reproduce its arithmetic.
+  It outputs JSON with `baseline`, `version`, `base_version`, `tag`, and `reason`.
+  Confirm the baseline is on the expected release branch and corresponds to a
+  published release; unexpected history or unpublished tags block preparation.
+- Show the current stable tag, policy, exact candidate, calculation reason, and
+  any compatibility warnings at version confirmation. An explicit version supplied
+  in the initial request still follows the existing confirmation protocol.
+
 ## Procedure
 
 1. Verify `main`, its upstream, a clean worktree and index, and the
@@ -70,15 +99,17 @@ restrictions as blockers; never change permissions or protection to avoid them.
    files. Require local `main` to contain remote `main` and inspect any outgoing
    commits. Stop if behind or diverged; do not merge or rebase automatically.
    Check required tools and GitHub authentication before editing. Record source HEAD.
-2. Determine the candidate line from actual tag history, then run
-   `scripts/release/collect-commits.sh beta VERSION` or
-   `scripts/release/collect-commits.sh stable VERSION`. Save its JSON output
+2. Calculate the candidate using `next-version.py` and the Version Policy above,
+   then run `scripts/release/collect-commits.sh CHANNEL BASE_VERSION`, using the
+   returned `base_version` (without a Beta suffix). Save its JSON output
    to a temporary file when it is large, and inspect both that data and
    `git diff BASE..HEAD`.
-3. Recommend `MAJOR.MINOR.PATCH` using breaking changes, Conventional Commit
-   evidence, affected code, and existing tags. For Beta use `VERSION-beta.1`,
-   or increment the existing same-line Beta number. Validate the candidate
-   before presenting it.
+3. Inspect breaking changes, Conventional Commits, and affected code for changelog
+   content and compatibility warnings, not version arithmetic. Present the exact
+   script-generated candidate after checking local/remote tag absence. Validate
+   overrides with the same script before accepting them and recollect commits
+   using the returned base version. File consistency validation happens after
+   preparation, not against the old Cargo version during selection.
 4. Wait for the version transition described above. A confirmed version is
    the single source of truth for all following commands.
 5. Generate a dated Keep a Changelog body with Added, Changed, Fixed,
