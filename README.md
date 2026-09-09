@@ -36,8 +36,8 @@ Oracle MySQL, SQL Server, and SQLite.
     </td>
   </tr>
   <tr>
-    <th>MCP</th>
-    <th>Neovim LSP</th>
+    <th>MCP & Neovim Integrated</th>
+    <th>Neovim LSP(Completion & Syntax Highlighting)</th>
   </tr>
   <tr>
     <td>
