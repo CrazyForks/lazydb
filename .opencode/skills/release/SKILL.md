@@ -130,8 +130,15 @@ restrictions as blockers; never change permissions or protection to avoid them.
    binary `version --json` smoke test. Also run
    `sh scripts/release/test-distribution.sh`; this is the shared CI/Release
    gate for installer, manifest, Pages, metadata, and online smoke-test contracts.
-   All checks must pass before commit/tag creation. Report each command's actual result;
-   never infer success from a partial or concurrent command.
+   Serialize Cargo commands that share the build directory. When invoking commands
+   through a tool with a command timeout, use a bounded timeout of at least 10 minutes
+   (`600000` ms) for the full test suite, release build, and distribution gate; the
+   default short timeout can terminate a still-running test suite and must not be
+   reported as a test failure. If a command reaches its timeout, inspect its actual
+   process and repository state before retrying, then rerun it with the same 10-minute
+   bound or a larger bounded value if the measured build requires it. All checks must
+   pass before commit/tag creation. Report each command's actual result; never infer
+   success from a partial, timed-out, or concurrent command.
 9. Inspect the complete release diff, status, index, and recent commit history.
    Report the files changed, baseline, commit count, diff summary, and exact
    commands without pausing for approval. Verify HEAD still matches the inspected
