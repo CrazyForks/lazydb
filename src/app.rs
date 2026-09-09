@@ -269,6 +269,7 @@ pub struct App {
     workspaces: HashMap<Uuid, ConnectionWorkspace>,
     workspace_save: crate::model::workspace_save::SaveState,
     workspace_save_closing: bool,
+    workspace_quit_save: crate::model::workspace_save::QuitSaveState,
     pub notifications: NotificationCenter,
     dashboard_refresh_interval_millis: u64,
     default_connection_access: crate::config::ConnectionAccessDefault,
@@ -672,6 +673,7 @@ impl App {
             workspaces: HashMap::new(),
             workspace_save: Default::default(),
             workspace_save_closing: false,
+            workspace_quit_save: Default::default(),
             notifications: NotificationCenter::default(),
             dashboard_refresh_interval_millis: crate::persistence::settings::AppSettings::default()
                 .dashboard_refresh_interval_millis(),
@@ -1509,7 +1511,19 @@ impl App {
                 ));
             }
         }
-        let legacy_consoles = if active_profile.is_none() && !has_profile_workspaces {
+        let has_unpersisted_default_console = active_profile.is_none()
+            && !has_profile_workspaces
+            && self.sql_editors.len() == 1
+            && self.sql_editors[0].name == "console"
+            && self.sql_editors[0].execution_target.is_none()
+            && self.sql_editors[0].transaction_mode == TransactionMode::Auto
+            && self
+                .editor_text(self.sql_editors[0].id)
+                .is_ok_and(|text| text.is_empty());
+        let legacy_consoles = if active_profile.is_none()
+            && !has_profile_workspaces
+            && !has_unpersisted_default_console
+        {
             self.sql_editors
                 .iter()
                 .map(|record| self.persisted_console(record, None))
@@ -1517,11 +1531,16 @@ impl App {
         } else {
             Vec::new()
         };
-        let sql = if active_profile.is_none() && !has_profile_workspaces {
+        let sql = if active_profile.is_none()
+            && !has_profile_workspaces
+            && !has_unpersisted_default_console
+        {
             self.sql_editors
                 .iter()
                 .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default()))
                 .collect()
+        } else if has_unpersisted_default_console {
+            Vec::new()
         } else {
             sql
         };
@@ -3070,24 +3089,85 @@ impl App {
             }
             Action::WorkspaceSaveFailed { revision, message } => {
                 self.workspace_save.failed(revision);
+                if self.workspace_save_closing
+                    && matches!(
+                        self.workspace_quit_save,
+                        crate::model::workspace_save::QuitSaveState::Saving {
+                            revision: pending
+                        } if pending == revision
+                    )
+                {
+                    self.workspace_quit_save =
+                        crate::model::workspace_save::QuitSaveState::Failed {
+                            revision,
+                            message: message.clone(),
+                        };
+                }
                 self.notify_error(
                     "Workspace",
                     format!("Workspace save {revision} failed: {message}"),
                 );
+                if matches!(
+                    self.workspace_quit_save,
+                    crate::model::workspace_save::QuitSaveState::Failed {
+                        revision: pending,
+                        ..
+                    } if pending == revision
+                ) {
+                    self.overlay = Some(Overlay::WorkspaceSaveFailed { revision, message });
+                }
                 vec![Command::CompleteWorkspaceSave {
                     revision,
                     succeeded: false,
                 }]
             }
             Action::WorkspaceSaveRetry => {
+                if let crate::model::workspace_save::QuitSaveState::Failed { revision, .. } =
+                    self.workspace_quit_save
+                {
+                    self.workspace_quit_save =
+                        crate::model::workspace_save::QuitSaveState::Saving { revision };
+                }
                 self.workspace_save.status = crate::model::workspace_save::SaveStatus::Saving;
                 vec![Command::RetryWorkspaceSave]
             }
+            Action::RetryWorkspaceQuitSave => {
+                if matches!(
+                    self.workspace_quit_save,
+                    crate::model::workspace_save::QuitSaveState::Failed { .. }
+                ) {
+                    self.overlay = None;
+                    return self.update(Action::WorkspaceSaveRetry);
+                }
+                Vec::new()
+            }
+            Action::DiscardWorkspaceQuitSave => {
+                if matches!(
+                    self.workspace_quit_save,
+                    crate::model::workspace_save::QuitSaveState::Failed { .. }
+                ) {
+                    self.overlay = None;
+                    self.workspace_save_closing = false;
+                    self.workspace_quit_save = crate::model::workspace_save::QuitSaveState::Idle;
+                    self.should_quit = true;
+                    return vec![Command::Quit];
+                }
+                Vec::new()
+            }
             Action::WorkspaceSaveFlushed { revision } => {
+                if !matches!(
+                    self.workspace_quit_save,
+                    crate::model::workspace_save::QuitSaveState::Saving {
+                        revision: pending
+                    } if pending == revision
+                ) {
+                    return Vec::new();
+                }
                 if !self.workspace_save.is_acknowledged(revision) {
                     return Vec::new();
                 }
                 self.workspace_save_closing = false;
+                self.workspace_quit_save = crate::model::workspace_save::QuitSaveState::Idle;
                 self.should_quit = true;
                 vec![Command::Quit]
             }
@@ -4361,6 +4441,12 @@ impl App {
             }
             Action::ExecuteHelpShortcut(id) => self.execute_help_shortcut(id),
             Action::DismissOverlay => {
+                if matches!(self.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
+                    self.overlay = None;
+                    self.workspace_save_closing = false;
+                    self.workspace_quit_save = crate::model::workspace_save::QuitSaveState::Idle;
+                    return Vec::new();
+                }
                 if matches!(
                     self.overlay,
                     Some(Overlay::DeleteConsole { .. } | Overlay::SqlEditorList(_))
@@ -10136,6 +10222,12 @@ impl App {
                 Some((message, unknown)),
             ),
             Action::Quit => {
+                if !matches!(
+                    self.workspace_quit_save,
+                    crate::model::workspace_save::QuitSaveState::Idle
+                ) {
+                    return Vec::new();
+                }
                 if matches!(
                     self.overlay,
                     Some(
@@ -10203,6 +10295,8 @@ impl App {
                         let command = self.persist_workspace_command();
                         let revision = self.workspace_save.current_revision;
                         self.workspace_save_closing = true;
+                        self.workspace_quit_save =
+                            crate::model::workspace_save::QuitSaveState::Saving { revision };
                         self.workspace_save.begin_closing();
                         vec![command, Command::FlushWorkspace { revision }]
                     }
@@ -17975,6 +18069,42 @@ mod tests {
         ));
 
         finish_workspace_quit(&mut app, revision);
+    }
+
+    #[test]
+    fn workspace_save_failure_offers_discard_quit_and_blocks_duplicate_quit_requests() {
+        let mut app = App::new(Vec::new());
+        let revision = quit_revision(&mut app);
+        app.update(Action::WorkspaceSaveFailed {
+            revision,
+            message: "test failure".into(),
+        });
+
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::WorkspaceSaveFailed { .. })
+        ));
+        assert!(app.update(Action::Quit).is_empty());
+        assert!(matches!(
+            app.update(Action::DiscardWorkspaceQuitSave).as_slice(),
+            [Command::Quit]
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn dismissing_workspace_save_failure_cancels_quit() {
+        let mut app = App::new(Vec::new());
+        let revision = quit_revision(&mut app);
+        app.update(Action::WorkspaceSaveFailed {
+            revision,
+            message: "test failure".into(),
+        });
+
+        assert!(app.update(Action::DismissOverlay).is_empty());
+        assert_eq!(app.overlay, None);
+        assert!(!app.should_quit);
+        assert!(!app.update(Action::Quit).is_empty());
     }
 
     #[test]

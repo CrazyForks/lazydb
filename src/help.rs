@@ -180,6 +180,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::ProfileGroup(_) => ShortcutContext::ProfileGroup,
                 Overlay::ExplorerAdd(_) => ShortcutContext::Explorer,
                 Overlay::Message { .. } => ShortcutContext::Message,
+                Overlay::WorkspaceSaveFailed { .. } => ShortcutContext::Message,
                 Overlay::SubstituteConfirm { .. } => ShortcutContext::SubstituteConfirmation,
                 Overlay::ExecutionConfirm { .. } => ShortcutContext::ExecutionConfirmation,
                 Overlay::ManualCancelConfirm { .. } => ShortcutContext::ManualCancelConfirmation,

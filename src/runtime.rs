@@ -156,6 +156,7 @@ struct WorkspaceSaveQueue {
     failed: Option<(u64, crate::persistence::workspace::WorkspaceSnapshot)>,
     active: Option<JoinHandle<()>>,
     next_revision: u64,
+    acknowledged_revision: u64,
     flushing: Option<u64>,
 }
 
@@ -167,6 +168,7 @@ impl WorkspaceSaveQueue {
             failed: None,
             active: None,
             next_revision: 0,
+            acknowledged_revision: 0,
             flushing: None,
         }
     }
@@ -192,7 +194,9 @@ impl WorkspaceSaveQueue {
             return;
         }
         let Some((revision, snapshot)) = self.pending.take() else {
-            if let Some(revision) = self.flushing {
+            if let Some(revision) = self.flushing
+                && self.acknowledged_revision >= revision
+            {
                 let _ = sender.send(Action::WorkspaceSaveFlushed { revision });
                 self.flushing = None;
             }
@@ -225,6 +229,9 @@ impl WorkspaceSaveQueue {
         // returns. Dropping this completed wrapper releases the queue slot even
         // if Tokio has not observed the outer task as finished yet.
         self.active.take();
+        if succeeded {
+            self.acknowledged_revision = self.acknowledged_revision.max(revision);
+        }
         if succeeded
             && self
                 .failed
@@ -4813,6 +4820,7 @@ fn sequence_redraw_needed(
 #[cfg(test)]
 mod workspace_save_tests {
     use super::WorkspaceSaveQueue;
+    use crate::action::Action;
     use crate::persistence::workspace::WorkspaceSnapshot;
 
     fn snapshot() -> WorkspaceSnapshot {
@@ -4841,6 +4849,33 @@ mod workspace_save_tests {
             Some(2)
         );
         assert_eq!(queue.next_revision, 2);
+    }
+
+    #[tokio::test]
+    async fn failed_flush_does_not_emit_flushed_until_retry_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::persistence::workspace::WorkspaceStore::new(
+            temp.path().join("workspace.toml"),
+            temp.path().join("sql"),
+        );
+        let mut queue = WorkspaceSaveQueue::new(store);
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        queue.next_revision = 1;
+        queue.failed = Some((1, snapshot()));
+        queue.flushing = Some(1);
+
+        assert!(receiver.try_recv().is_err());
+
+        queue.retry(sender.clone());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(Action::WorkspaceSaveSucceeded { revision: 1 })
+        ));
+        queue.complete(1, true, sender);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(Action::WorkspaceSaveFlushed { revision: 1 })
+        ));
     }
 }
 

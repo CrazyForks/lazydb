@@ -165,6 +165,15 @@ impl Keymap {
             }
             return None;
         }
+        if matches!(app.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Char('r') => Some(Action::RetryWorkspaceQuitSave),
+                KeyCode::Char('d') => Some(Action::DiscardWorkspaceQuitSave),
+                KeyCode::Esc => Some(Action::DismissOverlay),
+                _ => None,
+            };
+        }
         if app.overlay == Some(Overlay::ProfileManager) {
             self.pending = None;
             return map_profile_manager(event, app);

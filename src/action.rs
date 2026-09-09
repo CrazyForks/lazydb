@@ -133,6 +133,8 @@ pub enum Action {
     },
     RestartForUpdate,
     DismissOverlay,
+    RetryWorkspaceQuitSave,
+    DiscardWorkspaceQuitSave,
     ToggleTerminalSelection,
     DismissNotification(u64),
     OpenNotificationHistory,

@@ -2,6 +2,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use lazydb::{
+    app::App,
     db::catalog::{CatalogId, CatalogKind, QualifiedName},
     model::execution_target::ExecutionTarget,
     model::relation::RelationView,
@@ -11,6 +12,30 @@ use lazydb::{
         WorkspaceError, WorkspaceSnapshot, WorkspaceStore,
     },
 };
+
+#[test]
+fn empty_app_workspace_snapshot_is_persistable() {
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(
+        temp.path().join("state/workspace.toml"),
+        temp.path().join("state/sql"),
+    );
+    let app = App::new(Vec::new());
+
+    store
+        .save(&app.workspace_snapshot())
+        .expect("an empty app must be able to save its workspace");
+}
+
+#[test]
+fn empty_app_snapshot_does_not_persist_its_placeholder_console() {
+    let app = App::new(Vec::new());
+    let snapshot = app.workspace_snapshot();
+
+    assert!(snapshot.profiles.is_empty());
+    assert!(snapshot.consoles.is_empty());
+    assert!(snapshot.sql.is_empty());
+}
 
 #[test]
 fn workspace_v3_round_trip_restores_two_profile_workspaces_and_durable_state() {

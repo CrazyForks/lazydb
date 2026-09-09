@@ -65,6 +65,24 @@ installation data from `~/.local/share/lazydb/` into the selected config
 directory when the destination entries do not already exist. This includes
 `install.json`, `current`, and `releases/` for native installations.
 
+The environment variable selects a different configuration root; it does not
+copy profiles from the previous root. For example, after setting
+`LAZYDB_CONFIG_HOME=$HOME/lazydb`, LazyDB reads connections from
+`$HOME/lazydb/connections.toml`. Existing profiles under
+`~/.config/lazydb/` remain there unless you explicitly migrate the complete
+set of related files. When using `local_encrypted` credentials, migrate the
+matching `credential.key` together with the profile file. Do not overwrite an
+existing destination without first checking its contents.
+
+The workspace stores open tabs in `workspace.toml` and SQL text in `sql/`.
+LazyDB saves an empty welcome console as an empty workspace; a console with
+user-entered SQL is treated as a draft and is not discarded merely because no
+database profile is currently active.
+
+If workspace saving fails while quitting, the UI offers retry, discard-and-quit,
+or cancel-quit. Discarding applies to the current unsaved workspace snapshot;
+it does not undo files that were successfully written by an earlier save.
+
 ## Command-Line Options
 
 These options are global and can be placed before a subcommand. They are not

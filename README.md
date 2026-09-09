@@ -332,8 +332,13 @@ use another directory for these files. For example, to keep using the previous
 macOS location:
 
 ```bash
-export LAZYDB_CONFIG_HOME=$HOME/lazydb
+  export LAZYDB_CONFIG_HOME=$HOME/lazydb
 ```
+
+This changes the configuration root; it does not automatically copy connection
+profiles from the default directory. If profiles use local encrypted
+credentials, keep the matching `credential.key` with `connections.toml` when
+migrating them.
 
 Windows continues to use `%APPDATA%\\lazydb\\`. The directory contains
 `settings.toml`, `connections.toml`, `credential.key`, `workspace.toml`, and the `sql/` directory

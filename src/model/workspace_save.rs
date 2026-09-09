@@ -46,6 +46,19 @@ pub struct SaveState {
     pub acknowledged_revision: u64,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum QuitSaveState {
+    #[default]
+    Idle,
+    Saving {
+        revision: u64,
+    },
+    Failed {
+        revision: u64,
+        message: String,
+    },
+}
+
 impl Default for SaveState {
     fn default() -> Self {
         Self {
