@@ -491,8 +491,12 @@ fn relation_dirty_edits_block_refresh_and_all_navigation() {
             "x".into(),
         )]]),
     );
-    tab.edit.as_mut().unwrap().mode =
-        lazydb::model::relation_edit::RelationGridMode::VisualLine { anchor: 0 };
+    assert!(
+        tab.edit
+            .as_mut()
+            .unwrap()
+            .update_cell(0, 0, CellValue::Text("changed".into()))
+    );
     for action in [
         Action::RefreshActiveRelation,
         Action::RelationFirstPage,
@@ -502,6 +506,40 @@ fn relation_dirty_edits_block_refresh_and_all_navigation() {
     ] {
         assert!(app.update(action).is_empty());
     }
+}
+
+#[test]
+fn relation_visual_selection_does_not_block_refresh() {
+    let mut app = app_with_relation_columns(&["value"]);
+    let mut profile = lazydb::profile::import_connection_url("sqlite::memory:", Some("test"))
+        .unwrap()
+        .profile;
+    profile.id = Uuid::nil();
+    app.profiles.push(profile);
+    app.connection.profile_id = Some(Uuid::nil());
+    app.connection.generation = 1;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    app.connection.target = Some(lazydb::model::execution_target::ExecutionTarget {
+        profile_id: Uuid::nil(),
+        database: ":memory:".into(),
+        schema: None,
+    });
+    let WorkspaceTab::Relation(tab) = &mut app.tabs[1] else {
+        panic!()
+    };
+    tab.edit = Some(
+        lazydb::model::relation_edit::RelationEditSession::from_rows(vec![vec![CellValue::Text(
+            "x".into(),
+        )]]),
+    );
+    tab.edit.as_mut().unwrap().mode =
+        lazydb::model::relation_edit::RelationGridMode::VisualLine { anchor: 0 };
+
+    let commands = app.update(Action::RefreshActiveRelation);
+    assert!(matches!(
+        commands.as_slice(),
+        [lazydb::action::Command::LoadRelationPreview(_)]
+    ));
 }
 
 #[test]

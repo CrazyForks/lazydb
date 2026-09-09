@@ -15649,6 +15649,12 @@ impl App {
                 .get(self.active_tab)
                 .is_some_and(|tab| matches!(tab, WorkspaceTab::Relation(tab) if tab.transaction_state == TransactionState::Idle))
         {
+            if self.tabs.get(self.active_tab).is_some_and(|tab| {
+                matches!(tab, WorkspaceTab::Relation(tab) if tab.edit.as_ref().is_none_or(|edit| !edit.has_dirty_rows()))
+            }) {
+                self.notify_info("Relation", "No pending relation changes");
+                return Vec::new();
+            }
             return self.relation_save();
         }
         let connection = self.database_command_identity();
@@ -17107,15 +17113,7 @@ fn relation_is_in_scope(tab: &RelationTab, scope: &crate::profile::CatalogScope)
 
 fn relation_has_pending_edits(tab: &RelationTab) -> bool {
     tab.edit.as_ref().is_some_and(|edit| {
-        !matches!(edit.mode, RelationGridMode::Browse)
-            || edit.rows.iter().any(|row| {
-                !matches!(
-                    row.state,
-                    crate::model::relation_edit::EditableRowState::Clean
-                )
-            })
-            || !edit.mutation_undo.is_empty()
-            || !edit.mutation_redo.is_empty()
+        edit.has_dirty_rows() || edit.has_unfinished_cell_edit() || edit.has_pending_work()
     })
 }
 
@@ -17581,6 +17579,23 @@ mod tests {
         );
         assert!(!message.contains("active catalog snapshot"));
         assert!(!message.contains("relation-children"));
+    }
+
+    #[test]
+    fn clean_relation_commit_reports_that_there_are_no_pending_changes() {
+        let mut app = App::new(Vec::new());
+        app.tabs
+            .push(WorkspaceTab::Relation(RelationTab::new("items")));
+        app.active_tab = 1;
+
+        assert!(app.update(Action::RelationCommit).is_empty());
+        let notification = app
+            .notifications
+            .history()
+            .next()
+            .expect("clean commit should explain why it did nothing");
+        assert_eq!(notification.title, "Relation");
+        assert_eq!(notification.body, "No pending relation changes");
     }
 
     fn empty_outcome() -> QueryOutcome {
@@ -19013,6 +19028,11 @@ mod tests {
                 .iter()
                 .all(|row| { matches!(row.state, EditableRowState::Clean) })
         );
+        let refresh_commands = app.update(Action::RefreshActiveRelation);
+        assert!(matches!(
+            refresh_commands.as_slice(),
+            [Command::LoadRelationPreview(request)] if request.tab_id == first_request.tab_id
+        ));
     }
 
     fn test_relation_ddl(request: RelationRequest, relation_id: CatalogId) -> RelationDdl {

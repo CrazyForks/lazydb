@@ -295,12 +295,7 @@ impl RelationEditSession {
             row.state = EditableRowState::Clean;
             row.supplied_columns.clear();
         }
-        self.mode = RelationGridMode::Browse;
-        self.undo.clear();
-        self.redo.clear();
-        self.pending_save.clear();
-        self.save_after_metadata_load = false;
-        self.sync_history_depth();
+        self.clear_edit_bookkeeping();
     }
 
     pub fn commit_changes(&mut self) {
@@ -311,16 +306,29 @@ impl RelationEditSession {
             row.state = EditableRowState::Clean;
             row.supplied_columns.clear();
         }
-        self.pending_save.clear();
-        self.save_after_metadata_load = false;
-        self.undo.clear();
-        self.redo.clear();
-        self.sync_history_depth();
+        self.clear_edit_bookkeeping();
     }
 
     pub fn sync_history_depth(&mut self) {
         self.undo_depth = self.undo.len();
         self.redo_depth = self.redo.len();
+    }
+
+    pub fn has_dirty_rows(&self) -> bool {
+        self.rows
+            .iter()
+            .any(|row| !matches!(row.state, EditableRowState::Clean))
+    }
+
+    pub fn has_pending_work(&self) -> bool {
+        matches!(self.mode, RelationGridMode::Busy)
+            || !self.pending_save.is_empty()
+            || self.save_after_metadata_load
+            || self.pending_mutation_history.is_some()
+    }
+
+    pub fn has_unfinished_cell_edit(&self) -> bool {
+        matches!(self.mode, RelationGridMode::EditCell(_))
     }
 
     pub fn record_mutation(&mut self, history: RelationMutationHistory) {
@@ -364,6 +372,18 @@ impl RelationEditSession {
     fn record_change(&mut self) {
         self.undo.push(self.rows.clone());
         self.redo.clear();
+        self.sync_history_depth();
+    }
+
+    fn clear_edit_bookkeeping(&mut self) {
+        self.mode = RelationGridMode::Browse;
+        self.undo.clear();
+        self.redo.clear();
+        self.mutation_undo.clear();
+        self.mutation_redo.clear();
+        self.pending_mutation_history = None;
+        self.pending_save.clear();
+        self.save_after_metadata_load = false;
         self.sync_history_depth();
     }
 }
@@ -548,7 +568,26 @@ mod tests {
 
     #[test]
     fn typed_mutation_history_moves_only_after_success() {
-        let request = crate::db::mutation::RelationMutationRequest {
+        let request = relation_request();
+        let mut session = RelationEditSession::default();
+        session.record_mutation(RelationMutationHistory {
+            forward: request.clone(),
+            inverse: request,
+        });
+        assert_eq!(session.mutation_undo.len(), 1);
+        assert!(
+            session
+                .pending_mutation(PendingMutationHistory::Undo)
+                .is_some()
+        );
+        assert_eq!(session.mutation_undo.len(), 1);
+        assert!(session.complete_mutation());
+        assert!(session.mutation_undo.is_empty());
+        assert_eq!(session.mutation_redo.len(), 1);
+    }
+
+    fn relation_request() -> crate::db::mutation::RelationMutationRequest {
+        crate::db::mutation::RelationMutationRequest {
             tab_id: uuid::Uuid::nil(),
             tab_generation: 1,
             edit_generation: 1,
@@ -586,22 +625,50 @@ mod tests {
                 primary_key: vec!["id".into()],
             },
             operation: crate::db::mutation::RelationMutation::DeleteRows(Vec::new()),
-        };
-        let mut session = RelationEditSession::default();
-        session.record_mutation(RelationMutationHistory {
-            forward: request.clone(),
-            inverse: request,
+        }
+    }
+
+    #[test]
+    fn commit_and_discard_clear_all_edit_bookkeeping() {
+        let mut session = RelationEditSession::from_rows(vec![vec![CellValue::Integer(1)]]);
+        session.update_cell(0, 0, CellValue::Integer(2));
+        session.mode = RelationGridMode::EditCell(Box::new(CellEditorState {
+            row: 0,
+            column: 0,
+            input: CellEditorBuffer::default(),
+            error: None,
+        }));
+        session.pending_save.push_back(relation_request());
+        session.mutation_undo.push(RelationMutationHistory {
+            forward: relation_request(),
+            inverse: relation_request(),
         });
-        assert_eq!(session.mutation_undo.len(), 1);
-        assert!(
-            session
-                .pending_mutation(PendingMutationHistory::Undo)
-                .is_some()
-        );
-        assert_eq!(session.mutation_undo.len(), 1);
-        assert!(session.complete_mutation());
+        session.mutation_redo.push(RelationMutationHistory {
+            forward: relation_request(),
+            inverse: relation_request(),
+        });
+        session.pending_mutation_history = Some(PendingMutationHistory::Undo);
+
+        session.commit_changes();
         assert!(session.mutation_undo.is_empty());
-        assert_eq!(session.mutation_redo.len(), 1);
+        assert!(session.mutation_redo.is_empty());
+        assert!(session.pending_mutation_history.is_none());
+        assert!(session.pending_save.is_empty());
+        assert!(matches!(session.mode, RelationGridMode::Browse));
+        assert!(session.rows.iter().all(|row| {
+            matches!(row.state, EditableRowState::Clean) && row.current == row.original
+        }));
+
+        session.update_cell(0, 0, CellValue::Integer(3));
+        session.pending_save.push_back(relation_request());
+        session.mutation_undo.push(RelationMutationHistory {
+            forward: relation_request(),
+            inverse: relation_request(),
+        });
+        session.discard_changes();
+        assert!(session.mutation_undo.is_empty());
+        assert!(session.pending_save.is_empty());
+        assert_eq!(session.rows[0].current, vec![CellValue::Integer(2)]);
     }
 
     #[test]
