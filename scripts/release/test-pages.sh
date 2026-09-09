@@ -36,6 +36,8 @@ cmp "$TMP/output/channels/stable.json" "$TMP/output-again/channels/stable.json"
 [ "$(cat "$TMP/output/channels/beta.json")" = preserved ]
 [ "$(cat "$TMP/output/CNAME")" = lazydb.yelog.org ]
 [ -x "$TMP/output/install.sh" ] && [ -x "$TMP/output/install-beta.sh" ] && [ -x "$TMP/output/install-core.sh" ] && [ -f "$TMP/output/install.ps1" ]
+cmp "$TMP/source/install.ps1" "$TMP/output/install.ps1.txt"
+cmp "$TMP/output/install.ps1" "$TMP/output/install.ps1.txt"
 [ "$(grep -c 'set -eu' "$TMP/output/install.sh")" -eq 1 ]
 [ "$(grep -c 'LAZYDB_CHANNEL_LOCKED=stable' "$TMP/output/install.sh")" -eq 1 ]
 [ "$(grep -c 'LAZYDB_CHANNEL_LOCKED=beta' "$TMP/output/install-beta.sh")" -eq 1 ]
@@ -45,6 +47,7 @@ channels/stable.json
 install-beta.sh
 install-core.sh
 install.ps1
+install.ps1.txt
 install.sh" ]
 if find "$TMP/output" -type f -name '*.tar.xz' | grep . >/dev/null 2>&1; then exit 1; fi
 
@@ -52,6 +55,7 @@ cp "$TMP/output/channels/stable.json" "$TMP/existing/stable.json"
 make_assets "$TMP/beta-assets" 1.2.3-beta.1
 sh "$ROOT/scripts/release/assemble-pages.sh" beta 1.2.3-beta.1 2026-08-31T12:00:00Z "$TMP/beta-assets" "$TMP/source" "$TMP/existing" "$TMP/output-beta"
 [ -f "$TMP/output-beta/channels/beta.json" ]
+cmp "$TMP/source/install.ps1" "$TMP/output-beta/install.ps1.txt"
 [ "$(cat "$TMP/output-beta/channels/stable.json")" = "$(cat "$TMP/existing/stable.json")" ]
 [ "$(cat "$TMP/output-beta/CNAME")" = lazydb.yelog.org ]
 if find "$TMP/output-beta" -type f \( -name '*.tar.xz' -o -name '*.deb' -o -name '*.rpm' \) | grep . >/dev/null 2>&1; then exit 1; fi

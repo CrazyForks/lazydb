@@ -18,6 +18,11 @@ $appData = Join-Path $temp 'appdata'
 $localAppData = Join-Path $temp 'localappdata'
 $installDir = Join-Path $localAppData 'LazyDB [smoke] bin'
 $installer = Join-Path $temp 'installer.ps1'
+$bootstrapPath = Join-Path $temp 'bootstrap.ps1'
+$readme = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../README.md') -Raw
+$bootstrap = [regex]::Match($readme, '(?s)```powershell\r?\n(.*?)\r?\n```')
+$command = [regex]::Match($bootstrap.Groups[1].Value, '^powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "([^"]+)"$')
+if (-not $command.Success) { throw 'README Windows bootstrap format changed; update the smoke test.' }
 # Do not cast to string: an absent user PATH must remain absent.
 $oldPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $savedEnvironment = @{}
@@ -25,12 +30,34 @@ $overrides = @{
     HOME = $testHome; USERPROFILE = $testHome; APPDATA = $appData; LOCALAPPDATA = $localAppData
     LAZYDB_INSTALL_DIR = $installDir; LAZYDB_CHANNEL = $Channel; LAZYDB_MCP_SETUP = 'skip'
     LAZYDB_CHANNEL_BASE_URL = 'https://lazydb.yelog.org/channels'
+    LAZYDB_EXPECTED_INSTALLER_HASH = $expectedHash
 }
 foreach ($name in $overrides.Keys) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 
 try {
     foreach ($dir in @($testHome, $appData, $localAppData)) { [IO.Directory]::CreateDirectory($dir) | Out-Null }
     foreach ($name in $overrides.Keys) { [Environment]::SetEnvironmentVariable($name, $overrides[$name], 'Process') }
+    # Keep the real HTTP decoding and README pipeline, but authenticate its exact
+    # input before iex. This guard never substitutes a local installer response.
+    $guard = @'
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param([string] $Uri)
+    $text = Microsoft.PowerShell.Utility\Invoke-RestMethod -Uri $Uri -TimeoutSec 60 -ErrorAction Stop
+    if ($text -isnot [string] -or [string]::IsNullOrWhiteSpace($text)) {
+        throw 'Installer response is not non-empty script text.'
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-', '')
+    } finally { $sha.Dispose() }
+    if ($hash -ne $env:LAZYDB_EXPECTED_INSTALLER_HASH) {
+        throw 'Decoded installer SHA256 differs from checked-out pages/install.ps1.'
+    }
+    return $text
+}
+'@
+    [IO.File]::WriteAllText($bootstrapPath, ($guard + "`n" + $command.Groups[1].Value + "`n" + 'if (-not $?) { exit 1 }'), [Text.UTF8Encoding]::new($false))
     for ($attempt = 1; $attempt -le 6; $attempt++) {
         try {
             # Every retry starts clean, so an earlier binary cannot mask a failed installation.
@@ -40,7 +67,15 @@ try {
             if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expectedHash) {
                 throw 'Deployed install.ps1 SHA256 differs from checked-out pages/install.ps1 (stale or unexpected deployment).'
             }
-            $process = Start-Process -FilePath $hostExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$installer`"" -PassThru -NoNewWindow
+            $response = Invoke-WebRequest -Uri 'https://lazydb.yelog.org/install.ps1.txt' -UseBasicParsing -Method Head -TimeoutSec 60
+            if ([string]$response.Headers['Content-Type'] -notmatch '^text/plain(?:\s*;|\s*$)') {
+                throw 'Text installer endpoint must be served as text/plain.'
+            }
+            Invoke-WebRequest -Uri 'https://lazydb.yelog.org/install.ps1.txt' -UseBasicParsing -OutFile $installer -TimeoutSec 60
+            if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expectedHash) {
+                throw 'Deployed install.ps1.txt differs from the installer source.'
+            }
+            $process = Start-Process -FilePath $hostExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$bootstrapPath`"" -PassThru -NoNewWindow
             try {
                 $null = $process.Handle
                 if (-not $process.WaitForExit(120000)) { throw 'installer timed out after 120 seconds' }

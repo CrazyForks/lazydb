@@ -74,6 +74,29 @@ curl -fsSL https://lazydb.yelog.org/install.sh | sh -s -- --no-modify-path
 Run the following on Windows to install LazyDB:
 
 ```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://lazydb.yelog.org/install.ps1.txt -ErrorAction Stop | iex"
+```
+
+The Windows installer supports 64-bit Windows (MSVC), downloads the release
+metadata and ZIP archive over HTTPS, verifies the SHA-256 checksum, and adds
+`%LOCALAPPDATA%\LazyDB\bin` to the user `PATH`. No administrator privileges are
+required. Open a new terminal after installation. To install the beta channel,
+set `$env:LAZYDB_CHANNEL = "beta"` before running the command.
+
+The command downloads and executes a script from the LazyDB site. The `.txt`
+endpoint is generated from the same installer source, but served as text for
+PowerShell compatibility. Review the [installer source](pages/install.ps1) if
+needed, or download the Windows ZIP from the
+[latest GitHub Release](https://github.com/yelog/lazydb/releases/latest).
+
+<details>
+<summary>Alternative: download the installer to a temporary file</summary>
+
+For troubleshooting or environments where piping scripts to `Invoke-Expression`
+is unsuitable, run the following in PowerShell. This also executes downloaded
+code; saving it to a file does not authenticate the installer.
+
+```powershell
 & {
     $ErrorActionPreference = 'Stop'
     $installer = Join-Path ([IO.Path]::GetTempPath()) (
@@ -95,13 +118,7 @@ Run the following on Windows to install LazyDB:
 }
 ```
 
-The Windows installer supports 64-bit Windows (MSVC), downloads the release
-metadata and ZIP archive over HTTPS, verifies the SHA-256 checksum, and adds
-`%LOCALAPPDATA%\LazyDB\bin` to the user `PATH`. The command does not require
-administrator privileges. Open a new terminal after
-installation. To install the beta channel, set `$env:LAZYDB_CHANNEL = "beta"`
-before running the command. You can also download the Windows ZIP from the
-[latest GitHub Release](https://github.com/yelog/lazydb/releases/latest).
+</details>
 
 After installation, configure database access for Claude Code, Codex, or
 OpenCode from the target project:

@@ -29,7 +29,7 @@ $windowsPowerShell = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('lazydb fixtures ' + [IO.Path]::GetRandomFileName())
 $oldPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $savedEnvironment = @{}
-$names = @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LAZYDB_INSTALL_DIR', 'LAZYDB_CHANNEL', 'LAZYDB_CHANNEL_BASE_URL', 'LAZYDB_MCP_SETUP', 'LAZYDB_FIXTURE_ROOT')
+$names = @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'LAZYDB_INSTALL_DIR', 'LAZYDB_CHANNEL', 'LAZYDB_CHANNEL_BASE_URL', 'LAZYDB_MCP_SETUP', 'LAZYDB_FIXTURE_ROOT', 'LAZYDB_BOOTSTRAP_FAILURE')
 foreach ($name in $names) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 
 try {
@@ -52,13 +52,38 @@ function Invoke-WebRequest {
     Copy-Item -LiteralPath (Join-Path $root $source) -Destination $OutFile -Force
 }
 '@
+    $textDownloadMock = @'
+function Invoke-RestMethod {
+    [CmdletBinding()]
+    param([string] $Uri)
+    if ($Uri -ne 'https://lazydb.yelog.org/install.ps1.txt') { throw "Unexpected fixture URL: $Uri" }
+    [IO.File]::AppendAllText((Join-Path $env:LAZYDB_FIXTURE_ROOT 'requests.log'), "$Uri`n")
+    switch ($env:LAZYDB_BOOTSTRAP_FAILURE) {
+        'network' { throw 'fixture download failed' }
+        'empty' { return '' }
+        'invalid' { return 'if (' }
+        default { Get-Content -LiteralPath (Join-Path $env:LAZYDB_FIXTURE_ROOT 'downloaded-installer.ps1') -Raw }
+    }
+}
+'@
     $installer = Get-Content -LiteralPath (Join-Path $root 'pages/install.ps1') -Raw
     Write-Utf8 (Join-Path $temp 'downloaded-installer.ps1') ($downloadMock + "`n" + $installer)
     Write-Utf8 (Join-Path $temp 'run.ps1') ('$ErrorActionPreference = ''Stop''' + "`n" + $downloadMock + "`n& '" + (Join-Path $root 'pages/install.ps1').Replace("'", "''") + "'`n")
     $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
     $bootstrap = [regex]::Match($readme, '(?s)```powershell\r?\n(.*?)\r?\n```')
     Assert-True $bootstrap.Success 'README contains a PowerShell bootstrap'
-    Write-Utf8 (Join-Path $temp 'bootstrap.ps1') ($downloadMock + "`n" + $bootstrap.Groups[1].Value)
+    $command = [regex]::Match($bootstrap.Groups[1].Value, '^powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "([^"]+)"$')
+    Assert-True $command.Success 'README uses an isolated PowerShell command'
+    # Execute the exact command payload in each test host, with only HTTP mocked.
+    Write-Utf8 (Join-Path $temp 'bootstrap.ps1') ($textDownloadMock + "`n" + $command.Groups[1].Value + "`n" + 'if (-not $?) { exit 1 }')
+
+    foreach ($failure in @('network', 'empty', 'invalid')) {
+        $env:LAZYDB_BOOTSTRAP_FAILURE = $failure
+        Assert-True ((Invoke-TestHost $hostExe (Join-Path $temp 'bootstrap.ps1')) -ne 0) "$failure bootstrap rejected"
+    }
+    Remove-Item Env:LAZYDB_BOOTSTRAP_FAILURE
+    $fallback = [regex]::Matches($readme, '(?s)```powershell\r?\n(.*?)\r?\n```')[1]
+    Write-Utf8 (Join-Path $temp 'fallback.ps1') ($downloadMock + "`n" + $fallback.Groups[1].Value)
 
     # Windows PowerShell emits a runnable .NET Framework EXE; pwsh 7 cannot emit
     # ConsoleApplication assemblies. Both test hosts execute the same real EXE.
@@ -88,7 +113,7 @@ public class Fixture {
     Write-Utf8 (Join-Path $emptyPayload 'README.txt') 'No binary here'
     [IO.Compression.ZipFile]::CreateFromDirectory($emptyPayload, (Join-Path $temp 'missing.zip'))
 
-    foreach ($scenario in @('success', 'beta', 'repeat', 'empty-path', 'bad-hash', 'invalid-json', 'invalid-manifest', 'invalid-url', 'missing-binary', 'version-mismatch', 'readme')) {
+    foreach ($scenario in @('success', 'beta', 'repeat', 'empty-path', 'bad-hash', 'invalid-json', 'invalid-manifest', 'invalid-url', 'missing-binary', 'version-mismatch', 'readme', 'fallback')) {
         $caseDir = Join-Path $temp $scenario
         $scratch = Join-Path $caseDir 'temp [scratch]'
         $env:HOME = Join-Path $caseDir 'home'
@@ -129,7 +154,7 @@ public class Fixture {
         $json = if ($scenario -eq 'invalid-json') { '{broken' } else { $manifest | ConvertTo-Json -Depth 5 }
         Write-Utf8 (Join-Path $temp 'manifest.json') $json
         Write-Utf8 (Join-Path $temp 'requests.log') ''
-        $scriptName = if ($scenario -eq 'readme') { 'bootstrap.ps1' } else { 'run.ps1' }
+        $scriptName = if ($scenario -eq 'readme') { 'bootstrap.ps1' } elseif ($scenario -eq 'fallback') { 'fallback.ps1' } else { 'run.ps1' }
         $result = Invoke-TestHost $hostExe (Join-Path $temp $scriptName)
         $failure = $scenario -in @('bad-hash', 'invalid-json', 'invalid-manifest', 'invalid-url', 'missing-binary', 'version-mismatch')
         if ($failure) {
@@ -163,7 +188,7 @@ public class Fixture {
         Assert-True (@(Get-ChildItem -LiteralPath $scratch -Force).Count -eq 0) "$scenario cleans all temporary downloads/extraction/bootstrap files"
         $requests = @(Get-Content -LiteralPath (Join-Path $temp 'requests.log'))
         Assert-True ($requests -contains "https://lazydb.yelog.org/channels/$env:LAZYDB_CHANNEL.json") "$scenario requests selected channel"
-        $expectedCount = if ($failure) { if ($scenario -in @('invalid-json', 'invalid-manifest', 'invalid-url')) { 1 } else { 2 } } elseif ($scenario -eq 'readme') { 6 } else { 4 }
+        $expectedCount = if ($failure) { if ($scenario -in @('invalid-json', 'invalid-manifest', 'invalid-url')) { 1 } else { 2 } } elseif ($scenario -in @('readme', 'fallback')) { 6 } else { 4 }
         Assert-True ($requests.Count -eq $expectedCount) "$scenario requests only expected URLs"
         Write-Host "Passed: $scenario ($hostExe)"
     }

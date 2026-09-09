@@ -48,6 +48,8 @@ mkdir -p "$output/channels"
 } > "$output/install-beta.sh"
 cp "$source_pages/install-core.sh" "$output/"
 cp "$source_pages/install.ps1" "$output/install.ps1"
+# GitHub Pages serves .txt as text rather than an opaque binary download.
+cp "$source_pages/install.ps1" "$output/install.ps1.txt"
 cp "$source_pages/CNAME" "$output/CNAME"
 chmod 0755 "$output/install.sh" "$output/install-beta.sh" "$output/install-core.sh"
 
@@ -59,5 +61,5 @@ fi
 
 # The allow-list above is deliberate: release archives never become Pages files.
 unexpected=$(find "$output" -type f ! -name 'install.sh' ! -name 'install-beta.sh' \
-    ! -name 'install-core.sh' ! -name 'install.ps1' ! -name 'CNAME' ! -name 'stable.json' ! -name 'beta.json' -print)
+    ! -name 'install-core.sh' ! -name 'install.ps1' ! -name 'install.ps1.txt' ! -name 'CNAME' ! -name 'stable.json' ! -name 'beta.json' -print)
 [ -z "$unexpected" ] || { printf 'pages: unexpected output file: %s\n' "$unexpected" >&2; exit 1; }

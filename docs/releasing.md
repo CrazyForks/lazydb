@@ -90,27 +90,37 @@ curl --fail --proto '=https' --tlsv1.2 https://lazydb.yelog.org/channels/beta.js
 
 The Pages job preserves the other channel manifest while publishing the
 channel associated with the newly published Release. It intentionally deploys
-only the two manifests, `CNAME`, and the three installer scripts; release
+only the channel manifests, `CNAME`, and installer scripts (including the generated
+`install.ps1.txt` text entry point); release
 archives are not copied to Pages.
 
 The Windows installer is checked in both Windows PowerShell 5.1 and PowerShell
-7. The documented Windows bootstrap downloads `install.ps1` to a temporary file
-and executes it with `-File`; it does not pipe a web response to
-`Invoke-Expression`. The installer writes its temporary archive with a `.zip`
+7. The README starts an isolated Windows PowerShell process and pipes the
+`install.ps1.txt` text response to `Invoke-Expression`. Pages assembly generates
+that endpoint byte-for-byte from `pages/install.ps1`; do not maintain a second
+source file. The `.txt` suffix lets the static host serve `text/plain` instead of
+`application/octet-stream`. A download-to-file alternative remains in the README.
+Both methods trust the remote installer, not just its release archive checksum.
+The installer writes its temporary archive with a `.zip`
 extension and writes `install.json` as UTF-8 without a BOM for compatibility
 with the Rust JSON parser. The Pages workflow runs the same installation against
 the public endpoint after deployment, using isolated `windows-2022` runners
 and explicit `powershell` and `pwsh` steps. The smoke test downloads
-`install.ps1` for either channel and compares its SHA-256 with the checked-out
-`pages/install.ps1` **before execution**. A stale deployment fails verification
-even if it could install the requested release. Each child installer uses the
-same executable as the smoke-test host, so the PowerShell 7 check does not
-silently run Windows PowerShell 5.1 instead. Downloads and installer execution
+both endpoints for either channel and compares their SHA-256 with the checked-out
+`pages/install.ps1` **before execution**, also requiring `text/plain` on the text
+endpoint. It then executes the exact README command payload in each host. A guard
+around the real `Invoke-RestMethod` checks that the decoded response is non-empty
+text and matches the source hash before passing it to `iex`; it never substitutes
+local content. A stale deployment fails verification even if it could install the
+requested release. Each child uses the same executable as the smoke-test host,
+so the PowerShell 7 check does not silently run Windows PowerShell 5.1 instead.
+Downloads and installer execution
 have timeouts; failed attempts retry up to six times.
 
-The old `irm ... | iex` bootstrap is not supported. Fixing the script body
-does not fix how an older bootstrap decodes or evaluates the HTTP response.
-Use the current README's download-to-file command instead.
+The old `irm .../install.ps1 | iex` bootstrap remains unsupported: it requests
+the binary MIME endpoint. Use the README's `.ps1.txt` command or its download-to-file
+alternative. Deploy the generated text endpoint before advertising the new command;
+the post-deployment Windows checks validate its actual HTTP decoding behavior.
 
 ### Redeploying Installer Fixes
 
