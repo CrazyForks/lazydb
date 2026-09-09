@@ -3,6 +3,37 @@ use lazydb::cli::McpClient;
 use tempfile::tempdir;
 
 #[tokio::test]
+async fn comments_are_not_servers_and_disabled_entries_are_reported() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("opencode.jsonc");
+    for (text, detail) in [
+        ("{ // lazydb --write-policy deny\n}", "missing LazyDB"),
+        (
+            "{\"mcp\":{\"lazydb\":{\"type\":\"local\",\"command\":[\"lazydb\",\"mcp\",\"serve\",\"--write-policy\",\"deny\"],\"enabled\":false}}}",
+            "disabled",
+        ),
+        (
+            "{\"mcp\":{\"lazydb\":{\"type\":\"remote\",\"url\":\"https://example.com/lazydb/write-policy/deny\"}}}",
+            "could not be confirmed",
+        ),
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let output = doctor::run_with_options(
+            vec![McpClient::Opencode],
+            Some(dir.path().into()),
+            Some(path.clone()),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(output.contains(detail), "{output}");
+        let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(report["status"], "warning");
+    }
+}
+
+#[tokio::test]
 async fn reports_missing_configs_without_database_io() {
     let dir = tempdir().unwrap();
     let output = doctor::run(

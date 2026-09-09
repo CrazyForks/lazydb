@@ -1,13 +1,23 @@
+use super::client_config::{self as cfg, Locations, Source};
+use crate::cli::{McpClient, McpScope};
+use anyhow::{Context, Result, bail};
 use std::{
-    fs,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, bail};
+pub struct SetupOptions {
+    pub clients: Vec<McpClient>,
+    pub scope: Option<McpScope>,
+    pub client_config: Option<PathBuf>,
+    pub project: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+    pub dry_run: bool,
+    pub yes: bool,
+    pub json: bool,
+}
 
-use crate::cli::{McpClient, McpScope};
-
+/// Compatibility entry point for callers that explicitly select a scope.
 pub fn run(
     clients: Vec<McpClient>,
     scope: McpScope,
@@ -17,117 +27,263 @@ pub fn run(
     yes: bool,
     json: bool,
 ) -> Result<String> {
-    if scope != McpScope::Project {
-        bail!("only project-scoped MCP configuration is supported");
-    }
-    if json && !yes && !dry_run {
+    run_with_options(SetupOptions {
+        clients,
+        scope: Some(scope),
+        client_config: None,
+        project,
+        config,
+        dry_run,
+        yes,
+        json,
+    })
+}
+
+pub fn run_with_options(mut options: SetupOptions) -> Result<String> {
+    if options.json && !options.yes && !options.dry_run {
         bail!("--json setup requires --yes or --dry-run");
     }
-    let clients = if clients.is_empty() {
-        interactive_clients()?
-    } else {
-        clients
-    };
-    let project = project.unwrap_or(std::env::current_dir()?).canonicalize()?;
-    let mut plans = clients
-        .iter()
-        .copied()
-        .map(|client| plan_client(client, &project, config.as_deref()))
-        .collect::<Result<Vec<_>>>()?;
-
-    let confirmed = yes || dry_run || (!json && confirm_write(&plans)?);
-    if confirmed && !dry_run {
-        for plan in &mut plans {
-            if plan.status == "create" {
-                write_new_config(plan)?;
-                plan.status = "created";
+    let interactive = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && !options.json
+        && !options.yes;
+    if options.clients.is_empty() {
+        if !interactive {
+            bail!("at least one --client is required in non-interactive mode");
+        }
+        println!("Configure LazyDB MCP: [1] Claude Code [2] Codex [3] OpenCode");
+        for number in prompt("Select clients (for example 1,2): ")?
+            .split(',')
+            .map(str::trim)
+        {
+            let client = match number {
+                "1" => McpClient::ClaudeCode,
+                "2" => McpClient::Codex,
+                "3" => McpClient::Opencode,
+                _ => bail!("invalid client selection"),
+            };
+            if !options.clients.contains(&client) {
+                options.clients.push(client);
             }
         }
     }
-
-    let has_conflict = plans.iter().any(|plan| plan.status == "conflict");
-    let status = if dry_run {
+    let mut unique = Vec::new();
+    options.clients.retain(|client| {
+        if unique.contains(client) {
+            false
+        } else {
+            unique.push(*client);
+            true
+        }
+    });
+    if options.client_config.is_some() && options.clients.len() != 1 {
+        bail!("--client-config requires exactly one --client");
+    }
+    let project = options
+        .project
+        .clone()
+        .unwrap_or(std::env::current_dir()?)
+        .canonicalize()?;
+    let config = options
+        .config
+        .as_ref()
+        .map(|p| p.canonicalize())
+        .transpose()
+        .context("cannot resolve LazyDB --config")?;
+    let locations = Locations::discover()?;
+    let mut plans = Vec::new();
+    for client in options.clients.iter().copied() {
+        let sources = locations.sources(client, &project);
+        let target = select_target(client, &sources, &project, &options, interactive)?;
+        plans.push(plan_client(
+            client,
+            target,
+            &project,
+            config.as_deref(),
+            &sources,
+        ));
+    }
+    let actionable = plans.iter().any(|p| matches!(p.status, "create" | "add"));
+    let confirmed = if !actionable || options.yes || options.dry_run {
+        true
+    } else {
+        if !interactive {
+            bail!("non-interactive setup requires --yes or --dry-run");
+        }
+        println!("Planned MCP configuration changes:");
+        for plan in &plans {
+            println!(
+                "  {}: {} ({}) — {}",
+                plan.client,
+                plan.status,
+                plan.config_path.display(),
+                plan.message
+            );
+        }
+        matches!(
+            prompt("Continue? [y/N] ")?.to_ascii_lowercase().as_str(),
+            "y" | "yes"
+        )
+    };
+    if confirmed && !options.dry_run {
+        for plan in &mut plans {
+            if matches!(plan.status, "create" | "add") {
+                cfg::write(&plan.config_path, plan.original.as_deref(), &plan.content)?;
+                plan.status = if plan.status == "create" {
+                    "created"
+                } else {
+                    "added"
+                };
+            }
+        }
+    }
+    let status = if options.dry_run {
         "dry_run"
-    } else if has_conflict {
+    } else if plans
+        .iter()
+        .any(|p| matches!(p.status, "conflict" | "invalid"))
+    {
         "warning"
     } else if confirmed {
         "complete"
     } else {
         "planned"
     };
-    if json {
-        return Ok(serde_json::json!({
-            "schema_version": 1,
-            "status": status,
-            "project": project,
-            "clients": plans,
-            "warnings": [
-                "MCP write policy defaults to deny",
-                "global LazyDB profiles remain visible to the project server"
-            ]
-        })
-        .to_string());
+    if options.json {
+        return Ok(serde_json::json!({"schema_version": 1, "status": status, "project": project, "clients": plans,
+            "warnings": ["MCP write policy defaults to deny", "global LazyDB profiles remain visible to the project server", "static configuration inspection; client startup and trust are not verified"]}).to_string());
     }
-    Ok(format!(
-        "MCP setup {status} for {}\n{}\nwrite policy: deny",
-        project.display(),
-        plans
-            .iter()
-            .map(|plan| format!(
-                "{}: {} ({})",
-                plan.client,
-                plan.status,
-                plan.config_path.display()
-            ))
-            .collect::<Vec<_>>()
-            .join("\n")
-    ))
-}
-
-fn interactive_clients() -> Result<Vec<McpClient>> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("at least one --client is required in non-interactive mode");
-    }
-    println!("Configure LazyDB MCP for which clients? [1] Claude Code [2] Codex [3] OpenCode");
-    print!("Select one or more numbers (for example 1,2): ");
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    let mut clients = Vec::new();
-    for value in input.trim().split(',').map(str::trim) {
-        let client = match value {
-            "1" => McpClient::ClaudeCode,
-            "2" => McpClient::Codex,
-            "3" => McpClient::Opencode,
-            "" => continue,
-            _ => bail!("invalid client selection: {value}"),
-        };
-        if !clients.contains(&client) {
-            clients.push(client);
+    let mut output = format!(
+        "MCP setup {status} for {}\nwrite policy: deny",
+        project.display()
+    );
+    for plan in plans {
+        output.push_str(&format!(
+            "\n{}: {} ({}, {:?}) — {}",
+            plan.client,
+            plan.status,
+            plan.config_path.display(),
+            plan.scope,
+            plan.message
+        ));
+        for note in plan.notes {
+            output.push_str(&format!("\n  {note}"));
         }
     }
-    if clients.is_empty() {
-        bail!("at least one client must be selected");
-    }
-    Ok(clients)
+    Ok(output)
 }
 
-fn confirm_write(plans: &[ClientPlan]) -> Result<bool> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("non-interactive setup requires --yes or --dry-run");
-    }
-    println!("The following new project configuration files will be created:");
-    for plan in plans.iter().filter(|plan| plan.status == "create") {
-        println!("  {}", plan.config_path.display());
-    }
-    print!("Continue? [y/N] ");
+fn prompt(message: &str) -> Result<String> {
+    print!("{message}");
     std::io::stdout().flush()?;
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(input.trim().to_owned())
+}
+
+fn select_target(
+    client: McpClient,
+    sources: &[Source],
+    project: &Path,
+    options: &SetupOptions,
+    interactive: bool,
+) -> Result<Source> {
+    if options.scope == Some(McpScope::Local) && client != McpClient::ClaudeCode {
+        bail!("local scope is supported only by Claude Code");
+    }
+    if let Some(path) = &options.client_config {
+        let path = std::path::absolute(path)?;
+        let known = sources
+            .iter()
+            .find(|s| std::path::absolute(&s.path).ok().as_ref() == Some(&path));
+        return Ok(Source {
+            path,
+            scope: options.scope.or(known.map(|s| s.scope)).unwrap_or_default(),
+            origin: "--client-config".into(),
+        });
+    }
+    let mut candidates: Vec<_> = sources
+        .iter()
+        .filter(|s| options.scope.is_none_or(|scope| scope == s.scope) && s.path.exists())
+        .cloned()
+        .collect();
+    if interactive && options.scope.is_none() {
+        // Existing server entries first, then existing user configuration.
+        candidates.sort_by_key(|s| {
+            let registered = cfg::read_optional(&s.path)
+                .ok()
+                .flatten()
+                .and_then(|text| cfg::parse(client, &text).ok())
+                .is_some_and(|v| {
+                    cfg::entry(&v, &cfg::keys(client, s, project))
+                        .ok()
+                        .flatten()
+                        .is_some()
+                });
+            (!registered, s.scope != McpScope::User)
+        });
+        for scope in [McpScope::User, McpScope::Project] {
+            if !candidates.iter().any(|s| s.scope == scope) {
+                if let Some(source) = sources.iter().find(|s| s.scope == scope) {
+                    candidates.push(source.clone());
+                }
+            }
+        }
+        if client == McpClient::ClaudeCode && !candidates.iter().any(|s| s.scope == McpScope::Local)
+        {
+            candidates.push(
+                sources
+                    .iter()
+                    .find(|s| s.scope == McpScope::Local)
+                    .unwrap()
+                    .clone(),
+            );
+        }
+        println!("{} configuration targets:", client_name(client));
+        for (i, source) in candidates.iter().enumerate() {
+            println!(
+                "  [{}] {:?}: {} ({}){}",
+                i + 1,
+                source.scope,
+                source.path.display(),
+                if source.path.exists() {
+                    "exists"
+                } else {
+                    "new file"
+                },
+                if i == 0 { " — recommended" } else { "" }
+            );
+        }
+        let answer = prompt("Select target [1]: ")?;
+        let index = if answer.is_empty() {
+            1
+        } else {
+            answer.parse::<usize>()?
+        };
+        return candidates
+            .get(index.wrapping_sub(1))
+            .cloned()
+            .context("invalid target selection");
+    }
+    let scope = options.scope.unwrap_or_default();
+    candidates.retain(|s| s.scope == scope);
+    // A scope does not authorize arbitrarily choosing between multiple existing files.
+    if candidates.len() > 1 {
+        bail!(
+            "multiple {:?} configurations for {}; select one with --client-config: {}",
+            scope,
+            client_name(client),
+            candidates
+                .iter()
+                .map(|s| s.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    candidates
+        .pop()
+        .or_else(|| sources.iter().find(|s| s.scope == scope).cloned())
+        .context("no configuration target for scope")
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -135,106 +291,160 @@ struct ClientPlan {
     client: String,
     status: &'static str,
     config_path: PathBuf,
-    message: &'static str,
+    scope: McpScope,
+    message: String,
+    discovered: Vec<Source>,
+    notes: Vec<String>,
+    #[serde(skip)]
+    original: Option<String>,
     #[serde(skip)]
     content: String,
 }
 
-fn plan_client(client: McpClient, project: &Path, config: Option<&Path>) -> Result<ClientPlan> {
-    let (relative, message, content) = match client {
-        McpClient::ClaudeCode => (
-            PathBuf::from(".mcp.json"),
-            "new file only; merge existing files manually",
-            claude_config(config),
-        ),
-        McpClient::Codex => (
-            PathBuf::from(".codex/config.toml"),
-            "new file only; merge existing files manually",
-            codex_config(config),
-        ),
-        McpClient::Opencode => {
-            let relative = if project.join("opencode.jsonc").exists() {
-                PathBuf::from("opencode.jsonc")
+fn plan_client(
+    client: McpClient,
+    target: Source,
+    project: &Path,
+    config: Option<&Path>,
+    sources: &[Source],
+) -> ClientPlan {
+    let mut plan = ClientPlan {
+        client: client_name(client).into(),
+        status: "invalid",
+        config_path: target.path.clone(),
+        scope: target.scope,
+        message: String::new(),
+        discovered: sources
+            .iter()
+            .filter(|s| s.path.exists())
+            .cloned()
+            .collect(),
+        notes: Vec::new(),
+        original: None,
+        content: String::new(),
+    };
+    let result = (|| -> Result<()> {
+        plan.original = cfg::read_optional(&target.path)?;
+        let text = plan
+            .original
+            .as_deref()
+            .unwrap_or(if client == McpClient::Codex {
+                ""
             } else {
-                PathBuf::from("opencode.json")
+                "{\n}\n"
+            });
+        let value = cfg::parse(client, text)?;
+        let keys = cfg::keys(client, &target, project);
+        let desired = cfg::desired(client, config);
+        if let Some(existing) = cfg::entry(&value, &keys)? {
+            if cfg::equivalent(existing, &desired) {
+                plan.status = "unchanged";
+                plan.message = "LazyDB is already configured; no changes".into();
+            } else {
+                plan.status = "conflict";
+                let fields = desired
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .filter(|(key, value)| existing.get(*key) != Some(*value))
+                    .map(|(key, _)| key.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                plan.message = format!(
+                    "existing LazyDB entry differs in {fields}; review manually (not overwritten by --yes)"
+                );
+            }
+            if existing.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+                plan.notes
+                    .push("LazyDB is disabled in this configuration".into());
+            }
+        } else {
+            plan.content = cfg::insert(client, text, &keys, &desired)?;
+            cfg::parse(client, &plan.content)?;
+            plan.status = if plan.original.is_some() {
+                "add"
+            } else {
+                "create"
             };
-            (
-                relative,
-                "new file only; merge existing files manually",
-                opencode_config(config),
-            )
+            plan.message = format!("register {}", keys.join("."));
         }
-    };
-    let config_path = project.join(relative);
-    let status = if config_path.exists() {
-        "conflict"
-    } else {
-        "create"
-    };
-    Ok(ClientPlan {
-        client: client_name(client).to_owned(),
-        status,
-        config_path,
-        message,
-        content,
-    })
-}
-
-fn server_args(config: Option<&Path>) -> Vec<String> {
-    let mut args = Vec::new();
-    if let Some(config) = config {
-        args.extend(["--config".to_owned(), config.display().to_string()]);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        plan.status = "invalid";
+        plan.message = error.to_string();
     }
-    args.extend(["mcp", "serve", "--project", ".", "--write-policy", "deny"].map(str::to_owned));
-    args
+    for source in &plan.discovered {
+        if source.path == target.path && source.scope == target.scope {
+            continue;
+        }
+        if cfg::read_optional(&source.path)
+            .ok()
+            .flatten()
+            .and_then(|text| cfg::parse(client, &text).ok())
+            .is_some_and(|value| {
+                cfg::entry(&value, &cfg::keys(client, source, project))
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+        {
+            plan.notes.push(format!(
+                "another LazyDB entry exists in {} ({:?}); inspect precedence with mcp doctor",
+                source.path.display(),
+                source.scope
+            ));
+        }
+    }
+    if client == McpClient::Codex && target.scope == McpScope::Project {
+        plan.notes
+            .push("Codex loads project configuration only for trusted projects".into());
+    }
+    if target.origin == "--client-config" {
+        plan.notes
+            .push("explicit file selected; ensure the client loads this path".into());
+    }
+    plan
 }
 
-fn claude_config(config: Option<&Path>) -> String {
-    let args = server_args(config);
-    serde_json::to_string_pretty(&serde_json::json!({
-        "mcpServers": { "lazydb": { "type": "stdio", "command": "lazydb", "args": args } }
-    }))
-    .expect("static configuration serializes")
-        + "\n"
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn opencode_config(config: Option<&Path>) -> String {
-    let args = server_args(config);
-    serde_json::to_string_pretty(&serde_json::json!({
-        "$schema": "https://opencode.ai/config.json",
-        "mcp": { "lazydb": { "type": "local", "command": std::iter::once("lazydb".to_owned()).chain(args).collect::<Vec<_>>(), "cwd": "." } }
-    })).expect("static configuration serializes") + "\n"
-}
-
-fn codex_config(config: Option<&Path>) -> String {
-    let args = server_args(config)
-        .into_iter()
-        .map(|arg| format!("\"{arg}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("[mcp_servers.lazydb]\ncommand = \"lazydb\"\nargs = [{args}]\nrequired = true\n")
-}
-
-fn write_new_config(plan: &ClientPlan) -> Result<()> {
-    if plan.config_path.exists() {
-        bail!(
-            "refusing to overwrite existing MCP configuration: {}",
-            plan.config_path.display()
+    #[test]
+    fn existing_user_config_is_selected_and_project_file_is_not_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("home/.config/opencode/opencode.json");
+        std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+        std::fs::write(&user, "{\"model\":\"custom\"}").unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let locations = Locations {
+            home: dir.path().join("home"),
+            ..Default::default()
+        };
+        let sources = locations.sources(McpClient::Opencode, &project);
+        let options = SetupOptions {
+            clients: vec![McpClient::Opencode],
+            scope: Some(McpScope::User),
+            client_config: None,
+            project: Some(project.clone()),
+            config: None,
+            dry_run: true,
+            yes: false,
+            json: true,
+        };
+        let target =
+            select_target(McpClient::Opencode, &sources, &project, &options, false).unwrap();
+        assert_eq!(target.path, user);
+        let plan = plan_client(McpClient::Opencode, target, &project, None, &sources);
+        assert_eq!(plan.status, "add");
+        assert!(!project.join("opencode.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(user).unwrap(),
+            "{\"model\":\"custom\"}"
         );
     }
-    if let Some(parent) = plan.config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp = plan.config_path.with_extension("lazydb.tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(plan.content.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temp, &plan.config_path)?;
-    Ok(())
 }
 
 pub(crate) fn client_name(client: McpClient) -> &'static str {

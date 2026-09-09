@@ -23,25 +23,41 @@ async fn main() -> Result<()> {
                 lazydb::cli::McpCommand::Setup {
                     client,
                     scope,
+                    client_config,
                     project,
                     dry_run,
                     yes,
                     json,
                 } => {
-                    let output = lazydb::agent::setup::run(
-                        client, scope, project, cli.config, dry_run, yes, json,
+                    let output = lazydb::agent::setup::run_with_options(
+                        lazydb::agent::setup::SetupOptions {
+                            clients: client,
+                            scope,
+                            client_config,
+                            project,
+                            config: cli.config,
+                            dry_run,
+                            yes,
+                            json,
+                        },
                     )?;
                     println!("{output}");
                 }
                 lazydb::cli::McpCommand::Doctor {
                     client,
+                    client_config,
                     project,
                     probe,
                     json,
                 } => {
-                    let output =
-                        lazydb::agent::doctor::run(client, project, cli.config, probe, json)
-                            .await?;
+                    let output = lazydb::agent::doctor::run_with_options(
+                        client,
+                        project,
+                        client_config,
+                        probe,
+                        json,
+                    )
+                    .await?;
                     println!("{output}");
                 }
             },

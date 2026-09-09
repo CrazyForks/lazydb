@@ -205,38 +205,63 @@ The supported setup entry point is:
 lazydb mcp setup
 ```
 
-It creates project-scoped configuration for Claude Code, Codex, or OpenCode and
-uses `--write-policy deny` by default. The command does not install a coding
-agent, change client approval rules, or copy credentials. Use `--dry-run` to
-preview changes and `lazydb mcp doctor` to inspect configuration without
-connecting to a database. Existing files that contain unsupported comments or
-conflicting `lazydb` entries are reported for manual handling rather than
-rewritten.
+It discovers existing Claude Code, Codex and OpenCode configuration and lets you
+choose where to register LazyDB. Existing LazyDB entries are recommended first,
+followed by existing user configuration. `--scope user` makes the server available
+across projects; `--scope project` selects project configuration. Claude Code also
+supports `--scope local` (private to the current project, stored in `.claude.json`).
+Scripts that omit `--scope` retain the project default. All generated entries use
+`--write-policy deny`. Use `--dry-run` to preview changes and `lazydb mcp doctor`
+to inspect configuration without connecting to a database.
 
 Installers and Homebrew print this command after installation but do not modify
 agent configuration automatically. This keeps package installation safe for
 unattended environments and leaves the project choice to the user.
 
-The project directory must be selected explicitly or confirmed by the
-interactive prompt. A project-scoped client configuration does not hide LazyDB
+The project directory defaults to the current directory; use `--project` to select
+another directory. A project-scoped client configuration does not hide LazyDB
 global profiles; the same profile visibility and selection rules above still
 apply.
 
-The first setup implementation safely creates a new project configuration file
-when the target file does not exist. If the target already exists, it reports a
-conflict instead of rewriting user content; merge the shown server entry
-manually and rerun `lazydb mcp doctor`. This is deliberate until a format-aware
-editor can preserve JSONC comments, TOML comments, and unknown client fields.
+Setup preserves JSONC/TOML comments and unrelated fields when adding a server.
+Plans distinguish `create`, `add`, `unchanged`, `conflict`, and `invalid`. Running
+setup again leaves matching entries untouched, including custom options. A
+different existing LazyDB entry is never overwritten by `--yes`; review it
+manually. Disabled entries remain disabled and are reported as such.
+
+Discovery includes OpenCode's XDG user directory, `OPENCODE_CONFIG`, project and
+`.opencode` files, and `OPENCODE_CONFIG_DIR`; Codex's `CODEX_HOME` (default
+`~/.codex`) and repository config layers; and Claude Code's user/local
+`~/.claude.json` plus project `.mcp.json`. A custom `CLAUDE_CONFIG_DIR` uses its
+`.claude.json`. Multiple existing targets in an explicitly selected scope require
+`--client-config <path>` (one client only). This option is also available to doctor.
+An explicit path does not cause a client to load that file automatically.
+
+User registration does not pin the project used during setup: `--project .` is
+resolved when the MCP process starts. OpenCode uses workspace-relative `cwd`;
+Codex uses the server's launch directory. Generated Claude Code entries omit
+`--project` so LazyDB can use the client's `CLAUDE_PROJECT_DIR`, falling back to
+the working directory on older clients. Explicit `--project` takes precedence. LazyDB
+`--config` paths supplied to setup are resolved to absolute paths. Codex project
+configuration requires project trust; generated Codex entries are optional and
+do not make Codex startup fail if LazyDB cannot initialize.
 
 Useful non-interactive forms are:
 
 ```bash
 lazydb mcp setup --client claude-code --client codex --project . --dry-run --json
 lazydb mcp setup --client opencode --project . --yes --json
+lazydb mcp setup --client opencode --scope user --dry-run --json
+lazydb mcp setup --client codex --scope user --yes
+lazydb mcp setup --client claude-code --scope local --project . --yes
+lazydb mcp setup --client opencode --scope user --client-config ~/.config/opencode/opencode.jsonc --yes
 lazydb mcp doctor --project . --json
 ```
 
 The current `doctor --probe` flag reports that protocol probing is not yet
 implemented and does not start configured client commands. A successful static
-diagnosis therefore confirms file presence and the generated read-only policy,
-not client trust, process startup, or database connectivity.
+diagnosis confirms parsed server fields and deny policy, not client trust,
+process startup, or database connectivity. Doctor lists discovered LazyDB sources
+in file precedence order and reports duplicate definitions and disabled entries.
+Runtime CLI overrides, inline OpenCode configuration, remote/managed settings and
+client-specific trust decisions are not fully resolved by static inspection.

@@ -221,9 +221,40 @@ pub async fn run(
     policy: WritePolicy,
     config: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let project = server_project(
+        project,
+        std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from),
+    );
     let service = AgentService::load(project.as_deref(), config)?;
     if let Some(selector) = connection.as_deref() {
         service.select(Some(selector))?;
     }
     AgentMcpServer::new(service, policy).serve_stdio().await
+}
+
+fn server_project(explicit: Option<PathBuf>, client_project: Option<PathBuf>) -> Option<PathBuf> {
+    explicit.or_else(|| client_project.filter(|p| p.is_absolute()))
+}
+
+#[cfg(test)]
+mod project_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_each_client_project_at_startup_without_pinning_setup_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["project-a", "project-b"] {
+            let project = dir.path().join(name);
+            std::fs::create_dir_all(&project).unwrap();
+            let selected = server_project(None, Some(project.clone()));
+            let context =
+                crate::agent::context::AgentProjectContext::resolve(selected.as_deref()).unwrap();
+            assert_eq!(context.root(), project.canonicalize().unwrap());
+        }
+        assert_eq!(
+            server_project(Some("explicit".into()), Some(dir.path().into())),
+            Some("explicit".into())
+        );
+        assert_eq!(server_project(None, Some("relative".into())), None);
+    }
 }

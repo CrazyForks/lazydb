@@ -3,7 +3,7 @@ use lazydb::cli::{Cli, Command, McpClient, McpCommand, McpScope};
 use tempfile::tempdir;
 
 #[test]
-fn parses_setup_options_and_defaults_to_project_scope() {
+fn parses_setup_options_with_unspecified_scope() {
     let cli = Cli::try_parse_from([
         "lazydb",
         "mcp",
@@ -19,13 +19,146 @@ fn parses_setup_options_and_defaults_to_project_scope() {
         Some(Command::Mcp {
             command: McpCommand::Setup {
                 client,
-                scope: McpScope::Project,
+                scope: None,
                 dry_run: true,
                 json: true,
                 ..
             }
         }) if client == vec![McpClient::Codex]
     ));
+}
+
+fn explicit_setup(client: McpClient, path: &std::path::Path, project: &std::path::Path) -> String {
+    lazydb::agent::setup::run_with_options(lazydb::agent::setup::SetupOptions {
+        clients: vec![client],
+        scope: Some(McpScope::User),
+        client_config: Some(path.into()),
+        project: Some(project.into()),
+        config: None,
+        dry_run: false,
+        yes: true,
+        json: true,
+    })
+    .unwrap()
+}
+
+#[test]
+fn preserves_jsonc_and_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("opencode.jsonc");
+    let original = "{\n  // keep this comment\n  \"model\": \"custom\",\n  \"mcp\": {\n    \"other\": { \"type\": \"local\", \"command\": [\"other\"], },\n  },\n}\n";
+    std::fs::write(&path, original).unwrap();
+    assert!(
+        explicit_setup(McpClient::Opencode, &path, dir.path()).contains("\"status\":\"added\"")
+    );
+    let updated = std::fs::read_to_string(&path).unwrap();
+    assert!(updated.contains("// keep this comment"));
+    assert!(updated.contains("\"other\": { \"type\": \"local\", \"command\": [\"other\"], }"));
+    assert!(
+        explicit_setup(McpClient::Opencode, &path, dir.path()).contains("\"status\":\"unchanged\"")
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), updated);
+    assert!(!dir.path().join("opencode.json").exists());
+}
+
+#[test]
+fn preserves_toml_comments_and_does_not_require_server() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let original = "# personal preferences\nmodel = 'custom' # retain quotes\n\n[mcp_servers.other]\ncommand = 'other'\n";
+    std::fs::write(&path, original).unwrap();
+    explicit_setup(McpClient::Codex, &path, dir.path());
+    let updated = std::fs::read_to_string(&path).unwrap();
+    assert!(updated.starts_with(original));
+    let parsed: toml::Value = toml::from_str(&updated).unwrap();
+    assert!(parsed["mcp_servers"]["lazydb"].get("required").is_none());
+    assert!(explicit_setup(McpClient::Codex, &path, dir.path()).contains("unchanged"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), updated);
+}
+
+#[test]
+fn never_overwrites_conflicting_or_invalid_configuration() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("opencode.json");
+    for (original, status) in [
+        (
+            "{\"mcp\":{\"lazydb\":{\"type\":\"local\",\"command\":[\"custom\"]}}}",
+            "conflict",
+        ),
+        ("{\"mcp\":[]}", "invalid"),
+        ("not json", "invalid"),
+    ] {
+        std::fs::write(&path, original).unwrap();
+        let output = explicit_setup(McpClient::Opencode, &path, dir.path());
+        assert!(
+            output.contains(&format!("\"status\":\"{status}\"")),
+            "{output}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn claude_local_only_updates_current_project_node() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().canonicalize().unwrap();
+    let path = dir.path().join(".claude.json");
+    std::fs::write(
+        &path,
+        "{\"preferences\":true,\"projects\":{\"/another\":{\"allowedTools\":[\"Read\"]}}}",
+    )
+    .unwrap();
+    let output = lazydb::agent::setup::run_with_options(lazydb::agent::setup::SetupOptions {
+        clients: vec![McpClient::ClaudeCode],
+        scope: Some(McpScope::Local),
+        client_config: Some(path.clone()),
+        project: Some(project.clone()),
+        config: None,
+        dry_run: false,
+        yes: true,
+        json: true,
+    })
+    .unwrap();
+    assert!(output.contains("added"));
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(value["preferences"], true);
+    assert_eq!(value["projects"]["/another"]["allowedTools"][0], "Read");
+    assert_eq!(
+        value["projects"][project.to_str().unwrap()]["mcpServers"]["lazydb"]["command"],
+        "lazydb"
+    );
+    assert!(value.get("mcpServers").is_none());
+}
+
+#[test]
+fn rejects_unsupported_scope_and_multiple_explicit_clients() {
+    let dir = tempdir().unwrap();
+    assert!(
+        lazydb::agent::setup::run(
+            vec![McpClient::Codex],
+            McpScope::Local,
+            Some(dir.path().into()),
+            None,
+            true,
+            false,
+            true
+        )
+        .is_err()
+    );
+    assert!(
+        lazydb::agent::setup::run_with_options(lazydb::agent::setup::SetupOptions {
+            clients: vec![McpClient::Codex, McpClient::Opencode],
+            scope: None,
+            client_config: Some(dir.path().join("config")),
+            project: Some(dir.path().into()),
+            config: None,
+            dry_run: true,
+            yes: false,
+            json: true,
+        })
+        .is_err()
+    );
 }
 
 #[test]
@@ -78,7 +211,7 @@ fn dry_run_reports_missing_client_files_without_writing() {
 }
 
 #[test]
-fn existing_client_file_is_reported_as_conflict() {
+fn existing_client_file_is_planned_for_incremental_registration() {
     let dir = tempdir().unwrap();
     std::fs::write(dir.path().join(".mcp.json"), "{\"other\": true}\n").unwrap();
     let output = lazydb::agent::setup::run(
@@ -91,7 +224,7 @@ fn existing_client_file_is_reported_as_conflict() {
         true,
     )
     .unwrap();
-    assert!(output.contains("\"status\":\"conflict\""));
+    assert!(output.contains("\"status\":\"add\""));
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap(),
         "{\"other\": true}\n"

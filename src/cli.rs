@@ -237,12 +237,16 @@ pub enum McpCommand {
         #[arg(long, value_enum, default_value_t = crate::agent::policy::WritePolicy::Deny)]
         write_policy: crate::agent::policy::WritePolicy,
     },
-    /// Configure a project-scoped MCP server for coding agents.
+    /// Register an MCP server in an existing or new coding-agent configuration.
     Setup {
         #[arg(long = "client", value_enum)]
         client: Vec<McpClient>,
-        #[arg(long, default_value = "project", value_enum)]
-        scope: McpScope,
+        /// Installation scope (interactive selection; project in scripts).
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        /// Explicit client configuration file (requires a single client).
+        #[arg(long)]
+        client_config: Option<PathBuf>,
         #[arg(long)]
         project: Option<PathBuf>,
         #[arg(long)]
@@ -252,10 +256,12 @@ pub enum McpCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Inspect project-scoped MCP configuration without database I/O.
+    /// Inspect user and project MCP configuration without database I/O.
     Doctor {
         #[arg(long = "client", value_enum)]
         client: Vec<McpClient>,
+        #[arg(long)]
+        client_config: Option<PathBuf>,
         #[arg(long)]
         project: Option<PathBuf>,
         #[arg(long)]
@@ -272,10 +278,13 @@ pub enum McpClient {
     Opencode,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum McpScope {
     #[default]
     Project,
+    User,
+    Local,
 }
 
 #[derive(Clone, Debug, Args)]
