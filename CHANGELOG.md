@@ -771,6 +771,28 @@
 - [`fb2d5b3`](https://github.com/yelog/lazydb/commit/fb2d5b322f2a77ecf0f8171e9d466612c1f96ecb) ci: avoid caching cargo build artifacts
 - [`7b631eb`](https://github.com/yelog/lazydb/commit/7b631eb722ec1a6a3259991a1a554ea12ba5fc75) fix(update): recognize resolved native launchers and report check errors
 
+## [0.1.3] - 2026-09-09
+
+### Changed
+
+- Improved workspace save recovery when quitting, including empty-workspace handling and persistence coverage ([`fed1ce0`](https://github.com/yelog/lazydb/commit/fed1ce0e22d237cb11933ba1e82bea731e18ea2c)).
+- Added discovery and reuse of existing MCP client configurations, with setup and doctor support ([`cd65a3e`](https://github.com/yelog/lazydb/commit/cd65a3ed287b17d5586e9c0ab4d87be14cd70929)).
+
+### Internal
+
+- Updated CI compatibility for the latest Clippy lints ([`ba33cf2`](https://github.com/yelog/lazydb/commit/ba33cf261f039cfeae11e9aa25b856e09561c1bd)).
+- Simplified installation documentation ([`4c14e85`](https://github.com/yelog/lazydb/commit/4c14e8519c69022b789b4f215f689c6db433247f)).
+- Cleared committed relation edits before refresh and expanded relation tab coverage ([`bf41f2e`](https://github.com/yelog/lazydb/commit/bf41f2e49de532e70135f65227a506f62a8451c4)).
+
+### Commits
+
+- [`9023973`](https://github.com/yelog/lazydb/commit/90239734589c686a8b57615af7fb4e8dd1c9c673) merge: recover from failed quit saves
+- [`fed1ce0`](https://github.com/yelog/lazydb/commit/fed1ce0e22d237cb11933ba1e82bea731e18ea2c) fix(workspace): recover from failed quit saves
+- [`ba33cf2`](https://github.com/yelog/lazydb/commit/ba33cf261f039cfeae11e9aa25b856e09561c1bd) fix(ci): satisfy latest clippy lints
+- [`cd65a3e`](https://github.com/yelog/lazydb/commit/cd65a3ed287b17d5586e9c0ab4d87be14cd70929) fix(mcp): discover and reuse existing client configurations
+- [`4c14e85`](https://github.com/yelog/lazydb/commit/4c14e8519c69022b789b4f215f689c6db433247f) docs(readme): simplify installation instructions
+- [`bf41f2e`](https://github.com/yelog/lazydb/commit/bf41f2e49de532e70135f65227a506f62a8451c4) fix(relation): clear committed edits before refresh
+
 ## Unreleased
 
 - Add persistent Explorer connection groups, group membership, and profile ordering.
