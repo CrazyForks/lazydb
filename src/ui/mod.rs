@@ -1085,6 +1085,7 @@ fn overlay_key(overlay: &Overlay) -> u8 {
         Overlay::ProfileGroup(_) => 19,
         Overlay::ExplorerAdd(_) => 20,
         Overlay::Message { .. } => 5,
+        Overlay::WorkspaceSaveFailed { .. } => 24,
         Overlay::SubstituteConfirm { .. } => 6,
         Overlay::ExecutionConfirm { .. } => 7,
         Overlay::ManualCancelConfirm { .. } => 8,
@@ -3919,6 +3920,9 @@ fn render_overlay(
             options,
         } => render_profile_access(frame, area, app, *profile_id, *selected, options, theme),
         Overlay::Message { title, body } => render_message(frame, area, title, body, theme),
+        Overlay::WorkspaceSaveFailed { revision, message } => {
+            render_workspace_save_failed(frame, area, *revision, message, theme)
+        }
         Overlay::SubstituteConfirm { remaining } => {
             render_substitute_confirm(frame, area, *remaining, theme)
         }
@@ -5831,6 +5835,38 @@ fn render_message(frame: &mut Frame<'_>, area: Rect, title: &str, body: &str, th
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: true }),
         popup,
+    );
+}
+
+fn render_workspace_save_failed(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    revision: u64,
+    message: &str,
+    theme: Theme,
+) {
+    let popup = centered(area, 76, 12);
+    frame.render_widget(Clear, popup);
+    let block = panel_block(" WORKSPACE SAVE FAILED ", true, theme);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Revision {revision} could not be saved."),
+            theme.title(true),
+        )),
+        Line::from(Span::styled(message, Style::new().fg(theme.text))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "r Retry save    d Discard and quit    Esc Cancel quit",
+            Style::new().fg(theme.action),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::new().fg(theme.text).bg(theme.surface_raised))
+            .wrap(Wrap { trim: true }),
+        inner,
     );
 }
 

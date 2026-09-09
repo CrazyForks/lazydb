@@ -124,6 +124,10 @@ pub enum Overlay {
         title: String,
         body: String,
     },
+    WorkspaceSaveFailed {
+        revision: u64,
+        message: String,
+    },
     SubstituteConfirm {
         remaining: usize,
     },
