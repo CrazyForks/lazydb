@@ -223,10 +223,10 @@ fn select_target(
             (!registered, s.scope != McpScope::User)
         });
         for scope in [McpScope::User, McpScope::Project] {
-            if !candidates.iter().any(|s| s.scope == scope) {
-                if let Some(source) = sources.iter().find(|s| s.scope == scope) {
-                    candidates.push(source.clone());
-                }
+            if !candidates.iter().any(|s| s.scope == scope)
+                && let Some(source) = sources.iter().find(|s| s.scope == scope)
+            {
+                candidates.push(source.clone());
             }
         }
         if client == McpClient::ClaudeCode && !candidates.iter().any(|s| s.scope == McpScope::Local)
@@ -407,6 +407,14 @@ fn plan_client(
     plan
 }
 
+pub(crate) fn client_name(client: McpClient) -> &'static str {
+    match client {
+        McpClient::ClaudeCode => "claude-code",
+        McpClient::Codex => "codex",
+        McpClient::Opencode => "opencode",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,13 +452,5 @@ mod tests {
             std::fs::read_to_string(user).unwrap(),
             "{\"model\":\"custom\"}"
         );
-    }
-}
-
-pub(crate) fn client_name(client: McpClient) -> &'static str {
-    match client {
-        McpClient::ClaudeCode => "claude-code",
-        McpClient::Codex => "codex",
-        McpClient::Opencode => "opencode",
     }
 }

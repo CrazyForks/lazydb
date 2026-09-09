@@ -241,7 +241,6 @@ fn valid_server(client: McpClient, value: &serde_json::Value) -> bool {
         && args.windows(2).any(|a| a[0] == "mcp" && a[1] == "serve")
         && args
             .windows(2)
-            .filter(|a| a[0] == "--write-policy")
-            .last()
+            .rfind(|a| a[0] == "--write-policy")
             .is_some_and(|a| a[1] == "deny")
 }
