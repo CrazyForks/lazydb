@@ -744,6 +744,33 @@
 - [`a783bd6`](https://github.com/yelog/lazydb/commit/a783bd6a2383451af79049dba97f2bcd7a408af7) fix(installer): align manifest targets with release assets
 - [`31020c1`](https://github.com/yelog/lazydb/commit/31020c1321adaadf93920ab0820777ecc540463e) fix(input): keep focus in explorer for empty workspaces
 
+## [0.1.2] - 2026-09-09
+
+### Changed
+
+- Improved native update detection, archive compatibility, and installer behavior across supported platforms ([`7b631eb`](https://github.com/yelog/lazydb/commit/7b631eb722ec1a6a3259991a1a554ea12ba5fc75), [`0b937ad`](https://github.com/yelog/lazydb/commit/0b937ad6b973b25122fe326aa1210b8d1ce0b48c), [`98a8be9`](https://github.com/yelog/lazydb/commit/98a8be97e572443bba571b97f6d5e3a96735c307)).
+- Made macOS release binaries independent of Homebrew `xz` and strengthened distribution packaging and recovery checks ([`c949da8`](https://github.com/yelog/lazydb/commit/c949da844e0225567c04fe0ac8f8c1489cb3b60a), [`eef0c78`](https://github.com/yelog/lazydb/commit/eef0c78bbfc331545fa14783c49062d54ce55b2c)).
+
+### Internal
+
+- Reduced CI disk usage and removed Cargo build artifact caching ([`fea9da7`](https://github.com/yelog/lazydb/commit/fea9da75105d1fb006237967bf97cb7bd3db9d29), [`fb2d5b3`](https://github.com/yelog/lazydb/commit/fb2d5b322f2a77ecf0f8171e9d466612c1f96ecb)).
+- Updated release automation, documentation, and integration coverage for the new distribution flow ([`c676606`](https://github.com/yelog/lazydb/commit/c6766063391901bbb689f65b3ada346c6743474e), [`7ac3c9c`](https://github.com/yelog/lazydb/commit/7ac3c9c39fd30eb50052ea6e16418c378ec4893e)).
+- Added deterministic version rollover policy checks to release tooling ([`fd6d1a7`](https://github.com/yelog/lazydb/commit/fd6d1a71afa18b29960e9263a0579e1f7004b6c8)).
+
+### Commits
+
+- [`fd6d1a7`](https://github.com/yelog/lazydb/commit/fd6d1a71afa18b29960e9263a0579e1f7004b6c8) fix(release): use deterministic version rollover policy
+- [`c676606`](https://github.com/yelog/lazydb/commit/c6766063391901bbb689f65b3ada346c6743474e) chore(release): automate publishing after version confirmation
+- [`eef0c78`](https://github.com/yelog/lazydb/commit/eef0c78bbfc331545fa14783c49062d54ce55b2c) fix(release): unblock tagged release recovery
+- [`7ac3c9c`](https://github.com/yelog/lazydb/commit/7ac3c9c39fd30eb50052ea6e16418c378ec4893e) Update MCP and Neovim LSP headings in README
+- [`98a8be9`](https://github.com/yelog/lazydb/commit/98a8be97e572443bba571b97f6d5e3a96735c307) fix(installer): simplify Windows bootstrap with text endpoint
+- [`be6a339`](https://github.com/yelog/lazydb/commit/be6a339c7252f372b89798610f4e39a069a7456d) Merge remote-tracking branch 'origin/main'
+- [`0b937ad`](https://github.com/yelog/lazydb/commit/0b937ad6b973b25122fe326aa1210b8d1ce0b48c) fix(update): accept archive directory markers and preserve legacy compatibility
+- [`c949da8`](https://github.com/yelog/lazydb/commit/c949da844e0225567c04fe0ac8f8c1489cb3b60a) fix(release): make macOS binaries independent of Homebrew xz
+- [`fea9da7`](https://github.com/yelog/lazydb/commit/fea9da75105d1fb006237967bf97cb7bd3db9d29) ci: reduce cargo test disk usage
+- [`fb2d5b3`](https://github.com/yelog/lazydb/commit/fb2d5b322f2a77ecf0f8171e9d466612c1f96ecb) ci: avoid caching cargo build artifacts
+- [`7b631eb`](https://github.com/yelog/lazydb/commit/7b631eb722ec1a6a3259991a1a554ea12ba5fc75) fix(update): recognize resolved native launchers and report check errors
+
 ## Unreleased
 
 - Add persistent Explorer connection groups, group membership, and profile ordering.
