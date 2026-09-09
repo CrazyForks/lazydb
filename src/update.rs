@@ -847,11 +847,6 @@ fn extract_archive(
     target: &str,
 ) -> anyhow::Result<()> {
     let expected_root = format!("lazydb_{}_{}", manifest.version, target);
-    let mut decoder = XzDecoder::new(Cursor::new(archive));
-    let mut tar_bytes = Vec::new();
-    decoder.read_to_end(&mut tar_bytes)?;
-    let mut tar_archive = tar::Archive::new(Cursor::new(&tar_bytes));
-    let entries = tar_archive.entries()?.collect::<Result<Vec<_>, _>>()?;
     let mut names = std::collections::BTreeSet::new();
     let binary_file = if target == "x86_64-pc-windows-msvc" {
         "lazydb.exe"
@@ -861,46 +856,43 @@ fn extract_archive(
     let binary_name = format!("{expected_root}/{binary_file}");
     let mut root_seen = false;
     let mut binary_seen = false;
-    for entry in &entries {
-        let name = entry.path()?.to_string_lossy().into_owned();
-        let safe = archive_entry_path_is_normal(&name)
-            && (name == expected_root || name.starts_with(&format!("{expected_root}/")))
-            && names.insert(name.clone());
-        if !safe
-            || entry.header().entry_type().is_symlink()
-            || entry.header().entry_type().is_hard_link()
-            || !(entry.header().entry_type().is_dir() || entry.header().entry_type().is_file())
+    let mut validate_entry = |raw_name: &str, is_dir: bool, is_file: bool| -> anyhow::Result<()> {
+        // A single trailing slash is a directory marker, not an empty path component.
+        let name = if is_dir {
+            raw_name.strip_suffix('/').unwrap_or(raw_name)
+        } else {
+            raw_name
+        };
+        if !archive_entry_path_is_normal(name)
+            || !(name == expected_root || name.starts_with(&format!("{expected_root}/")))
+            || !names.insert(name.to_owned())
+            || !(is_dir || is_file)
+            || (name == expected_root && !is_dir)
+            || (name == binary_name && !is_file)
         {
-            anyhow::bail!("unsafe archive entry: {name}")
+            anyhow::bail!("unsafe archive entry: {raw_name}")
         }
-        if name == expected_root && entry.header().entry_type().is_dir() {
-            root_seen = true;
-        }
-        if name == binary_name {
-            binary_seen = true;
-        }
-    }
-    if !root_seen || !binary_seen {
-        anyhow::bail!("archive does not contain the expected executable")
-    }
+        root_seen |= name == expected_root && is_dir;
+        binary_seen |= name == binary_name && is_file;
+        Ok(())
+    };
     if target == "x86_64-pc-windows-msvc" {
         let mut zip = zip::ZipArchive::new(Cursor::new(archive))?;
         for index in 0..zip.len() {
             let entry = zip.by_index(index)?;
-            let name = entry.name().trim_end_matches('/');
-            if !archive_entry_path_is_normal(name)
-                || !name.starts_with(&format!("{expected_root}/"))
-                || entry.is_symlink()
-            {
-                anyhow::bail!("unsafe archive entry: {name}")
+            let mode = entry.unix_mode().unwrap_or(0) & 0o170000;
+            if entry.is_symlink() || !matches!(mode, 0 | 0o040000 | 0o100000) {
+                anyhow::bail!("unsafe archive entry: {}", entry.name())
             }
+            validate_entry(entry.name(), entry.is_dir(), entry.is_file())?;
+        }
+        if !root_seen || !binary_seen {
+            anyhow::bail!("archive does not contain the expected executable")
         }
         let mut zip = zip::ZipArchive::new(Cursor::new(archive))?;
         for index in 0..zip.len() {
             let mut entry = zip.by_index(index)?;
-            let name = entry.name().trim_end_matches('/');
-            let relative = name.strip_prefix(&format!("{expected_root}/")).unwrap();
-            let output = destination.join(relative);
+            let output = destination.join(entry.name());
             if entry.is_dir() {
                 fs::create_dir_all(output)?;
             } else {
@@ -912,6 +904,20 @@ fn extract_archive(
             }
         }
     } else {
+        let mut decoder = XzDecoder::new(Cursor::new(archive));
+        let mut tar_bytes = Vec::new();
+        decoder.read_to_end(&mut tar_bytes)?;
+        let mut tar_archive = tar::Archive::new(Cursor::new(&tar_bytes));
+        for entry in tar_archive.entries()? {
+            let entry = entry?;
+            let path = entry.path_bytes();
+            let name = std::str::from_utf8(&path)?;
+            let entry_type = entry.header().entry_type();
+            validate_entry(name, entry_type.is_dir(), entry_type.is_file())?;
+        }
+        if !root_seen || !binary_seen {
+            anyhow::bail!("archive does not contain the expected executable")
+        }
         let mut tar_archive = tar::Archive::new(Cursor::new(&tar_bytes));
         tar_archive.unpack(destination)?;
     }
@@ -1541,6 +1547,156 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn release_packager_output_is_accepted_by_updater() {
+        let dir = tempdir().unwrap();
+        let target = SUPPORTED_TARGETS[0];
+        let root = dir.path().join(format!("lazydb_1.3.0_{target}"));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("lazydb"), b"binary").unwrap();
+        fs::write(root.join("README.md"), b"documentation").unwrap();
+        let archive = dir.path().join("release.tar.xz");
+        let status = Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/release/package-archive.py"
+            ))
+            .arg(&root)
+            .arg(&archive)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let destination = dir.path().join("unpack");
+        let manifest = update_manifest("1.3.0", "a".repeat(64));
+        extract_archive(&fs::read(archive).unwrap(), &destination, &manifest, target).unwrap();
+        assert_eq!(fs::read(destination.join("lazydb")).unwrap(), b"binary");
+        assert_eq!(
+            fs::read(destination.join("README.md")).unwrap(),
+            b"documentation"
+        );
+    }
+
+    #[test]
+    fn archive_directory_markers_and_unsafe_entries() {
+        let target = SUPPORTED_TARGETS[0];
+        let root = format!("lazydb_1.3.0_{target}");
+        let binary = format!("{root}/lazydb");
+        let manifest = update_manifest("1.3.0", "a".repeat(64));
+        let cases = [
+            (root.clone(), binary.clone(), tar::EntryType::Regular, true),
+            (
+                format!("{root}/"),
+                binary.clone(),
+                tar::EntryType::Regular,
+                true,
+            ),
+            (
+                format!("{root}//"),
+                binary.clone(),
+                tar::EntryType::Regular,
+                false,
+            ),
+            (
+                root.clone(),
+                binary.clone(),
+                tar::EntryType::Directory,
+                false,
+            ),
+            (root.clone(), binary.clone(), tar::EntryType::Symlink, false),
+            (root.clone(), binary.clone(), tar::EntryType::Link, false),
+            (
+                root.clone(),
+                format!("{root}/"),
+                tar::EntryType::Directory,
+                false,
+            ),
+            (
+                root.clone(),
+                format!("{root}/../lazydb"),
+                tar::EntryType::Regular,
+                false,
+            ),
+            (
+                root.clone(),
+                format!("{root}/./lazydb"),
+                tar::EntryType::Regular,
+                false,
+            ),
+            (
+                root.clone(),
+                format!("{root}//lazydb"),
+                tar::EntryType::Regular,
+                false,
+            ),
+            (
+                root.clone(),
+                format!("/{binary}"),
+                tar::EntryType::Regular,
+                false,
+            ),
+        ];
+        for (directory, name, kind, valid) in cases {
+            let mut bytes = Vec::new();
+            {
+                let mut builder = tar::Builder::new(&mut bytes);
+                for (path, entry_type) in [(&directory, tar::EntryType::Directory), (&name, kind)] {
+                    let mut header = tar::Header::new_ustar();
+                    // Write raw names so the fixture builder cannot normalize unsafe paths.
+                    header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
+                    header.set_entry_type(entry_type);
+                    header.set_size(0);
+                    header.set_mode(0o755);
+                    header.set_cksum();
+                    builder.append(&header, &[][..]).unwrap();
+                }
+                builder.finish().unwrap();
+            }
+            let mut encoder = XzEncoder::new(Vec::new(), 6);
+            encoder.write_all(&bytes).unwrap();
+            let archive = encoder.finish().unwrap();
+            let dir = tempdir().unwrap();
+            let result = extract_archive(&archive, dir.path(), &manifest, target);
+            assert_eq!(result.is_ok(), valid, "{directory}, {name}: {result:?}");
+            if valid {
+                assert!(dir.path().join("lazydb").is_file());
+            } else {
+                assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn zip_archive_is_validated_before_extraction() {
+        let target = "x86_64-pc-windows-msvc";
+        let root = format!("lazydb_1.3.0_{target}");
+        let manifest = update_manifest("1.3.0", "a".repeat(64));
+        for extra in [None, Some("../escape"), Some("lazydb.exe")] {
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            let options = zip::write::SimpleFileOptions::default();
+            writer.add_directory(format!("{root}/"), options).unwrap();
+            writer
+                .start_file(format!("{root}/lazydb.exe"), options)
+                .unwrap();
+            writer.write_all(b"binary").unwrap();
+            if let Some(extra) = extra {
+                // A directory with the binary's name also checks type/alias rejection.
+                writer
+                    .add_directory(format!("{root}/{extra}/"), options)
+                    .unwrap();
+            }
+            let archive = writer.finish().unwrap().into_inner();
+            let dir = tempdir().unwrap();
+            let result = extract_archive(&archive, dir.path(), &manifest, target);
+            assert_eq!(result.is_ok(), extra.is_none(), "{extra:?}: {result:?}");
+            if extra.is_none() {
+                assert_eq!(fs::read(dir.path().join("lazydb.exe")).unwrap(), b"binary");
+            } else {
+                assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn archive_without_expected_root_directory_is_rejected() {
         let dir = tempdir().unwrap();
         let target = SUPPORTED_TARGETS[0];
@@ -1648,7 +1804,7 @@ mod tests {
             let mut builder = tar::Builder::new(&mut tar_bytes);
             let root = format!("lazydb_{version}_{target}");
             let mut directory = tar::Header::new_gnu();
-            directory.set_path(&root).unwrap();
+            directory.set_path(format!("{root}/")).unwrap();
             directory.set_entry_type(tar::EntryType::Directory);
             directory.set_size(0);
             directory.set_mode(0o755);

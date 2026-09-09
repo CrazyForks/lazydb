@@ -121,7 +121,11 @@ jobs:
           if [ "$TARGET" = x86_64-pc-windows-msvc ]; then
              (cd dist/package && 7z a -tzip "../lazydb_${VERSION}_${TARGET}.zip" "lazydb_${VERSION}_${TARGET}")
           else
-            tar -cJf "dist/lazydb_${VERSION}_${TARGET}.tar.xz" -C dist/package "lazydb_${VERSION}_${TARGET}"
+            python3 scripts/release/package-archive.py "$staging" "dist/lazydb_${VERSION}_${TARGET}.tar.xz"
+            mkdir -p dist/smoke
+            tar -xJf "dist/lazydb_${VERSION}_${TARGET}.tar.xz" -C dist/smoke
+            cmp "$executable" "dist/smoke/lazydb_${VERSION}_${TARGET}/lazydb"
+            scripts/release/smoke-artifact.sh "dist/smoke/lazydb_${VERSION}_${TARGET}/lazydb" "$VERSION"
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.4.3
         with:
