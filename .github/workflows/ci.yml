@@ -63,6 +63,13 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy --no-self-update
       - name: Select Rust
         run: rustup default 1.94.0
+      - name: Limit Cargo build footprint
+        shell: bash
+        run: |
+          {
+            echo 'CARGO_INCREMENTAL=0'
+            echo 'CARGO_BUILD_JOBS=2'
+          } >> "$GITHUB_ENV"
       - name: Cache Cargo
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
