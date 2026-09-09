@@ -22,6 +22,20 @@ label is not a cross-compilation check; use a binary runnable on the test host.
 The release workflow also compares and smoke-tests each extracted Unix binary
 on its native runner. Windows ZIP packaging is unchanged.
 
+## macOS Runtime Dependencies
+
+The release build enables xz2's static liblzma feature. Published macOS
+artifacts must pass `check-macos-dependencies.sh`, which allows only Apple
+system libraries and frameworks. A Homebrew path such as
+`/opt/homebrew/opt/xz/lib/liblzma.5.dylib` is a release blocker; users must
+not be asked to install Homebrew just to run LazyDB.
+
+The installers also probe Python's XZ support before downloading an archive.
+`dyld: Library not loaded` identifies a broken published binary, while an
+error mentioning Python `lzma` identifies the installer's Python runtime.
+The latter requires a Python build with working `_lzma` support; it is not
+fixed by installing the LazyDB binary or by changing the archive checksum.
+
 ## Recovery Boundaries
 
 This fix affects newly generated archives, not already published assets.

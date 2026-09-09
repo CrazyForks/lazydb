@@ -97,6 +97,9 @@ jobs:
       - name: Build
         shell: bash
         run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Check macOS binary dependencies
+        if: matrix.target == 'x86_64-apple-darwin' || matrix.target == 'aarch64-apple-darwin'
+        run: scripts/release/check-macos-dependencies.sh "target/${{ matrix.target }}/release/lazydb"
       - name: Smoke test
         if: matrix.os != 'windows-2025'
         run: scripts/release/smoke-artifact.sh "target/${{ matrix.target }}/release/lazydb" "${{ needs.plan.outputs.version }}"
@@ -126,6 +129,9 @@ jobs:
             tar -xJf "dist/lazydb_${VERSION}_${TARGET}.tar.xz" -C dist/smoke
             cmp "$executable" "dist/smoke/lazydb_${VERSION}_${TARGET}/lazydb"
             scripts/release/smoke-artifact.sh "dist/smoke/lazydb_${VERSION}_${TARGET}/lazydb" "$VERSION"
+            if [ "$TARGET" = x86_64-apple-darwin ] || [ "$TARGET" = aarch64-apple-darwin ]; then
+              scripts/release/check-macos-dependencies.sh "dist/smoke/lazydb_${VERSION}_${TARGET}/lazydb"
+            fi
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.4.3
         with:

@@ -35,6 +35,8 @@ esac
 
 for tool in curl tar awk cat cp mkdir mv ln chmod; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 command -v python3 >/dev/null 2>&1 || die 'python3 is required'
+python3 -c 'import lzma; lzma.LZMADecompressor(format=lzma.FORMAT_XZ)' >/dev/null 2>&1 \
+    || die 'python3 cannot decode XZ archives; use a Python 3 installation with working lzma support. Homebrew is not required.'
 INSTALL_DIR=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$INSTALL_DIR")
 if command -v sha256sum >/dev/null 2>&1; then HASH=sha256sum; else command -v shasum >/dev/null 2>&1 || die 'sha256sum or shasum is required'; HASH='shasum -a 256'; fi
 

@@ -65,6 +65,24 @@ export TMPDIR_TEST="$TMP" PATH="$TMP/bin:$PATH" LAZYDB_CHANNEL_BASE_URL=https://
 export LAZYDB_CONFIG_HOME="$TMP/home/config"
 export SHELL=/bin/bash LAZYDB_MCP_SETUP=skip
 unset ZDOTDIR XDG_CONFIG_HOME LAZYDB_INSTALL_DIR
+REAL_PYTHON=$(command -v python3)
+mkdir -p "$TMP/no-lzma-bin"
+cat > "$TMP/no-lzma-bin/python3" <<SH
+#!/bin/sh
+if [ "\${1:-}" = -c ] && printf '%s' "\${2:-}" | grep -q 'import lzma'; then
+    exit 1
+fi
+exec "$REAL_PYTHON" "\$@"
+SH
+chmod 755 "$TMP/no-lzma-bin/python3"
+if HOME="$TMP/no-lzma-home" PATH="$TMP/no-lzma-bin:$TMP/bin:$PATH" \
+    LAZYDB_CONFIG_HOME="$TMP/no-lzma-home/config" \
+    sh "$TMP/pages/install.sh" --install-dir "$TMP/no-lzma-install" >"$TMP/no-lzma-output" 2>&1; then
+    printf '%s\n' 'installer accepted Python without XZ support' >&2
+    exit 1
+fi
+grep -q 'cannot decode XZ archives' "$TMP/no-lzma-output"
+[ ! -e "$TMP/no-lzma-home/config/install.json" ]
 # Consume the same five-target manifests as production, including Windows.
 if ! HOME="$TMP/home" sh "$TMP/pages/install.sh" --install-dir "$TMP/install" >/dev/null; then
     printf '%s\n' 'installer fixture failed' >&2
