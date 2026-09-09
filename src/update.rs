@@ -260,7 +260,7 @@ impl UpdateHttpClient for SystemUpdateHttpClient {
 }
 
 pub trait InstallationStateSource {
-    fn state(&self) -> Option<InstallationState>;
+    fn state(&self) -> anyhow::Result<Option<InstallationState>>;
 }
 
 pub trait UpdateFileSystem {
@@ -281,11 +281,18 @@ pub struct InstallationStateFileSource<F = SystemUpdateFileSystem> {
 }
 
 impl<F: UpdateFileSystem> InstallationStateSource for InstallationStateFileSource<F> {
-    fn state(&self) -> Option<InstallationState> {
-        self.file_system
-            .read_to_string(&self.path)
-            .ok()
-            .and_then(|input| parse_installation_state(&input).ok())
+    fn state(&self) -> anyhow::Result<Option<InstallationState>> {
+        let input = match self.file_system.read_to_string(&self.path) {
+            Ok(input) => input,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => anyhow::bail!("failed to read {}: {error}", self.path.display()),
+        };
+        parse_installation_state(&input).map(Some).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid installation state at {}: {error}",
+                self.path.display()
+            )
+        })
     }
 }
 
@@ -321,7 +328,7 @@ pub async fn run(args: crate::cli::UpdateArgs, _config: Option<PathBuf>) -> anyh
         && report.status == "update_available"
     {
         let state = source
-            .state()
+            .state()?
             .ok_or_else(|| anyhow::anyhow!("native installation state is unavailable"))?;
         let target = current_target(Some(&state))
             .ok_or_else(|| anyhow::anyhow!("current target is unsupported"))?;
@@ -409,7 +416,7 @@ pub async fn install_current_native(
     };
     let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lazydb"));
     let initial_state = source
-        .state()
+        .state()?
         .ok_or_else(|| anyhow::anyhow!("native installation state is unavailable"))?;
     if detect_installation_manager(&executable, Some(&initial_state), &SystemInstallationProbe)
         != InstallationManager::Native
@@ -418,7 +425,7 @@ pub async fn install_current_native(
     }
     let lock = UpdateLock::acquire(&native_data_dir(&initial_state)?)?;
     let current_state = source
-        .state()
+        .state()?
         .ok_or_else(|| anyhow::anyhow!("native installation state is unavailable"))?;
     if detect_installation_manager(&executable, Some(&current_state), &SystemInstallationProbe)
         != InstallationManager::Native
@@ -454,7 +461,7 @@ pub async fn install_current_native(
     )
     .await?;
     let installed = source
-        .state()
+        .state()?
         .ok_or_else(|| anyhow::anyhow!("updated installation state is unavailable"))?;
     if installed.version != manifest.version {
         anyhow::bail!("updated installation state does not match the downloaded release")
@@ -480,7 +487,10 @@ where
     S: InstallationStateSource,
     H: UpdateHttpClient,
 {
-    let state = source.state();
+    let (state, state_error) = match source.state() {
+        Ok(state) => (state, None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
     let manager = detect_installation_manager(executable, state.as_ref(), probe);
     let channel = resolve_channel(
         requested_channel,
@@ -499,7 +509,7 @@ where
         .as_ref()
         .ok()
         .map(|manifest| manifest.version.clone());
-    let status = match manifest {
+    let status = match &manifest {
         Ok(_) => match manager {
             InstallationManager::Native => {
                 let status = version_status_kind(
@@ -515,7 +525,6 @@ where
                     status
                 }
             }
-            InstallationManager::Unknown => UpdateStatus::Error,
             _ => UpdateStatus::ManagerActionRequired,
         },
         Err(_) => UpdateStatus::Error,
@@ -524,8 +533,20 @@ where
         UpdateStatus::Available if manager == InstallationManager::Native => {
             Some("native target update will be applied".to_owned())
         }
-        UpdateStatus::ManagerActionRequired => manager_action(manager, channel),
-        UpdateStatus::Error => Some("unable to determine the latest LazyDB release".to_owned()),
+        UpdateStatus::ManagerActionRequired => {
+            let action = manager_action(manager, channel);
+            if manager == InstallationManager::Unknown {
+                state_error
+                    .map(|error| format!("{error}; {}", action.as_deref().unwrap_or_default()))
+                    .or(action)
+            } else {
+                action
+            }
+        }
+        UpdateStatus::Error => Some(match manifest {
+            Err(error) => error,
+            Ok(_) => "installed version is invalid; repair the native installation".to_owned(),
+        }),
         _ => None,
     };
     UpdateInspection {
@@ -643,9 +664,12 @@ async fn fetch_manifest<H: UpdateHttpClient>(
         base.trim_end_matches('/'),
         channel_name(channel)
     );
-    let manifest =
-        parse_channel_manifest(&http.get(&url).await.map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
+    let input = http
+        .get(&url)
+        .await
+        .map_err(|error| format!("failed to fetch {url}: {error:#}"))?;
+    let manifest = parse_channel_manifest(&input)
+        .map_err(|error| format!("invalid channel manifest at {url}: {error}"))?;
     (manifest.channel == channel)
         .then_some(manifest)
         .ok_or_else(|| "manifest channel mismatch".to_owned())
@@ -696,7 +720,7 @@ fn manager_action(manager: InstallationManager, _channel: UpdateChannel) -> Opti
         ),
         InstallationManager::Cargo => Some("cargo install lazydb".to_owned()),
         InstallationManager::Unknown => {
-            Some("installation manager could not be determined".to_owned())
+            Some("installation manager could not be determined; update using the original installation method or the official installer at https://lazydb.yelog.org/install.sh".to_owned())
         }
         InstallationManager::Native => None,
     }
@@ -1151,16 +1175,17 @@ pub fn native_installation_is_active<P: InstallationProbe>(
         return false;
     }
 
-    // The visible binary must be a link through `current`, rather than merely
-    // resembling a native installation path.
-    probe.read_link(executable).is_some_and(|target| {
+    // current_exe() may resolve symlinks (notably on Linux). Validate the
+    // recorded launcher, after confirming it resolves to the running binary.
+    probe.read_link(&state.path).is_some_and(|target| {
         let target_has_current = target
             .components()
             .any(|component| component.as_os_str() == "current");
         let resolved_target = if target.is_absolute() {
             target
         } else {
-            executable
+            state
+                .path
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .join(target)
@@ -1402,6 +1427,120 @@ mod tests {
             detect_installation_manager(Path::new("/opt/lazydb"), None, &probe),
             InstallationManager::Arch
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn native_launcher_validation_accepts_resolved_executable_and_rejects_invalid_links() {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let data = dir.path().join("data");
+        let release = data.join("releases/1.2.3");
+        fs::create_dir_all(&release).unwrap();
+        let binary = release.join("lazydb");
+        fs::write(&binary, b"binary").unwrap();
+        let launcher = dir.path().join("bin/lazydb");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        symlink(&release, data.join("current")).unwrap();
+        let mut state = parse_installation_state(&valid_state("/unused")).unwrap();
+        state.path = launcher.clone();
+        for target in [
+            data.join("current/lazydb"),
+            PathBuf::from("../data/current/lazydb"),
+        ] {
+            symlink(target, &launcher).unwrap();
+            assert_eq!(
+                detect_installation_manager(&binary, Some(&state), &SystemInstallationProbe),
+                InstallationManager::Native
+            );
+            assert!(native_installation_is_active(
+                &state,
+                &launcher,
+                &SystemInstallationProbe
+            ));
+            assert!(!native_installation_is_active(
+                &state,
+                Path::new("/missing"),
+                &SystemInstallationProbe
+            ));
+            fs::remove_file(&launcher).unwrap();
+        }
+        for target in [&binary, &data.join("current/missing")] {
+            symlink(target, &launcher).unwrap();
+            assert!(!native_installation_is_active(
+                &state,
+                &binary,
+                &SystemInstallationProbe
+            ));
+            fs::remove_file(&launcher).unwrap();
+        }
+        state.path = binary.clone();
+        assert!(!native_installation_is_active(
+            &state,
+            &binary,
+            &SystemInstallationProbe
+        ));
+    }
+
+    struct ManifestHttp(Result<String, &'static str>);
+
+    #[async_trait]
+    impl UpdateHttpClient for ManifestHttp {
+        async fn get(&self, _url: &str) -> anyhow::Result<String> {
+            self.0.clone().map_err(anyhow::Error::msg)
+        }
+
+        async fn download(&self, _url: &str) -> anyhow::Result<Vec<u8>> {
+            panic!("inspection must not download an archive")
+        }
+    }
+
+    #[tokio::test]
+    async fn inspection_distinguishes_unknown_installation_network_and_invalid_metadata() {
+        let dir = tempdir().unwrap();
+        let source = InstallationStateFileSource {
+            path: dir.path().join("install.json"),
+            file_system: SystemUpdateFileSystem,
+        };
+        let probe = FakeProbe::default();
+        let executable = Path::new("/opt/lazydb");
+        let inspect = |http| inspect_installation(None, false, &source, &probe, executable, http);
+        let http = ManifestHttp(Ok(manifest_fixture()));
+        let inspection = inspect(&http).await;
+        assert_eq!(inspection.manager, InstallationManager::Unknown);
+        assert_eq!(inspection.target_version.as_deref(), Some("1.3.0"));
+        assert_eq!(inspection.status, UpdateStatus::ManagerActionRequired);
+        assert!(
+            inspection
+                .action
+                .unwrap()
+                .contains("original installation method")
+        );
+
+        let http = ManifestHttp(Err("connection timed out"));
+        let inspection = inspect(&http).await;
+        assert_eq!(inspection.status, UpdateStatus::Error);
+        let message = inspection.action.unwrap();
+        assert!(message.contains("failed to fetch"));
+        assert!(message.contains("connection timed out"));
+
+        let http = ManifestHttp(Ok("not JSON".into()));
+        let inspection = inspect(&http).await;
+        assert_eq!(inspection.status, UpdateStatus::Error);
+        assert!(
+            inspection
+                .action
+                .unwrap()
+                .contains("invalid channel manifest")
+        );
+
+        fs::write(&source.path, "not JSON").unwrap();
+        let http = ManifestHttp(Ok(manifest_fixture()));
+        let inspection = inspect(&http).await;
+        assert_eq!(inspection.status, UpdateStatus::ManagerActionRequired);
+        let message = inspection.action.unwrap();
+        assert!(message.contains("invalid installation state"));
+        assert!(message.contains(&source.path.display().to_string()));
     }
 
     #[test]

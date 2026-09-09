@@ -108,3 +108,23 @@ fn install_failure_is_retryable() {
     assert!(matches!(app.update_state, UpdateState::Failed { .. }));
     assert!(matches!(app.overlay, Some(Overlay::Update(_))));
 }
+
+#[test]
+fn unknown_installation_requires_manual_action_without_starting_install() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenUpdateCenter);
+    let mut result = inspection(UpdateStatus::ManagerActionRequired);
+    result.manager = InstallationManager::Unknown;
+    result.action = Some("update using the original installation method".into());
+    result.launcher_path = None;
+    app.update(Action::UpdateCheckCompleted {
+        request_id: 1,
+        inspection: result,
+    });
+    assert!(matches!(
+        app.update_state,
+        UpdateState::ManagerActionRequired(_)
+    ));
+    app.update(Action::UpdateOverlayToggleFocus);
+    assert!(app.update(Action::UpdateOverlayConfirm).is_empty());
+}
