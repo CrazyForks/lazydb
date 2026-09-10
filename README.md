@@ -67,6 +67,11 @@ Run the following on Windows to install LazyDB:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://lazydb.yelog.org/install.ps1.txt -ErrorAction Stop | iex"
 ```
 
+After an interactive installation, the installer can open the LazyDB MCP
+setup wizard. It supports user-level and project-level configuration and
+shows the target file before writing it. To defer this step, run
+`lazydb mcp setup` later, or use `--mcp-setup skip` with the Unix installer.
+
 The Windows installer supports 64-bit Windows (MSVC), downloads the release
 metadata and ZIP archive over HTTPS, verifies the SHA-256 checksum, and adds
 `%LOCALAPPDATA%\LazyDB\bin` to the user `PATH`. No administrator privileges are

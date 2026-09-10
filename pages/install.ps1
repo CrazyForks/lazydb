@@ -32,8 +32,9 @@ try {
     if ($LASTEXITCODE -ne 0 -or ($versionJson | ConvertFrom-Json).version -ne $manifest.version) { throw 'staged binary failed version check' }
 
     [IO.Directory]::CreateDirectory($installDir) | Out-Null
-    Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $installDir 'lazydb.exe') -Force
     $configDir = Join-Path $env:APPDATA 'lazydb'
+    $firstInstall = -not (Test-Path -LiteralPath (Join-Path $configDir 'install.json')) -and -not (Test-Path -LiteralPath (Join-Path $installDir 'lazydb.exe'))
+    Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $installDir 'lazydb.exe') -Force
     [IO.Directory]::CreateDirectory($configDir) | Out-Null
     $state = @{ schema = 1; product = 'lazydb'; manager = 'native'; channel = $channel; version = $manifest.version; target = $target; path = (Join-Path $installDir 'lazydb.exe') } |
         ConvertTo-Json
@@ -49,13 +50,25 @@ try {
         Write-Host "Added $installDir to the user PATH. Open a new terminal to use lazydb."
     }
     Write-Host "lazydb $($manifest.version) installed ($channel)"
-    Write-Host 'To configure database access for Claude Code, Codex, or OpenCode, run `lazydb mcp setup` inside your project.'
-    if ($mcpSetup -eq 'ask' -and [Environment]::UserInteractive -and $Host.Name -notmatch 'ServerRemoteHost') {
+    Write-Host 'Configure LazyDB MCP for Claude Code, Codex, or OpenCode; you can choose a user-level or project-level configuration.'
+    $interactive = [Environment]::UserInteractive -and $Host.Name -notmatch 'ServerRemoteHost' -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+    if ($mcpSetup -ne 'skip' -and $interactive -and (($mcpSetup -eq 'ask') -or $firstInstall)) {
         $answer = Read-Host 'Configure LazyDB MCP now? [y/N]'
         if ($answer -match '^(?i:y|yes)$') {
-            Write-Host 'MCP setup must be run from the target project directory. Run `lazydb mcp setup` there.'
+            try {
+                & (Join-Path $installDir 'lazydb.exe') mcp setup --help *> $null
+                if ($LASTEXITCODE -ne 0) { throw 'MCP setup is unavailable in this LazyDB binary' }
+                & (Join-Path $installDir 'lazydb.exe') mcp setup
+                if ($LASTEXITCODE -ne 0) { throw "MCP setup exited with code $LASTEXITCODE" }
+            } catch {
+                Write-Warning 'LazyDB is installed, but MCP setup did not complete.'
+                Write-Warning "Run '$(Join-Path $installDir 'lazydb.exe') mcp setup' to retry."
+            }
         }
-    }
+    } elseif ($mcpSetup -ne 'skip' -and -not $interactive) {
+        Write-Warning 'MCP setup was skipped because no interactive terminal is available.'
+        Write-Warning 'Run lazydb mcp setup in the target project directory to configure it.'
+        }
 } finally {
     Remove-Item -LiteralPath $manifestPath, $archivePath, $extractDir -Recurse -Force -ErrorAction SilentlyContinue
 }

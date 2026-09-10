@@ -205,6 +205,21 @@ The supported setup entry point is:
 lazydb mcp setup
 ```
 
+The Unix and Windows installers offer the same optional MCP onboarding. On a
+first interactive installation, answer `y` to enter the setup wizard. The
+wizard lets you choose a user-level or project-level configuration and shows
+the exact file before writing it. Answer `n` or use `--mcp-setup skip` to defer
+the setup; retry later with `lazydb mcp setup` or select a project explicitly:
+
+```sh
+curl -fsSL https://lazydb.yelog.org/install.sh | sh -s -- --mcp-setup ask
+curl -fsSL https://lazydb.yelog.org/install.sh | sh -s -- --mcp-setup skip
+lazydb mcp setup --project "/path/to/project"
+```
+
+Upgrades and non-interactive installs do not block waiting for MCP input. A
+non-interactive install prints the same manual retry command instead.
+
 It discovers existing Claude Code, Codex and OpenCode configuration and lets you
 choose where to register LazyDB. Existing LazyDB entries are recommended first,
 followed by existing user configuration. `--scope user` makes the server available

@@ -122,7 +122,9 @@ if data.get('version') != sys.argv[2]: raise SystemExit('binary reported version
 PY
 DEST="$RELEASES/$RELEASE_VERSION"
 FIRST_INSTALL=1
-if [ -e "$DEST" ]; then FIRST_INSTALL=0; fi
+if [ -e "$DATA_HOME/install.json" ] || [ -e "$DATA_HOME/current" ] || [ -e "$INSTALL_DIR/lazydb" ]; then
+    FIRST_INSTALL=0
+fi
 if [ ! -e "$DEST" ]; then mkdir -p "$RELEASES"; mv "$STAGED" "$DEST"; fi
 python3 - "$DEST" "$DATA_HOME/current" <<'PY'
 import os, sys
@@ -247,16 +249,32 @@ if profile:
         os.fsync(stream.fileno())
     os.replace(temporary, state_path)
 PY
-printf '%s\n' 'To configure database access for Claude Code, Codex, or OpenCode, run `lazydb mcp setup` inside your project.'
-if [ "$MCP_SETUP" != skip ] && { [ "$MCP_SETUP" = ask ] || [ "$FIRST_INSTALL" = 1 ]; } && [ -r /dev/tty ] && [ -w /dev/tty ] && "$DATA_HOME/current/lazydb" mcp setup --help >/dev/null 2>&1; then
-    printf '%s' 'Configure LazyDB MCP now? [y/N] ' > /dev/tty
-    answer=
-    IFS= read -r answer < /dev/tty || answer=
-    case "$answer" in
-        y|Y|yes|YES)
-            printf '%s\n' 'MCP setup must be run from the target project directory. Run `lazydb mcp setup` there.' > /dev/tty
-            ;;
-    esac
+printf '%s\n' 'Configure LazyDB MCP for Claude Code, Codex, or OpenCode; you can choose a user-level or project-level configuration.'
+if [ "$MCP_SETUP" != skip ]; then
+    mcp_setup_interactive() {
+        if ! [ -r /dev/tty ] || ! [ -w /dev/tty ]; then
+            printf '%s\n' 'MCP setup was skipped because no interactive terminal is available.' >&2
+            printf '%s\n' 'Run `lazydb mcp setup` in the target project directory to configure it.' >&2
+            return 0
+        fi
+        if [ "$MCP_SETUP" = ask ] || [ "$FIRST_INSTALL" = 1 ]; then
+            printf '%s' 'Configure LazyDB MCP now? [y/N] ' > /dev/tty
+            answer=
+            IFS= read -r answer < /dev/tty || answer=
+            answer=$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]' | awk '{$1=$1};1')
+            case "$answer" in
+                y|yes)
+                    if "$INSTALL_DIR/lazydb" mcp setup </dev/tty >/dev/tty 2>&1; then
+                        :
+                    else
+                        printf '%s\n' 'LazyDB is installed, but MCP setup did not complete.' > /dev/tty
+                        printf '%s\n' "Run '$INSTALL_DIR/lazydb mcp setup' to retry." > /dev/tty
+                    fi
+                    ;;
+            esac
+        fi
+    }
+    mcp_setup_interactive
 fi
 python3 - "$INSTALL_DIR" <<'PY'
 import os, shlex, shutil, sys

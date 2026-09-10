@@ -77,6 +77,26 @@ fn preserves_toml_comments_and_does_not_require_server() {
 }
 
 #[test]
+fn explicit_project_scope_uses_project_directory_without_using_cwd() {
+    let dir = tempdir().unwrap();
+    let project = dir.path().join("target-project");
+    std::fs::create_dir_all(&project).unwrap();
+    let config = project.join(".mcp.json");
+    let result = lazydb::agent::setup::run_with_options(lazydb::agent::setup::SetupOptions {
+        clients: vec![McpClient::ClaudeCode],
+        scope: Some(McpScope::Project),
+        client_config: Some(config.clone()),
+        project: Some(project.clone()),
+        config: None,
+        dry_run: false,
+        yes: true,
+        json: true,
+    });
+    assert!(result.is_ok());
+    assert!(config.exists());
+}
+
+#[test]
 fn never_overwrites_conflicting_or_invalid_configuration() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("opencode.json");

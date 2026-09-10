@@ -84,6 +84,12 @@ pub fn run_with_options(mut options: SetupOptions) -> Result<String> {
         .clone()
         .unwrap_or(std::env::current_dir()?)
         .canonicalize()?;
+    if interactive {
+        println!(
+            "Project directory for project/local MCP scopes: {}",
+            project.display()
+        );
+    }
     let config = options
         .config
         .as_ref()

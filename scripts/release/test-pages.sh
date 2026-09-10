@@ -41,6 +41,9 @@ cmp "$TMP/output/install.ps1" "$TMP/output/install.ps1.txt"
 [ "$(grep -c 'set -eu' "$TMP/output/install.sh")" -eq 1 ]
 [ "$(grep -c 'LAZYDB_CHANNEL_LOCKED=stable' "$TMP/output/install.sh")" -eq 1 ]
 [ "$(grep -c 'LAZYDB_CHANNEL_LOCKED=beta' "$TMP/output/install-beta.sh")" -eq 1 ]
+[ "$(grep -c 'Configure LazyDB MCP now?' "$TMP/output/install.sh")" -eq 1 ]
+[ "$(grep -c 'Configure LazyDB MCP now?' "$TMP/output/install-beta.sh")" -eq 1 ]
+[ "$(grep -c 'mcp setup' "$TMP/output/install.sh")" -ge 1 ]
 [ "$(find "$TMP/output" -type f | sort | sed "s#^$TMP/output/##")" = "CNAME
 channels/beta.json
 channels/stable.json
