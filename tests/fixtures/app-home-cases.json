@@ -1,0 +1,7 @@
+[
+  {"name":"fresh","legacy":[],"expected":"home/lazydb"},
+  {"name":"existing-config","legacy":["home/.config/lazydb/connections.toml"],"expected":"home/.config/lazydb"},
+  {"name":"existing-xdg-data","legacy":["home/.local/share/lazydb/install.json"],"expected":"home/.local/share/lazydb"},
+  {"name":"empty-legacy","legacy":["home/.config/lazydb"],"expected":"home/lazydb"},
+  {"name":"ambiguous","legacy":["home/.config/lazydb/settings.toml","home/.local/share/lazydb/install.json"],"error":"multiple"}
+]

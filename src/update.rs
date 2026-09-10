@@ -307,7 +307,7 @@ pub const UPDATE_STATUSES: [&str; 5] = [
 ];
 
 pub async fn run(args: crate::cli::UpdateArgs, _config: Option<PathBuf>) -> anyhow::Result<String> {
-    let paths = crate::persistence::paths::AppPaths::discover().ok();
+    let paths = Some(crate::persistence::paths::AppPaths::discover()?);
     let source = SystemInstallationStateSource {
         path: paths
             .as_ref()
@@ -383,7 +383,7 @@ pub async fn inspect_current_installation(
     requested_channel: Option<UpdateChannel>,
     allow_downgrade: bool,
 ) -> anyhow::Result<UpdateInspection> {
-    let paths = crate::persistence::paths::AppPaths::discover().ok();
+    let paths = Some(crate::persistence::paths::AppPaths::discover()?);
     let source = InstallationStateFileSource {
         path: paths
             .as_ref()
@@ -406,7 +406,7 @@ pub async fn install_current_native(
     requested_channel: Option<UpdateChannel>,
     allow_downgrade: bool,
 ) -> anyhow::Result<UpdateInspection> {
-    let paths = crate::persistence::paths::AppPaths::discover().ok();
+    let paths = Some(crate::persistence::paths::AppPaths::discover()?);
     let source = InstallationStateFileSource {
         path: paths
             .as_ref()
@@ -740,8 +740,14 @@ pub(crate) struct UpdateLock {
 
 impl UpdateLock {
     pub(crate) fn acquire(data_dir: &Path) -> anyhow::Result<Self> {
-        let path = data_dir.join(".install.lock");
-        fs::create_dir_all(data_dir)?;
+        Self::acquire_path(data_dir.join(".install.lock"))
+    }
+
+    pub(crate) fn acquire_path(path: PathBuf) -> anyhow::Result<Self> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("update lock has no parent directory"))?;
+        fs::create_dir_all(parent)?;
         match fs::create_dir(&path) {
             Ok(()) => {
                 if let Err(error) = fs::write(path.join("pid"), std::process::id().to_string()) {
@@ -1006,7 +1012,13 @@ fn publish_native_state(
     let state_path = data_dir.join("install.json");
     let state_old = data_dir.join(".install.json.old");
     #[cfg(unix)]
-    std::os::unix::fs::symlink(destination, &current_new)?;
+    {
+        let relative =
+            Path::new("releases").join(destination.file_name().ok_or_else(|| {
+                anyhow::anyhow!("native release destination has no version name")
+            })?);
+        std::os::unix::fs::symlink(relative, &current_new)?;
+    }
     let new_state = InstallationState {
         schema: 1,
         product: "lazydb".into(),
@@ -2012,7 +2024,7 @@ mod tests {
         assert!(old.exists());
         assert_eq!(
             fs::read_link(data.join("current")).unwrap(),
-            data.join("releases/1.3.0")
+            PathBuf::from("releases/1.3.0")
         );
         assert!(data.join("releases/1.3.0/lazydb").exists());
         let state_path = data.join("install.json");

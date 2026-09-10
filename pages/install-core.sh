@@ -44,7 +44,16 @@ python3 -c 'import lzma; lzma.LZMADecompressor(format=lzma.FORMAT_XZ)' >/dev/nul
 INSTALL_DIR=$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$INSTALL_DIR")
 if command -v sha256sum >/dev/null 2>&1; then HASH=sha256sum; else command -v shasum >/dev/null 2>&1 || die 'sha256sum or shasum is required'; HASH='shasum -a 256'; fi
 
-DATA_HOME=${LAZYDB_CONFIG_HOME:-"$HOME/.config/lazydb"}
+if [ -n "${LAZYDB_CONFIG_HOME:-}" ]; then
+    DATA_HOME=$LAZYDB_CONFIG_HOME
+elif [ -f "$HOME/.config/lazydb/connections.toml" ] || [ -f "$HOME/.config/lazydb/credential.key" ] || [ -f "$HOME/.config/lazydb/settings.toml" ] || [ -f "$HOME/.config/lazydb/workspace.toml" ] || [ -f "$HOME/.config/lazydb/install.json" ] || [ -d "$HOME/.config/lazydb/releases" ] || [ -d "$HOME/.config/lazydb/sql" ]; then
+    # Keep an existing native installation in place during upgrades.
+    DATA_HOME="$HOME/.config/lazydb"
+elif [ -f "$HOME/.local/share/lazydb/connections.toml" ] || [ -f "$HOME/.local/share/lazydb/credential.key" ] || [ -f "$HOME/.local/share/lazydb/settings.toml" ] || [ -f "$HOME/.local/share/lazydb/workspace.toml" ] || [ -f "$HOME/.local/share/lazydb/install.json" ] || [ -d "$HOME/.local/share/lazydb/releases" ] || [ -d "$HOME/.local/share/lazydb/sql" ]; then
+    DATA_HOME="$HOME/.local/share/lazydb"
+else
+    DATA_HOME="$HOME/lazydb"
+fi
 RELEASES=$DATA_HOME/releases
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/lazydb-install.XXXXXX")
 cleanup() { rm -rf "$TMP"; }

@@ -31,7 +31,7 @@ cat > "$config/install.json" <<EOF
 EOF
 
 before=$(find "$home" -type f -o -type l | sort)
-HOME="$home" PATH="$bin:$PATH" "$ROOT/target/debug/lazydb" uninstall --dry-run --json > "$TMP/plan.json"
+HOME="$home" LAZYDB_CONFIG_HOME= PATH="$bin:$PATH" "$ROOT/target/debug/lazydb" uninstall --dry-run --json > "$TMP/plan.json"
 after=$(find "$home" -type f -o -type l | sort)
 [ "$before" = "$after" ]
 python3 - "$TMP/plan.json" <<'PY'
@@ -41,7 +41,7 @@ assert report['status'] == 'planned'
 assert any(item['kind'] == 'launcher' for item in report['actions'])
 PY
 
-HOME="$home" PATH="$bin:$PATH" "$ROOT/target/debug/lazydb" uninstall --yes >/dev/null
+HOME="$home" LAZYDB_CONFIG_HOME= PATH="$bin:$PATH" "$ROOT/target/debug/lazydb" uninstall --yes >/dev/null
 [ ! -e "$bin/lazydb" ]
 [ ! -e "$config/current" ]
 [ ! -e "$config/releases/0.1.0" ]

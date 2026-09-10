@@ -1,12 +1,9 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::env;
 
-use directories::{BaseDirs, ProjectDirs};
+use directories::BaseDirs;
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
@@ -22,22 +19,14 @@ pub enum PathError {
     Unavailable,
     #[error("failed to migrate application data: {0}")]
     Io(#[from] std::io::Error),
+    #[error("multiple LazyDB data directories were found: {0}")]
+    Ambiguous(String),
 }
 
 impl AppPaths {
     pub fn discover() -> Result<Self, PathError> {
-        let dirs = ProjectDirs::from("dev", "lazydb", "lazydb").ok_or(PathError::Unavailable)?;
         let base_dirs = BaseDirs::new().ok_or(PathError::Unavailable)?;
-        let config_dir = config_dir(&base_dirs);
-        migrate_legacy_directory(dirs.config_dir(), &config_dir)?;
-        migrate_legacy_directory(dirs.data_dir(), &config_dir)?;
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        if let Some(home) = env::var_os("HOME") {
-            migrate_legacy_directory(
-                &PathBuf::from(home).join(".local/share/lazydb"),
-                &config_dir,
-            )?;
-        }
+        let config_dir = discover_config_dir(&base_dirs)?;
         Ok(Self {
             config_dir: config_dir.clone(),
             data_dir: config_dir.clone(),
@@ -78,35 +67,81 @@ impl AppPaths {
     }
 }
 
-fn config_dir(base_dirs: &BaseDirs) -> PathBuf {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        if let Some(path) = env::var_os("LAZYDB_CONFIG_HOME").filter(|path| !path.is_empty()) {
-            return PathBuf::from(path);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn explicit_config_dir() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("LAZYDB_CONFIG_HOME").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    None
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn legacy_candidates(home: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        home.join(".config/lazydb"),
+        home.join(".local/share/lazydb"),
+    ];
+    #[cfg(target_os = "macos")]
+    candidates.push(home.join("Library/Application Support/dev.lazydb.lazydb"));
+    candidates
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn discover_config_dir(base_dirs: &BaseDirs) -> Result<PathBuf, PathError> {
+    resolve_config_dir(
+        base_dirs.home_dir(),
+        explicit_config_dir(),
+        legacy_candidates(base_dirs.home_dir()),
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn discover_config_dir(base_dirs: &BaseDirs) -> Result<PathBuf, PathError> {
+    Ok(base_dirs.config_dir().join("lazydb"))
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn resolve_config_dir(
+    home: &Path,
+    explicit: Option<PathBuf>,
+    legacy: Vec<PathBuf>,
+) -> Result<PathBuf, PathError> {
+    if let Some(path) = explicit {
+        return Ok(if path.is_absolute() {
+            path
+        } else {
+            home.join(path)
+        });
+    }
+
+    let new_dir = home.join("lazydb");
+    let mut existing = Vec::new();
+    let mut identities = Vec::new();
+    for path in std::iter::once(new_dir.clone()).chain(legacy) {
+        if path.exists() && has_lazydb_data(&path) {
+            let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !identities.iter().any(|seen| seen == &identity) {
+                identities.push(identity);
+                existing.push(path);
+            }
         }
-
-        base_dirs.home_dir().join(".config/lazydb")
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        base_dirs.config_dir().join("lazydb")
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        base_dirs.config_dir().join("lazydb")
+    match existing.as_slice() {
+        [] => Ok(new_dir),
+        [path] => Ok(path.clone()),
+        paths => Err(PathError::Ambiguous(
+            paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
     }
 }
 
-fn migrate_legacy_directory(old_dir: &Path, new_dir: &Path) -> Result<(), std::io::Error> {
-    if old_dir == new_dir || !old_dir.exists() {
-        return Ok(());
-    }
-
-    fs::create_dir_all(new_dir)?;
-    set_private_dir_permissions(new_dir)?;
-    for name in [
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn has_lazydb_data(path: &Path) -> bool {
+    [
         "connections.toml",
         "credential.key",
         "settings.toml",
@@ -114,63 +149,124 @@ fn migrate_legacy_directory(old_dir: &Path, new_dir: &Path) -> Result<(), std::i
         "install.json",
         "current",
         "releases",
-    ] {
-        move_if_absent(&old_dir.join(name), &new_dir.join(name))?;
-    }
-
-    let old_sql = old_dir.join("sql");
-    let new_sql = new_dir.join("sql");
-    if old_sql.is_dir() {
-        if !new_sql.exists() {
-            fs::rename(old_sql, new_sql)?;
-        } else {
-            for entry in fs::read_dir(old_sql)? {
-                let entry = entry?;
-                let destination = new_sql.join(entry.file_name());
-                move_if_absent(&entry.path(), &destination)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_dir_permissions(path: &Path) -> Result<(), std::io::Error> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(not(unix))]
-fn set_private_dir_permissions(_path: &Path) -> Result<(), std::io::Error> {
-    Ok(())
-}
-
-fn move_if_absent(source: &Path, destination: &Path) -> Result<(), std::io::Error> {
-    if source.exists() && !destination.exists() {
-        fs::rename(source, destination)?;
-    }
-    Ok(())
+        "sql",
+    ]
+    .iter()
+    .any(|name| path.join(name).exists())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::config_dir;
+    use super::{discover_config_dir, resolve_config_dir};
     use directories::BaseDirs;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn config_directory_uses_cli_friendly_platform_path() {
         let base_dirs = BaseDirs::new().expect("test environment has a home directory");
-        let path = config_dir(&base_dirs);
+        let path = discover_config_dir(&base_dirs).unwrap();
 
         if cfg!(any(target_os = "macos", target_os = "linux")) {
             if let Some(config_home) = std::env::var_os("LAZYDB_CONFIG_HOME") {
                 assert_eq!(path, config_home);
             } else {
-                assert_eq!(path, base_dirs.home_dir().join(".config/lazydb"));
+                assert!(
+                    path == base_dirs.home_dir().join("lazydb")
+                        || path == base_dirs.home_dir().join(".config/lazydb")
+                        || path == base_dirs.home_dir().join(".local/share/lazydb")
+                );
             }
         } else {
             assert_eq!(path, base_dirs.config_dir().join("lazydb"));
         }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn fresh_install_uses_home_lazydb_without_creating_it() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("home");
+        fs::create_dir(&home).unwrap();
+
+        let selected = resolve_config_dir(
+            &home,
+            None,
+            vec![
+                home.join(".config/lazydb"),
+                home.join(".local/share/lazydb"),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(selected, home.join("lazydb"));
+        assert!(!selected.exists());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn existing_legacy_root_wins_but_empty_root_does_not() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("home");
+        let old = home.join(".config/lazydb");
+        fs::create_dir_all(&old).unwrap();
+
+        assert_eq!(
+            resolve_config_dir(&home, None, vec![old.clone()]).unwrap(),
+            home.join("lazydb")
+        );
+        fs::write(old.join("settings.toml"), "[ui]\n").unwrap();
+        assert_eq!(
+            resolve_config_dir(&home, None, vec![old.clone()]).unwrap(),
+            old
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn new_root_wins_over_its_compatibility_symlink() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("home");
+        let new_root = home.join("lazydb");
+        let old_root = home.join(".config/lazydb");
+        fs::create_dir_all(&new_root).unwrap();
+        fs::create_dir_all(old_root.parent().unwrap()).unwrap();
+        fs::write(new_root.join("settings.toml"), "[ui]\n").unwrap();
+        std::os::unix::fs::symlink(&new_root, &old_root).unwrap();
+
+        assert_eq!(
+            resolve_config_dir(&home, None, vec![old_root]).unwrap(),
+            new_root
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn multiple_legacy_roots_are_not_merged() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("home");
+        let config = home.join(".config/lazydb");
+        let data = home.join(".local/share/lazydb");
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&data).unwrap();
+        fs::write(config.join("settings.toml"), "[ui]\n").unwrap();
+        fs::write(data.join("install.json"), "{}\n").unwrap();
+
+        let error = resolve_config_dir(&home, None, vec![config, data]).unwrap_err();
+        assert!(error.to_string().contains("multiple"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn explicit_relative_root_is_resolved_under_home() {
+        let directory = tempdir().unwrap();
+        let home = directory.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+
+        assert_eq!(
+            resolve_config_dir(&home, Some(PathBuf::from("custom/lazydb")), vec![]).unwrap(),
+            home.join("custom/lazydb")
+        );
     }
 }

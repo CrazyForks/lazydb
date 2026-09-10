@@ -171,7 +171,7 @@ lowercase SHA-256 digest. The manifest is generated from the published
 `SHA256SUMS`; it does not duplicate archive data or call the GitHub API.
 
 The canonical native installer stores configuration, installation state, and
-releases below `${LAZYDB_CONFIG_HOME:-$HOME/.config/lazydb}`, activates a
+releases below `${LAZYDB_CONFIG_HOME:-$HOME/lazydb}`, activates a
 `current` symlink, and links the requested executable directory to that
 activation. It records channel,
 target, version, and manager ownership in `install.json`. `--version` selects a
