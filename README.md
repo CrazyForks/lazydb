@@ -332,13 +332,18 @@ relation, result-grid, search, and confirmation controls.
 ## Configuration
 
 Connection profiles, the local credential key, and workspace state are stored in
-`~/.config/lazydb/` on macOS and Linux by default. Set `LAZYDB_CONFIG_HOME` to
+`~/lazydb/` on macOS and Linux by default. Existing installations continue to
+use their current root during upgrades. Set `LAZYDB_CONFIG_HOME` to
 use another directory for these files. For example, to keep using the previous
 macOS location:
 
 ```bash
-  export LAZYDB_CONFIG_HOME=$HOME/lazydb
+export LAZYDB_CONFIG_HOME=$HOME/lazydb
 ```
+
+Existing users are not moved automatically. After reviewing the plan, move a
+complete Unix application root with `lazydb migrate-home --to
+"$HOME/lazydb" --dry-run`, followed by the same command with `--yes`.
 
 This changes the configuration root; it does not automatically copy connection
 profiles from the default directory. If profiles use local encrypted

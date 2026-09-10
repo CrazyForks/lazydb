@@ -110,6 +110,18 @@ case "$beta_output" in
 esac
 [ "$(python3 -c 'import json; print(json.load(open("'$TMP'/beta-home/config/install.json"))["channel"])')" = beta ]
 HOME="$TMP/home" XDG_DATA_HOME="$TMP/root-data" sh "$ROOT/install.sh" --install-dir "$TMP/root-install" >/dev/null
+[ ! -e "$TMP/fresh-home/.config/lazydb" ]
+HOME="$TMP/fresh-home" LAZYDB_CONFIG_HOME= XDG_DATA_HOME="$TMP/fresh-data" \
+    sh "$ROOT/install.sh" --install-dir "$TMP/fresh-install" >/dev/null
+[ -L "$TMP/fresh-home/lazydb/current" ]
+[ -f "$TMP/fresh-home/lazydb/install.json" ]
+[ ! -e "$TMP/fresh-data/lazydb" ]
+mkdir -p "$TMP/legacy-home/.config/lazydb"
+printf '%s\n' legacy > "$TMP/legacy-home/.config/lazydb/settings.toml"
+HOME="$TMP/legacy-home" LAZYDB_CONFIG_HOME= \
+    sh "$ROOT/install.sh" --install-dir "$TMP/legacy-install" >/dev/null
+[ -f "$TMP/legacy-home/.config/lazydb/install.json" ]
+[ ! -e "$TMP/legacy-home/lazydb/install.json" ]
 for installer in "$TMP/pages/install.sh" "$ROOT/install.sh"; do
     test_home="$TMP/path-$(basename "$(dirname "$installer")")"
     mkdir -p "$test_home"

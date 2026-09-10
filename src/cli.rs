@@ -124,6 +124,8 @@ pub enum Command {
     Update(UpdateArgs),
     /// Remove the native LazyDB installation without deleting user data by default.
     Uninstall(UninstallArgs),
+    /// Move the complete LazyDB application root to another directory.
+    MigrateHome(MigrateHomeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -191,6 +193,22 @@ pub struct UninstallArgs {
     /// Also remove LazyDB user data and credentials when safely possible.
     #[arg(long)]
     pub purge: bool,
+    /// Emit a machine-readable report.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct MigrateHomeArgs {
+    /// Destination directory for the complete LazyDB application root.
+    #[arg(long)]
+    pub to: PathBuf,
+    /// Show the migration plan without changing the filesystem.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Confirm the filesystem migration.
+    #[arg(long)]
+    pub yes: bool,
     /// Emit a machine-readable report.
     #[arg(long)]
     pub json: bool,
@@ -437,7 +455,7 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
             Ok("This command requires asynchronous execution".to_owned())
         }
         Command::Lsp(_) => Ok("This command requires asynchronous execution".to_owned()),
-        Command::Update(_) | Command::Uninstall(_) => {
+        Command::Update(_) | Command::Uninstall(_) | Command::MigrateHome(_) => {
             Ok("This command requires asynchronous execution".to_owned())
         }
     }
@@ -448,8 +466,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        CLI_API_VERSION, Cli, Command, MotionMode, UninstallArgs, UpdateArgs, capabilities,
-        render_command,
+        CLI_API_VERSION, Cli, Command, MigrateHomeArgs, MotionMode, UninstallArgs, UpdateArgs,
+        capabilities, render_command,
     };
     use crate::ui::icons::IconMode;
 
@@ -484,6 +502,27 @@ mod tests {
             panic!("expected uninstall command");
         };
         assert!(dry_run && yes && purge && json);
+    }
+
+    #[test]
+    fn parses_migrate_home_options() {
+        let cli = Cli::try_parse_from([
+            "lazydb",
+            "migrate-home",
+            "--to",
+            "/tmp/lazydb",
+            "--dry-run",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::MigrateHome(MigrateHomeArgs {
+                dry_run: true,
+                json: true,
+                ..
+            }))
+        ));
     }
 
     #[test]

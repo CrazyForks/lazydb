@@ -98,6 +98,7 @@ fn discover_installation() -> Result<Installation, String> {
     if let Some(path) = env::var_os("LAZYDB_CONFIG_HOME").filter(|path| !path.is_empty()) {
         candidates.push(PathBuf::from(path));
     }
+    candidates.push(home.join("lazydb"));
     candidates.push(home.join(".config/lazydb"));
     candidates.push(home.join(".local/share/lazydb"));
 
@@ -158,7 +159,11 @@ fn discover_from_candidates(candidates: Vec<PathBuf>) -> Result<Installation, St
             .parent()
             .ok_or_else(|| "native installation root is unavailable".to_owned())?
             .to_path_buf();
-        if root != config_dir || !root.join("releases").is_dir() {
+        let same_root = fs::canonicalize(&root)
+            .ok()
+            .zip(fs::canonicalize(&config_dir).ok())
+            .is_some_and(|(root, config)| root == config);
+        if !same_root || !root.join("releases").is_dir() {
             return Err(format!(
                 "native installation root is not the recorded config directory: {}",
                 root.display()

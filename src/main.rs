@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
             Command::Uninstall(args) => {
                 println!("{}", lazydb::uninstall::run(args, cli.config).await?);
             }
+            Command::MigrateHome(args) => println!("{}", lazydb::migration::run(args)?),
             command => println!("{}", render_command(&command)?),
         }
         return Ok(());

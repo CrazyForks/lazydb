@@ -29,7 +29,8 @@ upgrade.
 
 ## Configuration Files
 
-`AppPaths` uses `~/.config/lazydb/` on macOS and Linux by default. Set
+`AppPaths` uses `~/lazydb/` for new users on macOS and Linux. Existing users
+continue using the root selected by their installation during upgrades. Set
 `LAZYDB_CONFIG_HOME` to override that directory, for example:
 
 ```bash
@@ -42,12 +43,12 @@ Windows continues to use the standard `%APPDATA%\\lazydb\\` directory.
 
 | File | macOS | Linux | Windows | Purpose |
 | --- | --- | --- | --- | --- |
-| `connections.toml` | `~/.config/lazydb/connections.toml` | `~/.config/lazydb/connections.toml` | `%APPDATA%\\lazydb\\connections.toml` | Saved connection profiles |
+| `connections.toml` | `~/lazydb/connections.toml` | `~/lazydb/connections.toml` | `%APPDATA%\\lazydb\\connections.toml` | Saved connection profiles |
 | `credential.key` | Same directory as `connections.toml` | Same directory as `connections.toml` | Same directory as `connections.toml` | Device-local key for `local_encrypted` credentials |
-| `workspace.toml` | `~/.config/lazydb/workspace.toml` | `~/.config/lazydb/workspace.toml` | `%APPDATA%\\lazydb\\workspace.toml` | Open profiles, consoles, and tabs |
-| `sql/<UUID>.sql` | `~/.config/lazydb/sql/<UUID>.sql` | `~/.config/lazydb/sql/<UUID>.sql` | `%APPDATA%\\lazydb\\sql\\<UUID>.sql` | SQL text for persisted consoles |
-| `settings.toml` | `~/.config/lazydb/settings.toml` | `~/.config/lazydb/settings.toml` | `%APPDATA%\\lazydb\\settings.toml` | Application settings |
-| `install.json` | `~/.config/lazydb/install.json` | `~/.config/lazydb/install.json` | `%APPDATA%\\lazydb\\install.json` | Native installer ownership, channel, version, and target |
+| `workspace.toml` | `~/lazydb/workspace.toml` | `~/lazydb/workspace.toml` | `%APPDATA%\\lazydb\\workspace.toml` | Open profiles, consoles, and tabs |
+| `sql/<UUID>.sql` | `~/lazydb/sql/<UUID>.sql` | `~/lazydb/sql/<UUID>.sql` | `%APPDATA%\\lazydb\\sql\\<UUID>.sql` | SQL text for persisted consoles |
+| `settings.toml` | `~/lazydb/settings.toml` | `~/lazydb/settings.toml` | `%APPDATA%\\lazydb\\settings.toml` | Application settings |
+| `install.json` | `~/lazydb/install.json` | `~/lazydb/install.json` | `%APPDATA%\\lazydb\\install.json` | Native installer ownership, channel, version, and target |
 
 Native installation data also lives in this same application directory. The
 `current` symlink selects the active version and `releases/<VERSION>/` contains
@@ -66,13 +67,27 @@ directory when the destination entries do not already exist. This includes
 `install.json`, `current`, and `releases/` for native installations.
 
 The environment variable selects a different configuration root; it does not
-copy profiles from the previous root. For example, after setting
+copy profiles from the previous root. Existing roots are deliberately not
+automatically merged. For example, after setting
 `LAZYDB_CONFIG_HOME=$HOME/lazydb`, LazyDB reads connections from
 `$HOME/lazydb/connections.toml`. Existing profiles under
 `~/.config/lazydb/` remain there unless you explicitly migrate the complete
 set of related files. When using `local_encrypted` credentials, migrate the
 matching `credential.key` together with the profile file. Do not overwrite an
 existing destination without first checking its contents.
+
+To move a complete Unix application root, stop all LazyDB, MCP, and LSP
+processes first and inspect the plan:
+
+```bash
+lazydb migrate-home --to "$HOME/lazydb" --dry-run
+lazydb migrate-home --to "$HOME/lazydb" --yes
+```
+
+The migration only accepts a new destination on the same filesystem and does
+not merge two existing roots. It keeps `~/.config/lazydb` as a compatibility
+symlink after a successful move. If the source and destination are ambiguous,
+select the source explicitly with `LAZYDB_CONFIG_HOME`.
 
 The workspace stores open tabs in `workspace.toml` and SQL text in `sql/`.
 LazyDB saves an empty welcome console as an empty workspace; a console with

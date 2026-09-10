@@ -2,7 +2,8 @@
 #
 # This file is embedded into the binary and is the authoritative source for
 # user-facing application defaults. Copy only the values you want to change to
-# ~/.config/lazydb/settings.toml. Explicit command-line options take precedence.
+# ~/lazydb/settings.toml for new users. Existing installations keep their
+# selected root. Explicit command-line options take precedence.
 
 version = 1
 
