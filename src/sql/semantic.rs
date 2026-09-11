@@ -53,9 +53,16 @@ impl CatalogSnapshot {
         entries: impl IntoIterator<Item = CatalogEntry>,
         coverage: impl IntoIterator<Item = (CatalogNamespace, CatalogCoverage)>,
     ) -> Self {
+        let mut namespace_coverage = HashMap::new();
+        for (namespace, status) in coverage {
+            namespace_coverage
+                .entry(namespace)
+                .and_modify(|current| *current = merge_coverage(*current, status))
+                .or_insert(status);
+        }
         Self {
             entries: entries.into_iter().collect(),
-            coverage: coverage.into_iter().collect(),
+            coverage: namespace_coverage,
             column_coverage: HashMap::new(),
         }
     }
@@ -64,7 +71,12 @@ impl CatalogSnapshot {
         mut self,
         coverage: impl IntoIterator<Item = (CatalogId, CatalogCoverage)>,
     ) -> Self {
-        self.column_coverage = coverage.into_iter().collect();
+        for (relation, status) in coverage {
+            self.column_coverage
+                .entry(relation)
+                .and_modify(|current| *current = merge_coverage(*current, status))
+                .or_insert(status);
+        }
         self
     }
 
@@ -81,6 +93,30 @@ impl CatalogSnapshot {
 
     pub fn relations(&self) -> impl Iterator<Item = &CatalogEntry> {
         self.entries.iter().filter(|entry| entry.kind.is_relation())
+    }
+
+    pub fn databases(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == CatalogKind::Database)
+    }
+
+    pub fn schemas(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.kind == CatalogKind::Schema)
+    }
+
+    fn has_database(&self, name: &str) -> bool {
+        self.databases()
+            .any(|entry| same_identifier(&entry.qualified_name.object, name))
+    }
+
+    fn has_schema(&self, database: Option<&str>, schema: &str) -> bool {
+        self.schemas().any(|entry| {
+            same_identifier(&entry.qualified_name.object, schema)
+                && same_optional_identifier(entry.qualified_name.database.as_deref(), database)
+        })
     }
 
     pub fn relation_columns(&self, relation: &CatalogId) -> impl Iterator<Item = &CatalogEntry> {
@@ -129,6 +165,23 @@ impl CatalogSnapshot {
             [] => RelationResolution::Unknown,
             _ => RelationResolution::Ambiguous,
         }
+    }
+}
+
+fn merge_coverage(left: CatalogCoverage, right: CatalogCoverage) -> CatalogCoverage {
+    if left.can_prove_missing() && right.can_prove_missing() {
+        CatalogCoverage::Complete
+    } else if matches!(left, CatalogCoverage::Failed) || matches!(right, CatalogCoverage::Failed) {
+        CatalogCoverage::Failed
+    } else if matches!(left, CatalogCoverage::Loading) || matches!(right, CatalogCoverage::Loading)
+    {
+        CatalogCoverage::Loading
+    } else if matches!(left, CatalogCoverage::NotLoaded)
+        || matches!(right, CatalogCoverage::NotLoaded)
+    {
+        CatalogCoverage::NotLoaded
+    } else {
+        CatalogCoverage::OutOfScope
     }
 }
 
@@ -349,6 +402,9 @@ fn resolve_target_name(
         .iter()
         .map(|part| part.value.as_str())
         .collect::<Vec<_>>();
+    if !validate_qualified_namespace(&parts, &values, context, catalog, text, index, analysis) {
+        return None;
+    }
     match catalog.resolve_relation(&values, context) {
         RelationResolution::Resolved(id) => Some(id),
         RelationResolution::Missing => {
@@ -370,6 +426,55 @@ fn resolve_target_name(
             None
         }
     }
+}
+
+fn validate_qualified_namespace(
+    parts: &[&sqlparser::ast::Ident],
+    values: &[&str],
+    context: &SemanticContext,
+    catalog: &CatalogSnapshot,
+    text: &str,
+    index: &LineIndex,
+    analysis: &mut SemanticAnalysis,
+) -> bool {
+    if values.len() == 3
+        && catalog.databases().next().is_some()
+        && matches!(
+            context.dialect,
+            SqlDialect::Postgres | SqlDialect::SqlServer
+        )
+        && !catalog.has_database(values[0])
+    {
+        analysis.diagnostics.push(super::SqlDiagnostic {
+            range: ident_range(text, index, parts[0]),
+            message: format!("database '{}' does not exist", parts[0].value),
+            code: "sql-unknown-database",
+        });
+        return false;
+    }
+    let schema_index = match (context.dialect, values) {
+        (SqlDialect::SqlServer, [_database, _schema, _relation]) => Some(1),
+        (_, [_schema, _relation]) => Some(0),
+        _ => None,
+    };
+    if let Some(schema_index) = schema_index
+        && catalog.schemas().next().is_some()
+    {
+        let database = if values.len() == 3 {
+            Some(values[0])
+        } else {
+            context.database.as_deref()
+        };
+        if !catalog.has_schema(database, values[schema_index]) {
+            analysis.diagnostics.push(super::SqlDiagnostic {
+                range: ident_range(text, index, parts[schema_index]),
+                message: format!("schema '{}' does not exist", parts[schema_index].value),
+                code: "sql-unknown-schema",
+            });
+            return false;
+        }
+    }
+    true
 }
 
 fn validate_relation_column_name(
@@ -513,6 +618,17 @@ fn analyze_query(
             }
         }
     }
+    let output_aliases = select
+        .projection
+        .iter()
+        .filter_map(|item| match item {
+            sqlparser::ast::SelectItem::ExprWithAlias { alias, .. } => Some(alias.value.clone()),
+            sqlparser::ast::SelectItem::ExprWithAliases { aliases, .. } => {
+                aliases.first().map(|alias| alias.value.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     for item in &select.projection {
         let expr = match item {
             sqlparser::ast::SelectItem::UnnamedExpr(expr)
@@ -581,15 +697,24 @@ fn analyze_query(
         && let sqlparser::ast::OrderByKind::Expressions(expressions) = &order_by.kind
     {
         for order in expressions {
-            validate_expr(
+            let is_output_alias = matches!(
                 &order.expr,
-                &sources,
-                &local_sources,
-                catalog,
-                text,
-                index,
-                analysis,
+                sqlparser::ast::Expr::Identifier(identifier)
+                    if output_aliases
+                        .iter()
+                        .any(|alias| same_identifier(alias, &identifier.value))
             );
+            if !is_output_alias {
+                validate_expr(
+                    &order.expr,
+                    &sources,
+                    &local_sources,
+                    catalog,
+                    text,
+                    index,
+                    analysis,
+                );
+            }
         }
     }
 }
@@ -641,6 +766,9 @@ fn analyze_table_factor(
             virtual_columns: local.virtual_columns.clone(),
             virtual_complete: local.virtual_complete,
         });
+        return;
+    }
+    if !validate_qualified_namespace(&parts, &names, context, catalog, text, index, analysis) {
         return;
     }
     let resolution = catalog.resolve_relation(&names, context);
@@ -816,9 +944,13 @@ fn ident_range(text: &str, index: &LineIndex, ident: &sqlparser::ast::Ident) -> 
 fn relation_namespace(name: &[&str], context: &SemanticContext) -> Option<CatalogNamespace> {
     match (context.dialect, name) {
         (_, [object]) if !object.is_empty() => Some(context.default_namespace()),
-        (SqlDialect::MySql | SqlDialect::Sqlite, [database, _]) if !database.is_empty() => {
+        (SqlDialect::MySql, [database, _]) if !database.is_empty() => {
             Some(CatalogNamespace::new(Some(*database), Some(*database)))
         }
+        (SqlDialect::Sqlite, [schema, _]) if !schema.is_empty() => Some(CatalogNamespace::new(
+            context.database.clone(),
+            Some(*schema),
+        )),
         (_, [schema, _]) if !schema.is_empty() => Some(CatalogNamespace::new(
             context.database.clone(),
             Some(*schema),

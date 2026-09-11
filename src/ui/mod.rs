@@ -3076,12 +3076,19 @@ fn render_editor(
             QueryStatus::Cancelled => Some(("QUERY CANCELLED", theme.warning)),
             QueryStatus::Failed => Some(("QUERY ERROR", theme.error)),
         });
+    let diagnostic_count = snapshot.semantic_diagnostics.len();
     let transaction_segment = format!(" {transaction} ");
+    let diagnostic_segment = if diagnostic_count > 0 {
+        format!(" DIAGNOSTICS {diagnostic_count} ")
+    } else {
+        String::new()
+    };
     let query_segment_width =
         query_status.map_or(0, |(label, _)| format!(" {label} ").cell_width());
     let available_width = area.width.saturating_sub(2);
-    let required_context_width =
-        query_segment_width.saturating_add(transaction_segment.cell_width());
+    let required_context_width = query_segment_width
+        .saturating_add(diagnostic_segment.cell_width())
+        .saturating_add(transaction_segment.cell_width());
     let left_title = if full_left_title
         .cell_width()
         .saturating_add(required_context_width)
@@ -3102,6 +3109,12 @@ fn render_editor(
         context.push(Span::styled(
             format!(" {label} "),
             Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !diagnostic_segment.is_empty() {
+        context.push(Span::styled(
+            diagnostic_segment,
+            Style::new().fg(theme.error).add_modifier(Modifier::BOLD),
         ));
     }
     if show_target {
@@ -3148,6 +3161,11 @@ fn render_editor(
         {
             Style::new()
                 .fg(theme.accent)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD)
+        } else if line_has_diagnostic(line, &snapshot.semantic_diagnostics) {
+            Style::new()
+                .fg(theme.error)
                 .bg(theme.surface)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -3528,17 +3546,29 @@ pub(crate) fn editor_line_spans(
             let mouse_highlighted = mouse_selection_cells.iter().any(|(start, end)| {
                 display_cell < *end && display_cell.saturating_add(width) > *start
             });
-            let style = Style::new().fg(foreground).bg(if mouse_highlighted {
-                theme.mouse_selection
-            } else if highlighted {
-                theme.selection
-            } else if statement_background_cells.is_some_and(|(start, end)| {
-                display_cell < end && display_cell.saturating_add(width) > start
-            }) {
-                theme.surface_raised
-            } else {
-                theme.surface
-            });
+            let style = Style::new()
+                .fg(foreground)
+                .bg(if mouse_highlighted {
+                    theme.mouse_selection
+                } else if highlighted {
+                    theme.selection
+                } else if statement_background_cells.is_some_and(|(start, end)| {
+                    display_cell < end && display_cell.saturating_add(width) > start
+                }) {
+                    theme.surface_raised
+                } else {
+                    theme.surface
+                })
+                .add_modifier(
+                    if snapshot.semantic_diagnostics.iter().any(|diagnostic| {
+                        diagnostic.range.start < source_offset.saturating_add(character.len_utf8())
+                            && diagnostic.range.end > source_offset
+                    }) {
+                        Modifier::UNDERLINED
+                    } else {
+                        Modifier::empty()
+                    },
+                );
             if let Some(previous) = result.last_mut()
                 && previous.style == style
             {
@@ -3551,6 +3581,26 @@ pub(crate) fn editor_line_spans(
         }
     }
     result
+}
+
+fn line_has_diagnostic(
+    line: &crate::model::editor::EditorRenderLine,
+    diagnostics: &[crate::sql::SqlDiagnostic],
+) -> bool {
+    let Some(start) = line.spans.first().map(|span| span.source_start) else {
+        return false;
+    };
+    let end = line
+        .spans
+        .last()
+        .map(|span| span.source_end)
+        .unwrap_or(start);
+    diagnostics.iter().any(|diagnostic| {
+        (diagnostic.range.start < end && diagnostic.range.end > start)
+            || (diagnostic.range.start == diagnostic.range.end
+                && diagnostic.range.start >= start
+                && diagnostic.range.start <= end)
+    })
 }
 
 pub(crate) fn mouse_selection_cells(

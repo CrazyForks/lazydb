@@ -47,6 +47,27 @@ fn typing_refreshes_an_open_completion_without_flicker() {
 }
 
 #[test]
+fn editor_text_changes_schedule_diagnostics_and_clear_stale_results() {
+    let mut app = App::new(Vec::new());
+    app.active_console_mut()
+        .semantic_diagnostics
+        .push(lazydb::sql::SqlDiagnostic {
+            range: TextRange::new(0, 1),
+            message: "stale".into(),
+            code: "test",
+        });
+
+    let commands = app.update(Action::ReplaceEditor("select 1".into()));
+
+    assert!(app.active_console().semantic_diagnostics.is_empty());
+    assert!(
+        commands
+            .iter()
+            .any(|command| { matches!(command, Command::ScheduleDiagnostics(_)) })
+    );
+}
+
+#[test]
 fn catalog_unavailable_relation_error_is_user_facing_and_terminal_safe() {
     let mut app = App::new(Vec::new());
     app.update(Action::RelationFailed {

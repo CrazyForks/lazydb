@@ -206,6 +206,7 @@ pub struct ConsoleTab {
     pub last_execution: Option<LastExecution>,
     pub execution_target: Option<ExecutionTarget>,
     pub target_error: Option<String>,
+    pub semantic_diagnostics: Vec<crate::sql::SqlDiagnostic>,
     pub query: DataQueryState,
     pub derived: Option<DerivedResultState>,
 }
@@ -293,6 +294,7 @@ impl ConsoleTab {
             last_execution: None,
             execution_target: None,
             target_error: None,
+            semantic_diagnostics: Vec::new(),
             query: DataQueryState::default(),
             derived: None,
         }

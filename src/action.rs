@@ -511,6 +511,12 @@ pub enum Action {
         columns: isize,
     },
     CompletionDue(crate::sql::CompletionScheduleKey),
+    DiagnosticDue(crate::sql::DiagnosticScheduleKey),
+    DiagnosticsReady {
+        key: crate::sql::DiagnosticScheduleKey,
+        diagnostics: Vec<crate::sql::SqlDiagnostic>,
+        dependencies: Vec<crate::db::catalog::CatalogId>,
+    },
     CompletionExplicit,
     CompletionNext,
     CompletionPrevious,
@@ -1272,6 +1278,13 @@ pub enum Command {
     WriteClipboard(ClipboardPayload),
     CheckSecretStoreAvailability,
     ScheduleCompletion(crate::sql::CompletionScheduleKey),
+    ScheduleDiagnostics(crate::sql::DiagnosticScheduleKey),
+    AnalyzeDiagnostics {
+        key: crate::sql::DiagnosticScheduleKey,
+        text: String,
+        context: crate::sql::SemanticContext,
+        catalog: crate::sql::CatalogSnapshot,
+    },
     CheckForUpdate {
         request_id: u64,
         automatic: bool,

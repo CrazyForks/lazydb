@@ -62,6 +62,20 @@ fn empty_namespace_is_unknown_until_catalog_is_complete() {
 }
 
 #[test]
+fn namespace_coverage_uses_the_most_conservative_group_status() {
+    let namespace = CatalogNamespace::new(Some("moss_biz"), Some("test_schema"));
+    let snapshot = CatalogSnapshot::new(
+        [],
+        [
+            (namespace.clone(), CatalogCoverage::Complete),
+            (namespace.clone(), CatalogCoverage::Loading),
+        ],
+    );
+
+    assert_eq!(snapshot.coverage(&namespace), CatalogCoverage::Loading);
+}
+
+#[test]
 fn complete_empty_namespace_can_prove_missing() {
     let namespace = CatalogNamespace::new(Some("moss_biz"), Some("test_schema"));
     let snapshot = CatalogSnapshot::new([], [(namespace.clone(), CatalogCoverage::Complete)]);
@@ -239,4 +253,86 @@ fn dml_target_columns_use_the_target_relation_metadata() {
     );
     assert_eq!(delete.diagnostics.len(), 1);
     assert_eq!(delete.diagnostics[0].code, "sql-unknown-column");
+}
+
+#[test]
+fn order_by_output_alias_is_not_reported_as_a_missing_column() {
+    let context = SemanticContext::new(SqlDialect::Postgres, Some("moss_biz"), Some("test_schema"));
+    let relation = relation("sys_user", "moss_biz", "test_schema");
+    let relation_id = relation.id.clone();
+    let snapshot = CatalogSnapshot::new(
+        [relation.clone(), column(&relation, "id")],
+        [(context.default_namespace(), CatalogCoverage::Complete)],
+    )
+    .with_column_coverage([(relation_id, CatalogCoverage::Complete)]);
+
+    let analysis = analyze_semantics(
+        "select id as user_id from sys_user order by user_id",
+        &context,
+        &snapshot,
+    );
+
+    assert!(analysis.diagnostics.is_empty(), "{analysis:?}");
+}
+
+#[test]
+fn sqlite_main_qualified_relation_uses_the_main_schema() {
+    let context = SemanticContext::new(SqlDialect::Sqlite, Some("database.db"), Some("main"));
+    let entry = relation("users", "database.db", "main");
+    let expected = entry.id.clone();
+    let namespace = CatalogNamespace::new(Some("database.db"), Some("main"));
+    let snapshot = CatalogSnapshot::new([entry], [(namespace, CatalogCoverage::Complete)]);
+
+    assert_eq!(
+        snapshot.resolve_relation(&["main", "users"], &context),
+        RelationResolution::Resolved(expected)
+    );
+}
+
+#[test]
+fn qualified_missing_schema_is_reported_at_the_schema_identifier() {
+    let context = SemanticContext::new(SqlDialect::Postgres, Some("moss_biz"), Some("public"));
+    let profile = Uuid::new_v4();
+    let database = CatalogEntry::database(
+        CatalogId::new(profile, CatalogKind::Database, ["moss_biz"]),
+        QualifiedName {
+            database: None,
+            schema: None,
+            object: "moss_biz".into(),
+        },
+        "DATABASE",
+        Default::default(),
+        true,
+    )
+    .unwrap();
+    let schema = CatalogEntry::schema(
+        CatalogId::new(profile, CatalogKind::Schema, ["moss_biz", "public"]),
+        CatalogId::new(profile, CatalogKind::Database, ["moss_biz"]),
+        QualifiedName {
+            database: Some("moss_biz".into()),
+            schema: None,
+            object: "public".into(),
+        },
+        "SCHEMA",
+        Default::default(),
+        true,
+    )
+    .unwrap();
+    let snapshot = CatalogSnapshot::new(
+        [database, schema],
+        [(
+            CatalogNamespace::new(Some("moss_biz"), Some("missing")),
+            CatalogCoverage::Complete,
+        )],
+    );
+    let analysis = analyze_semantics("select * from missing.users", &context, &snapshot);
+
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(analysis.diagnostics[0].code, "sql-unknown-schema");
+    assert_eq!(
+        analysis.diagnostics[0]
+            .range
+            .get("select * from missing.users"),
+        Some("missing")
+    );
 }

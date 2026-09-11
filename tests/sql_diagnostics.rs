@@ -36,3 +36,16 @@ fn tokenizer_failures_use_the_structured_token_location() {
     assert_eq!(diagnostics[0].code, "sql-tokenizer");
     assert_eq!(diagnostics[0].range.start, "select *\nfrom users\n".len());
 }
+
+#[test]
+fn independent_statements_are_checked_after_an_earlier_parser_error() {
+    let diagnostics = diagnose_sql("select * from; select * from", SqlDialect::Generic);
+
+    assert_eq!(diagnostics.len(), 2);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "sql-parser")
+    );
+    assert!(diagnostics[1].range.start > diagnostics[0].range.start);
+}
