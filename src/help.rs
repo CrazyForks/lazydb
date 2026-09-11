@@ -1009,6 +1009,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         OpenSqlEditors,
         [
             Explorer,
+            EditorNormal,
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
@@ -3894,6 +3895,17 @@ mod tests {
             !rows
                 .iter()
                 .any(|row| row.description.contains("first SQL console"))
+        );
+
+        let editor_rows = prefix_shortcuts(
+            ShortcutContext::EditorNormal,
+            ShortcutCapabilities::default(),
+            ShortcutPrefix::Leader,
+        );
+        assert!(
+            editor_rows.iter().any(|row| {
+                row.id == HelpShortcutId::OpenSqlEditors && row.sequence == "Space s"
+            })
         );
     }
 
