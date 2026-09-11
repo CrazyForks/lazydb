@@ -793,6 +793,55 @@
 - [`4c14e85`](https://github.com/yelog/lazydb/commit/4c14e8519c69022b789b4f215f689c6db433247f) docs(readme): simplify installation instructions
 - [`bf41f2e`](https://github.com/yelog/lazydb/commit/bf41f2e49de532e70135f65227a506f62a8451c4) fix(relation): clear committed edits before refresh
 
+## [0.1.4] - 2026-09-11
+
+### Added
+
+- Added SQL editor diagnostics, jump-list navigation, workspace database selection, unified pane scrollbar interactions, draggable result-grid scrolling, and improved SQL editor indentation and selection.
+- Added home-directory installation support and post-confirmation MCP setup for installers.
+
+### Changed
+
+- Improved catalog relation reads with request-scoped visibility and streamlined database selector interactions.
+- Improved installer application-data-root handling and SQL editor shortcut help.
+
+### Fixed
+
+- Corrected diagnostic rendering ranges and platform-specific Clippy compatibility.
+
+### Internal
+
+- Updated release build parallelization, artifact caching, validation timeouts, and editor diagnostic implementation documentation.
+
+### Commits
+
+- [`b8142fe`](https://github.com/yelog/lazydb/commit/b8142fe7528859f872700934f0d68a1ca36fa605) fix(ci): satisfy platform-specific clippy
+- [`9f41238`](https://github.com/yelog/lazydb/commit/9f412384917a12131786bc7fd9db4eefe6b8876a) ci(release): parallelize builds and cache Rust artifacts
+- [`42c2fdb`](https://github.com/yelog/lazydb/commit/42c2fdbbc36fefc3a92eec7fc14cf453823f58bb) fix(installer): unify application data root
+- [`a86dce3`](https://github.com/yelog/lazydb/commit/a86dce30427c2173cb3fd1f3e3c7c275d7b9f6c0) docs: add editor diagnostic rendering plan
+- [`6331548`](https://github.com/yelog/lazydb/commit/6331548e73f54396d28ad811f6f7d99fce7b0f97) fix(help): show SQL editor shortcut
+- [`732a412`](https://github.com/yelog/lazydb/commit/732a41268d908e69a550bafad6e733989643633d) Merge branch 'task/sql-diagnostic-rendering'
+- [`34b9423`](https://github.com/yelog/lazydb/commit/34b94230ed1349b8013bc5602ebecfb83f833459) fix(sql): align diagnostic rendering ranges
+- [`5222dbc`](https://github.com/yelog/lazydb/commit/5222dbc9e0a30690a093f043be15f58d6bf2f8cb) merge: streamline database selector
+- [`80ed748`](https://github.com/yelog/lazydb/commit/80ed748ba70d109634a51892490c0cd15f3e28aa) fix(ui): streamline database selector
+- [`5c55ad7`](https://github.com/yelog/lazydb/commit/5c55ad7c6908e1f522d978af0c2b001ce2cbfadc) merge: add SQL editor jump list
+- [`81f6a93`](https://github.com/yelog/lazydb/commit/81f6a93b1ed0e04be76f10569059ecea9f97e208) feat(sql-editor): add jump list navigation
+- [`9ba151d`](https://github.com/yelog/lazydb/commit/9ba151df2bc72b61e91211a56c2126de314cb1b7) merge: add SQL editor diagnostics
+- [`ceee037`](https://github.com/yelog/lazydb/commit/ceee03786f77e70ca0035dd88248d5e075734f33) feat(sql): add editor diagnostics
+- [`e2b48a6`](https://github.com/yelog/lazydb/commit/e2b48a6d8011a9576fb2a6ea31f85a6b4fc17d57) merge: add workspace database selector
+- [`287eb82`](https://github.com/yelog/lazydb/commit/287eb82078e1676080d395cddebf3bfa0c0f1036) feat(ui): add workspace database selector
+- [`9ccbfd6`](https://github.com/yelog/lazydb/commit/9ccbfd6f5ea03255dd38caf618621d470b5603ab) Merge branch 'task/unified-pane-scrollbars'
+- [`2f9da5b`](https://github.com/yelog/lazydb/commit/2f9da5bd08545fbda51651154cf31e6d3e12d325) feat(ui): unify pane scrollbar interactions
+- [`ef603e8`](https://github.com/yelog/lazydb/commit/ef603e8bbc53f08479ed0ae7761b7ed3b91a148c) merge: fix request-scoped visible objects
+- [`66557a2`](https://github.com/yelog/lazydb/commit/66557a24c211dc3627fff19cd8d4830ee24ef3d0) fix(catalog): use request scope for relation reads
+- [`c9afca5`](https://github.com/yelog/lazydb/commit/c9afca5d095e63826d66f036d8539605849d1fff) merge: integrate SQL editor indentation and selection fixes
+- [`8c731a2`](https://github.com/yelog/lazydb/commit/8c731a2501ec2dd5e104841774d2e53536cbf724) fix(sql-editor): preserve selections and support indentation
+- [`1ec9e46`](https://github.com/yelog/lazydb/commit/1ec9e46663c605c22b7415d5b44688bc6922e692) feat(grid): add draggable vertical table scrollbar
+- [`ae98291`](https://github.com/yelog/lazydb/commit/ae98291e61020d7a369d1f070d00f7ea162842a9) merge: support home directory installations
+- [`9b2e037`](https://github.com/yelog/lazydb/commit/9b2e037a6c83855183e743b3e0cd7929afa15f47) feat(paths): support home directory installations
+- [`e98abbd`](https://github.com/yelog/lazydb/commit/e98abbd927e36e7d4de99e75e39387f47b7058bb) fix(installer): run MCP setup after confirmation
+- [`ae95a6e`](https://github.com/yelog/lazydb/commit/ae95a6e12f7ab99d8d84c573a2561020a7bb8a1f) ci(release): allow longer validation timeouts
+
 ## Unreleased
 
 - Add persistent Explorer connection groups, group membership, and profile ordering.
