@@ -340,6 +340,7 @@ pub enum HelpShortcutId {
     EditorRun,
     EditorRunInsert,
     EditorFormat,
+    EditorIndent,
     EditorCopyStatement,
     EditorCopyBuffer,
     ToggleTransaction,
@@ -1305,6 +1306,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "format selected / current SQL",
         EditorLeader,
         "f"
+    ),
+    row!(
+        EditorIndent,
+        [EditorNormal, EditorVisual],
+        ">> / <<; > / <",
+        "indent or unindent the current or selected lines"
     ),
     row!(
         EditorCopyStatement,

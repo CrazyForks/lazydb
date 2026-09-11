@@ -25,6 +25,7 @@ fn full_line_width(text: &str) -> usize {
         .unwrap_or(0)
 }
 
+mod indent;
 mod prompt;
 mod substitute;
 use prompt::PromptSession;
@@ -1288,6 +1289,91 @@ impl EditorWorkspace {
         Ok(())
     }
 
+    pub(crate) fn replace_range_preserving_selection(
+        &mut self,
+        id: Uuid,
+        range: TextRange,
+        replacement: &str,
+    ) -> Result<(), EditorError> {
+        let mode_before = self.mode(id)?;
+        let before = self.snapshot(id)?;
+        let session = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        let mut buffer = session
+            .buffer
+            .write()
+            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+        let selection = buffer.get_leader_selection(session.group_id);
+        drop(buffer);
+        let Some((selection_start, selection_end, shape)) = selection else {
+            return self.replace_range(id, range, replacement, ReplacementCursor::Start);
+        };
+        let old_cursor = char_position_to_byte(&before.text, before.position);
+        let selection_start = position_to_byte(
+            &before.text,
+            selection_start.get_y(),
+            selection_start.get_x(),
+        );
+        let selection_end =
+            position_to_byte(&before.text, selection_end.get_y(), selection_end.get_x());
+        let old_anchor = if old_cursor == selection_start {
+            selection_end
+        } else {
+            selection_start
+        };
+        let mut next = before.text.clone();
+        if range.get(&next).is_none() {
+            return Err(EditorError::Operation(
+                "format range is not on a UTF-8 boundary".into(),
+            ));
+        }
+        next.replace_range(range.start..range.end, replacement);
+        if next == before.text {
+            return Ok(());
+        }
+        let map_endpoint = |offset: usize, is_start: bool| {
+            let mapped = if offset <= range.start {
+                offset
+            } else if offset >= range.end {
+                range.start + replacement.len()
+            } else if is_start {
+                range.start
+            } else {
+                range.start + replacement.len()
+            };
+            byte_to_char_position(&next, mapped)
+        };
+        let cursor_is_start = old_cursor <= old_anchor;
+        let cursor = map_endpoint(old_cursor, cursor_is_start);
+        let anchor = map_endpoint(old_anchor, !cursor_is_start);
+        self.write_text(id, &next, cursor)?;
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        let mut buffer = session
+            .buffer
+            .write()
+            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+        buffer.set_group(
+            session.group_id,
+            modalkit::editing::cursor::CursorGroup::new(
+                modalkit::editing::cursor::CursorState::Selection(
+                    modalkit::editing::cursor::Cursor::new(cursor.line, cursor.column),
+                    modalkit::editing::cursor::Cursor::new(anchor.line, anchor.column),
+                    shape,
+                ),
+                Vec::new(),
+            ),
+        );
+        drop(buffer);
+        let after = self.snapshot(id)?;
+        self.record_edit_history(id, before, &after, mode_before, mode_before)?;
+        self.record_changed(id)
+    }
+
     pub(crate) fn set_viewport(
         &mut self,
         id: Uuid,
@@ -1981,14 +2067,27 @@ impl EditorWorkspace {
             }
             return Ok(());
         }
-        let terminal_key = key.to_terminal_key()?;
-        session.keys.input_key(terminal_key);
-        let mut actions = Vec::new();
-        while let Some((action, context)) = session.keys.pop() {
-            actions.push((action, context));
-        }
-        for (action, context) in actions {
-            self.apply_action(id, action, context)?;
+        let visual_indent = matches!(
+            mode_before,
+            EditorMode::VisualChar | EditorMode::VisualLine | EditorMode::VisualBlock
+        ) && matches!(key, EditorKey::Character('<' | '>'));
+        if visual_indent {
+            self.indent_target(
+                id,
+                &modalkit::prelude::EditTarget::Selection,
+                matches!(key, EditorKey::Character('>')),
+                1,
+            )?;
+        } else {
+            let terminal_key = key.to_terminal_key()?;
+            session.keys.input_key(terminal_key);
+            let mut actions = Vec::new();
+            while let Some((action, context)) = session.keys.pop() {
+                actions.push((action, context));
+            }
+            for (action, context) in actions {
+                self.apply_action(id, action, context)?;
+            }
         }
         self.sync_session_from_buffer(id)?;
         self.sync_registers();
@@ -2038,6 +2137,7 @@ impl EditorWorkspace {
         context: modalkit::editing::context::EditContext,
     ) -> Result<(), EditorError> {
         use modalkit::actions::Action;
+        use modalkit::editing::context::Resolve;
         use modalkit::prelude::{Axis, MoveDir2D, ScrollSize, ScrollStyle};
         match action {
             Action::Editor(editor_action) => {
@@ -2050,6 +2150,35 @@ impl EditorWorkspace {
                 {
                     return Ok(());
                 }
+                if let modalkit::actions::EditorAction::Edit(operation, target) = &editor_action
+                    && let modalkit::actions::EditAction::Indent(change) =
+                        context.resolve(operation)
+                    && let Some(increase) = match change {
+                        modalkit::prelude::IndentChange::Increase(_) => Some(true),
+                        modalkit::prelude::IndentChange::Decrease(_) => Some(false),
+                        modalkit::prelude::IndentChange::Auto => None,
+                    }
+                {
+                    let count = context.get_count().unwrap_or(1).max(1);
+                    self.indent_target(id, target, increase, count)?;
+                    return Ok(());
+                }
+                let context = if matches!(
+                    &editor_action,
+                    modalkit::actions::EditorAction::Edit(operation, target)
+                        if matches!(target, modalkit::prelude::EditTarget::Motion(..))
+                            && matches!(
+                                context.resolve(operation),
+                                modalkit::actions::EditAction::Motion
+                            )
+                            && mode_from_key_manager(&session.keys) == EditorMode::Normal
+                ) {
+                    modalkit::editing::context::EditContextBuilder::from(context)
+                        .target_shape(None)
+                        .build()
+                } else {
+                    context
+                };
                 let mut buffer = session
                     .buffer
                     .write()
@@ -2099,6 +2228,65 @@ impl EditorWorkspace {
             ))),
         }
         Ok(())
+    }
+
+    fn indent_target(
+        &mut self,
+        id: Uuid,
+        target: &modalkit::prelude::EditTarget,
+        increase: bool,
+        count: usize,
+    ) -> Result<(), EditorError> {
+        const WIDTH: usize = 4;
+        let before = self.snapshot(id)?;
+        let session = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        let mode = mode_from_key_manager(&session.keys);
+        let mut buffer = session
+            .buffer
+            .write()
+            .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+        let selection = buffer.get_leader_selection(session.group_id);
+        drop(buffer);
+        let (first_line, last_line) =
+            if matches!(
+                mode,
+                EditorMode::VisualChar | EditorMode::VisualLine | EditorMode::VisualBlock
+            ) || matches!(target, modalkit::prelude::EditTarget::Selection)
+            {
+                let Some((start, end, _)) = selection else {
+                    return Ok(());
+                };
+                (
+                    start.get_y().min(end.get_y()),
+                    start.get_y().max(end.get_y()),
+                )
+            } else {
+                let last_line = before.position.line.saturating_add(count.saturating_sub(1));
+                (
+                    before.position.line,
+                    last_line.min(before.text.matches('\n').count()),
+                )
+            };
+        let direction = if increase {
+            indent::IndentDirection::Increase
+        } else {
+            indent::IndentDirection::Decrease
+        };
+        let (next, _) = indent::indent_lines(&before.text, first_line, last_line, direction, WIDTH);
+        if next == before.text {
+            return Ok(());
+        }
+        let start = line_bounds(&before.text, first_line).0;
+        let end = line_bounds(&before.text, last_line).1;
+        let next_end = line_bounds(&next, last_line).1;
+        self.replace_range_preserving_selection(
+            id,
+            TextRange::new(start, end),
+            &next[start..next_end],
+        )
     }
 
     fn sync_session_from_buffer(&mut self, id: Uuid) -> Result<(), EditorError> {

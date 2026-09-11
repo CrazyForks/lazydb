@@ -1,7 +1,8 @@
 use uuid::Uuid;
 
 use crate::model::editor::{
-    EditorHighlightKind, EditorMode, EditorPosition, EditorPromptKind, EditorViewport,
+    EditorHighlightKind, EditorMode, EditorPosition, EditorPromptKind, EditorSelectionShape,
+    EditorViewport,
 };
 
 use super::{EditorEffect, EditorKey, EditorWorkspace, decode_editor_text, encode_editor_text};
@@ -1441,6 +1442,181 @@ fn vim_motions_are_table_driven_and_unicode_safe() {
             "{keys}"
         );
     }
+}
+
+#[test]
+fn normal_caret_motion_does_not_create_a_selection() {
+    let (mut workspace, id) = normal_fixture("  select 1;\nselect 2;");
+
+    press_keys(&mut workspace, id, "$^");
+
+    assert_eq!(
+        workspace.position(id).unwrap(),
+        EditorPosition { line: 0, column: 2 }
+    );
+    assert_eq!(workspace.mode(id).unwrap(), EditorMode::Normal);
+
+    let snapshot = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Generic,
+        )
+        .unwrap();
+    assert!(snapshot.selections.is_empty());
+    assert!(snapshot.selection_cells.is_empty());
+    assert!(snapshot.lines.iter().all(|line| !line.selection_newline));
+}
+
+#[test]
+fn format_range_preserves_visual_selection() {
+    let (mut workspace, id) = normal_fixture("select id from users where id = 1;");
+    press_keys(&mut workspace, id, "v$");
+    let before = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Postgres,
+        )
+        .unwrap();
+    let scope = workspace
+        .current_scope(id, crate::sql::SqlDialect::Postgres)
+        .unwrap()
+        .unwrap();
+    let formatted = crate::sql::format_sql(&scope.sql, crate::sql::SqlDialect::Postgres).unwrap();
+    let crate::sql::ScopeSource::Contiguous(range) = scope.source else {
+        panic!("expected contiguous visual range");
+    };
+    workspace
+        .replace_range_preserving_selection(id, range, &formatted)
+        .unwrap();
+    let after = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Postgres,
+        )
+        .unwrap();
+
+    assert_eq!(before.mode, EditorMode::VisualChar);
+    assert_eq!(after.mode, EditorMode::VisualChar);
+    assert_eq!(after.selections.len(), 1);
+    assert_eq!(after.selections[0].shape, EditorSelectionShape::Char);
+    assert!(!after.selection_cells.is_empty());
+    assert_eq!(
+        after.selections[0].start,
+        EditorPosition { line: 0, column: 0 }
+    );
+    assert_eq!(
+        after.selections[0].end,
+        super::byte_to_char_position(&formatted, formatted.len())
+    );
+}
+
+#[test]
+fn format_range_preserves_reverse_visual_selection() {
+    let (mut workspace, id) = normal_fixture("select id from users where id = 1;");
+    press_keys(&mut workspace, id, "$vhh");
+    let scope = workspace
+        .current_scope(id, crate::sql::SqlDialect::Postgres)
+        .unwrap()
+        .unwrap();
+    let formatted = crate::sql::format_sql(&scope.sql, crate::sql::SqlDialect::Postgres).unwrap();
+    let crate::sql::ScopeSource::Contiguous(range) = scope.source else {
+        panic!("expected contiguous visual range");
+    };
+    workspace
+        .replace_range_preserving_selection(id, range, &formatted)
+        .unwrap();
+    let after = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::sql::SqlDialect::Postgres,
+        )
+        .unwrap();
+
+    assert_eq!(after.mode, EditorMode::VisualChar);
+    assert_eq!(after.selections.len(), 1);
+    assert!(!after.selection_cells.is_empty());
+    let cursor = workspace.position(id).unwrap();
+    assert!(
+        (
+            after.selections[0].start.line,
+            after.selections[0].start.column
+        ) <= (cursor.line, cursor.column)
+            && (cursor.line, cursor.column)
+                <= (after.selections[0].end.line, after.selections[0].end.column)
+    );
+}
+
+#[test]
+fn normal_indent_shortcuts_change_the_current_line() {
+    let (mut workspace, id) = normal_fixture("select 1;\nselect 2;");
+
+    press_keys(&mut workspace, id, ">>");
+    assert_eq!(workspace.text(id).unwrap(), "    select 1;\nselect 2;");
+
+    press_keys(&mut workspace, id, "<<");
+    assert_eq!(workspace.text(id).unwrap(), "select 1;\nselect 2;");
+}
+
+#[test]
+fn visual_indent_shortcuts_change_selected_lines() {
+    let (mut workspace, id) = normal_fixture("select 1;\nselect 2;\nselect 3;");
+
+    press_keys(&mut workspace, id, "Vj>");
+    assert_eq!(
+        workspace.text(id).unwrap(),
+        "    select 1;\n    select 2;\nselect 3;"
+    );
+    assert_eq!(workspace.mode(id).unwrap(), EditorMode::VisualLine);
+}
+
+#[test]
+fn counted_normal_indent_affects_multiple_lines() {
+    let (mut workspace, id) = normal_fixture("select 1;\nselect 2;\nselect 3;");
+
+    press_keys(&mut workspace, id, "2>>");
+
+    assert_eq!(
+        workspace.text(id).unwrap(),
+        "    select 1;\n    select 2;\nselect 3;"
+    );
+}
+
+#[test]
+fn visual_block_indent_preserves_block_mode() {
+    let (mut workspace, id) = normal_fixture("select 1;\nselect 2;");
+
+    workspace.press(id, EditorKey::Control('v')).unwrap();
+    press_keys(&mut workspace, id, "j>");
+
+    assert_eq!(workspace.text(id).unwrap(), "    select 1;\n    select 2;");
+    assert_eq!(workspace.mode(id).unwrap(), EditorMode::VisualBlock);
+}
+
+#[test]
+fn read_only_and_insert_modes_do_not_indent_with_vim_shortcuts() {
+    let (mut read_only, read_only_id) = read_only_fixture("select 1;");
+    press_keys(&mut read_only, read_only_id, ">>");
+    assert_eq!(read_only.text(read_only_id).unwrap(), "select 1;");
+
+    let (mut workspace, id) = fixture("select 1;");
+    press_keys(&mut workspace, id, ">>");
+    assert_eq!(workspace.text(id).unwrap(), ">>select 1;");
 }
 
 #[test]
