@@ -297,6 +297,7 @@ pub struct Runtime {
     update_startup_task: Option<JoinHandle<()>>,
     profile_tasks: Vec<JoinHandle<()>>,
     completion_tasks: HashMap<Uuid, JoinHandle<()>>,
+    diagnostic_tasks: HashMap<Uuid, JoinHandle<()>>,
     catalog_search_task: Option<JoinHandle<()>>,
     manual_transactions: HashMap<Uuid, ManualTransactionEntry>,
     relation_transactions: HashMap<Uuid, ManualTransactionEntry>,
@@ -397,6 +398,7 @@ impl Runtime {
             update_startup_task: None,
             profile_tasks: Vec::new(),
             completion_tasks: HashMap::new(),
+            diagnostic_tasks: HashMap::new(),
             catalog_search_task: None,
             manual_transactions: HashMap::new(),
             relation_transactions: HashMap::new(),
@@ -696,6 +698,43 @@ impl Runtime {
                     let _ = sender.send(Action::CompletionDue(key));
                 });
                 self.completion_tasks.insert(key.console_id, task);
+            }
+            Command::ScheduleDiagnostics(key) => {
+                let console_id = key.console_id;
+                if let Some(task) = self.diagnostic_tasks.remove(&key.console_id) {
+                    task.abort();
+                }
+                let sender = self.event_sender.clone();
+                let task = tokio::spawn(async move {
+                    sleep(Duration::from_millis(300)).await;
+                    let _ = sender.send(Action::DiagnosticDue(key));
+                });
+                self.diagnostic_tasks.insert(console_id, task);
+            }
+            Command::AnalyzeDiagnostics {
+                key,
+                text,
+                context,
+                catalog,
+            } => {
+                let sender = self.event_sender.clone();
+                tokio::spawn(async move {
+                    let diagnostics = tokio::task::spawn_blocking(move || {
+                        let syntax = crate::sql::diagnose_sql(&text, context.dialect);
+                        if !syntax.is_empty() {
+                            return (syntax, Vec::new());
+                        }
+                        let analysis = crate::sql::analyze_semantics(&text, &context, &catalog);
+                        (analysis.diagnostics, analysis.dependencies)
+                    })
+                    .await
+                    .unwrap_or_default();
+                    let _ = sender.send(Action::DiagnosticsReady {
+                        key,
+                        diagnostics: diagnostics.0,
+                        dependencies: diagnostics.1,
+                    });
+                });
             }
             Command::CheckForUpdate {
                 request_id,

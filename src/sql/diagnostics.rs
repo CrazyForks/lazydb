@@ -1,6 +1,9 @@
 use sqlparser::{parser::Parser, tokenizer::Tokenizer};
+use uuid::Uuid;
 
-use super::{SqlDialect, TextRange, analysis::LineIndex, dialect::parser_dialect};
+use super::{
+    SqlDialect, TextRange, analysis::LineIndex, dialect::parser_dialect, scope::scan_statements,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqlDiagnostic {
@@ -9,15 +12,41 @@ pub struct SqlDiagnostic {
     pub code: &'static str,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticScheduleKey {
+    pub console_id: Uuid,
+    pub document_revision: u64,
+    pub target: Option<crate::model::execution_target::ExecutionTarget>,
+    pub dialect: SqlDialect,
+    pub catalog_generation: u64,
+}
+
 pub fn diagnose_sql(text: &str, dialect: SqlDialect) -> Vec<SqlDiagnostic> {
+    let statements = scan_statements(text, dialect);
+    if statements.is_empty() {
+        return diagnose_statement(text, dialect, 0);
+    }
+    let mut diagnostics = Vec::new();
+    for range in statements {
+        let Some(statement) = range.get(text) else {
+            continue;
+        };
+        diagnostics.extend(diagnose_statement(statement, dialect, range.start));
+    }
+    diagnostics
+}
+
+fn diagnose_statement(text: &str, dialect: SqlDialect, offset: usize) -> Vec<SqlDiagnostic> {
     if let Err(error) = Tokenizer::new(parser_dialect(dialect), text).tokenize() {
         let index = LineIndex::new(text);
-        let start = index.offset(text, error.location.line, error.location.column);
+        let start = offset + index.offset(text, error.location.line, error.location.column);
+        let end = start
+            + text
+                .get(start.saturating_sub(offset)..)
+                .and_then(|suffix| suffix.chars().next())
+                .map_or(0, char::len_utf8);
         return vec![SqlDiagnostic {
-            range: TextRange::new(
-                start,
-                start + text[start..].chars().next().map_or(0, char::len_utf8),
-            ),
+            range: TextRange::new(start, end),
             message: error.to_string(),
             code: "sql-tokenizer",
         }];
@@ -30,15 +59,20 @@ pub fn diagnose_sql(text: &str, dialect: SqlDialect) -> Vec<SqlDiagnostic> {
             Some((line.parse::<u64>().ok()?, column.parse::<u64>().ok()?))
         });
         let range = if let Some((line, column)) = location {
-            let start = LineIndex::new(text).offset(text, line, column);
+            let start = offset + LineIndex::new(text).offset(text, line, column);
             TextRange::new(
                 start,
-                start + text[start..].chars().next().map_or(0, char::len_utf8),
+                start
+                    + text
+                        .get(start.saturating_sub(offset)..)
+                        .and_then(|suffix| suffix.chars().next())
+                        .map_or(0, char::len_utf8),
             )
         } else if message.ends_with("found: EOF") {
-            TextRange::new(text.trim_end().len(), text.trim_end().len())
+            let end = offset + text.trim_end().len();
+            TextRange::new(end, end)
         } else {
-            TextRange::new(0, text.len())
+            TextRange::new(offset, offset + text.len())
         };
         return vec![SqlDiagnostic {
             range,

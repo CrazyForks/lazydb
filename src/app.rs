@@ -1026,7 +1026,7 @@ impl App {
         let Some(tab) = self.active_console_opt() else {
             return Vec::new();
         };
-        let Ok(Some(scope)) = self.editor.current_scope(tab.id, self.sql_dialect()) else {
+        let Ok(Some(scope)) = self.editor.current_scope(tab.id, self.editor_sql_dialect()) else {
             self.notify_warning("Clipboard", "Nothing to copy at the cursor");
             return Vec::new();
         };
@@ -1305,7 +1305,7 @@ impl App {
             .ok()
             .and_then(|position| {
                 let cursor = cursor_byte(&text, position.line, position.column);
-                sql::resolve_scope(&text, cursor, None, self.sql_dialect())
+                sql::resolve_scope(&text, cursor, None, self.editor_sql_dialect())
             })
             .map(|scope| match scope.source {
                 sql::ScopeSource::Contiguous(range) => range,
@@ -1314,19 +1314,10 @@ impl App {
         let mut snapshot = self.editor.render_snapshot_with_dialect_and_statement(
             tab.id,
             viewport,
-            self.sql_dialect(),
+            self.editor_sql_dialect(),
             statement,
         )?;
-        if let Some(target) = tab.execution_target.as_ref() {
-            let context = SemanticContext::new(
-                self.sql_dialect(),
-                Some(target.database.clone()),
-                target.schema.clone(),
-            );
-            let catalog = self.semantic_catalog_snapshot(target, &context);
-            snapshot.semantic_diagnostics =
-                sql::analyze_semantics(&text, &context, &catalog).diagnostics;
-        }
+        snapshot.semantic_diagnostics = tab.semantic_diagnostics.clone();
         Ok(snapshot)
     }
 
@@ -2353,6 +2344,8 @@ impl App {
                     | Action::EditorScroll { .. }
                     | Action::ReplaceEditor(_)
                     | Action::CompletionDue(_)
+                    | Action::DiagnosticDue(_)
+                    | Action::DiagnosticsReady { .. }
                     | Action::RunActiveSql
                     | Action::RunAllSql
                     | Action::CancelActiveQuery
@@ -7416,7 +7409,12 @@ impl App {
                     return Vec::new();
                 };
                 let _ = self.editor.set_text(id, &text);
-                vec![self.persist_workspace_command()]
+                let mut commands = vec![self.persist_workspace_command()];
+                if let Some(key) = self.editor_diagnostics_key() {
+                    self.active_console_mut().semantic_diagnostics.clear();
+                    commands.push(Command::ScheduleDiagnostics(key));
+                }
+                commands
             }
             Action::CompletionExplicit => self.complete_now(false),
             Action::CompletionDue(key) => {
@@ -7429,6 +7427,49 @@ impl App {
                 } else {
                     Vec::new()
                 }
+            }
+            Action::DiagnosticDue(key) => {
+                if self.editor_diagnostics_key() == Some(key.clone()) {
+                    self.diagnostic_analysis_command(key)
+                } else {
+                    Vec::new()
+                }
+            }
+            Action::DiagnosticsReady {
+                key,
+                diagnostics,
+                dependencies,
+            } => {
+                if self.editor_diagnostics_key() == Some(key) {
+                    self.active_console_mut().semantic_diagnostics = diagnostics;
+                    let mut commands = Vec::new();
+                    for relation in dependencies {
+                        let owner =
+                            crate::model::explorer::ExplorerOwnerId::Catalog(relation.clone());
+                        let loaded = self
+                            .explorer
+                            .normalized
+                            .profiles
+                            .get(&relation.profile_id())
+                            .is_some_and(|profile| {
+                                matches!(
+                                    profile.load_states.get(&owner),
+                                    Some(crate::model::explorer::ExplorerLoadState::Loaded {
+                                        next_cursor: None
+                                    })
+                                )
+                            });
+                        if !loaded {
+                            commands.extend(self.start_catalog_request(
+                                CatalogTarget::relation_children(relation).unwrap(),
+                                None,
+                                CatalogRequestIntent::Automatic,
+                            ));
+                        }
+                    }
+                    return commands;
+                }
+                Vec::new()
             }
             Action::CompletionNext => {
                 if let Some(popup) = self
@@ -8724,6 +8765,12 @@ impl App {
                 if should_activate_workspace && self.is_active_relation_tab() {
                     commands.extend(self.load_active_relation(false));
                 }
+                if editor_target_switch.is_some()
+                    && let Some(key) = self.editor_diagnostics_key()
+                {
+                    self.active_console_mut().semantic_diagnostics.clear();
+                    commands.push(Command::ScheduleDiagnostics(key));
+                }
                 if persist_target || should_activate_workspace {
                     commands.push(self.persist_workspace_command());
                 }
@@ -8864,7 +8911,20 @@ impl App {
             Action::CatalogPageLoaded(page) => {
                 let target = page.key.target.clone();
                 let profile_id = page.key.connection.profile_id;
-                let commands = self.accept_catalog_page(page);
+                let mut commands = self.accept_catalog_page(page);
+                if self
+                    .active_console_opt()
+                    .and_then(|tab| tab.execution_target.as_ref())
+                    .is_some_and(|target| target.profile_id == profile_id)
+                    && self
+                        .active_editor_text()
+                        .ok()
+                        .is_some_and(|text| !text.trim().is_empty())
+                    && let Some(key) = self.editor_diagnostics_key()
+                {
+                    self.active_console_mut().semantic_diagnostics.clear();
+                    commands.push(Command::ScheduleDiagnostics(key));
+                }
                 self.refresh_active_data_query_completion();
                 if self.catalog_sync_pending
                     && self
@@ -12184,6 +12244,10 @@ impl App {
         for effect in effects {
             let action = match effect {
                 EditorEffect::Changed { .. } => {
+                    self.active_console_mut().semantic_diagnostics.clear();
+                    if let Some(key) = self.editor_diagnostics_key() {
+                        commands.push(Command::ScheduleDiagnostics(key));
+                    }
                     if matches!(completion, CompletionAfterEdit::Suppress) {
                         self.clear_completion_request();
                         self.active_console_mut().completion = None;
@@ -12195,8 +12259,11 @@ impl App {
                         continue;
                     }
                     let (text, cursor) = self.active_editor_text_and_cursor();
-                    if !sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
-                    {
+                    if !sql::should_offer_completion_for_dialect(
+                        &text,
+                        cursor,
+                        self.editor_sql_dialect(),
+                    ) {
                         self.clear_completion_request();
                         self.active_console_mut().completion = None;
                         continue;
@@ -12289,6 +12356,49 @@ impl App {
         })
     }
 
+    fn editor_diagnostics_key(&self) -> Option<crate::sql::DiagnosticScheduleKey> {
+        let tab = self.active_console_opt()?;
+        Some(crate::sql::DiagnosticScheduleKey {
+            console_id: tab.id,
+            document_revision: self.active_editor_revision(),
+            target: tab.execution_target.clone(),
+            dialect: self.editor_sql_dialect(),
+            catalog_generation: self.explorer.catalog_generation,
+        })
+    }
+
+    fn diagnostic_analysis_command(&self, key: crate::sql::DiagnosticScheduleKey) -> Vec<Command> {
+        let Some(tab) = self.active_console_opt() else {
+            return Vec::new();
+        };
+        let text = self.active_editor_text().unwrap_or_default();
+        let dialect = key.dialect;
+        let context = tab.execution_target.as_ref().map(|target| {
+            SemanticContext::new(
+                dialect,
+                Some(target.database.clone()),
+                target.schema.clone(),
+            )
+        });
+        let catalog = context
+            .as_ref()
+            .and_then(|context| {
+                tab.execution_target
+                    .as_ref()
+                    .map(|target| (target, context))
+            })
+            .map_or_else(CatalogSnapshot::default, |(target, context)| {
+                self.semantic_catalog_snapshot(target, context)
+            });
+        vec![Command::AnalyzeDiagnostics {
+            key,
+            text,
+            context: context
+                .unwrap_or_else(|| SemanticContext::new(dialect, None::<String>, None::<String>)),
+            catalog,
+        }]
+    }
+
     fn completion_request_is_current(&self) -> bool {
         let Some(tab) = self.active_console_opt() else {
             return false;
@@ -12331,7 +12441,8 @@ impl App {
             .as_ref()
             .map(|snapshot| cursor_byte(&text, snapshot.cursor.line, snapshot.cursor.column))
             .unwrap_or(text.len());
-        if automatic && !sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
+        if automatic
+            && !sql::should_offer_completion_for_dialect(&text, cursor, self.editor_sql_dialect())
         {
             self.clear_completion_request();
             self.active_console_mut().completion = None;
@@ -12352,7 +12463,7 @@ impl App {
         let dependencies = sql::completion_dependencies(
             &text,
             cursor,
-            self.sql_dialect(),
+            self.editor_sql_dialect(),
             &self.explorer.completion_index,
             completion_context,
         );
@@ -12384,7 +12495,7 @@ impl App {
         let candidates = sql::complete(
             &text,
             cursor,
-            self.sql_dialect(),
+            self.editor_sql_dialect(),
             &self.explorer.completion_index,
             completion_context,
         );
@@ -12504,8 +12615,11 @@ impl App {
             .is_some_and(|character| character.is_whitespace() || character == '.');
         let completion = if !waiting_for_relation_children
             && starts_next_completion
-            && crate::sql::should_offer_completion_for_dialect(&text, cursor, self.sql_dialect())
-        {
+            && crate::sql::should_offer_completion_for_dialect(
+                &text,
+                cursor,
+                self.editor_sql_dialect(),
+            ) {
             CompletionAfterEdit::Schedule
         } else {
             CompletionAfterEdit::Suppress
@@ -12524,6 +12638,27 @@ impl App {
         commands
     }
 
+    pub(crate) fn editor_sql_dialect(&self) -> SqlDialect {
+        let Some(kind) = self
+            .active_console_opt()
+            .and_then(|tab| tab.execution_target.as_ref())
+            .and_then(|target| {
+                self.profiles
+                    .iter()
+                    .find(|profile| profile.id == target.profile_id)
+            })
+            .map(|profile| profile.kind)
+        else {
+            return SqlDialect::Generic;
+        };
+        match kind {
+            DatabaseKind::Postgres => SqlDialect::Postgres,
+            DatabaseKind::MySql => SqlDialect::MySql,
+            DatabaseKind::Sqlite => SqlDialect::Sqlite,
+            DatabaseKind::SqlServer => SqlDialect::SqlServer,
+        }
+    }
+
     pub(crate) fn sql_dialect(&self) -> SqlDialect {
         match self.active_profile().map(|profile| profile.kind) {
             Some(DatabaseKind::Postgres) => SqlDialect::Postgres,
@@ -12538,7 +12673,7 @@ impl App {
         let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
             return;
         };
-        let dialect = self.sql_dialect();
+        let dialect = self.editor_sql_dialect();
         let scope = match self.editor.current_scope(id, dialect) {
             Ok(Some(scope)) => scope,
             _ => {
@@ -12692,7 +12827,7 @@ impl App {
             return Vec::new();
         };
         let sql = self.editor_text(tab_id).unwrap_or_default();
-        let dialect = self.sql_dialect();
+        let dialect = self.editor_sql_dialect();
         let scope = if full_buffer {
             (!sql.trim().is_empty()).then(|| sql::ResolvedScope {
                 kind: sql::ScopeKind::FullBuffer,
