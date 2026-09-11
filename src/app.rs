@@ -12583,13 +12583,10 @@ impl App {
                 target.schema.clone(),
             )
         });
-        let catalog = context
+        let catalog = tab
+            .execution_target
             .as_ref()
-            .and_then(|context| {
-                tab.execution_target
-                    .as_ref()
-                    .map(|target| (target, context))
-            })
+            .zip(context.as_ref())
             .map_or_else(CatalogSnapshot::default, |(target, context)| {
                 self.semantic_catalog_snapshot(target, context)
             });
