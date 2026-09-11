@@ -550,7 +550,6 @@ pub enum Action {
     OpenDatabaseSelector,
     SelectDatabaseSelector(usize),
     MoveDatabaseSelector(isize),
-    EditDatabaseSelector(crate::model::text_input::TextInputEdit),
     ConfirmDatabaseSelector,
     CancelDatabaseSelector,
     SelectTargetSelector(usize),

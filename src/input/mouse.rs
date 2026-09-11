@@ -820,7 +820,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::DatabaseSelectorRow(index) => {
                     Some(Action::SelectDatabaseSelector(index))
                 }
-                HitTarget::DatabaseSelectorSearch => None,
                 HitTarget::EditorExecutionTarget => Some(Action::OpenTargetSelector),
                 HitTarget::EditorTransactionMenu => Some(Action::ActivateEditorTransaction),
                 HitTarget::TransactionMenuItem(index) => Some(Action::SelectTransactionMenu(index)),
@@ -1095,7 +1094,6 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::TargetSelectorRow(_)
         | HitTarget::TargetSelectorCancel
         | HitTarget::DatabaseSelectorRow(_)
-        | HitTarget::DatabaseSelectorSearch
         | HitTarget::EditorExecutionTarget
         | HitTarget::EditorTransactionMenu
         | HitTarget::TransactionMenuItem(_)

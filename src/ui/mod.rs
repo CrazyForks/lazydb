@@ -206,7 +206,6 @@ pub enum HitTarget {
     TargetSelectorRow(usize),
     TargetSelectorCancel,
     DatabaseSelectorRow(usize),
-    DatabaseSelectorSearch,
     TransactionMenuItem(usize),
     TransactionMenuCancel,
     TransactionExitChoice(crate::model::transaction::TransactionExitChoice),
@@ -4589,66 +4588,61 @@ fn render_overlay(
             );
         }
         Overlay::DatabaseSelector(selector) => {
-            let filtered = selector.filtered_candidates();
-            let visible_count = filtered.len().min(8);
-            let height = (visible_count as u16 + 5).clamp(7, 14);
+            let visible_count = selector.candidates.len().clamp(1, 8);
+            let height = (visible_count as u16 + 4).clamp(6, 12);
             let popup = centered(area, 52.min(area.width.saturating_sub(2)), height);
             frame.render_widget(Clear, popup);
-            let mut lines = vec![Line::from(Span::styled(
-                " SWITCH DATABASE ",
-                theme.title(true),
-            ))];
-            lines.push(Line::from(vec![
-                Span::styled("Search: ", Style::new().fg(theme.muted)),
-                Span::styled(selector.search.value(), Style::new().fg(theme.text)),
-            ]));
-            let search_area = Rect::new(popup.x + 1, popup.y + 1, popup.width.saturating_sub(2), 1);
-            state.hit_regions.push(HitRegion {
-                area: search_area,
-                target: HitTarget::DatabaseSelectorSearch,
-            });
-            register_input_selection_target(
-                state,
-                text_selection::InputSelectionTarget::DatabaseSelectorSearch,
-                search_area,
-                "Search: ",
-                &selector.search,
-                text_input_horizontal_offset(search_area, "Search: ", &selector.search),
-            );
-            lines.extend(filtered.iter().take(visible_count).map(|(index, target)| {
-                let selected = *index == selector.selected;
-                let marker = if selected { ">" } else { " " };
-                let current = if selector.is_current(&target.database) {
-                    " *"
-                } else {
-                    ""
-                };
-                Line::from(Span::styled(
-                    truncate_to_cells(
-                        &format!(
-                            "{marker} {}{current}",
-                            sanitize_terminal_text(&target.database)
-                        ),
-                        popup.width.saturating_sub(2) as usize,
-                    ),
-                    if selected {
-                        Style::new().fg(theme.text).bg(theme.selection)
+            let start = selector
+                .selected
+                .saturating_add(1)
+                .saturating_sub(visible_count)
+                .min(selector.candidates.len().saturating_sub(visible_count));
+            let end = (start + visible_count).min(selector.candidates.len());
+            let mut lines = selector.candidates[start..end]
+                .iter()
+                .enumerate()
+                .map(|(offset, target)| {
+                    let index = start + offset;
+                    let selected = index == selector.selected;
+                    let marker = if selected { ">" } else { " " };
+                    let current = if selector.is_current(&target.database) {
+                        " (current)"
                     } else {
-                        Style::new().fg(theme.text)
-                    },
-                ))
-            }));
+                        ""
+                    };
+                    Line::from(Span::styled(
+                        truncate_to_cells(
+                            &format!(
+                                "{marker} {}{current}",
+                                sanitize_terminal_text(&target.database)
+                            ),
+                            popup.width.saturating_sub(2) as usize,
+                        ),
+                        if selected {
+                            Style::new().fg(theme.text).bg(theme.selection)
+                        } else {
+                            Style::new().fg(theme.text)
+                        },
+                    ))
+                })
+                .collect::<Vec<_>>();
+            if selector.candidates.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "No databases available",
+                    Style::new().fg(theme.muted),
+                )));
+            }
             lines.push(Line::raw(""));
-            lines.push(Line::raw("Up/Down select  Enter switch  Esc cancel"));
-            for (row, (index, _)) in filtered.iter().take(visible_count).enumerate() {
+            lines.push(Line::raw("j/k or Up/Down select  Enter switch  Esc cancel"));
+            for (offset, index) in (start..end).enumerate() {
                 state.hit_regions.push(HitRegion {
                     area: Rect::new(
                         popup.x + 1,
-                        popup.y + 2 + row as u16,
+                        popup.y + 1 + offset as u16,
                         popup.width.saturating_sub(2),
                         1,
                     ),
-                    target: HitTarget::DatabaseSelectorRow(*index),
+                    target: HitTarget::DatabaseSelectorRow(index),
                 });
             }
             frame.render_widget(
