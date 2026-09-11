@@ -1432,6 +1432,66 @@ fn render_snapshot_preserves_semantic_sql_highlight_kinds() {
 }
 
 #[test]
+fn render_snapshot_uses_full_document_source_ranges_for_later_lines() {
+    let text = "SELECT * from ignore_table;\n\nSELECT ignore_col from sys_user;";
+    let (workspace, id) = fixture(text);
+    let snapshot = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 120,
+                height: 20,
+            },
+            crate::sql::SqlDialect::Postgres,
+        )
+        .unwrap();
+
+    assert_eq!(snapshot.lines[0].source_start, 0);
+    assert_eq!(snapshot.lines[0].source_end, text.find('\n').unwrap());
+    let after_first_line = text.find('\n').unwrap() + 1;
+    let second_statement_start =
+        after_first_line + text[after_first_line..].find("SELECT").unwrap();
+    assert_eq!(snapshot.lines[2].source_start, second_statement_start);
+    assert_eq!(snapshot.lines[2].source_end, text.len());
+    let ignore_col_start = text.find("ignore_col").unwrap();
+    assert!(snapshot.lines[2].spans.iter().any(|span| {
+        span.source_start <= ignore_col_start
+            && span.source_end >= ignore_col_start + "ignore_col".len()
+    }));
+}
+
+#[test]
+fn render_snapshot_keeps_projection_mapping_whole_line_with_tabs() {
+    let (workspace, id) = fixture("SELECT\tignore_col\n\nSELECT ok");
+    let snapshot = workspace
+        .render_snapshot_with_dialect(
+            id,
+            EditorViewport {
+                width: 120,
+                height: 20,
+            },
+            crate::sql::SqlDialect::Postgres,
+        )
+        .unwrap();
+    let line = &snapshot.lines[0];
+
+    assert_eq!(line.display_text, "SELECT  ignore_col");
+    assert_eq!(
+        line.spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        line.display_text
+    );
+    assert_eq!(line.source_start, 0);
+    assert_eq!(line.source_end, "SELECT\tignore_col".len());
+    assert_eq!(
+        line.source_to_display_bytes.last(),
+        Some(&line.display_text.len())
+    );
+}
+
+#[test]
 fn render_snapshot_preserves_semantic_kinds_before_incomplete_where() {
     let (workspace, id) = fixture("SELECT u.id FROM users u WHERE");
     let snapshot = workspace

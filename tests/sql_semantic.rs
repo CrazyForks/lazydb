@@ -164,6 +164,38 @@ fn semantic_analysis_reports_missing_table_and_column_in_their_source_ranges() {
 }
 
 #[test]
+fn semantic_analysis_keeps_diagnostics_in_later_statements_at_full_text_ranges() {
+    let context = SemanticContext::new(SqlDialect::Postgres, Some("moss_biz"), Some("test_schema"));
+    let relation = relation("sys_user", "moss_biz", "test_schema");
+    let relation_id = relation.id.clone();
+    let snapshot = CatalogSnapshot::new(
+        [relation.clone(), column(&relation, "id")],
+        [(context.default_namespace(), CatalogCoverage::Complete)],
+    )
+    .with_column_coverage([(relation_id, CatalogCoverage::Complete)]);
+    let text = "SELECT * from ignore_table;\n\nSELECT ignore_col from sys_user;";
+
+    let analysis = analyze_semantics(text, &context, &snapshot);
+
+    assert_eq!(analysis.diagnostics.len(), 2);
+    assert_eq!(analysis.diagnostics[0].code, "sql-unknown-relation");
+    assert_eq!(
+        analysis.diagnostics[0].range.get(text),
+        Some("ignore_table")
+    );
+    assert_eq!(analysis.diagnostics[1].code, "sql-unknown-column");
+    assert_eq!(analysis.diagnostics[1].range.get(text), Some("ignore_col"));
+    assert_eq!(
+        analysis.diagnostics[0].range.start,
+        text.find("ignore_table").unwrap()
+    );
+    assert_eq!(
+        analysis.diagnostics[1].range.start,
+        text.find("ignore_col").unwrap()
+    );
+}
+
+#[test]
 fn semantic_analysis_reports_missing_relation_without_fabricating_column_errors() {
     let context = SemanticContext::new(SqlDialect::Postgres, Some("moss_biz"), Some("test_schema"));
     let snapshot = CatalogSnapshot::new(
