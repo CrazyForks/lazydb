@@ -348,6 +348,24 @@ impl DataGridState {
             .min(row_count.saturating_sub(visible_rows.min(row_count)));
     }
 
+    pub fn set_row_offset(&mut self, offset: usize, row_count: usize) {
+        if row_count == 0 {
+            self.selected_row = 0;
+            self.row_offset = 0;
+            return;
+        }
+        if self.viewport_rows == 0 {
+            return;
+        }
+
+        self.row_offset = offset.min(self.max_row_offset(row_count));
+        let last_visible = self
+            .row_offset
+            .saturating_add(self.viewport_rows.saturating_sub(1))
+            .min(row_count - 1);
+        self.selected_row = self.selected_row.clamp(self.row_offset, last_visible);
+    }
+
     pub fn select_row_target(&mut self, target: GridRowTarget, row_count: usize) {
         if row_count == 0 {
             self.selected_row = 0;
@@ -395,16 +413,12 @@ impl DataGridState {
         let step = match amount {
             GridScrollAmount::Lines(lines) => {
                 let delta = scroll_delta(direction, lines);
-                self.row_offset = move_bounded(
+                let row_offset = move_bounded(
                     self.row_offset,
                     delta,
                     self.max_row_offset(row_count).saturating_add(1),
                 );
-                let last_visible = self
-                    .row_offset
-                    .saturating_add(self.viewport_rows.saturating_sub(1))
-                    .min(row_count - 1);
-                self.selected_row = self.selected_row.clamp(self.row_offset, last_visible);
+                self.set_row_offset(row_offset, row_count);
                 return;
             }
             GridScrollAmount::HalfPage => (self.viewport_rows / 2).max(1),
@@ -666,6 +680,57 @@ mod tests {
         state.selected_row = 0;
         state.ensure_row_visible(10);
         assert_eq!(state.row_offset, 0);
+    }
+
+    #[test]
+    fn absolute_row_offset_clamps_selection_to_the_new_viewport() {
+        let mut state = DataGridState {
+            selected_row: 45,
+            selected_column: 3,
+            row_offset: 40,
+            viewport_rows: 10,
+            ..DataGridState::default()
+        };
+
+        state.set_row_offset(40, 100);
+        assert_eq!((state.selected_row, state.row_offset), (45, 40));
+
+        state.set_row_offset(60, 100);
+        assert_eq!((state.selected_row, state.row_offset), (60, 60));
+
+        state.set_row_offset(usize::MAX, 100);
+        assert_eq!((state.selected_row, state.row_offset), (90, 90));
+        assert_eq!(state.selected_column, 3);
+    }
+
+    #[test]
+    fn absolute_row_offset_handles_empty_and_non_scrollable_grids() {
+        let mut empty = DataGridState {
+            selected_row: 3,
+            row_offset: 2,
+            viewport_rows: 5,
+            ..DataGridState::default()
+        };
+        empty.set_row_offset(usize::MAX, 0);
+        assert_eq!((empty.selected_row, empty.row_offset), (0, 0));
+
+        let mut short = DataGridState {
+            selected_row: 2,
+            row_offset: 0,
+            viewport_rows: 5,
+            ..DataGridState::default()
+        };
+        short.set_row_offset(usize::MAX, 3);
+        assert_eq!((short.selected_row, short.row_offset), (2, 0));
+
+        let mut zero_height = DataGridState {
+            selected_row: 2,
+            row_offset: 1,
+            viewport_rows: 0,
+            ..DataGridState::default()
+        };
+        zero_height.set_row_offset(usize::MAX, 10);
+        assert_eq!((zero_height.selected_row, zero_height.row_offset), (2, 1));
     }
 
     #[test]

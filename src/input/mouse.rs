@@ -184,10 +184,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return pane_resize_action(drag, pane_resize_pointer(drag.split, event), ui, app);
             }
             if let Some(drag) = *ui.grid_scrollbar_drag.borrow() {
-                let travel = drag.track_width.saturating_sub(drag.thumb_width);
-                let pointer = event
-                    .column
-                    .saturating_sub(drag.track_x)
+                let pointer_position = match drag.axis {
+                    crate::ui::GridScrollAxis::Horizontal => event.column,
+                    crate::ui::GridScrollAxis::Vertical => event.row,
+                };
+                let travel = drag.track_length.saturating_sub(drag.thumb_length);
+                let pointer = pointer_position
+                    .saturating_sub(drag.track_start)
                     .saturating_sub(drag.pointer_offset)
                     .min(travel);
                 let offset = if travel == 0 {
@@ -195,7 +198,10 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 } else {
                     (pointer as usize * drag.max_offset + travel as usize / 2) / travel as usize
                 };
-                return Some(Action::GridSetColumnOffset { offset });
+                return Some(match drag.axis {
+                    crate::ui::GridScrollAxis::Horizontal => Action::GridSetColumnOffset { offset },
+                    crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
+                });
             }
             if let Some(drag) = *ui.editor_scrollbar_drag.borrow() {
                 let pointer_position = if drag.vertical {
@@ -619,27 +625,42 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 HitTarget::GridColumnSort(column) => Some(Action::CycleDataColumnSort(column)),
                 HitTarget::GridScrollbarThumb {
-                    track_x,
-                    track_width,
-                    thumb_x,
-                    thumb_width,
+                    axis,
+                    track_start,
+                    track_length,
+                    thumb_start,
+                    thumb_length,
                     offset,
                     max_offset,
                 } => {
                     *ui.grid_scrollbar_drag.borrow_mut() = Some(crate::ui::GridScrollbarDrag {
-                        track_x,
-                        track_width,
-                        thumb_width,
-                        pointer_offset: event.column.saturating_sub(thumb_x),
+                        axis,
+                        track_start,
+                        track_length,
+                        thumb_length,
+                        pointer_offset: match axis {
+                            crate::ui::GridScrollAxis::Horizontal => {
+                                event.column.saturating_sub(thumb_start)
+                            }
+                            crate::ui::GridScrollAxis::Vertical => {
+                                event.row.saturating_sub(thumb_start)
+                            }
+                        },
                         max_offset,
                     });
                     *ui.mouse_gesture.borrow_mut() =
                         Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
-                    Some(Action::GridSetColumnOffset { offset })
+                    Some(match axis {
+                        crate::ui::GridScrollAxis::Horizontal => {
+                            Action::GridSetColumnOffset { offset }
+                        }
+                        crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
+                    })
                 }
-                HitTarget::GridScrollbarPage { offset } => {
-                    Some(Action::GridSetColumnOffset { offset })
-                }
+                HitTarget::GridScrollbarPage { axis, offset } => Some(match axis {
+                    crate::ui::GridScrollAxis::Horizontal => Action::GridSetColumnOffset { offset },
+                    crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
+                }),
                 HitTarget::EditorScrollbarPage {
                     session_id,
                     rows,

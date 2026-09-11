@@ -2061,7 +2061,10 @@ fn horizontal_scrollbar_track_click_sets_page_offset() {
     let mut ui = UiState::new();
     ui.hit_regions.push(HitRegion {
         area: Rect::new(20, 10, 8, 1),
-        target: HitTarget::GridScrollbarPage { offset: 6 },
+        target: HitTarget::GridScrollbarPage {
+            axis: lazydb::ui::GridScrollAxis::Horizontal,
+            offset: 6,
+        },
     });
 
     assert_eq!(
@@ -2125,10 +2128,11 @@ fn horizontal_scrollbar_thumb_drag_maps_to_column_offsets() {
     ui.hit_regions.push(HitRegion {
         area: Rect::new(12, 10, 4, 1),
         target: HitTarget::GridScrollbarThumb {
-            track_x: 10,
-            track_width: 20,
-            thumb_x: 12,
-            thumb_width: 4,
+            axis: lazydb::ui::GridScrollAxis::Horizontal,
+            track_start: 10,
+            track_length: 20,
+            thumb_start: 12,
+            thumb_length: 4,
             offset: 2,
             max_offset: 16,
         },
@@ -2161,6 +2165,80 @@ fn horizontal_scrollbar_thumb_drag_maps_to_column_offsets() {
     assert_eq!(
         map_mouse(
             mouse(MouseEventKind::Up(MouseButton::Left), 10, 10),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridEndColumnResize)
+    );
+    assert!(ui.grid_scrollbar_drag.borrow().is_none());
+}
+
+#[test]
+fn vertical_scrollbar_track_click_sets_page_offset() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(20, 10, 1, 4),
+        target: HitTarget::GridScrollbarPage {
+            axis: lazydb::ui::GridScrollAxis::Vertical,
+            offset: 12,
+        },
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 20, 11),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridSetRowOffset { offset: 12 })
+    );
+}
+
+#[test]
+fn vertical_scrollbar_thumb_drag_maps_to_row_offsets_and_cleans_up() {
+    let app = App::new(Vec::new());
+    let mut ui = UiState::new();
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(20, 12, 1, 4),
+        target: HitTarget::GridScrollbarThumb {
+            axis: lazydb::ui::GridScrollAxis::Vertical,
+            track_start: 10,
+            track_length: 20,
+            thumb_start: 12,
+            thumb_length: 4,
+            offset: 2,
+            max_offset: 16,
+        },
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 20, 13),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridSetRowOffset { offset: 2 })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 20, 29),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridSetRowOffset { offset: 16 })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 20, 10),
+            &ui,
+            &app,
+        ),
+        Some(Action::GridSetRowOffset { offset: 0 })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 20, 10),
             &ui,
             &app,
         ),
@@ -2349,9 +2427,10 @@ fn dragging_while_an_overlay_is_open_cancels_pending_resizes() {
         start_size: 40,
     });
     *ui.grid_scrollbar_drag.borrow_mut() = Some(lazydb::ui::GridScrollbarDrag {
-        track_x: 10,
-        track_width: 20,
-        thumb_width: 4,
+        axis: lazydb::ui::GridScrollAxis::Horizontal,
+        track_start: 10,
+        track_length: 20,
+        thumb_length: 4,
         pointer_offset: 1,
         max_offset: 5,
     });

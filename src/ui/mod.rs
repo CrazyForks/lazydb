@@ -124,14 +124,16 @@ pub enum HitTarget {
     },
     GridColumnSort(usize),
     GridScrollbarThumb {
-        track_x: u16,
-        track_width: u16,
-        thumb_x: u16,
-        thumb_width: u16,
+        axis: GridScrollAxis,
+        track_start: u16,
+        track_length: u16,
+        thumb_start: u16,
+        thumb_length: u16,
         offset: usize,
         max_offset: usize,
     },
     GridScrollbarPage {
+        axis: GridScrollAxis,
         offset: usize,
     },
     EditorScrollbarPage {
@@ -299,10 +301,17 @@ pub struct DdlViewportMetrics {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GridScrollAxis {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GridScrollbarDrag {
-    pub track_x: u16,
-    pub track_width: u16,
-    pub thumb_width: u16,
+    pub axis: GridScrollAxis,
+    pub track_start: u16,
+    pub track_length: u16,
+    pub thumb_length: u16,
     pub pointer_offset: u16,
     pub max_offset: usize,
 }

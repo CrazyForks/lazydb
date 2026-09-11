@@ -654,6 +654,9 @@ pub enum Action {
     GridSetColumnOffset {
         offset: usize,
     },
+    GridSetRowOffset {
+        offset: usize,
+    },
     GridScrollColumns {
         offset: usize,
         first_visible: usize,

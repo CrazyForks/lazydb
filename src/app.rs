@@ -2154,6 +2154,7 @@ impl App {
                         | Action::GridSetColumnWidth { .. }
                         | Action::GridEndColumnResize
                         | Action::GridSetColumnOffset { .. }
+                        | Action::GridSetRowOffset { .. }
                         | Action::CopyGridCell
                         | Action::CopyGridRow { .. }
                         | Action::ViewGridCell
@@ -2376,6 +2377,7 @@ impl App {
                     | Action::GridSetColumnWidth { .. }
                     | Action::GridEndColumnResize
                     | Action::GridSetColumnOffset { .. }
+                    | Action::GridSetRowOffset { .. }
                     | Action::OpenRecordView
                     | Action::RecordViewMoveFields(_)
                     | Action::RecordViewJumpFirstField
@@ -8449,6 +8451,10 @@ impl App {
             Action::GridEndColumnResize => Vec::new(),
             Action::GridSetColumnOffset { offset } => {
                 self.set_grid_column_offset(offset);
+                Vec::new()
+            }
+            Action::GridSetRowOffset { offset } => {
+                self.set_grid_row_offset(offset);
                 Vec::new()
             }
             Action::GridScrollColumns {
@@ -16584,6 +16590,12 @@ impl App {
         });
     }
 
+    fn set_grid_row_offset(&mut self, offset: usize) {
+        self.with_active_grid(|grid, (row_count, _)| {
+            grid.set_row_offset(offset, row_count);
+        });
+    }
+
     fn scroll_grid_columns(&mut self, offset: usize, first_visible: usize, last_visible: usize) {
         self.with_active_grid(|grid, (row_count, column_count)| {
             if column_count == 0 {
@@ -19428,6 +19440,41 @@ mod tests {
             ),
             horizontal
         );
+    }
+
+    #[test]
+    fn grid_row_offset_action_updates_viewport_without_querying() {
+        let mut app = sql_result_app();
+        let result = app
+            .active_console_mut()
+            .outcome
+            .as_mut()
+            .unwrap()
+            .result_sets
+            .last_mut()
+            .unwrap();
+        result.rows = (0..20)
+            .map(|row| vec![CellValue::Integer(row), CellValue::Text(row.to_string())])
+            .collect();
+        let tab_id = app.active_console().id;
+
+        app.update(Action::GridViewportChanged(
+            crate::model::tab::DataGridViewport {
+                tab_id,
+                column_offset: 0,
+                row_offset: 0,
+                visible_rows: 5,
+            },
+        ));
+        app.update(Action::GridSelect { row: 2, column: 1 });
+        assert!(
+            app.update(Action::GridSetRowOffset { offset: 12 })
+                .is_empty()
+        );
+
+        assert_eq!(app.active_console().grid.row_offset, 12);
+        assert_eq!(app.active_console().grid.selected_row, 12);
+        assert_eq!(app.active_console().grid.selected_column, 1);
     }
 
     #[test]

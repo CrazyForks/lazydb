@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    GridHorizontalScrollTarget, GridHorizontalScrollTargets, HitRegion, HitTarget, UiState,
-    icons::IconSet, theme::Theme,
+    GridHorizontalScrollTarget, GridHorizontalScrollTargets, GridScrollAxis, HitRegion, HitTarget,
+    UiState, icons::IconSet, theme::Theme,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,12 +76,21 @@ pub(crate) fn render(
         .collect::<Vec<_>>();
     let number_width = row_number_width(row_count);
     let fixed_width = number_width.saturating_add(1);
-    let available = table_area
+    let base_available = table_area
         .width
         .saturating_sub(2)
         .saturating_sub(fixed_width)
         .max(1);
-    let overflow = total_width(&widths) > available;
+    let mut vertical_gutter = false;
+    let (available, overflow) = (0..2).fold((base_available, false), |_, _| {
+        let available = base_available
+            .saturating_sub(u16::from(vertical_gutter))
+            .max(1);
+        let overflow = total_width(&widths) > available;
+        let visible_rows = table_area.height.saturating_sub(1 + u16::from(overflow));
+        vertical_gutter = row_count > visible_rows as usize && visible_rows >= 3;
+        (available, overflow)
+    });
     let first = viewport_start(&widths, grid.column_offset, grid.selected_column, available);
     let visible = visible_columns(&widths, first, available);
     state.grid_horizontal_scroll = Some(GridHorizontalScrollTargets {
@@ -106,10 +115,13 @@ pub(crate) fn render(
         visible_rows,
     });
     let row_y = table_area.y.saturating_add(1);
+    let content_right = table_area
+        .right()
+        .saturating_sub(u16::from(vertical_gutter));
     if sort_projection.is_some() && sort_interactive {
         let mut header_x = data_start_x(table_area, number_width);
         for column in &visible {
-            if header_x >= table_area.right() {
+            if header_x >= content_right {
                 break;
             }
             state.hit_regions.push(HitRegion {
@@ -118,7 +130,7 @@ pub(crate) fn render(
                     table_area.y,
                     column
                         .rendered_width
-                        .min(table_area.right().saturating_sub(header_x)),
+                        .min(content_right.saturating_sub(header_x)),
                     1,
                 ),
                 target: HitTarget::GridColumnSort(column.index),
@@ -133,14 +145,14 @@ pub(crate) fn render(
         let mut x = data_start_x(table_area, number_width);
         for column in &visible {
             let width = column.rendered_width;
-            if x >= table_area.right() {
+            if x >= content_right {
                 break;
             }
             state.hit_regions.push(HitRegion {
                 area: Rect::new(
                     x,
                     row_y.saturating_add(screen_row as u16),
-                    width.min(table_area.right().saturating_sub(x)),
+                    width.min(content_right.saturating_sub(x)),
                     1,
                 ),
                 target: HitTarget::ResultCell {
@@ -154,7 +166,7 @@ pub(crate) fn render(
     let mut boundary_x = data_start_x(table_area, number_width);
     for column in &visible {
         boundary_x = boundary_x.saturating_add(column.rendered_width);
-        if column.is_complete() && boundary_x < table_area.right().saturating_sub(1) {
+        if column.is_complete() && boundary_x < content_right.saturating_sub(1) {
             let target = HitTarget::RelationColumnResize {
                 column: column.index,
                 width: column.natural_width,
@@ -283,6 +295,17 @@ pub(crate) fn render(
             widths.len(),
             last_page_start(&widths, available),
             number_width,
+            theme,
+            state,
+        );
+    }
+    if row_count > visible_rows && visible_rows >= 3 {
+        render_vertical_scrollbar(
+            frame,
+            table_area,
+            row_offset,
+            visible_rows,
+            row_count,
             theme,
             state,
         );
@@ -732,16 +755,18 @@ fn render_scrollbar(
     state.hit_regions.push(HitRegion {
         area: Rect::new(track.x, track.y, thumb_x.saturating_sub(track.x), 1),
         target: HitTarget::GridScrollbarPage {
+            axis: crate::ui::GridScrollAxis::Horizontal,
             offset: first.saturating_sub(page as usize),
         },
     });
     state.hit_regions.push(HitRegion {
         area: Rect::new(thumb_x, track.y, thumb_width, 1),
         target: HitTarget::GridScrollbarThumb {
-            track_x: track.x.saturating_add(1),
-            track_width: rail_width,
-            thumb_x,
-            thumb_width,
+            axis: crate::ui::GridScrollAxis::Horizontal,
+            track_start: track.x.saturating_add(1),
+            track_length: rail_width,
+            thumb_start: thumb_x,
+            thumb_length: thumb_width,
             offset: first,
             max_offset,
         },
@@ -750,7 +775,89 @@ fn render_scrollbar(
     state.hit_regions.push(HitRegion {
         area: Rect::new(after_x, track.y, track.right().saturating_sub(after_x), 1),
         target: HitTarget::GridScrollbarPage {
+            axis: crate::ui::GridScrollAxis::Horizontal,
             offset: first.saturating_add(page as usize).min(max_offset),
+        },
+    });
+}
+
+fn render_vertical_scrollbar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    offset: usize,
+    visible_rows: usize,
+    row_count: usize,
+    theme: Theme,
+    state: &mut UiState,
+) {
+    let track = Rect::new(
+        area.right().saturating_sub(1),
+        area.y.saturating_add(1),
+        1,
+        visible_rows.min(u16::MAX as usize) as u16,
+    );
+    if track.height < 3 || row_count == 0 {
+        return;
+    }
+
+    let rail_length = track.height.saturating_sub(2);
+    let thumb_length =
+        ((rail_length as usize * visible_rows) / row_count).clamp(1, rail_length as usize) as u16;
+    let max_offset = row_count.saturating_sub(visible_rows);
+    let travel = rail_length.saturating_sub(thumb_length);
+    let thumb_offset = ((travel as usize * offset)
+        .checked_div(max_offset)
+        .unwrap_or(0)) as u16;
+    let thumb_y = track.y.saturating_add(1).saturating_add(thumb_offset);
+    let before = thumb_y.saturating_sub(track.y.saturating_add(1));
+    let after = rail_length
+        .saturating_sub(before)
+        .saturating_sub(thumb_length);
+
+    let mut lines = Vec::with_capacity(track.height as usize);
+    lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+    lines.extend((0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.extend(
+        (0..thumb_length).map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+    );
+    lines.extend((0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme.surface)),
+        track,
+    );
+
+    let page = visible_rows;
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(track.x, track.y.saturating_add(1), 1, before),
+        target: HitTarget::GridScrollbarPage {
+            axis: GridScrollAxis::Vertical,
+            offset: offset.saturating_sub(page),
+        },
+    });
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(track.x, thumb_y, 1, thumb_length),
+        target: HitTarget::GridScrollbarThumb {
+            axis: GridScrollAxis::Vertical,
+            track_start: track.y.saturating_add(1),
+            track_length: rail_length,
+            thumb_start: thumb_y,
+            thumb_length,
+            offset,
+            max_offset,
+        },
+    });
+    let after_y = thumb_y.saturating_add(thumb_length);
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            track.x,
+            after_y,
+            1,
+            track.bottom().saturating_sub(1).saturating_sub(after_y),
+        ),
+        target: HitTarget::GridScrollbarPage {
+            axis: GridScrollAxis::Vertical,
+            offset: offset.saturating_add(page).min(max_offset),
         },
     });
 }
@@ -825,6 +932,41 @@ mod tests {
         state
     }
 
+    fn vertical_hit_regions() -> crate::ui::UiState {
+        let result = ResultSet {
+            columns: vec![ColumnMeta {
+                name: "value".into(),
+                type_name: "INTEGER".into(),
+            }],
+            rows: (0..30)
+                .map(|row| vec![crate::db::value::CellValue::Integer(row)])
+                .collect(),
+            affected_rows: 0,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(24, 8)).unwrap();
+        let mut state = crate::ui::UiState::new();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    Rect::new(0, 0, 24, 8),
+                    uuid::Uuid::nil(),
+                    &result,
+                    crate::model::tab::DataGridState::default(),
+                    &[Some(8)],
+                    Theme::deep_space(),
+                    Block::default(),
+                    &mut state,
+                    None,
+                    IconSet::new(IconMode::Ascii),
+                    None,
+                    false,
+                );
+            })
+            .unwrap();
+        state
+    }
+
     #[test]
     fn relation_sort_hit_regions_cover_header_content_not_separators() {
         let projection = [None, None, None];
@@ -881,6 +1023,49 @@ mod tests {
                 .iter()
                 .any(|region| matches!(region.target, HitTarget::GridColumnSort(_)))
         );
+    }
+
+    #[test]
+    fn vertical_scrollbar_uses_right_gutter_and_registers_drag_targets() {
+        let state = vertical_hit_regions();
+        let vertical_targets = state
+            .hit_regions
+            .iter()
+            .filter(|region| {
+                matches!(
+                    region.target,
+                    HitTarget::GridScrollbarPage {
+                        axis: crate::ui::GridScrollAxis::Vertical,
+                        ..
+                    } | HitTarget::GridScrollbarThumb {
+                        axis: crate::ui::GridScrollAxis::Vertical,
+                        ..
+                    }
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(vertical_targets.len(), 3);
+        assert!(vertical_targets.iter().all(|region| region.area.x == 23));
+        assert!(matches!(
+            state.target_at(23, 2),
+            Some(HitTarget::GridScrollbarThumb {
+                axis: crate::ui::GridScrollAxis::Vertical,
+                ..
+            })
+        ));
+        assert!(!matches!(
+            state.target_at(22, 2),
+            Some(
+                HitTarget::GridScrollbarPage {
+                    axis: crate::ui::GridScrollAxis::Vertical,
+                    ..
+                } | HitTarget::GridScrollbarThumb {
+                    axis: crate::ui::GridScrollAxis::Vertical,
+                    ..
+                }
+            )
+        ));
     }
 
     #[test]
