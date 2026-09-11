@@ -249,6 +249,7 @@ open and input is blocked until the result arrives.
 | `o` | Open line below |
 | `x`, Delete | Delete character |
 | `u` / `Ctrl-r` | Undo/redo |
+| `Ctrl-o` / `Ctrl-i` (`Tab`) | Jump to the previous / next saved editor position; counts are supported |
 | `>>` / `<<` | Indent or unindent the current line |
 | `^` | Move to the first non-blank character without selecting text |
 | `R` / `F5` | Run current statement |
@@ -279,6 +280,12 @@ the cursor again when it leaves the visible area.
 | `Ctrl-d` | Scroll down half a page |
 | `Ctrl-u` | Scroll up half a page |
 | `/`, `?`, `n`, `N` | Search and reveal matching text |
+
+Successful searches and large Vim motions such as `gg` and `G` are saved in the
+current SQL Editor's jump list. `Ctrl-o` moves backward and `Ctrl-i` (or Normal
+mode `Tab`) moves forward. Ordinary cursor movement is not saved as a separate
+entry. The history is local to each SQL Editor and is not persisted. In
+Insert/Replace mode, `Tab` keeps its existing text/completion behavior.
 
 The same read-only viewport controls apply to SQL Output/Plan and Relation DDL.
 In Insert/Replace mode and editor prompts, `Ctrl-u` keeps its existing

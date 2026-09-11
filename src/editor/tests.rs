@@ -872,6 +872,32 @@ fn press_keys(workspace: &mut EditorWorkspace, id: Uuid, keys: &str) {
 }
 
 #[test]
+fn normal_jump_list_round_trips_through_large_motions() {
+    let (mut workspace, id) = normal_fixture("first\nsecond\nthird");
+    workspace.press(id, EditorKey::Character('G')).unwrap();
+    workspace.press(id, EditorKey::Character('g')).unwrap();
+    workspace.press(id, EditorKey::Character('g')).unwrap();
+
+    workspace.press(id, EditorKey::Control('o')).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 2);
+    workspace.press(id, EditorKey::Control('o')).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 0);
+    workspace.press(id, EditorKey::Control('i')).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 2);
+}
+
+#[test]
+fn jump_navigation_does_not_change_text_or_revision() {
+    let (mut workspace, id) = normal_fixture("first\nsecond");
+    let text = workspace.text(id).unwrap();
+    let revision = workspace.revision(id).unwrap();
+    workspace.press(id, EditorKey::Character('G')).unwrap();
+    workspace.press(id, EditorKey::Control('o')).unwrap();
+    assert_eq!(workspace.text(id).unwrap(), text);
+    assert_eq!(workspace.revision(id).unwrap(), revision);
+}
+
+#[test]
 fn current_scope_includes_visual_char_endpoint() {
     let (mut workspace, id) = normal_fixture("SELECT 1; SELECT 2;");
     press_keys(&mut workspace, id, "v7l");
@@ -1717,6 +1743,21 @@ fn prompt_search_supports_backward_repeat_and_abort() {
             .prompt
             .is_none()
     );
+}
+
+#[test]
+fn search_positions_share_the_jump_list_with_vim_motions() {
+    let (mut workspace, id) = normal_fixture("one\ntwo\none");
+    workspace.press(id, EditorKey::Character('G')).unwrap();
+    workspace.press(id, EditorKey::Character('/')).unwrap();
+    press_keys(&mut workspace, id, "one");
+    workspace.press(id, EditorKey::Enter).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 0);
+
+    workspace.press(id, EditorKey::Control('o')).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 2);
+    workspace.press(id, EditorKey::Control('i')).unwrap();
+    assert_eq!(workspace.position(id).unwrap().line, 0);
 }
 
 #[test]

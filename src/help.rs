@@ -337,6 +337,7 @@ pub enum HelpShortcutId {
     EditorNormal,
     EditorUndo,
     EditorRedo,
+    EditorJumpList,
     EditorRun,
     EditorRunInsert,
     EditorFormat,
@@ -1292,6 +1293,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(EditorUndo, [EditorNormal], "u", "undo"),
     row!(EditorRedo, [EditorNormal], "Ctrl-r", "redo"),
+    row!(
+        EditorJumpList,
+        [EditorNormal],
+        "Ctrl-o / Ctrl-i (Tab)",
+        "jump to the previous / next saved editor position"
+    ),
     row!(
         EditorRun,
         [EditorNormal, EditorVisual],

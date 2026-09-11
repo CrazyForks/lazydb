@@ -26,8 +26,10 @@ fn full_line_width(text: &str) -> usize {
 }
 
 mod indent;
+mod jump_history;
 mod prompt;
 mod substitute;
+use jump_history::{JumpHistory, remap_text_position};
 use prompt::PromptSession;
 use substitute::{LineRange, SubstitutionPlan};
 
@@ -191,6 +193,7 @@ struct EditorSession {
     position: EditorPosition,
     revision: u64,
     history: EditorHistory,
+    jump_history: JumpHistory,
     capability: EditorSessionCapability,
     pending_tail_scroll: bool,
 }
@@ -376,6 +379,7 @@ impl EditorWorkspace {
                 position: EditorPosition { line: 0, column: 0 },
                 revision: 0,
                 history: EditorHistory::default(),
+                jump_history: JumpHistory::default(),
                 capability,
                 pending_tail_scroll: false,
             },
@@ -704,6 +708,18 @@ impl EditorWorkspace {
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
+        let old_text = {
+            let buffer = session
+                .buffer
+                .read()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+            decode_editor_text(&buffer.get_text())?
+        };
+        if old_text != text {
+            session
+                .jump_history
+                .remap(|position| remap_text_position(&old_text, text, position));
+        }
         let mut buffer = session
             .buffer
             .write()
@@ -1448,6 +1464,7 @@ impl EditorWorkspace {
             .write()
             .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
         buffer.set_text(encode_editor_text(text));
+        session.jump_history.clear();
         session.keys.reset_mode();
         session.position = EditorPosition { line: 0, column: 0 };
         session.viewport = Default::default();
@@ -1471,12 +1488,24 @@ impl EditorWorkspace {
             return Err(EditorError::Operation("session is editable".into()));
         }
         let encoded = encode_editor_text(text);
+        let old_text = {
+            let buffer = session
+                .buffer
+                .read()
+                .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
+            decode_editor_text(&buffer.get_text())?
+        };
         let mut buffer = session
             .buffer
             .write()
             .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
         if buffer.get_text() != encoded {
             buffer.set_text(encoded);
+            if old_text != text {
+                session
+                    .jump_history
+                    .remap(|position| remap_text_position(&old_text, text, position));
+            }
             session.revision = session.revision.saturating_add(1);
         }
         let line_count = text.matches('\n').count();
@@ -2138,8 +2167,29 @@ impl EditorWorkspace {
     ) -> Result<(), EditorError> {
         use modalkit::actions::Action;
         use modalkit::editing::context::Resolve;
-        use modalkit::prelude::{Axis, MoveDir2D, ScrollSize, ScrollStyle};
+        use modalkit::prelude::{
+            Axis, MoveDir1D, MoveDir2D, PositionList, ScrollSize, ScrollStyle,
+        };
         match action {
+            Action::Jump(PositionList::JumpList, direction, count) => {
+                let count = context.resolve(&count);
+                let current = self.position(id)?;
+                let target = {
+                    let session = self
+                        .sessions
+                        .get_mut(&id)
+                        .ok_or(EditorError::MissingSession(id))?;
+                    match direction {
+                        MoveDir1D::Previous => session.jump_history.backward(current, count),
+                        MoveDir1D::Next => session.jump_history.forward(count),
+                    }
+                };
+                if let Some(target) = target {
+                    let target = self.mouse_position(id, target)?;
+                    self.set_keyboard_cursor(id, target)?;
+                    self.ensure_cursor_visible_at(id, target, false)?;
+                }
+            }
             Action::Editor(editor_action) => {
                 let session = self
                     .sessions
@@ -2163,6 +2213,22 @@ impl EditorWorkspace {
                     self.indent_target(id, target, increase, count)?;
                     return Ok(());
                 }
+                let record_jump = matches!(
+                    &editor_action,
+                    modalkit::actions::EditorAction::Edit(operation, target)
+                        if matches!(target, modalkit::prelude::EditTarget::Motion(..))
+                            && target.is_jumping()
+                            && matches!(
+                                context.resolve(operation),
+                                modalkit::actions::EditAction::Motion
+                            )
+                            && mode_from_key_manager(&session.keys) == EditorMode::Normal
+                );
+                let before_position = if record_jump {
+                    Some(self.position(id)?)
+                } else {
+                    None
+                };
                 let context = if matches!(
                     &editor_action,
                     modalkit::actions::EditorAction::Edit(operation, target)
@@ -2187,6 +2253,17 @@ impl EditorWorkspace {
                 buffer
                     .editor_command(&editor_action, &ctx, &mut self.store)
                     .map_err(|error| EditorError::Operation(error.to_string()))?;
+                drop(buffer);
+                if let Some(before_position) = before_position {
+                    let after_position = self.position(id)?;
+                    if after_position != before_position {
+                        self.sessions
+                            .get_mut(&id)
+                            .ok_or(EditorError::MissingSession(id))?
+                            .jump_history
+                            .record_jump(before_position);
+                    }
+                }
             }
             Action::Application(ApplicationAction::Effect(effect)) => {
                 if self
@@ -2577,6 +2654,7 @@ impl EditorWorkspace {
                 },
             )
         };
+        let before_position = byte_to_char_position(&text, cursor);
         let found = if backward {
             text[..cursor]
                 .rfind(pattern)
@@ -2613,6 +2691,13 @@ impl EditorWorkspace {
                 );
             session.position
         };
+        if position != before_position {
+            self.sessions
+                .get_mut(&id)
+                .ok_or(EditorError::MissingSession(id))?
+                .jump_history
+                .record_jump(before_position);
+        }
         self.ensure_cursor_visible_at(id, position, true)?;
         Ok(true)
     }
