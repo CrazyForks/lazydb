@@ -23,6 +23,52 @@ use uuid::Uuid;
 const ATTACHED_ALIAS: &str = "ArchiveCase";
 
 #[tokio::test]
+async fn relation_reads_use_request_scope_without_reconnecting() {
+    let mut imported = import_connection_url("sqlite://:memory:", Some("request-scope")).unwrap();
+    imported.profile.catalog_scope = CatalogScope::for_profile(
+        lazydb::profile::DatabaseKind::Sqlite,
+        ":memory:",
+        Some("other"),
+    );
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    database
+        .execute("CREATE TABLE main.request_scope (id INTEGER PRIMARY KEY, label TEXT);")
+        .await
+        .unwrap();
+
+    let relation = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        [":memory:", "main", "request_scope"],
+    );
+    let scope = CatalogScope::for_profile(
+        lazydb::profile::DatabaseKind::Sqlite,
+        ":memory:",
+        Some("main"),
+    );
+    let preview = database
+        .preview_relation_with_scope(
+            &relation,
+            &scope,
+            &Default::default(),
+            PageRequest::first(PageSize::Ten),
+        )
+        .await
+        .unwrap();
+    assert!(preview.sql.contains("main"));
+
+    let ddl = database
+        .relation_ddl_with_scope(&relation, &scope)
+        .await
+        .unwrap();
+    assert!(ddl.sql.contains("request_scope"));
+    database.close().await;
+}
+
+#[tokio::test]
 async fn relation_preview_preserves_metadata_limits_quotes_and_rejects_forged_ids() {
     let imported = import_connection_url("sqlite://:memory:", Some("relation-preview")).unwrap();
     let profile_id = imported.profile.id;

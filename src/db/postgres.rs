@@ -329,6 +329,37 @@ struct PgSearchCandidate {
 }
 
 impl PostgresAdapter {
+    pub async fn preview_relation_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &CatalogScope,
+        options: &crate::model::relation::RelationPreviewOptions,
+        page: crate::model::pagination::PageRequest,
+    ) -> Result<crate::db::RelationPreview, DatabaseError> {
+        let mut adapter = self.clone();
+        adapter.catalog_scope = scope.clone();
+        adapter.preview_relation(relation, options, page).await
+    }
+
+    pub async fn relation_ddl_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &CatalogScope,
+    ) -> Result<RelationDdl, DatabaseError> {
+        let mut adapter = self.clone();
+        adapter.catalog_scope = scope.clone();
+        adapter.relation_ddl(relation).await
+    }
+
+    pub async fn resolve_relation_identity_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &CatalogScope,
+    ) -> Result<Option<CatalogEntry>, DatabaseError> {
+        let mut adapter = self.clone();
+        adapter.catalog_scope = scope.clone();
+        adapter.resolve_relation_identity(relation).await
+    }
     pub const OWNER_CONTEXT_SQL: &str = r#"
         SELECT
             role.rolname AS name,

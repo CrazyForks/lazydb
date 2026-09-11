@@ -468,6 +468,21 @@ impl DatabaseConnection {
         }
     }
 
+    pub async fn resolve_relation_identity_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &crate::profile::CatalogScope,
+    ) -> Result<Option<catalog::CatalogEntry>, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => {
+                adapter
+                    .resolve_relation_identity_with_scope(relation, scope)
+                    .await
+            }
+            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+        }
+    }
+
     pub async fn load_catalog_object_definition(
         &self,
         request: &CatalogObjectDefinitionRequest,
@@ -535,12 +550,56 @@ impl DatabaseConnection {
         }
     }
 
+    pub async fn preview_relation_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &crate::profile::CatalogScope,
+        options: &crate::model::relation::RelationPreviewOptions,
+        page: crate::model::pagination::PageRequest,
+    ) -> Result<RelationPreview, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => {
+                adapter
+                    .preview_relation_with_scope(relation, scope, options, page)
+                    .await
+            }
+            Self::MySql(adapter) => {
+                adapter
+                    .preview_relation_with_scope(relation, scope, options, page)
+                    .await
+            }
+            Self::Sqlite(adapter) => {
+                adapter
+                    .preview_relation_with_scope(relation, scope, options, page)
+                    .await
+            }
+            Self::SqlServer(adapter) => {
+                adapter
+                    .preview_relation_with_scope(relation, scope, options, page)
+                    .await
+            }
+        }
+    }
+
     pub async fn relation_ddl(&self, relation: &CatalogId) -> Result<RelationDdl, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.relation_ddl(relation).await,
             Self::MySql(adapter) => adapter.relation_ddl(relation).await,
             Self::Sqlite(adapter) => adapter.relation_ddl(relation).await,
             Self::SqlServer(adapter) => adapter.relation_ddl(relation).await,
+        }
+    }
+
+    pub async fn relation_ddl_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &crate::profile::CatalogScope,
+    ) -> Result<RelationDdl, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::MySql(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::Sqlite(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::SqlServer(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
         }
     }
 
