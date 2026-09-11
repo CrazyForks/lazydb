@@ -4652,17 +4652,15 @@ mod tests {
         assert!(!leader.contains(&HelpShortcutId::ToggleTransaction));
         assert!(!leader.contains(&HelpShortcutId::TransactionControl));
         assert!(leader.contains(&HelpShortcutId::FocusExplorerLeader));
-        assert!(
-            prefix_shortcuts(
-                ShortcutContext::EditorNormal,
-                ShortcutCapabilities {
-                    active_sql_console: true,
-                    ..ShortcutCapabilities::default()
-                },
-                ShortcutPrefix::Leader,
-            )
-            .is_empty()
+        let editor_leader_prefix = prefix_ids(
+            ShortcutContext::EditorNormal,
+            ShortcutCapabilities {
+                active_sql_console: true,
+                ..ShortcutCapabilities::default()
+            },
+            ShortcutPrefix::Leader,
         );
+        assert!(editor_leader_prefix.contains(&HelpShortcutId::OpenSqlEditors));
         let editor_leader = prefix_ids(
             ShortcutContext::EditorNormal,
             ShortcutCapabilities::default(),

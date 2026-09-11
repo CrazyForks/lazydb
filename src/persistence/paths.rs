@@ -77,13 +77,21 @@ fn explicit_config_dir() -> Option<PathBuf> {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn legacy_candidates(home: &Path) -> Vec<PathBuf> {
-    let mut candidates = vec![
-        home.join(".config/lazydb"),
-        home.join(".local/share/lazydb"),
-    ];
     #[cfg(target_os = "macos")]
-    candidates.push(home.join("Library/Application Support/dev.lazydb.lazydb"));
-    candidates
+    {
+        vec![
+            home.join(".config/lazydb"),
+            home.join(".local/share/lazydb"),
+            home.join("Library/Application Support/dev.lazydb.lazydb"),
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            home.join(".config/lazydb"),
+            home.join(".local/share/lazydb"),
+        ]
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
