@@ -1,12 +1,11 @@
 use uuid::Uuid;
 
-use super::{execution_target::ExecutionTarget, text_input::TextInput};
+use super::execution_target::ExecutionTarget;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseSelectorState {
     pub connection: super::workspace::ConnectionIdentity,
     pub candidates: Vec<ExecutionTarget>,
-    pub search: TextInput,
     pub selected: usize,
     pub current_database: String,
 }
@@ -24,21 +23,9 @@ impl DatabaseSelectorState {
         Self {
             connection,
             candidates,
-            search: TextInput::default(),
             selected,
             current_database: current_database.to_owned(),
         }
-    }
-
-    pub fn filtered_candidates(&self) -> Vec<(usize, &ExecutionTarget)> {
-        let query = self.search.value().to_ascii_lowercase();
-        self.candidates
-            .iter()
-            .enumerate()
-            .filter(|(_, candidate)| {
-                query.is_empty() || candidate.database.to_ascii_lowercase().contains(&query)
-            })
-            .collect()
     }
 
     pub fn selected_target(&self) -> Option<&ExecutionTarget> {
@@ -51,6 +38,7 @@ impl DatabaseSelectorState {
             .map(|target| target.database.clone())
             .unwrap_or_default();
         self.candidates = candidates;
+        self.current_database = current_database.to_owned();
         self.selected = self
             .candidates
             .iter()
@@ -64,24 +52,18 @@ impl DatabaseSelectorState {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let candidates = self.filtered_candidates();
-        if candidates.is_empty() {
+        if self.candidates.is_empty() {
             return;
         }
-        let current = candidates
-            .iter()
-            .position(|(index, _)| *index == self.selected)
-            .unwrap_or(0);
-        let next = (current as isize + delta).rem_euclid(candidates.len() as isize) as usize;
-        self.selected = candidates[next].0;
+        self.selected =
+            (self.selected as isize + delta).rem_euclid(self.candidates.len() as isize) as usize;
     }
 
-    pub fn select_filtered(&mut self, index: usize) -> bool {
-        let filtered = self.filtered_candidates();
-        let Some((candidate, _)) = filtered.get(index) else {
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.candidates.len() {
             return false;
-        };
-        self.selected = *candidate;
+        }
+        self.selected = index;
         true
     }
 
@@ -118,21 +100,6 @@ mod tests {
     }
 
     #[test]
-    fn filters_database_names_without_changing_source_candidates() {
-        let mut state = state();
-        state.search.set("LOG");
-        assert_eq!(
-            state
-                .filtered_candidates()
-                .into_iter()
-                .map(|(_, target)| target.database.as_str())
-                .collect::<Vec<_>>(),
-            vec!["moss_log"]
-        );
-        assert_eq!(state.candidates.len(), 3);
-    }
-
-    #[test]
     fn selection_stays_on_current_database() {
         let state = state();
         assert_eq!(state.selected, 0);
@@ -140,10 +107,9 @@ mod tests {
     }
 
     #[test]
-    fn filtered_selection_uses_source_identity() {
+    fn selection_uses_source_identity() {
         let mut state = state();
-        state.search.set("post");
-        assert!(state.select_filtered(0));
+        assert!(state.select(2));
         assert_eq!(
             state
                 .selected_target()

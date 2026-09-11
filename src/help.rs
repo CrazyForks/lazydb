@@ -56,6 +56,7 @@ pub enum ShortcutContext {
     TransactionExitConfirmation,
     ClearTransactionOutcomeConfirmation,
     TargetSelector,
+    DatabaseSelector,
     DeleteConsoleConfirmation,
     PageSizeSelector,
     CatalogDropConfirmation,
@@ -105,6 +106,7 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::TransactionExitConfirmation,
     ShortcutContext::ClearTransactionOutcomeConfirmation,
     ShortcutContext::TargetSelector,
+    ShortcutContext::DatabaseSelector,
     ShortcutContext::DeleteConsoleConfirmation,
     ShortcutContext::PageSizeSelector,
     ShortcutContext::CatalogDropConfirmation,
@@ -195,7 +197,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 }
                 Overlay::TransactionMenu { .. } => ShortcutContext::Message,
                 Overlay::TargetSelector { .. } => ShortcutContext::TargetSelector,
-                Overlay::DatabaseSelector(_) => ShortcutContext::TargetSelector,
+                Overlay::DatabaseSelector(_) => ShortcutContext::DatabaseSelector,
                 Overlay::DeleteConsole { .. } => ShortcutContext::DeleteConsoleConfirmation,
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
@@ -466,6 +468,9 @@ pub enum HelpShortcutId {
     TargetMove,
     TargetConfirm,
     TargetCancel,
+    DatabaseMove,
+    DatabaseConfirm,
+    DatabaseCancel,
     DeleteConsoleConfirm,
     DeleteConsoleCancel,
     PageSizeMove,
@@ -553,6 +558,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | TransactionChoices
         | ClearOutcomeConfirm
         | TargetMove
+        | DatabaseMove
         | DeleteConsoleConfirm
         | RelationEditApply
         | RelationVisualMove
@@ -589,6 +595,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | TransactionCancel
         | ClearOutcomeCancel
         | TargetConfirm
+        | DatabaseConfirm
         | DeleteConsoleCancel
         | RelationEditCancel
         | RelationVisualYank
@@ -613,7 +620,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | RecordEnds | DataQueryCancel | ProfileFormSave | ProfileScopeRefresh
         | ConsoleManagerCreate | HelpExecute | ProfileAccessClose | ExecutionToggle
         | ManualCancelToggle | TransactionToggle | ClearOutcomeToggle | TargetCancel
-        | RelationEditText | RelationVisualDelete => 3,
+        | DatabaseCancel | RelationEditText | RelationVisualDelete => 3,
         RelationEditSetNull | RelationEditRestoreDefault | RelationEditUseValue => 3,
         ExplorerExpand
         | EditorCopyStatement
@@ -2411,20 +2418,35 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         display
     ),
     row!(
-        TargetMove,
+        DatabaseMove,
         [TargetSelector],
         "j/k",
         "move target selection",
         display
     ),
     row!(
-        TargetConfirm,
+        DatabaseConfirm,
         [TargetSelector],
         "Enter",
         "choose target",
         display
     ),
     row!(TargetCancel, [TargetSelector], "Esc", "cancel", display),
+    row!(
+        TargetMove,
+        [DatabaseSelector],
+        "j/k, Up/Down, Tab",
+        "move database selection",
+        display
+    ),
+    row!(
+        TargetConfirm,
+        [DatabaseSelector],
+        "Enter",
+        "switch database",
+        display
+    ),
+    row!(DatabaseCancel, [DatabaseSelector], "Esc", "cancel", display),
     row!(
         DeleteConsoleConfirm,
         [DeleteConsoleConfirmation],
@@ -3244,6 +3266,7 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         ShortcutContext::TransactionExitConfirmation => "TRANSACTION",
         ShortcutContext::ClearTransactionOutcomeConfirmation => "TRANSACTION OUTCOME",
         ShortcutContext::TargetSelector => "TARGET SELECTOR",
+        ShortcutContext::DatabaseSelector => "DATABASE SELECTOR",
         ShortcutContext::DeleteConsoleConfirmation => "DELETE CONSOLE",
         ShortcutContext::PageSizeSelector => "PAGE SIZE",
         ShortcutContext::CatalogDropConfirmation => "CATALOG DROP",

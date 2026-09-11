@@ -578,14 +578,12 @@ impl Keymap {
             return match event.code {
                 KeyCode::Enter => Some(Action::ConfirmDatabaseSelector),
                 KeyCode::Esc => Some(Action::CancelDatabaseSelector),
-                KeyCode::Down => Some(Action::MoveDatabaseSelector(1)),
-                KeyCode::Up => Some(Action::MoveDatabaseSelector(-1)),
-                KeyCode::Backspace => Some(Action::EditDatabaseSelector(
-                    crate::model::text_input::TextInputEdit::Backspace,
-                )),
-                KeyCode::Char(character) => Some(Action::EditDatabaseSelector(
-                    crate::model::text_input::TextInputEdit::Insert(character),
-                )),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    Some(Action::MoveDatabaseSelector(1))
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                    Some(Action::MoveDatabaseSelector(-1))
+                }
                 _ => None,
             };
         }

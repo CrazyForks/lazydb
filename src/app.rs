@@ -2391,11 +2391,6 @@ impl App {
                     | Action::MoveTargetSelector(_)
                     | Action::ConfirmTargetSelector
                     | Action::CancelTargetSelector
-                    | Action::MoveDatabaseSelector(_)
-                    | Action::SelectDatabaseSelector(_)
-                    | Action::EditDatabaseSelector(_)
-                    | Action::ConfirmDatabaseSelector
-                    | Action::CancelDatabaseSelector
                     | Action::ConfirmClearTransactionOutcome
                     | Action::CancelClearTransactionOutcome
                     | Action::OpenSqlEditorList
@@ -2609,11 +2604,6 @@ impl App {
                             search.query.begin_selection(cursor);
                         }
                     }
-                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
-                        if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
-                            selector.search.begin_selection(cursor);
-                        }
-                    }
                 }
                 Vec::new()
             }
@@ -2772,11 +2762,6 @@ impl App {
                     crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
                         if let Some(search) = self.explorer.search.as_mut() {
                             search.query.extend_selection(cursor);
-                        }
-                    }
-                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
-                        if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
-                            selector.search.extend_selection(cursor);
                         }
                     }
                 }
@@ -3077,25 +3062,6 @@ impl App {
                             .search
                             .as_ref()
                             .and_then(|search| search.query.selected_text())
-                        {
-                            return vec![Command::WriteClipboard(ClipboardPayload {
-                                description: format!(
-                                    "Text selection: {} chars",
-                                    text.chars().count()
-                                ),
-                                text: text.to_owned(),
-                                sensitive: false,
-                            })];
-                        }
-                    }
-                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
-                        if let Some(text) =
-                            self.overlay.as_ref().and_then(|overlay| match overlay {
-                                Overlay::DatabaseSelector(selector) => {
-                                    selector.search.selected_text()
-                                }
-                                _ => None,
-                            })
                         {
                             return vec![Command::WriteClipboard(ClipboardPayload {
                                 description: format!(
@@ -7909,20 +7875,9 @@ impl App {
             }
             Action::SelectDatabaseSelector(index) => {
                 if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut()
-                    && selector.select_filtered(index)
+                    && selector.select(index)
                 {
                     return self.update(Action::ConfirmDatabaseSelector);
-                }
-                Vec::new()
-            }
-            Action::EditDatabaseSelector(edit) => {
-                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
-                    selector.search.apply(edit);
-                    selector.selected = selector
-                        .filtered_candidates()
-                        .first()
-                        .map(|(index, _)| *index)
-                        .unwrap_or(selector.selected);
                 }
                 Vec::new()
             }
@@ -7933,6 +7888,17 @@ impl App {
                 let Some(target) = selector.selected_target().cloned() else {
                     return Vec::new();
                 };
+                if Some(selector.connection) != self.connection.active_identity() {
+                    return Vec::new();
+                }
+                if self
+                    .connection
+                    .target
+                    .as_ref()
+                    .is_some_and(|current| current.database == target.database)
+                {
+                    return Vec::new();
+                }
                 if self.connection.pending_generation.is_some() {
                     self.notify_warning(
                         "Connection",
@@ -7970,15 +7936,6 @@ impl App {
                         self.overlay = Some(Overlay::DatabaseSelector(selector));
                         return Vec::new();
                     }
-                }
-                if Some(selector.connection) != self.connection.active_identity()
-                    || self
-                        .connection
-                        .target
-                        .as_ref()
-                        .is_some_and(|current| current.database == target.database)
-                {
-                    return Vec::new();
                 }
                 let commands = self.request_connection_target(target);
                 if !commands.is_empty() {
@@ -12225,7 +12182,7 @@ impl App {
             .execution_target_candidates(profile)
             .into_iter()
             .map(|target| target.database)
-            .collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>();
         if let Some(state) = self.explorer.normalized.profiles.get(&profile.id) {
             for database in state
                 .catalog
@@ -12234,9 +12191,7 @@ impl App {
                 .filter_map(|id| state.catalog.get(id))
                 .filter_map(|entry| entry.qualified_name.database.clone())
             {
-                if !databases.iter().any(|known| known == &database) {
-                    databases.push(database);
-                }
+                databases.insert(database);
             }
         }
         databases
@@ -13931,11 +13886,6 @@ impl App {
             crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
                 if let Some(search) = self.explorer.search.as_mut() {
                     search.query.clear_selection();
-                }
-            }
-            crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
-                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
-                    selector.search.clear_selection();
                 }
             }
         }
