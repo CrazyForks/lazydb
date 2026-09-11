@@ -63,6 +63,11 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || needs.plan.outputs.tag }}
       - run: rustup toolchain install 1.94.0 --profile minimal --no-self-update
       - run: rustup default 1.94.0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: release-quality
+          cache-targets: true
       - name: Distribution contracts
         run: sh scripts/release/test-distribution.sh
       - run: cargo fmt --all -- --check
@@ -70,7 +75,7 @@ jobs:
       - run: cargo test --all-targets --all-features
 
   build:
-    needs: [plan, quality]
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +99,11 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || needs.plan.outputs.tag }}
       - run: rustup toolchain install 1.94.0 --target "${{ matrix.target }}" --profile minimal --no-self-update
       - run: rustup default 1.94.0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          cache-targets: true
       - name: Build
         shell: bash
         run: cargo build --release --locked --target "${{ matrix.target }}"
@@ -142,7 +152,7 @@ jobs:
           if-no-files-found: error
 
   package:
-    needs: [plan, build]
+    needs: [plan, build, quality]
     if: needs.plan.outputs.channel == 'stable'
     runs-on: ubuntu-24.04
     steps:
@@ -171,8 +181,8 @@ jobs:
         with: { name: release-packages, path: dist/packages/*, if-no-files-found: error }
 
   publish:
-    needs: [plan, build, package]
-    if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && (needs.package.result == 'success' || needs.package.result == 'skipped')
+    needs: [plan, build, package, quality]
+    if: always() && needs.plan.result == 'success' && needs.quality.result == 'success' && needs.build.result == 'success' && (needs.package.result == 'success' || needs.package.result == 'skipped')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
