@@ -96,6 +96,7 @@ pub enum InputSelectionTarget {
     ProfileGroupName,
     ExplorerFind,
     ExplorerSearch,
+    DatabaseSelectorSearch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -490,6 +490,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 && (overlay != &Overlay::ProfileManager
                     && overlay != &Overlay::CatalogEditor
                     && !matches!(overlay, Overlay::TargetSelector { .. })
+                    && !matches!(overlay, Overlay::DatabaseSelector(_))
                     && !matches!(overlay, Overlay::TransactionMenu { .. })
                     && !matches!(overlay, Overlay::TransactionExitConfirm { .. })
                     && !matches!(overlay, Overlay::CatalogEditorDiscardConfirm { .. })
@@ -530,6 +531,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                             | HitTarget::CatalogOwnerChoice(_)
                             | HitTarget::TargetSelectorRow(_)
                             | HitTarget::TargetSelectorCancel
+                            | HitTarget::DatabaseSelectorRow(_)
+                            | HitTarget::HeaderDatabase
                             | HitTarget::EditorExecutionTarget
                             | HitTarget::EditorTransactionMenu
                             | HitTarget::TransactionMenuItem(_)
@@ -763,6 +766,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         ))
                     },
                 ),
+                HitTarget::HeaderDatabase => Some(Action::OpenDatabaseSelector),
                 HitTarget::ProfileField(field) => Some(Action::ProfileFocusField(field)),
                 HitTarget::ProfileDriver(kind) => Some(Action::ProfileSelectDriver(kind)),
                 HitTarget::ProfileToggle(field) => Some(Action::ProfileToggleField(field)),
@@ -813,6 +817,10 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::CatalogOwnerChoice(name) => Some(Action::CatalogOwnerPickerChoose(name)),
                 HitTarget::TargetSelectorRow(index) => Some(Action::SelectTargetSelector(index)),
                 HitTarget::TargetSelectorCancel => Some(Action::CancelTargetSelector),
+                HitTarget::DatabaseSelectorRow(index) => {
+                    Some(Action::SelectDatabaseSelector(index))
+                }
+                HitTarget::DatabaseSelectorSearch => None,
                 HitTarget::EditorExecutionTarget => Some(Action::OpenTargetSelector),
                 HitTarget::EditorTransactionMenu => Some(Action::ActivateEditorTransaction),
                 HitTarget::TransactionMenuItem(index) => Some(Action::SelectTransactionMenu(index)),
@@ -1053,6 +1061,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::UpdateCenter
         | HitTarget::UpdateButton { .. }
         | HitTarget::HeaderProfile
+        | HitTarget::HeaderDatabase
         | HitTarget::ProfileField(_)
         | HitTarget::ProfileDriver(_)
         | HitTarget::ProfileToggle(_)
@@ -1085,6 +1094,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::CatalogOwnerChoice(_) => None,
         HitTarget::TargetSelectorRow(_)
         | HitTarget::TargetSelectorCancel
+        | HitTarget::DatabaseSelectorRow(_)
+        | HitTarget::DatabaseSelectorSearch
         | HitTarget::EditorExecutionTarget
         | HitTarget::EditorTransactionMenu
         | HitTarget::TransactionMenuItem(_)

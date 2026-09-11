@@ -76,6 +76,7 @@ pub(crate) enum EditorEffect {
     SetDatabaseTarget(String),
     SetSchemaTarget(String),
     OpenTargetSelector,
+    OpenDatabaseSelector,
     Quit,
     Message(String),
     BackwardSearch,
@@ -2057,6 +2058,9 @@ impl EditorWorkspace {
                 }
                 (PendingBinding::Leader, 'd') => {
                     self.effects.push(EditorEffect::OpenTargetSelector)
+                }
+                (PendingBinding::Leader, 'D') => {
+                    self.effects.push(EditorEffect::OpenDatabaseSelector)
                 }
                 (PendingBinding::LeaderTransaction, 't') => {
                     self.effects.push(EditorEffect::ToggleTransaction)

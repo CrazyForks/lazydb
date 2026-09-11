@@ -195,6 +195,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 }
                 Overlay::TransactionMenu { .. } => ShortcutContext::Message,
                 Overlay::TargetSelector { .. } => ShortcutContext::TargetSelector,
+                Overlay::DatabaseSelector(_) => ShortcutContext::TargetSelector,
                 Overlay::DeleteConsole { .. } => ShortcutContext::DeleteConsoleConfirmation,
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
@@ -346,6 +347,7 @@ pub enum HelpShortcutId {
     ToggleTransaction,
     TransactionControl,
     OpenTargetSelector,
+    OpenDatabaseSelector,
     ResultsMoveLeft,
     ResultsMoveDown,
     ResultsMoveUp,
@@ -1352,6 +1354,21 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "choose and reconnect editor target",
         EditorLeader,
         "d"
+    ),
+    row!(
+        OpenDatabaseSelector,
+        [
+            Explorer,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDdl,
+            EditorNormal
+        ],
+        "Space D",
+        "choose and reconnect workspace database",
+        EditorLeader,
+        "D"
     ),
     row!(
         FocusExplorerLeader,
@@ -2828,6 +2845,7 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::RunSql => Some("run-leader-statement"),
         HelpShortcutId::RunAllSql => Some("run-leader-buffer"),
         HelpShortcutId::OpenTargetSelector => Some("open-target-selector"),
+        HelpShortcutId::OpenDatabaseSelector => Some("open-database-selector"),
         HelpShortcutId::NextTab => Some("next-tab"),
         HelpShortcutId::PreviousTab => Some("previous-tab"),
         HelpShortcutId::CloseTab => Some("close-tab"),
@@ -4618,6 +4636,7 @@ mod tests {
                 HelpShortcutId::ToggleTransaction,
                 HelpShortcutId::TransactionControl,
                 HelpShortcutId::OpenNotificationHistoryLeader,
+                HelpShortcutId::OpenDatabaseSelector,
             ]
         );
 

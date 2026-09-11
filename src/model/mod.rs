@@ -3,6 +3,7 @@ pub mod cell_editor;
 pub mod confirmation;
 pub mod dashboard;
 pub mod data_query;
+pub mod database_selector;
 pub mod editor;
 pub mod execution_target;
 pub mod explorer;
