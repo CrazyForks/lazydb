@@ -13,6 +13,7 @@ pub mod profiles;
 pub mod query_bar;
 pub mod record_view;
 pub mod relation;
+pub(crate) mod scrollbar;
 mod shortcut_hints;
 pub(crate) mod sql_preview;
 pub mod text_detail;
@@ -146,8 +147,19 @@ pub enum HitTarget {
         vertical: bool,
         track_start: u16,
         track_length: u16,
+        thumb_start: u16,
         thumb_length: u16,
         offset: usize,
+        max_offset: usize,
+    },
+    ExplorerScrollbarPage {
+        offset: usize,
+    },
+    ExplorerScrollbarThumb {
+        track_start: u16,
+        track_length: u16,
+        thumb_start: u16,
+        thumb_length: u16,
         max_offset: usize,
     },
     HeaderProfile,
@@ -272,6 +284,7 @@ pub struct UiState {
     pub relation_resize: RefCell<Option<(usize, u16, u16)>>,
     pub grid_scrollbar_drag: RefCell<Option<GridScrollbarDrag>>,
     pub editor_scrollbar_drag: RefCell<Option<EditorScrollbarDrag>>,
+    pub explorer_scrollbar_drag: RefCell<Option<ExplorerScrollbarDrag>>,
     pub pane_resize_drag: RefCell<Option<PaneResizeDrag>>,
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
@@ -328,6 +341,15 @@ pub struct EditorScrollbarDrag {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExplorerScrollbarDrag {
+    pub track_start: u16,
+    pub track_length: u16,
+    pub thumb_length: u16,
+    pub pointer_offset: u16,
+    pub max_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PaneResizeDrag {
     pub split: PaneSplit,
     pub start_pointer: u16,
@@ -376,6 +398,7 @@ impl UiState {
             relation_resize: RefCell::new(None),
             grid_scrollbar_drag: RefCell::new(None),
             editor_scrollbar_drag: RefCell::new(None),
+            explorer_scrollbar_drag: RefCell::new(None),
             pane_resize_drag: RefCell::new(None),
             mouse_gesture: RefCell::new(None),
             text_gesture: RefCell::new(None),
@@ -2181,6 +2204,83 @@ fn render_explorer(
         List::new(items).style(Style::new().bg(theme.surface)),
         inner,
     );
+    render_explorer_scrollbar(frame, inner, app, theme, state);
+}
+
+fn render_explorer_scrollbar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    theme: Theme,
+    state: &mut UiState,
+) {
+    let rows = if app.explorer.search.is_some() {
+        app.explorer.visible_search().len()
+    } else {
+        app.explorer.visible().len()
+    };
+    let visible = area.height as usize;
+    let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
+    let offset = app
+        .explorer
+        .search
+        .as_ref()
+        .map_or(app.explorer.normalized.scroll, |search| search.scroll);
+    let Some(geometry) = crate::ui::scrollbar::geometry(track, visible, rows, offset) else {
+        return;
+    };
+    let thumb_y = geometry.thumb_area().y;
+    let before = geometry.thumb_start;
+    let after = geometry
+        .rail
+        .height
+        .saturating_sub(before)
+        .saturating_sub(geometry.thumb_length);
+    let mut lines = Vec::with_capacity(track.height as usize);
+    lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+    lines.extend((0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.extend(
+        (0..geometry.thumb_length)
+            .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+    );
+    lines.extend((0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme.surface)),
+        track,
+    );
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(track.x, track.y.saturating_add(1), 1, before),
+        target: HitTarget::ExplorerScrollbarPage {
+            offset: app.explorer.normalized.scroll.saturating_sub(visible),
+        },
+    });
+    state.hit_regions.push(HitRegion {
+        area: geometry.thumb_area(),
+        target: HitTarget::ExplorerScrollbarThumb {
+            track_start: geometry.rail.y,
+            track_length: geometry.rail.height,
+            thumb_start: thumb_y,
+            thumb_length: geometry.thumb_length,
+            max_offset: geometry.max_offset,
+        },
+    });
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            track.x,
+            thumb_y.saturating_add(geometry.thumb_length),
+            1,
+            after,
+        ),
+        target: HitTarget::ExplorerScrollbarPage {
+            offset: app
+                .explorer
+                .normalized
+                .scroll
+                .saturating_add(visible)
+                .min(geometry.max_offset),
+        },
+    });
 }
 
 fn register_explorer_row_hits(state: &mut UiState, area: Rect, visible: &VisibleCatalogNode) {
@@ -2413,6 +2513,7 @@ fn render_explorer_find(
         List::new(items).style(Style::new().bg(theme.surface)),
         tree_area,
     );
+    render_explorer_scrollbar(frame, tree_area, app, theme, state);
     if area.height > 1 {
         let status = if find.phase == ExplorerSearchPhase::Editing {
             "Enter confirm  Esc cancel"
@@ -2579,6 +2680,7 @@ fn render_explorer_search(
                 result_height as u16,
             ),
         );
+        render_explorer_search_scrollbar(frame, area, app, search, theme, state, result_height);
     } else if result_height > 0 {
         let message = match &search.lifecycle {
             crate::model::workspace::ExplorerSearchLifecycle::Idle => {
@@ -2637,6 +2739,86 @@ fn render_explorer_search(
             Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
         );
     }
+}
+
+fn render_explorer_search_scrollbar(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    search: &crate::model::workspace::ExplorerSearchState,
+    theme: Theme,
+    state: &mut UiState,
+    visible: usize,
+) {
+    let rows = app.explorer.visible_search().len();
+    let track = Rect::new(
+        area.right().saturating_sub(1),
+        area.y.saturating_add(1),
+        1,
+        visible.min(u16::MAX as usize) as u16,
+    );
+    let Some(geometry) = crate::ui::scrollbar::geometry(track, visible, rows, search.scroll) else {
+        return;
+    };
+    render_explorer_scrollbar_parts(frame, track, geometry, theme, state, search.scroll, visible);
+}
+
+fn render_explorer_scrollbar_parts(
+    frame: &mut Frame<'_>,
+    track: Rect,
+    geometry: crate::ui::scrollbar::ScrollbarGeometry,
+    theme: Theme,
+    state: &mut UiState,
+    offset: usize,
+    page: usize,
+) {
+    let thumb_y = geometry.thumb_area().y;
+    let before = geometry.thumb_start;
+    let after = geometry
+        .rail
+        .height
+        .saturating_sub(before)
+        .saturating_sub(geometry.thumb_length);
+    let mut lines = Vec::with_capacity(track.height as usize);
+    lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+    lines.extend((0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.extend(
+        (0..geometry.thumb_length)
+            .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+    );
+    lines.extend((0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme.surface)),
+        track,
+    );
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(track.x, track.y.saturating_add(1), 1, before),
+        target: HitTarget::ExplorerScrollbarPage {
+            offset: offset.saturating_sub(page),
+        },
+    });
+    state.hit_regions.push(HitRegion {
+        area: geometry.thumb_area(),
+        target: HitTarget::ExplorerScrollbarThumb {
+            track_start: geometry.rail.y,
+            track_length: geometry.rail.height,
+            thumb_start: thumb_y,
+            thumb_length: geometry.thumb_length,
+            max_offset: geometry.max_offset,
+        },
+    });
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            track.x,
+            thumb_y.saturating_add(geometry.thumb_length),
+            1,
+            after,
+        ),
+        target: HitTarget::ExplorerScrollbarPage {
+            offset: offset.saturating_add(page).min(geometry.max_offset),
+        },
+    });
 }
 
 fn explorer_node_is_expanded(
@@ -3140,66 +3322,100 @@ pub(crate) fn render_editor_scrollbars(
             1,
             area.height.saturating_sub(2),
         );
-        let (thumb, offset) = scrollbar_geometry(
-            track.height,
+        let rail = crate::ui::scrollbar::geometry(
+            track,
             snapshot.viewport.height,
             snapshot.total_lines,
             snapshot.first_line,
         );
-        frame.render_widget(
-            Paragraph::new("│").style(Style::new().fg(theme.muted)),
-            track,
-        );
-        frame.render_widget(
-            Paragraph::new("█").style(Style::new().fg(theme.accent)),
-            Rect::new(track.x, track.y.saturating_add(offset), 1, thumb),
-        );
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(track.x, track.y, 1, offset),
-            target: HitTarget::EditorScrollbarPage {
-                session_id,
-                rows: -(snapshot.viewport.height.max(1) as isize),
-                columns: 0,
-            },
-        });
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(track.x, track.y.saturating_add(offset), 1, thumb),
-            target: HitTarget::EditorScrollbarThumb {
-                session_id,
-                vertical: true,
-                track_start: track.y,
-                track_length: track.height,
-                thumb_length: thumb,
-                offset: snapshot.first_line,
-                max_offset: vertical_max,
-            },
-        });
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
-                track.x,
-                track.y.saturating_add(offset + thumb),
-                1,
-                track.height.saturating_sub(offset + thumb),
-            ),
-            target: HitTarget::EditorScrollbarPage {
-                session_id,
-                rows: snapshot.viewport.height.max(1) as isize,
-                columns: 0,
-            },
-        });
+        if let Some(geometry) = rail {
+            let thumb_area = geometry.thumb_area();
+            let mut lines = Vec::with_capacity(track.height as usize);
+            lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+            lines.extend(
+                (0..geometry.thumb_start)
+                    .map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+            );
+            lines.extend(
+                (0..geometry.thumb_length)
+                    .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+            );
+            let after = geometry
+                .rail
+                .height
+                .saturating_sub(geometry.thumb_start)
+                .saturating_sub(geometry.thumb_length);
+            lines.extend(
+                (0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+            );
+            lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+            frame.render_widget(
+                Paragraph::new(lines).style(Style::new().bg(theme.surface)),
+                track,
+            );
+            let offset = geometry.thumb_start;
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(track.x, track.y.saturating_add(1), 1, offset),
+                target: HitTarget::EditorScrollbarPage {
+                    session_id,
+                    rows: -(snapshot.viewport.height.max(1) as isize),
+                    columns: 0,
+                },
+            });
+            state.hit_regions.push(HitRegion {
+                area: thumb_area,
+                target: HitTarget::EditorScrollbarThumb {
+                    session_id,
+                    vertical: true,
+                    track_start: geometry.rail.y,
+                    track_length: geometry.rail.height,
+                    thumb_start: thumb_area.y,
+                    thumb_length: geometry.thumb_length,
+                    offset: snapshot.first_line,
+                    max_offset: geometry.max_offset,
+                },
+            });
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(
+                    track.x,
+                    track.y.saturating_add(1 + offset + geometry.thumb_length),
+                    1,
+                    after,
+                ),
+                target: HitTarget::EditorScrollbarPage {
+                    session_id,
+                    rows: snapshot.viewport.height.max(1) as isize,
+                    columns: 0,
+                },
+            });
+        }
     }
 
     if horizontal_max > 0
         && let Some(track) = horizontal_track.filter(|track| track.width > 3)
     {
-        let (thumb, offset) = scrollbar_geometry(
-            track.width,
+        let Some(geometry) = crate::ui::scrollbar::geometry(
+            track,
             snapshot.viewport.width,
             snapshot.max_line_width,
             snapshot.horizontal_offset,
-        );
+        ) else {
+            return;
+        };
+        let thumb = geometry.thumb_length;
+        let offset = geometry.thumb_start;
         frame.render_widget(
-            Paragraph::new("─".repeat(track.width as usize)).style(Style::new().fg(theme.muted)),
+            Paragraph::new(Line::from(vec![
+                Span::styled("‹", Style::new().fg(theme.muted)),
+                Span::styled("─".repeat(offset as usize), Style::new().fg(theme.muted)),
+                Span::styled("━".repeat(thumb as usize), Style::new().fg(theme.accent)),
+                Span::styled(
+                    "─".repeat(geometry.rail.width.saturating_sub(offset + thumb) as usize),
+                    Style::new().fg(theme.muted),
+                ),
+                Span::styled("›", Style::new().fg(theme.muted)),
+            ]))
+            .style(Style::new().bg(theme.surface)),
             track,
         );
         frame.render_widget(
@@ -3219,8 +3435,9 @@ pub(crate) fn render_editor_scrollbars(
             target: HitTarget::EditorScrollbarThumb {
                 session_id,
                 vertical: false,
-                track_start: track.x,
-                track_length: track.width,
+                track_start: geometry.rail.x,
+                track_length: geometry.rail.width,
+                thumb_start: geometry.thumb_area().x,
                 thumb_length: thumb,
                 offset: snapshot.horizontal_offset,
                 max_offset: horizontal_max,
@@ -3230,7 +3447,7 @@ pub(crate) fn render_editor_scrollbars(
             area: Rect::new(
                 track.x.saturating_add(offset + thumb),
                 track.y,
-                track.width.saturating_sub(offset + thumb),
+                geometry.rail.width.saturating_sub(offset + thumb),
                 1,
             ),
             target: HitTarget::EditorScrollbarPage {
@@ -3239,33 +3456,6 @@ pub(crate) fn render_editor_scrollbars(
                 columns: snapshot.viewport.width.max(1) as isize,
             },
         });
-    }
-}
-
-fn scrollbar_geometry(track: u16, visible: usize, total: usize, offset: usize) -> (u16, u16) {
-    let rail = track.max(1);
-    let thumb = ((rail as usize * visible.max(1)) / total.max(1)).clamp(1, rail as usize) as u16;
-    let travel = rail.saturating_sub(thumb);
-    let max_offset = total.saturating_sub(visible.max(1));
-    let position = if max_offset == 0 {
-        0
-    } else {
-        ((travel as usize * offset.min(max_offset))
-            .checked_div(max_offset)
-            .unwrap_or_default()) as u16
-    };
-    (thumb, position)
-}
-
-#[cfg(test)]
-mod editor_scrollbar_tests {
-    use super::scrollbar_geometry;
-
-    #[test]
-    fn scrollbar_geometry_clamps_empty_and_end_positions() {
-        assert_eq!(scrollbar_geometry(10, 10, 10, 0), (10, 0));
-        assert_eq!(scrollbar_geometry(10, 2, 10, 100), (2, 8));
-        assert_eq!(scrollbar_geometry(0, 1, 10, 1), (1, 0));
     }
 }
 
@@ -3815,6 +4005,22 @@ fn render_output(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
                 .style(Style::new().bg(theme.surface))
                 .scroll((0, snapshot.horizontal_offset.min(u16::MAX as usize) as u16)),
             Rect::new(inner.x.saturating_add(3), y, viewport.width as u16, 1),
+        );
+    }
+    if let Some(session_id) = app.active_console_opt().map(|tab| tab.output_editor_id) {
+        render_editor_scrollbars(
+            frame,
+            inner,
+            Some(session_id),
+            &snapshot,
+            theme,
+            state,
+            Some(Rect::new(
+                inner.x.saturating_add(3),
+                inner.bottom().saturating_sub(1),
+                viewport.width as u16,
+                1,
+            )),
         );
     }
     if app.focus == Focus::Results

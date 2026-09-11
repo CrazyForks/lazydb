@@ -293,7 +293,6 @@ pub(crate) fn render(
             first,
             complete_visible,
             widths.len(),
-            last_page_start(&widths, available),
             number_width,
             theme,
             state,
@@ -708,7 +707,6 @@ fn render_scrollbar(
     first: usize,
     visible_column_count: usize,
     column_count: usize,
-    max_offset: usize,
     number_width: u16,
     theme: Theme,
     state: &mut UiState,
@@ -724,23 +722,23 @@ fn render_scrollbar(
     if track.width < 3 || column_count == 0 {
         return;
     }
-    let rail_width = track.width.saturating_sub(2);
-    let thumb_width = ((rail_width as usize * visible_column_count) / column_count)
-        .clamp(1, rail_width as usize) as u16;
-    let travel = rail_width.saturating_sub(thumb_width);
-    let thumb_offset = ((travel as usize * first)
-        .checked_div(max_offset)
-        .unwrap_or(0)) as u16;
-    let thumb_x = track.x.saturating_add(1).saturating_add(thumb_offset);
-    let before = thumb_x.saturating_sub(track.x.saturating_add(1));
-    let after = rail_width
+    let Some(geometry) =
+        super::scrollbar::geometry(track, visible_column_count, column_count, first)
+    else {
+        return;
+    };
+    let thumb_x = geometry.thumb_area().x;
+    let before = geometry.thumb_start;
+    let after = geometry
+        .rail
+        .width
         .saturating_sub(before)
-        .saturating_sub(thumb_width);
+        .saturating_sub(geometry.thumb_length);
     let line = Line::from(vec![
         Span::styled("‹", Style::new().fg(theme.muted)),
         Span::styled("─".repeat(before as usize), Style::new().fg(theme.muted)),
         Span::styled(
-            "━".repeat(thumb_width as usize),
+            "━".repeat(geometry.thumb_length as usize),
             Style::new().fg(theme.accent),
         ),
         Span::styled("─".repeat(after as usize), Style::new().fg(theme.muted)),
@@ -760,23 +758,23 @@ fn render_scrollbar(
         },
     });
     state.hit_regions.push(HitRegion {
-        area: Rect::new(thumb_x, track.y, thumb_width, 1),
+        area: geometry.thumb_area(),
         target: HitTarget::GridScrollbarThumb {
             axis: crate::ui::GridScrollAxis::Horizontal,
             track_start: track.x.saturating_add(1),
-            track_length: rail_width,
+            track_length: geometry.rail.width,
             thumb_start: thumb_x,
-            thumb_length: thumb_width,
+            thumb_length: geometry.thumb_length,
             offset: first,
-            max_offset,
+            max_offset: geometry.max_offset,
         },
     });
-    let after_x = thumb_x.saturating_add(thumb_width);
+    let after_x = thumb_x.saturating_add(geometry.thumb_length);
     state.hit_regions.push(HitRegion {
         area: Rect::new(after_x, track.y, track.right().saturating_sub(after_x), 1),
         target: HitTarget::GridScrollbarPage {
             axis: crate::ui::GridScrollAxis::Horizontal,
-            offset: first.saturating_add(page as usize).min(max_offset),
+            offset: first.saturating_add(page as usize).min(geometry.max_offset),
         },
     });
 }
@@ -799,26 +797,23 @@ fn render_vertical_scrollbar(
     if track.height < 3 || row_count == 0 {
         return;
     }
-
-    let rail_length = track.height.saturating_sub(2);
-    let thumb_length =
-        ((rail_length as usize * visible_rows) / row_count).clamp(1, rail_length as usize) as u16;
-    let max_offset = row_count.saturating_sub(visible_rows);
-    let travel = rail_length.saturating_sub(thumb_length);
-    let thumb_offset = ((travel as usize * offset)
-        .checked_div(max_offset)
-        .unwrap_or(0)) as u16;
-    let thumb_y = track.y.saturating_add(1).saturating_add(thumb_offset);
-    let before = thumb_y.saturating_sub(track.y.saturating_add(1));
-    let after = rail_length
+    let Some(geometry) = super::scrollbar::geometry(track, visible_rows, row_count, offset) else {
+        return;
+    };
+    let thumb_y = geometry.thumb_area().y;
+    let before = geometry.thumb_start;
+    let after = geometry
+        .rail
+        .height
         .saturating_sub(before)
-        .saturating_sub(thumb_length);
+        .saturating_sub(geometry.thumb_length);
 
     let mut lines = Vec::with_capacity(track.height as usize);
     lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
     lines.extend((0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
     lines.extend(
-        (0..thumb_length).map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+        (0..geometry.thumb_length)
+            .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
     );
     lines.extend((0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
     lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
@@ -836,18 +831,18 @@ fn render_vertical_scrollbar(
         },
     });
     state.hit_regions.push(HitRegion {
-        area: Rect::new(track.x, thumb_y, 1, thumb_length),
+        area: geometry.thumb_area(),
         target: HitTarget::GridScrollbarThumb {
             axis: GridScrollAxis::Vertical,
-            track_start: track.y.saturating_add(1),
-            track_length: rail_length,
+            track_start: geometry.rail.y,
+            track_length: geometry.rail.height,
             thumb_start: thumb_y,
-            thumb_length,
+            thumb_length: geometry.thumb_length,
             offset,
-            max_offset,
+            max_offset: geometry.max_offset,
         },
     });
-    let after_y = thumb_y.saturating_add(thumb_length);
+    let after_y = thumb_y.saturating_add(geometry.thumb_length);
     state.hit_regions.push(HitRegion {
         area: Rect::new(
             track.x,
@@ -857,7 +852,7 @@ fn render_vertical_scrollbar(
         ),
         target: HitTarget::GridScrollbarPage {
             axis: GridScrollAxis::Vertical,
-            offset: offset.saturating_add(page).min(max_offset),
+            offset: offset.saturating_add(page).min(geometry.max_offset),
         },
     });
 }

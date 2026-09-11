@@ -188,20 +188,35 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::ui::GridScrollAxis::Horizontal => event.column,
                     crate::ui::GridScrollAxis::Vertical => event.row,
                 };
-                let travel = drag.track_length.saturating_sub(drag.thumb_length);
-                let pointer = pointer_position
-                    .saturating_sub(drag.track_start)
-                    .saturating_sub(drag.pointer_offset)
-                    .min(travel);
-                let offset = if travel == 0 {
-                    0
-                } else {
-                    (pointer as usize * drag.max_offset + travel as usize / 2) / travel as usize
+                let rail = match drag.axis {
+                    crate::ui::GridScrollAxis::Horizontal => {
+                        ratatui::layout::Rect::new(drag.track_start, 0, drag.track_length, 1)
+                    }
+                    crate::ui::GridScrollAxis::Vertical => {
+                        ratatui::layout::Rect::new(0, drag.track_start, 1, drag.track_length)
+                    }
                 };
+                let offset = crate::ui::scrollbar::ScrollbarGeometry {
+                    rail,
+                    thumb_start: 0,
+                    thumb_length: drag.thumb_length,
+                    max_offset: drag.max_offset,
+                }
+                .offset_at(pointer_position, drag.pointer_offset);
                 return Some(match drag.axis {
                     crate::ui::GridScrollAxis::Horizontal => Action::GridSetColumnOffset { offset },
                     crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
                 });
+            }
+            if let Some(drag) = *ui.explorer_scrollbar_drag.borrow() {
+                let offset = crate::ui::scrollbar::ScrollbarGeometry {
+                    rail: ratatui::layout::Rect::new(0, drag.track_start, 1, drag.track_length),
+                    thumb_start: 0,
+                    thumb_length: drag.thumb_length,
+                    max_offset: drag.max_offset,
+                }
+                .offset_at(event.row, drag.pointer_offset);
+                return Some(Action::ExplorerSetScrollOffset(offset));
             }
             if let Some(drag) = *ui.editor_scrollbar_drag.borrow() {
                 let pointer_position = if drag.vertical {
@@ -209,20 +224,22 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 } else {
                     event.column
                 };
-                let pointer = pointer_position
-                    .saturating_sub(drag.track_start)
-                    .saturating_sub(drag.pointer_offset)
-                    .min(drag.track_length.saturating_sub(drag.thumb_length));
-                let travel = drag.track_length.saturating_sub(drag.thumb_length);
-                let offset = if travel == 0 {
-                    0
+                let rail = if drag.vertical {
+                    ratatui::layout::Rect::new(0, drag.track_start, 1, drag.track_length)
                 } else {
-                    (pointer as usize * drag.max_offset + travel as usize / 2) / travel as usize
+                    ratatui::layout::Rect::new(drag.track_start, 0, drag.track_length, 1)
                 };
-                return Some(Action::EditorSetScroll {
+                let offset = crate::ui::scrollbar::ScrollbarGeometry {
+                    rail,
+                    thumb_start: 0,
+                    thumb_length: drag.thumb_length,
+                    max_offset: drag.max_offset,
+                }
+                .offset_at(pointer_position, drag.pointer_offset);
+                return Some(Action::EditorSetScrollAxis {
                     session_id: drag.session_id,
-                    rows: if drag.vertical { offset as isize } else { 0 },
-                    columns: if drag.vertical { 0 } else { offset as isize },
+                    vertical: drag.vertical,
+                    offset,
                 });
             }
             let (column, start_width, start_x) = (*ui.relation_resize.borrow())?;
@@ -301,7 +318,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             let was_column_resize = ui.relation_resize.borrow_mut().take().is_some();
             let was_scrollbar_drag = ui.grid_scrollbar_drag.borrow_mut().take().is_some();
             let was_editor_scrollbar_drag = ui.editor_scrollbar_drag.borrow_mut().take().is_some();
-            if was_column_resize || was_scrollbar_drag || was_editor_scrollbar_drag {
+            let was_explorer_scrollbar_drag =
+                ui.explorer_scrollbar_drag.borrow_mut().take().is_some();
+            if was_column_resize
+                || was_scrollbar_drag
+                || was_editor_scrollbar_drag
+                || was_explorer_scrollbar_drag
+            {
                 ui.mouse_gesture.borrow_mut().take();
                 Some(Action::GridEndColumnResize)
             } else {
@@ -324,6 +347,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             ui.relation_resize.borrow_mut().take();
             ui.grid_scrollbar_drag.borrow_mut().take();
             ui.editor_scrollbar_drag.borrow_mut().take();
+            ui.explorer_scrollbar_drag.borrow_mut().take();
             ui.pane_resize_drag.borrow_mut().take();
             if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
                 if let Some(target) = ui.target_at(event.column, event.row).cloned() {
@@ -661,6 +685,36 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::ui::GridScrollAxis::Horizontal => Action::GridSetColumnOffset { offset },
                     crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
                 }),
+                HitTarget::ExplorerScrollbarPage { offset } => {
+                    Some(Action::ExplorerSetScrollOffset(offset))
+                }
+                HitTarget::ExplorerScrollbarThumb {
+                    track_start,
+                    track_length,
+                    thumb_start,
+                    thumb_length,
+                    max_offset,
+                } => {
+                    *ui.explorer_scrollbar_drag.borrow_mut() =
+                        Some(crate::ui::ExplorerScrollbarDrag {
+                            track_start,
+                            track_length,
+                            thumb_length,
+                            pointer_offset: event.row.saturating_sub(thumb_start),
+                            max_offset,
+                        });
+                    *ui.mouse_gesture.borrow_mut() =
+                        Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
+                    Some(Action::ExplorerSetScrollOffset(
+                        crate::ui::scrollbar::ScrollbarGeometry {
+                            rail: ratatui::layout::Rect::new(0, track_start, 1, track_length),
+                            thumb_start: 0,
+                            thumb_length,
+                            max_offset,
+                        }
+                        .offset_at(event.row, event.row.saturating_sub(thumb_start)),
+                    ))
+                }
                 HitTarget::EditorScrollbarPage {
                     session_id,
                     rows,
@@ -675,6 +729,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     vertical,
                     track_start,
                     track_length,
+                    thumb_start,
                     thumb_length,
                     offset,
                     max_offset,
@@ -686,18 +741,18 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         track_length,
                         thumb_length,
                         pointer_offset: if vertical {
-                            event.row.saturating_sub(track_start)
+                            event.row.saturating_sub(thumb_start)
                         } else {
-                            event.column.saturating_sub(track_start)
+                            event.column.saturating_sub(thumb_start)
                         },
                         max_offset,
                     });
                     *ui.mouse_gesture.borrow_mut() =
                         Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
-                    Some(Action::EditorSetScroll {
+                    Some(Action::EditorSetScrollAxis {
                         session_id,
-                        rows: if vertical { offset as isize } else { 0 },
-                        columns: if vertical { 0 } else { offset as isize },
+                        vertical,
+                        offset,
                     })
                 }
                 HitTarget::HeaderProfile => app.connection.profile_id.map_or(
@@ -838,6 +893,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     amount: ExplorerScrollAmount::Lines(3),
                 }),
                 Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, 3),
+                Focus::Results if is_output_focus(app) => output_scroll_action(app, 3, 0),
                 Focus::Results => Some(Action::GridScrollRows {
                     direction: 1,
                     amount: GridScrollAmount::Lines(3),
@@ -871,6 +927,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     amount: ExplorerScrollAmount::Lines(3),
                 }),
                 Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, -3),
+                Focus::Results if is_output_focus(app) => output_scroll_action(app, -3, 0),
                 Focus::Results => Some(Action::GridScrollRows {
                     direction: -1,
                     amount: GridScrollAmount::Lines(3),
@@ -889,6 +946,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 Focus::Results if is_relation_ddl_focus(app) => {
                     ddl_horizontal_scroll_action(app, -3)
                 }
+                Focus::Results if is_output_focus(app) => output_scroll_action(app, 0, -3),
                 Focus::Results => grid_horizontal_scroll_action(ui, false),
                 Focus::Editor => Some(Action::EditorScroll {
                     rows: 0,
@@ -905,6 +963,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 Focus::Results if is_relation_ddl_focus(app) => {
                     ddl_horizontal_scroll_action(app, 3)
                 }
+                Focus::Results if is_output_focus(app) => output_scroll_action(app, 0, 3),
                 Focus::Results => grid_horizontal_scroll_action(ui, true),
                 Focus::Editor => Some(Action::EditorScroll {
                     rows: 0,
@@ -973,6 +1032,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::RelationColumnResize { .. }
         | HitTarget::GridScrollbarThumb { .. }
         | HitTarget::GridScrollbarPage { .. } => Some(Focus::Results),
+        HitTarget::ExplorerScrollbarPage { .. } | HitTarget::ExplorerScrollbarThumb { .. } => {
+            Some(Focus::Explorer)
+        }
         HitTarget::EditorScrollbarPage { .. } | HitTarget::EditorScrollbarThumb { .. } => {
             Some(Focus::Editor)
         }
@@ -1061,6 +1123,24 @@ fn is_relation_ddl_focus(app: &App) -> bool {
             app.tabs.get(app.active_tab),
             Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Ddl
         )
+}
+
+fn is_output_focus(app: &App) -> bool {
+    app.focus == Focus::Results
+        && app.active_console_opt().is_some_and(|tab| {
+            matches!(
+                tab.result_view,
+                crate::model::tab::ResultView::Output | crate::model::tab::ResultView::Plan
+            )
+        })
+}
+
+fn output_scroll_action(app: &App, rows: isize, columns: isize) -> Option<Action> {
+    app.active_console_opt().map(|tab| Action::EditorScrollBy {
+        session_id: tab.output_editor_id,
+        rows,
+        columns,
+    })
 }
 
 fn ddl_scroll_action(app: &App, rows: isize) -> Option<Action> {

@@ -1269,6 +1269,28 @@ fn output_tail_viewport_sync_matches_snapshot_and_respects_manual_scroll() {
 }
 
 #[test]
+fn setting_one_scroll_axis_preserves_the_other_axis() {
+    let (mut workspace, id) = read_only_fixture(
+        "01234567890123456789\n01234567890123456789\n01234567890123456789\n01234567890123456789\n01234567890123456789",
+    );
+    let viewport = EditorViewport {
+        width: 5,
+        height: 2,
+    };
+    workspace.sync_output_viewport(id, viewport).unwrap();
+    workspace.set_scroll_offset(id, 2, 7).unwrap();
+    workspace.set_scroll_axis(id, true, 1).unwrap();
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 1);
+    assert_eq!(snapshot.horizontal_offset, 7);
+
+    workspace.set_scroll_axis(id, false, 3).unwrap();
+    let snapshot = workspace.render_snapshot(id, viewport).unwrap();
+    assert_eq!(snapshot.first_line, 1);
+    assert_eq!(snapshot.horizontal_offset, 3);
+}
+
+#[test]
 fn output_tail_request_survives_zero_size_viewport_sync() {
     let (mut workspace, id) = read_only_fixture("one");
     workspace

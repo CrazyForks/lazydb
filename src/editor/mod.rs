@@ -501,6 +501,30 @@ impl EditorWorkspace {
         Ok(())
     }
 
+    pub(crate) fn set_scroll_axis(
+        &mut self,
+        id: Uuid,
+        vertical: bool,
+        offset: usize,
+    ) -> Result<(), EditorError> {
+        let text = self.text(id)?;
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        let max_row = text
+            .split('\n')
+            .count()
+            .saturating_sub(session.viewport.get_height().max(1));
+        let max_column = full_line_width(&text).saturating_sub(session.viewport.get_width().max(1));
+        if vertical {
+            session.viewport.corner.set_y(offset.min(max_row));
+        } else {
+            session.viewport.corner.set_x(offset.min(max_column));
+        }
+        Ok(())
+    }
+
     pub(crate) fn text(&self, id: Uuid) -> Result<String, EditorError> {
         let session = self
             .sessions
