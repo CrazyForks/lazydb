@@ -386,11 +386,13 @@ pub enum CatalogScopeMode {
     Explicit,
 }
 
-pub const DRIVER_ORDER: [DatabaseKind; 4] = [
-    DatabaseKind::Postgres,
-    DatabaseKind::MySql,
-    DatabaseKind::SqlServer,
-    DatabaseKind::Sqlite,
+pub const DRIVER_ORDER: [DatabaseKind; 6] = [
+    crate::db::descriptor::DRIVERS[0].kind,
+    crate::db::descriptor::DRIVERS[1].kind,
+    crate::db::descriptor::DRIVERS[2].kind,
+    crate::db::descriptor::DRIVERS[3].kind,
+    crate::db::descriptor::DRIVERS[4].kind,
+    crate::db::descriptor::DRIVERS[5].kind,
 ];
 
 #[derive(Clone)]
@@ -617,7 +619,10 @@ impl ProfileDraft {
     pub fn new(kind: DatabaseKind) -> Self {
         let (host, port, schema, ssl_mode) = match kind {
             DatabaseKind::Postgres => ("localhost", "5432", "public", SslMode::Prefer),
-            DatabaseKind::MySql => ("localhost", "3306", "", SslMode::Prefer),
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
+                ("localhost", "3306", "", SslMode::Prefer)
+            }
+            DatabaseKind::Oracle => ("localhost", "1521", "", SslMode::Prefer),
             DatabaseKind::SqlServer => ("localhost", "1433", "dbo", SslMode::Prefer),
             DatabaseKind::Sqlite => ("", "", "main", SslMode::Disable),
         };
@@ -1067,6 +1072,8 @@ impl ProfileDraft {
             (DatabaseKind::SqlServer, _) => &POSTGRES_FIELDS,
             (DatabaseKind::Sqlite, false) => &SQLITE_FILE_FIELDS,
             (DatabaseKind::Sqlite, true) => &SQLITE_MEMORY_FIELDS,
+            (DatabaseKind::MariaDb, _) => &MYSQL_FIELDS,
+            (DatabaseKind::Oracle, _) => &POSTGRES_FIELDS,
         }
     }
 
@@ -1111,7 +1118,10 @@ impl ProfileDraft {
         }
 
         let (host, port, user, database, default_schema, sqlite_path, ssl_mode) = match self.kind {
-            DatabaseKind::Postgres | DatabaseKind::MySql | DatabaseKind::SqlServer => {
+            DatabaseKind::Postgres
+            | DatabaseKind::MySql
+            | DatabaseKind::MariaDb
+            | DatabaseKind::SqlServer => {
                 let host = required(&self.host, ProfileField::Host, "host is required")?;
                 let port = self.port.value().trim().parse::<u16>().map_err(|_| {
                     ProfileValidationError::new(
@@ -1139,6 +1149,35 @@ impl ProfileDraft {
                     matches!(self.kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
                         .then(|| optional(&self.schema))
                         .flatten(),
+                    None,
+                    self.ssl_mode,
+                )
+            }
+            DatabaseKind::Oracle => {
+                let host = required(&self.host, ProfileField::Host, "host is required")?;
+                let port = self.port.value().trim().parse::<u16>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    )
+                })?;
+                if port == 0 {
+                    return Err(ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    ));
+                }
+                let database = required(
+                    &self.database,
+                    ProfileField::Database,
+                    "service name is required",
+                )?;
+                (
+                    Some(host),
+                    Some(port),
+                    optional(&self.user),
+                    Some(database),
+                    None,
                     None,
                     self.ssl_mode,
                 )
@@ -1253,7 +1292,8 @@ impl ProfileDraft {
             DatabaseKind::Postgres | DatabaseKind::SqlServer => {
                 (self.database.value(), optional(&self.schema))
             }
-            DatabaseKind::MySql => (self.database.value(), None),
+            DatabaseKind::MySql | DatabaseKind::MariaDb => (self.database.value(), None),
+            DatabaseKind::Oracle => (self.database.value(), None),
             DatabaseKind::Sqlite => (
                 if self.sqlite_memory {
                     ":memory:"
@@ -1366,7 +1406,7 @@ impl ProfileDraft {
                     self.ssl_mode = SslMode::Prefer;
                 }
             }
-            DatabaseKind::MySql => {
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
                 }
@@ -1389,7 +1429,8 @@ impl ProfileDraft {
                 if self.port.value().trim().is_empty()
                     || matches!(
                         (previous, self.port.value()),
-                        (DatabaseKind::Postgres, "5432") | (DatabaseKind::MySql, "3306")
+                        (DatabaseKind::Postgres, "5432")
+                            | (DatabaseKind::MySql | DatabaseKind::MariaDb, "3306")
                     )
                 {
                     self.port.set("1433");
@@ -1405,6 +1446,27 @@ impl ProfileDraft {
                 }
             }
             DatabaseKind::Sqlite => self.ssl_mode = SslMode::Disable,
+            DatabaseKind::Oracle => {
+                if self.host.value().trim().is_empty() {
+                    self.host.set("localhost");
+                }
+                if self.port.value().trim().is_empty()
+                    || matches!(
+                        (previous, self.port.value()),
+                        (DatabaseKind::MySql | DatabaseKind::MariaDb, "3306")
+                            | (DatabaseKind::Postgres, "5432")
+                            | (DatabaseKind::SqlServer, "1433")
+                    )
+                {
+                    self.port.set("1521");
+                }
+                if self.schema.value() == "public" || self.schema.value() == "main" {
+                    self.schema.set("");
+                }
+                if previous == DatabaseKind::Sqlite && self.ssl_mode == SslMode::Disable {
+                    self.ssl_mode = SslMode::Prefer;
+                }
+            }
         }
         self.sync_derived_catalog_scope();
         self.refresh_url();
@@ -1431,7 +1493,10 @@ impl ProfileDraft {
 
     fn connection_profile_for_url(&self) -> Result<ConnectionProfile, ()> {
         let (host, port, user, database, default_schema, sqlite_path) = match self.kind {
-            DatabaseKind::Postgres | DatabaseKind::MySql | DatabaseKind::SqlServer => {
+            DatabaseKind::Postgres
+            | DatabaseKind::MySql
+            | DatabaseKind::MariaDb
+            | DatabaseKind::SqlServer => {
                 let host = optional(&self.host).ok_or(())?;
                 let port = self.port.value().trim().parse::<u16>().map_err(|_| ())?;
                 if port == 0 {
@@ -1448,6 +1513,14 @@ impl ProfileDraft {
                     None,
                 )
             }
+            DatabaseKind::Oracle => (
+                optional(&self.host),
+                self.port.value().trim().parse::<u16>().ok(),
+                optional(&self.user),
+                optional(&self.database),
+                None,
+                None,
+            ),
             DatabaseKind::Sqlite => {
                 let path = (!self.sqlite_memory)
                     .then(|| optional(&self.sqlite_path).map(PathBuf::from))
@@ -1799,7 +1872,7 @@ impl ProfileManagerState {
                 || self.scope_selected_row.as_deref() == Some(&format!("database:{database}"))
             {
                 let selected_schemas = selected_schema(&draft.catalog_scope, database);
-                if draft.kind == DatabaseKind::MySql {
+                if matches!(draft.kind, DatabaseKind::MySql | DatabaseKind::MariaDb) {
                     rows.push(ScopeRow {
                         id: format!("database:{database}:schema:{database}"),
                         name: database.to_owned(),
@@ -1835,7 +1908,10 @@ impl ProfileManagerState {
                         } else {
                             ScopeSelectionState::Unchecked
                         },
-                        read_only: draft.kind == DatabaseKind::MySql,
+                        read_only: matches!(
+                            draft.kind,
+                            DatabaseKind::MySql | DatabaseKind::MariaDb
+                        ),
                         unavailable: discovery.is_none_or(|result| {
                             result.as_ref().map_or(true, |items| {
                                 !items
@@ -2314,7 +2390,7 @@ fn toggle_scope(
         }
         return true;
     };
-    if kind == DatabaseKind::MySql {
+    if matches!(kind, DatabaseKind::MySql | DatabaseKind::MariaDb) {
         return false;
     }
     let discovered_schemas = discovered

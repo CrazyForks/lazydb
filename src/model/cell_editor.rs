@@ -1318,7 +1318,10 @@ pub(crate) fn classify_column_type(
             "datetimeoffset" => Some(CellEditorKind::Timestamp),
             _ => None,
         },
-        DatabaseKind::MySql | DatabaseKind::Sqlite => None,
+        DatabaseKind::MySql
+        | DatabaseKind::MariaDb
+        | DatabaseKind::Oracle
+        | DatabaseKind::Sqlite => None,
     }?;
 
     Some(ColumnEditorDescription { kind })

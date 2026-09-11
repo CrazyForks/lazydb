@@ -1,11 +1,15 @@
+pub mod capabilities;
 pub mod catalog;
 pub mod catalog_drop;
 pub mod catalog_mutation;
 pub(crate) mod ddl;
+pub mod descriptor;
 pub mod monitor;
 pub mod mssql;
 pub mod mutation;
 pub mod mysql;
+pub mod oracle;
+pub mod oracle_client;
 pub mod postgres;
 pub mod query;
 pub mod sqlite;
@@ -32,6 +36,7 @@ use self::{
     catalog_mutation::{CatalogObjectDefinition, CatalogObjectDefinitionRequest},
     mssql::MsSqlAdapter,
     mysql::MySqlAdapter,
+    oracle::OracleAdapter,
     postgres::PostgresAdapter,
     query::{QueryBudget, QueryOutcome},
     sqlite::SqliteAdapter,
@@ -246,6 +251,8 @@ fn format_postgres_severity(severity: sqlx::postgres::PgSeverity) -> String {
 pub enum DatabaseConnection {
     Postgres(PostgresAdapter),
     MySql(MySqlAdapter),
+    MariaDb(MySqlAdapter),
+    Oracle(OracleAdapter),
     Sqlite(SqliteAdapter),
     SqlServer(MsSqlAdapter),
 }
@@ -255,6 +262,13 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.load_monitor_snapshot().await,
             Self::MySql(adapter) => adapter.load_monitor_snapshot().await,
+            Self::MariaDb(adapter) => adapter.load_monitor_snapshot().await,
+            Self::Oracle(_) => Err(DatabaseError {
+                category: ErrorCategory::Unsupported,
+                code: Some("oracle_monitoring_unsupported".into()),
+                message: "Oracle monitoring is not implemented yet".into(),
+                diagnostic: None,
+            }),
             Self::SqlServer(adapter) => adapter.load_monitor_snapshot().await,
             Self::Sqlite(_) => Err(DatabaseError {
                 category: ErrorCategory::Unsupported,
@@ -269,6 +283,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.load_monitor_metadata().await,
             Self::MySql(adapter) => adapter.load_monitor_metadata().await,
+            Self::MariaDb(adapter) => adapter.load_monitor_metadata().await,
+            Self::Oracle(_) => Ok(monitor::MonitorMetadata::default()),
             Self::SqlServer(adapter) => adapter.load_monitor_metadata().await,
             Self::Sqlite(_) => Ok(monitor::MonitorMetadata::default()),
         }
@@ -278,6 +294,13 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.load_process_snapshot().await,
             Self::MySql(adapter) => adapter.load_process_snapshot().await,
+            Self::MariaDb(adapter) => adapter.load_process_snapshot().await,
+            Self::Oracle(_) => Err(DatabaseError {
+                category: ErrorCategory::Unsupported,
+                code: Some("oracle_process_list_unsupported".into()),
+                message: "Oracle process metrics are not implemented yet".into(),
+                diagnostic: None,
+            }),
             Self::SqlServer(adapter) => adapter.load_process_snapshot().await,
             Self::Sqlite(_) => Err(DatabaseError {
                 category: ErrorCategory::Unsupported,
@@ -300,6 +323,18 @@ impl DatabaseConnection {
                 ),
             ),
             Self::MySql(adapter) => Ok(
+                crate::runtime::transaction::spawn_transaction_worker_with_forced_close(
+                    adapter.transaction_backend().await?,
+                    forced_close,
+                ),
+            ),
+            Self::MariaDb(adapter) => Ok(
+                crate::runtime::transaction::spawn_transaction_worker_with_forced_close(
+                    adapter.transaction_backend().await?,
+                    forced_close,
+                ),
+            ),
+            Self::Oracle(adapter) => Ok(
                 crate::runtime::transaction::spawn_transaction_worker_with_forced_close(
                     adapter.transaction_backend().await?,
                     forced_close,
@@ -332,6 +367,12 @@ impl DatabaseConnection {
             DatabaseKind::MySql => MySqlAdapter::connect(profile, password)
                 .await
                 .map(Self::MySql),
+            DatabaseKind::MariaDb => MySqlAdapter::connect(profile, password)
+                .await
+                .map(Self::MariaDb),
+            DatabaseKind::Oracle => OracleAdapter::connect(profile, password)
+                .await
+                .map(Self::Oracle),
             DatabaseKind::SqlServer => MsSqlAdapter::connect(profile, password)
                 .await
                 .map(Self::SqlServer),
@@ -353,15 +394,39 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(_) => DatabaseKind::Postgres,
             Self::MySql(_) => DatabaseKind::MySql,
+            Self::MariaDb(_) => DatabaseKind::MariaDb,
+            Self::Oracle(_) => DatabaseKind::Oracle,
             Self::Sqlite(_) => DatabaseKind::Sqlite,
             Self::SqlServer(_) => DatabaseKind::SqlServer,
         }
+    }
+
+    pub fn capabilities(&self) -> capabilities::DatabaseCapabilities {
+        capabilities::DatabaseCapabilities::for_kind(self.kind())
     }
 
     pub fn catalog_capabilities(&self) -> CatalogCapabilities {
         match self {
             Self::Postgres(_) => PostgresAdapter::catalog_capabilities(),
             Self::MySql(_) => MySqlAdapter::catalog_capabilities(),
+            Self::MariaDb(_) => MySqlAdapter::catalog_capabilities(),
+            Self::Oracle(_) => catalog::CatalogCapabilities {
+                namespace_model: catalog::NamespaceModel::DatabaseAndSchema,
+                top_level_groups: vec![
+                    catalog::ObjectGroup::Tables,
+                    catalog::ObjectGroup::Views,
+                    catalog::ObjectGroup::Sequences,
+                ],
+                column_metadata: catalog::ColumnMetadataCapabilities {
+                    type_family: true,
+                    default_expression: true,
+                    numeric_precision_and_scale: true,
+                    character_length: true,
+                    comment: true,
+                    ..Default::default()
+                },
+                supports_lazy_children: true,
+            },
             Self::Sqlite(_) => SqliteAdapter::catalog_capabilities(),
             Self::SqlServer(_) => MsSqlAdapter::catalog_capabilities(),
         }
@@ -371,6 +436,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.mutation_capabilities(),
             Self::MySql(_) => MySqlAdapter::catalog_mutation_capabilities(),
+            Self::MariaDb(_) => MySqlAdapter::catalog_mutation_capabilities(),
+            Self::Oracle(_) => CatalogMutationCapabilities::default(),
             Self::Sqlite(_) => SqliteAdapter::catalog_mutation_capabilities(),
             Self::SqlServer(_) => MsSqlAdapter::catalog_mutation_capabilities(),
         }
@@ -384,6 +451,11 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(_) => PostgresAdapter::plan_catalog_drop(request, entry),
             Self::MySql(_) => MySqlAdapter::plan_catalog_drop(request, entry),
+            Self::MariaDb(_) => MySqlAdapter::plan_catalog_drop(request, entry),
+            Self::Oracle(_) => Err(catalog_drop::CatalogDropError::Unsupported {
+                kind: entry.kind,
+                reason: "Oracle catalog drops are not implemented yet".to_owned(),
+            }),
             Self::Sqlite(_) => SqliteAdapter::plan_catalog_drop(request, entry),
             Self::SqlServer(_) => MsSqlAdapter::plan_catalog_drop(request, entry),
         }
@@ -399,7 +471,12 @@ impl DatabaseConnection {
             Self::Postgres(adapter) => {
                 adapter.plan_catalog_mutation_for_adapter(request, draft, baseline)
             }
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
+            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
+                catalog_mutation::CatalogMutationError::UnsupportedOperation {
+                    object_type: request.object_type,
+                },
+            ),
+            Self::Oracle(_) => Err(
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
                 },
@@ -413,9 +490,12 @@ impl DatabaseConnection {
     ) -> Result<QueryOutcome, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.execute_catalog_mutation(plan).await,
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
+            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
                 DatabaseError::configuration("catalog mutation is not supported for this database"),
             ),
+            Self::Oracle(_) => Err(DatabaseError::configuration(
+                "catalog mutation is not supported for Oracle",
+            )),
         }
     }
 
@@ -423,6 +503,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.probe().await,
             Self::MySql(adapter) => adapter.probe().await,
+            Self::MariaDb(adapter) => adapter.probe().await,
+            Self::Oracle(adapter) => adapter.probe().await,
             Self::Sqlite(adapter) => adapter.probe().await,
             Self::SqlServer(adapter) => adapter.probe().await,
         }
@@ -432,6 +514,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.discover_catalog_scope().await,
             Self::MySql(adapter) => adapter.discover_catalog_scope().await,
+            Self::MariaDb(adapter) => adapter.discover_catalog_scope().await,
+            Self::Oracle(adapter) => adapter.discover_catalog_scope().await,
             Self::Sqlite(adapter) => adapter.discover_catalog_scope().await,
             Self::SqlServer(adapter) => adapter.discover_catalog_scope().await,
         }
@@ -442,7 +526,11 @@ impl DatabaseConnection {
     ) -> Result<Option<Vec<String>>, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.discoverable_databases().await.map(Some),
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+            Self::MySql(_)
+            | Self::MariaDb(_)
+            | Self::Oracle(_)
+            | Self::Sqlite(_)
+            | Self::SqlServer(_) => Ok(None),
         }
     }
 
@@ -453,6 +541,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.load_catalog_page(request).await,
             Self::MySql(adapter) => adapter.load_catalog_page(request).await,
+            Self::MariaDb(adapter) => adapter.load_catalog_page(request).await,
+            Self::Oracle(adapter) => adapter.load_catalog_page(request).await,
             Self::Sqlite(adapter) => adapter.load_catalog_page(request).await,
             Self::SqlServer(adapter) => adapter.load_catalog_page(request).await,
         }
@@ -464,7 +554,11 @@ impl DatabaseConnection {
     ) -> Result<Option<catalog::CatalogEntry>, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.resolve_relation_identity(relation).await,
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+            Self::MySql(_)
+            | Self::MariaDb(_)
+            | Self::Oracle(_)
+            | Self::Sqlite(_)
+            | Self::SqlServer(_) => Ok(None),
         }
     }
 
@@ -479,7 +573,11 @@ impl DatabaseConnection {
                     .resolve_relation_identity_with_scope(relation, scope)
                     .await
             }
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+            Self::MySql(_)
+            | Self::MariaDb(_)
+            | Self::Oracle(_)
+            | Self::Sqlite(_)
+            | Self::SqlServer(_) => Ok(None),
         }
     }
 
@@ -489,11 +587,13 @@ impl DatabaseConnection {
     ) -> Result<CatalogObjectDefinition, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.load_catalog_object_definition(request).await,
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => {
-                Err(DatabaseError::configuration(
-                    "catalog object definition loading is not supported for this database",
-                ))
-            }
+            Self::MySql(_)
+            | Self::MariaDb(_)
+            | Self::Oracle(_)
+            | Self::Sqlite(_)
+            | Self::SqlServer(_) => Err(DatabaseError::configuration(
+                "catalog object definition loading is not supported for this database",
+            )),
         }
     }
 
@@ -503,7 +603,11 @@ impl DatabaseConnection {
     ) -> Result<Option<catalog_mutation::CatalogOwnerContext>, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.load_catalog_owner_context(request).await.map(Some),
-            Self::MySql(_) | Self::Sqlite(_) | Self::SqlServer(_) => Ok(None),
+            Self::MySql(_)
+            | Self::MariaDb(_)
+            | Self::Oracle(_)
+            | Self::Sqlite(_)
+            | Self::SqlServer(_) => Ok(None),
         }
     }
 
@@ -514,6 +618,10 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.search_catalog(request).await,
             Self::MySql(adapter) => adapter.search_catalog(request).await,
+            Self::MariaDb(adapter) => adapter.search_catalog(request).await,
+            Self::Oracle(_) => Err(DatabaseError::configuration(
+                "Oracle catalog search is not implemented yet",
+            )),
             Self::Sqlite(adapter) => adapter.search_catalog(request).await,
             Self::SqlServer(adapter) => adapter.search_catalog(request).await,
         }
@@ -531,6 +639,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
             Self::MySql(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
+            Self::MariaDb(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
+            Self::Oracle(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
             Self::Sqlite(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
             Self::SqlServer(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
         }
@@ -545,6 +655,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::MySql(adapter) => adapter.preview_relation(relation, options, page).await,
+            Self::MariaDb(adapter) => adapter.preview_relation(relation, options, page).await,
+            Self::Oracle(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::Sqlite(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::SqlServer(adapter) => adapter.preview_relation(relation, options, page).await,
         }
@@ -568,6 +680,12 @@ impl DatabaseConnection {
                     .preview_relation_with_scope(relation, scope, options, page)
                     .await
             }
+            Self::MariaDb(adapter) => {
+                adapter
+                    .preview_relation_with_scope(relation, scope, options, page)
+                    .await
+            }
+            Self::Oracle(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::Sqlite(adapter) => {
                 adapter
                     .preview_relation_with_scope(relation, scope, options, page)
@@ -585,6 +703,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.relation_ddl(relation).await,
             Self::MySql(adapter) => adapter.relation_ddl(relation).await,
+            Self::MariaDb(adapter) => adapter.relation_ddl(relation).await,
+            Self::Oracle(adapter) => adapter.relation_ddl(relation).await,
             Self::Sqlite(adapter) => adapter.relation_ddl(relation).await,
             Self::SqlServer(adapter) => adapter.relation_ddl(relation).await,
         }
@@ -598,6 +718,10 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::MySql(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::MariaDb(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::Oracle(_) => Err(DatabaseError::configuration(
+                "Oracle relation DDL is not implemented yet",
+            )),
             Self::Sqlite(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::SqlServer(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
         }
@@ -612,6 +736,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.object_ddl(kind, schema, name).await,
             Self::MySql(adapter) => adapter.object_ddl(kind, schema, name).await,
+            Self::MariaDb(adapter) => adapter.object_ddl(kind, schema, name).await,
+            Self::Oracle(_) => Ok(None),
             Self::Sqlite(adapter) => adapter.object_ddl(kind, schema, name).await,
             Self::SqlServer(adapter) => adapter.object_ddl(kind, schema, name).await,
         }
@@ -621,6 +747,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(_) => postgres::quote_identifier(value),
             Self::MySql(_) => mysql::quote_identifier(value),
+            Self::MariaDb(_) => mysql::quote_identifier(value),
+            Self::Oracle(_) => format!("\"{}\"", value.replace('"', "\"\"")),
             Self::Sqlite(adapter) => adapter.quote_identifier(value),
             Self::SqlServer(adapter) => adapter.quote_identifier(value),
         }
@@ -630,6 +758,8 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(adapter) => adapter.close().await,
             Self::MySql(adapter) => adapter.close().await,
+            Self::MariaDb(adapter) => adapter.close().await,
+            Self::Oracle(adapter) => adapter.close().await,
             Self::Sqlite(adapter) => adapter.close().await,
             Self::SqlServer(adapter) => adapter.close().await,
         }

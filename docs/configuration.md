@@ -257,12 +257,12 @@ The current profile file format is version `5`:
 | `id` | UUID string | Generated on creation | Stable identity used by workspace state and system credential references. Must be unique within the file. |
 | `name` | String | Derived from the database, host, or SQLite filename | Name shown in the Explorer and accepted by `--profile` and agent `--connection`. |
 | `access` | Table | `{ scope = "global" }` | Controls which projects can see a saved profile. |
-| `kind` | `postgres`, `mysql`, `sqlserver`, `sqlite` | Required | Database adapter to use. |
+| `kind` | `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `sqlite` | Required | Database adapter to use. Oracle uses the native driver included in the default build and requires Oracle Instant Client at runtime. |
 | `url_format` | Kebab-case enum | Driver-specific | URL spelling used when LazyDB displays or regenerates the connection URL. |
-| `host` | String or `null` | `null` | Server hostname or address. PostgreSQL, MySQL, and SQL Server use this field. |
-| `port` | Integer or `null` | Driver default when imported | Server port. PostgreSQL defaults to `5432`, MySQL to `3306`, and SQL Server to `1433`. SQL Server profiles require an explicit TCP port when connecting. |
+| `host` | String or `null` | `null` | Server hostname or address. PostgreSQL, MySQL/MariaDB, and SQL Server use this field. |
+| `port` | Integer or `null` | Driver default when imported | Server port. PostgreSQL defaults to `5432`, MySQL/MariaDB to `3306`, and SQL Server to `1433`. SQL Server profiles require an explicit TCP port when connecting. |
 | `user` | String or `null` | `null` | Server login name. SQL Server uses SQL username/password authentication; SQLite does not use it. |
-| `database` | String or `null` | `null` | Database name for PostgreSQL, MySQL, or SQL Server, or the logical SQLite path value. |
+| `database` | String or `null` | `null` | Database name for PostgreSQL, MySQL/MariaDB, or SQL Server, or the logical SQLite path value. |
 | `default_schema` | String or `null` | `null` | PostgreSQL `currentSchema`, SQL Server schema, or SQLite `main`. MySQL has no separate default-schema field. |
 | `sqlite_path` | Path or `null` | `null` | SQLite file path. It is `null` for an in-memory database. |
 | `ssl_mode` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` | TLS policy for PostgreSQL, MySQL, and SQL Server. SQLite always uses `disable`. |
@@ -271,8 +271,15 @@ The current profile file format is version `5`:
 | `environment` | `development`, `staging`, `production` | `development` | Environment label used by the UI and agent write-policy checks. |
 | `catalog_scope` | Table | Derived from database and schema | Databases and schemas visible to Explorer and completion. |
 
+Oracle profiles use the native Oracle client. LazyDB first checks the
+`LAZYDB_ORACLE_CLIENT_LIB_DIR` environment variable, then
+`~/.local/share/lazydb/oracle/current`, and finally the Oracle client's normal
+library search paths. The selected directory must contain the ARM64
+`libclntsh.dylib` on Apple Silicon. Client discovery is process-wide; changing
+the client directory requires restarting LazyDB.
+
 `url_format` accepts `postgres`, `postgresql`, `jdbc-postgresql` for PostgreSQL;
-`mysql`, `jdbc-mysql` for MySQL; `sqlserver`, `mssql`, `jdbc-sqlserver` for SQL
+`mysql`, `jdbc-mysql` for MySQL; `mariadb` for MariaDB; `jdbc-oracle` for Oracle; `sqlserver`, `mssql`, `jdbc-sqlserver` for SQL
 Server; and `sqlite`, `file-uri`, `jdbc-sqlite` for SQLite. Defaults are
 `postgresql`, `mysql`, `sqlserver`, and `sqlite` respectively.
 

@@ -157,11 +157,11 @@ pub enum LspDialect {
 
 impl From<crate::profile::DatabaseKind> for LspDialect {
     fn from(kind: crate::profile::DatabaseKind) -> Self {
-        match kind {
-            crate::profile::DatabaseKind::Postgres => Self::Postgres,
-            crate::profile::DatabaseKind::MySql => Self::MySql,
-            crate::profile::DatabaseKind::SqlServer => Self::SqlServer,
-            crate::profile::DatabaseKind::Sqlite => Self::Sqlite,
+        match crate::sql::SqlDialect::for_database_kind(kind) {
+            crate::sql::SqlDialect::Postgres => Self::Postgres,
+            crate::sql::SqlDialect::MySql => Self::MySql,
+            crate::sql::SqlDialect::SqlServer => Self::SqlServer,
+            crate::sql::SqlDialect::Sqlite | crate::sql::SqlDialect::Generic => Self::Sqlite,
         }
     }
 }
@@ -330,7 +330,7 @@ pub struct Capabilities<'a> {
     pub version: &'a str,
     pub cli_api: u16,
     pub features: [&'a str; 7],
-    pub drivers: [&'a str; 3],
+    pub drivers: [&'a str; 6],
 }
 
 #[derive(Debug, Serialize)]
@@ -377,7 +377,7 @@ pub fn capabilities() -> Capabilities<'static> {
             "theme-file-v1",
             "lsp-v1",
         ],
-        drivers: ["postgres", "mysql", "sqlite"],
+        drivers: crate::db::descriptor::DRIVER_NAMES,
     }
 }
 
@@ -412,7 +412,7 @@ pub fn doctor_report(profile: Option<&str>) -> DoctorReport<'_> {
             DoctorCheck {
                 name: "drivers",
                 status: "ok",
-                detail: "postgres,mysql,sqlite",
+                detail: crate::db::descriptor::DRIVER_LIST,
             },
             DoctorCheck {
                 name: "credential_store",
@@ -429,9 +429,10 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
         Command::Version { json: false } => Ok(format!("lazydb {}", env!("CARGO_PKG_VERSION"))),
         Command::Capabilities { json: true } => serde_json::to_string(&capabilities()),
         Command::Capabilities { json: false } => Ok(format!(
-            "lazydb {} (cli api {})\ndrivers: postgres, mysql, sqlite\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring, theme-file-v1, lsp-v1",
+            "lazydb {} (cli api {})\ndrivers: {}\nfeatures: mouse, read-only, context-help, profile-manager, system-keyring, theme-file-v1, lsp-v1",
             env!("CARGO_PKG_VERSION"),
-            CLI_API_VERSION
+            CLI_API_VERSION,
+            crate::db::descriptor::DRIVER_LIST
         )),
         Command::Doctor {
             json: true,
@@ -444,8 +445,9 @@ pub fn render_command(command: &Command) -> Result<String, serde_json::Error> {
             let report = doctor_report(profile.as_deref());
             let status = if report.ok { "ok" } else { "warning" };
             Ok(format!(
-                "LazyDB doctor: {status}\nlocale: {}\ndrivers: postgres, mysql, sqlite\ncredential_store: {} {} ({})",
+                "LazyDB doctor: {status}\nlocale: {}\ndrivers: {}\ncredential_store: {} {} ({})",
                 report.checks[0].status,
+                crate::db::descriptor::DRIVER_LIST,
                 report.credential_store.provider,
                 report.credential_store.status,
                 report.credential_store.detail,
@@ -598,7 +600,14 @@ mod tests {
         assert_eq!(value["cli_api"], CLI_API_VERSION);
         assert_eq!(
             value["drivers"],
-            serde_json::json!(["postgres", "mysql", "sqlite"])
+            serde_json::json!([
+                "postgres",
+                "mysql",
+                "mariadb",
+                "oracle",
+                "sqlserver",
+                "sqlite"
+            ])
         );
         assert_eq!(
             value["features"],

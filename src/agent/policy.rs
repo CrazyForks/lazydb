@@ -125,10 +125,5 @@ fn is_read_only(analysis: &crate::sql::SqlRiskAnalysis) -> bool {
 }
 
 fn dialect(profile: &ConnectionProfile) -> SqlDialect {
-    match profile.kind {
-        crate::profile::DatabaseKind::Postgres => SqlDialect::Postgres,
-        crate::profile::DatabaseKind::MySql => SqlDialect::MySql,
-        crate::profile::DatabaseKind::Sqlite => SqlDialect::Sqlite,
-        crate::profile::DatabaseKind::SqlServer => SqlDialect::SqlServer,
-    }
+    SqlDialect::for_database_kind(profile.kind)
 }

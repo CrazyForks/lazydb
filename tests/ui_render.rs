@@ -6794,11 +6794,21 @@ fn profile_url_help_follows_the_selected_driver_when_focused() {
         ),
         (
             2,
-            "sqlserver://user:password@host:1433/database",
+            "mariadb://user:password@host:3306/database",
             "sqlite:///path/to/database.db",
         ),
         (
             3,
+            "jdbc:oracle:thin:@user:password@host:1521/database",
+            "sqlite:///path/to/database.db",
+        ),
+        (
+            4,
+            "sqlserver://user:password@host:1433/database",
+            "sqlite:///path/to/database.db",
+        ),
+        (
+            5,
             "sqlite:///path/to/database.db",
             "postgres://user:password@host:5432/database",
         ),
@@ -6822,7 +6832,9 @@ fn profile_url_help_follows_the_selected_driver_when_focused() {
         let help = match cycle {
             0 => "Accepts postgres://",
             1 => "Accepts mysql://",
-            2 => "Accepts sqlserver://",
+            2 => "Accepts mariadb://",
+            3 => "Accepts jdbc:oracle:thin:@host:port/service",
+            4 => "Accepts sqlserver://",
             _ => "Accepts sqlite://",
         };
         assert!(focused.contains(help), "missing URL help: {focused}");
@@ -6993,7 +7005,7 @@ fn server_and_sqlite_forms_only_show_relevant_fields() {
 
     let mut sql_server = App::new(Vec::new());
     sql_server.update(Action::OpenProfileManager);
-    sql_server.update(Action::ProfileCycle(2));
+    sql_server.update(Action::ProfileCycle(4));
     let sql_server_output = render(&sql_server, 120, 36);
     assert!(sql_server_output.contains("SQL Server"));
     assert!(sql_server_output.contains("Default schema"));
@@ -7002,7 +7014,7 @@ fn server_and_sqlite_forms_only_show_relevant_fields() {
 
     let mut sqlite_file = App::new(Vec::new());
     sqlite_file.update(Action::OpenProfileManager);
-    sqlite_file.update(Action::ProfileCycle(3));
+    sqlite_file.update(Action::ProfileCycle(5));
     let sqlite_file_output = render(&sqlite_file, 120, 36);
     assert!(sqlite_file_output.contains("SQLite"));
     assert!(sqlite_file_output.contains("Path"));
@@ -7026,8 +7038,7 @@ fn profile_form_remains_actionable_in_compact_layout() {
     assert!(output.contains("NEW CONNECTION"));
     assert!(output.contains("PostgreSQL"), "{output}");
     assert!(output.contains("MySQL"), "{output}");
-    assert!(output.contains("SQL Server"), "{output}");
-    assert!(output.contains("SQLite"), "{output}");
+    assert!(output.contains("MariaDB"), "{output}");
     assert!(output.contains("Host"));
     assert!(output.contains("Password"));
     assert!(output.contains("URL") || output.contains("CONNECTION URL"));
@@ -7085,11 +7096,13 @@ fn driver_options_have_individual_targets_and_selected_style_survives_field_blur
     app.update(Action::OpenProfileManager);
     app.update(Action::ProfileFocusField(ProfileField::Name));
 
-    let (buffer, state) = render_buffer_with_icons(&app, 80, 24, IconSet::new(IconMode::Ascii));
+    let (buffer, state) = render_buffer_with_icons(&app, 120, 24, IconSet::new(IconMode::Ascii));
 
     let options = [
         DatabaseKind::Postgres,
         DatabaseKind::MySql,
+        DatabaseKind::MariaDb,
+        DatabaseKind::Oracle,
         DatabaseKind::SqlServer,
         DatabaseKind::Sqlite,
     ]
@@ -7119,6 +7132,7 @@ fn driver_options_use_database_icons_in_each_icon_mode() {
     let kinds = [
         DatabaseKind::Postgres,
         DatabaseKind::MySql,
+        DatabaseKind::MariaDb,
         DatabaseKind::SqlServer,
         DatabaseKind::Sqlite,
     ];
@@ -7129,6 +7143,8 @@ fn driver_options_use_database_icons_in_each_icon_mode() {
             let display_name = match kind {
                 DatabaseKind::Postgres => "PostgreSQL",
                 DatabaseKind::MySql => "MySQL",
+                DatabaseKind::MariaDb => "MariaDB",
+                DatabaseKind::Oracle => "Oracle",
                 DatabaseKind::SqlServer => "SQL Server",
                 DatabaseKind::Sqlite => "SQLite",
             };

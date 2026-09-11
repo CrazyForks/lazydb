@@ -8,7 +8,7 @@ machine.
 
 ## Monitoring Dashboard
 
-The connection dashboard is available for PostgreSQL and MySQL. It
+The connection dashboard is available for PostgreSQL, MySQL, and MariaDB. It
 collects read-only status counters, connection gauges, and a bounded process
 list. SQLite reports monitoring as unsupported because it has no server-wide
 activity catalog. Samples remain in memory for the active workspace tab and
@@ -23,11 +23,13 @@ queries or terminate sessions.
 | Driver | Server/version gate | Namespace model | Catalog groups | Metadata support |
 | --- | --- | --- | --- | --- |
 | PostgreSQL | PostgreSQL 12 or newer | Database + schema | Tables, views, materialized views, sequences, functions, procedures, types | Type family, defaults, identity, generated expressions, character length, collation, comments; numeric precision/scale is not advertised |
-| MySQL | Oracle MySQL 8.0.13 or newer; MariaDB is rejected for this catalog contract | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
+| MySQL | Oracle MySQL 8.0.13 or newer | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
+| MariaDB | MariaDB 10.5 or newer; uses the MySQL-compatible transport and catalog contract | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
+| Oracle | Profile/URL recognition, native connect/probe, basic query, catalog, preview, and DDL implemented; advanced contract pending | Service + owner/schema | Tables, views, sequences, columns, indexes, primary/unique/check constraints | Type family, defaults, numeric precision/scale, character length; advanced LOB metadata pending |
 | SQL Server | SQL Server 2012 or newer | Database + schema | Tables, views, functions, procedures, sequences, triggers; relation children include columns, indexes, keys, and foreign keys | Type family, defaults, identity, computed/generated expressions, numeric precision/scale, character length, collation, comments, and rowversion metadata |
 | SQLite | SQLite metadata support through native schema tables; no server-version gate | Database + attached schema aliases | Tables, views, triggers | Default expressions and hidden-column metadata; unsupported fields are represented as unsupported |
 
-PostgreSQL, MySQL, and SQLite advertise lazy children. SQLite opens a pool with
+PostgreSQL, MySQL, MariaDB, and SQLite advertise lazy children. SQLite opens a pool with
 exactly one physical connection; SQL Server loads its supported catalog groups
 without lazy child requests.
 
@@ -67,7 +69,7 @@ for a draft that has changed is ignored.
 
 The picker presents `All` or `Selected` databases, with schemas nested under
 each discovered database. PostgreSQL and SQLite can select `All schemas` or
-individual schemas. MySQL mirrors each selected database as its schema; those
+individual schemas. MySQL and MariaDB mirror each selected database as its schema; those
 rows are read-only and cannot be toggled separately. If discovery is stale or
 unavailable, saved selections remain visible with a warning.
 
@@ -147,10 +149,10 @@ Driver-specific DDL behavior is:
   It does not require database or role creation privileges. A dropped object,
   an OID reused for another relation kind, or an object hidden by permissions
   is not treated as a rename.
-- Oracle MySQL reads the main table/view and each trigger through `SHOW CREATE`,
+ - Oracle MySQL and MariaDB read the main table/view and each trigger through `SHOW CREATE`,
   discovers triggers through `information_schema`, and assembles the native
-  object statement with sorted trigger statements. MariaDB is not part of this
-  contract.
+  object statement with sorted trigger statements. MariaDB follows the same
+  contract, with its version-specific catalog gate.
 - SQLite reads the main table/view and related indexes/triggers from each
   schema's `sqlite_schema` table. The complete read runs on the single SQLite
   connection inside a transaction that is rolled back afterward. A relation

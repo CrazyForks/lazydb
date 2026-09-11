@@ -1,0 +1,21 @@
+use lazydb::{profile::DatabaseKind, sql::SqlDialect};
+
+#[test]
+fn database_kind_mapping_has_one_canonical_sql_dialect() {
+    assert_eq!(
+        SqlDialect::for_database_kind(DatabaseKind::Postgres),
+        SqlDialect::Postgres
+    );
+    assert_eq!(
+        SqlDialect::for_database_kind(DatabaseKind::MySql),
+        SqlDialect::MySql
+    );
+    assert_eq!(
+        SqlDialect::for_database_kind(DatabaseKind::SqlServer),
+        SqlDialect::SqlServer
+    );
+    assert_eq!(
+        SqlDialect::for_database_kind(DatabaseKind::Sqlite),
+        SqlDialect::Sqlite
+    );
+}

@@ -141,13 +141,15 @@ schema changes only rewrite derived visibility.
 ## Database Boundary
 
 `DatabaseConnection` dispatches to concrete `PostgresAdapter`, `MySqlAdapter`, or
-`SqliteAdapter`. This is intentionally not SQLx `AnyPool`: native catalog, type,
+`SqliteAdapter`; MariaDB uses the MySQL-compatible adapter with a distinct product
+kind. This is intentionally not SQLx `AnyPool`: native catalog, type,
 SSL, DDL, cancellation, and transaction behavior must remain visible.
 
 Catalog requests use bounded keyset pages (maximum page size 500), with separate
 targets for databases, schemas, groups, objects, and relation children. The
 PostgreSQL adapter requires server version 12 or newer; the Oracle MySQL catalog
-adapter requires 8.0.13 or newer and rejects MariaDB for this contract. SQLite
+ adapter requires 8.0.13 or newer; the MariaDB-compatible catalog requires 10.5
+ or newer. SQLite
 supports metadata from native schema tables and loads each page inside a
 transaction that is rolled back afterward. SQLite deliberately uses a single
 physical pool connection, and catalog operations do not write database state.
