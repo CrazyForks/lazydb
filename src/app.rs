@@ -12565,12 +12565,21 @@ impl App {
         let ScopeSource::Contiguous(range) = scope.source else {
             return;
         };
-        if let Err(error) = self.editor.replace_range(
-            id,
-            range,
-            &formatted,
-            crate::editor::ReplacementCursor::Start,
+        let result = if matches!(
+            scope.kind,
+            sql::ScopeKind::VisualChar | sql::ScopeKind::VisualLine
         ) {
+            self.editor
+                .replace_range_preserving_selection(id, range, &formatted)
+        } else {
+            self.editor.replace_range(
+                id,
+                range,
+                &formatted,
+                crate::editor::ReplacementCursor::Start,
+            )
+        };
+        if let Err(error) = result {
             self.notify_error("Format", error.to_string());
         } else {
             self.notify_success("Format", "SQL formatted");

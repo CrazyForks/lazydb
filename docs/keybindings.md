@@ -249,6 +249,8 @@ open and input is blocked until the result arrives.
 | `o` | Open line below |
 | `x`, Delete | Delete character |
 | `u` / `Ctrl-r` | Undo/redo |
+| `>>` / `<<` | Indent or unindent the current line |
+| `^` | Move to the first non-blank character without selecting text |
 | `R` / `F5` | Run current statement |
 | `Shift-F5` | Run complete buffer |
 | `Space f` | Format current/selected SQL |
@@ -360,6 +362,7 @@ keyboard reporting, configure the terminal to forward that key combination.
 | `Esc` | Return to Normal |
 | `R` / `F5` | Run selection |
 | `Space f` | Format selection |
+| `>` / `<` | Indent or unindent selected lines; Visual mode and selection are preserved |
 | `Space y/Y` | Copy selection/buffer through EditorLeader |
 
 `Space r` and `Space R` remain available in Visual mode for current-selection
@@ -371,6 +374,12 @@ Visual Char, Visual Line, and Visual Block are presented as the Editor Visual
 context. Empty selections do not fall back to the whole buffer. `Space ?` is
 handled by EditorLeader in this context as editor Help; plain `?` is handled by
 the application mapper as contextual Help.
+
+Normal `^` moves to the first non-blank character; `0` moves to the absolute
+start of the line. Visual indentation operates on all lines touched by the
+selection and keeps the selection active so repeated `>` / `<` adjustments are
+possible. Formatting keeps the logical SQL selection even when the formatter
+expands it across additional lines.
 
 ## SQL Results Data
 
