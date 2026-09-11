@@ -1356,7 +1356,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         TransactionControl,
-        [EditorNormal, SqlResultsData, RelationDataBrowse],
+        [EditorNormal, SqlResultsData],
         "Space tc",
         "commit or roll back transaction",
         EditorLeader,
@@ -1719,7 +1719,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "Ctrl-s",
         "review and commit changes",
         RelationEditAvailable,
-        display
+        executable
     ),
     row!(
         RelationUndo,
@@ -4290,6 +4290,27 @@ mod tests {
         for editing in ["e", "a", "V", "p", "Ctrl-s"] {
             assert!(!rows.contains(&editing));
         }
+    }
+
+    #[test]
+    fn relation_data_help_does_not_list_console_transaction_control() {
+        let capabilities = ShortcutCapabilities {
+            relation_data: true,
+            relation_edit_available: true,
+            ..ShortcutCapabilities::default()
+        };
+        let rows = shortcuts(ShortcutContext::RelationDataBrowse, capabilities);
+
+        assert!(
+            !rows
+                .iter()
+                .any(|shortcut| shortcut.id == HelpShortcutId::TransactionControl)
+        );
+        assert!(
+            rows.iter()
+                .any(|shortcut| shortcut.id == HelpShortcutId::RelationCommit)
+        );
+        assert!(shortcut_is_executable(HelpShortcutId::RelationCommit));
     }
 
     #[test]
