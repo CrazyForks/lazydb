@@ -1431,7 +1431,8 @@ impl App {
             .find(|profile| profile.id == tab.descriptor.key.profile_id)
             .map(|profile| match profile.kind {
                 DatabaseKind::Postgres => SqlDialect::Postgres,
-                DatabaseKind::MySql => SqlDialect::MySql,
+                DatabaseKind::MySql | DatabaseKind::MariaDb => SqlDialect::MySql,
+                DatabaseKind::Oracle => SqlDialect::Generic,
                 DatabaseKind::Sqlite => SqlDialect::Sqlite,
                 DatabaseKind::SqlServer => SqlDialect::SqlServer,
             })
@@ -10359,6 +10360,10 @@ impl App {
                 DatabaseKind::MySql => {
                     crate::db::mysql::MySqlAdapter::catalog_mutation_capabilities()
                 }
+                DatabaseKind::MariaDb => {
+                    crate::db::mysql::MySqlAdapter::catalog_mutation_capabilities()
+                }
+                DatabaseKind::Oracle => return None,
                 DatabaseKind::Sqlite => {
                     crate::db::sqlite::SqliteAdapter::catalog_mutation_capabilities()
                 }
@@ -11922,7 +11927,8 @@ impl App {
                     continue;
                 };
                 let schema = match profile.kind {
-                    DatabaseKind::MySql => Some(database.clone()),
+                    DatabaseKind::MySql | DatabaseKind::MariaDb => Some(database.clone()),
+                    DatabaseKind::Oracle => entry.qualified_name.schema.clone(),
                     DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Sqlite => {
                         entry.qualified_name.schema.clone()
                     }
@@ -12527,7 +12533,8 @@ impl App {
     pub(crate) fn sql_dialect(&self) -> SqlDialect {
         match self.active_profile().map(|profile| profile.kind) {
             Some(DatabaseKind::Postgres) => SqlDialect::Postgres,
-            Some(DatabaseKind::MySql) => SqlDialect::MySql,
+            Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => SqlDialect::MySql,
+            Some(DatabaseKind::Oracle) => SqlDialect::Generic,
             Some(DatabaseKind::Sqlite) => SqlDialect::Sqlite,
             Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
             None => SqlDialect::Generic,
@@ -17268,7 +17275,11 @@ fn add_explorer_profile(
             .map(|path| path.to_string_lossy().into_owned())
             .or_else(|| profile.database.clone())
             .unwrap_or_default(),
-        DatabaseKind::Postgres | DatabaseKind::MySql | DatabaseKind::SqlServer => {
+        DatabaseKind::Postgres
+        | DatabaseKind::MySql
+        | DatabaseKind::MariaDb
+        | DatabaseKind::Oracle
+        | DatabaseKind::SqlServer => {
             let host = profile.host.as_deref().unwrap_or_default();
             profile
                 .port

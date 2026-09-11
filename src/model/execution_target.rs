@@ -23,9 +23,11 @@ impl ExecutionTarget {
             })
             .unwrap_or_default();
         let schema = match profile.kind {
-            DatabaseKind::MySql => Some(database.clone()),
+            DatabaseKind::MySql | DatabaseKind::MariaDb => Some(database.clone()),
             DatabaseKind::Sqlite => Some("main".to_owned()),
-            DatabaseKind::Postgres | DatabaseKind::SqlServer => profile.default_schema.clone(),
+            DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => {
+                profile.default_schema.clone()
+            }
         };
         Self {
             profile_id: profile.id,
@@ -42,7 +44,7 @@ impl ExecutionTarget {
             return false;
         }
         match profile.kind {
-            DatabaseKind::MySql => {
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
                 self.schema.as_deref() == Some(self.database.as_str())
                     && profile
                         .catalog_scope
@@ -54,7 +56,7 @@ impl ExecutionTarget {
                         profile.catalog_scope.allows_schema(&self.database, schema)
                     })
             }
-            DatabaseKind::Postgres | DatabaseKind::SqlServer => self
+            DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => self
                 .schema
                 .as_deref()
                 .is_none_or(|schema| profile.catalog_scope.allows_schema(&self.database, schema)),
@@ -67,11 +69,11 @@ impl ExecutionTarget {
         }
         let mut configured = profile.clone();
         match profile.kind {
-            DatabaseKind::Postgres | DatabaseKind::SqlServer => {
+            DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => {
                 configured.database = Some(self.database.clone());
                 configured.default_schema = self.schema.clone();
             }
-            DatabaseKind::MySql => {
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
                 configured.database = Some(self.database.clone());
                 configured.default_schema = Some(self.database.clone());
             }

@@ -819,6 +819,10 @@ fn driver_cycle_includes_sql_server_before_sqlite() {
     state.cycle(1);
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::MySql);
     state.cycle(1);
+    assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::MariaDb);
+    state.cycle(1);
+    assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::Oracle);
+    state.cycle(1);
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::SqlServer);
     state.cycle(1);
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::Sqlite);

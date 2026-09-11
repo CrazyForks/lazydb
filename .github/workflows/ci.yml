@@ -115,6 +115,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: lazydb_test
+          MARIADB_DATABASE: lazydb_test
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mariadb-admin ping -h 127.0.0.1 -plazydb_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-CU16-ubuntu-22.04
         env:
@@ -131,6 +143,7 @@ jobs:
     env:
       LAZYDB_TEST_POSTGRES_URL: postgresql://postgres:lazydb_test@127.0.0.1:5432/lazydb_test
       LAZYDB_TEST_MYSQL_URL: mysql://root:lazydb_test@127.0.0.1:3306/lazydb_test
+      LAZYDB_TEST_MARIADB_URL: mariadb://root:lazydb_test@127.0.0.1:3307/lazydb_test
       LAZYDB_TEST_SQLSERVER_URL: sqlserver://sa:LazydbC1!SqlServer2022@127.0.0.1:1433/tempdb?encrypt=false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,6 +154,8 @@ jobs:
         run: timeout 10m cargo test --locked --test postgres_adapter -- --nocapture --test-threads=1
       - name: MySQL adapter tests
         run: timeout 10m cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
+      - name: MariaDB adapter tests
+        run: timeout 10m env LAZYDB_TEST_MYSQL_URL="$LAZYDB_TEST_MARIADB_URL" cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
       - name: SQL Server adapter tests
         run: timeout 10m cargo test --locked --test sqlserver_adapter -- --nocapture --test-threads=1
       - name: SQL Server transaction tests

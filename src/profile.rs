@@ -14,6 +14,8 @@ use crate::persistence::local_credentials::EncryptedCredential;
 pub enum DatabaseKind {
     Postgres,
     MySql,
+    MariaDb,
+    Oracle,
     SqlServer,
     Sqlite,
 }
@@ -27,6 +29,8 @@ pub enum ConnectionUrlFormat {
     JdbcPostgreSql,
     MySql,
     JdbcMySql,
+    MariaDb,
+    JdbcOracle,
     SqlServer,
     MsSql,
     JdbcSqlServer,
@@ -40,6 +44,8 @@ impl ConnectionUrlFormat {
         match kind {
             DatabaseKind::Postgres => Self::PostgreSql,
             DatabaseKind::MySql => Self::MySql,
+            DatabaseKind::MariaDb => Self::MariaDb,
+            DatabaseKind::Oracle => Self::JdbcOracle,
             DatabaseKind::SqlServer => Self::SqlServer,
             DatabaseKind::Sqlite => Self::Sqlite,
         }
@@ -52,6 +58,8 @@ impl ConnectionUrlFormat {
                 Self::Postgres | Self::PostgreSql | Self::JdbcPostgreSql,
                 DatabaseKind::Postgres
             ) | (Self::MySql | Self::JdbcMySql, DatabaseKind::MySql)
+                | (Self::MariaDb, DatabaseKind::MariaDb)
+                | (Self::JdbcOracle, DatabaseKind::Oracle)
                 | (
                     Self::SqlServer | Self::MsSql | Self::JdbcSqlServer,
                     DatabaseKind::SqlServer
@@ -67,6 +75,8 @@ impl ConnectionUrlFormat {
         match kind {
             DatabaseKind::Postgres => &[Self::Postgres, Self::PostgreSql, Self::JdbcPostgreSql],
             DatabaseKind::MySql => &[Self::MySql, Self::JdbcMySql],
+            DatabaseKind::MariaDb => &[Self::MariaDb],
+            DatabaseKind::Oracle => &[Self::JdbcOracle],
             DatabaseKind::SqlServer => &[Self::SqlServer, Self::MsSql, Self::JdbcSqlServer],
             DatabaseKind::Sqlite => &[Self::Sqlite, Self::FileUri, Self::JdbcSqlite],
         }
@@ -497,6 +507,9 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedConnectionUrl, ProfileE
     {
         return parse_jdbc_sql_server_url(normalized);
     }
+    if jdbc && normalized.to_ascii_lowercase().starts_with("oracle:thin:@") {
+        return parse_jdbc_oracle_url(normalized);
+    }
 
     let url = Url::parse(normalized)?;
     let (kind, format) = match (url.scheme().to_ascii_lowercase().as_str(), jdbc) {
@@ -505,11 +518,52 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedConnectionUrl, ProfileE
         ("postgresql", true) => (DatabaseKind::Postgres, ConnectionUrlFormat::JdbcPostgreSql),
         ("mysql", false) => (DatabaseKind::MySql, ConnectionUrlFormat::MySql),
         ("mysql", true) => (DatabaseKind::MySql, ConnectionUrlFormat::JdbcMySql),
+        ("mariadb", false) => (DatabaseKind::MariaDb, ConnectionUrlFormat::MariaDb),
         ("sqlserver", false) => (DatabaseKind::SqlServer, ConnectionUrlFormat::SqlServer),
         ("mssql", false) => (DatabaseKind::SqlServer, ConnectionUrlFormat::MsSql),
         (scheme, _) => return Err(ProfileError::UnsupportedScheme(scheme.to_owned())),
     };
     parse_server_url(url, kind, format)
+}
+
+fn parse_jdbc_oracle_url(input: &str) -> Result<ParsedConnectionUrl, ProfileError> {
+    let (input, query) = input.split_once('?').map_or((input, ""), |parts| parts);
+    let address = input
+        .strip_prefix("oracle:thin:@")
+        .ok_or_else(|| ProfileError::UnsupportedScheme("oracle".to_owned()))?;
+    let (host_port, service) = address.split_once('/').ok_or(ProfileError::MissingHost)?;
+    let (host, port) = host_port
+        .rsplit_once(':')
+        .ok_or(ProfileError::MissingHost)?;
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| ProfileError::InvalidQueryParameter("port".into()))?;
+    if host.is_empty() || service.is_empty() || port == 0 {
+        return Err(ProfileError::MissingHost);
+    }
+    let mut user = None;
+    let mut password = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "user" => user = Some(value.into_owned()),
+            "password" => password = Some(SecretString::from(value.into_owned())),
+            _ => return Err(ProfileError::UnknownQueryParameter(key.into_owned())),
+        }
+    }
+    Ok(ParsedConnectionUrl {
+        kind: DatabaseKind::Oracle,
+        format: ConnectionUrlFormat::JdbcOracle,
+        host: Some(host.to_owned()),
+        port: Some(port),
+        user,
+        password,
+        database: Some(service.to_owned()),
+        default_schema: None,
+        sqlite_path: None,
+        sqlite_memory: false,
+        ssl_mode: SslMode::Prefer,
+        read_only: false,
+    })
 }
 
 pub fn import_connection_url(
@@ -593,14 +647,18 @@ fn parse_server_url(
             reject_duplicate(&mut seen_ssl, "ssl")?;
             ssl_mode = parse_ssl_mode(&value)
                 .ok_or_else(|| ProfileError::InvalidQueryParameter("sslmode".into()))?;
-        } else if key.eq_ignore_ascii_case("useSSL") && kind == DatabaseKind::MySql {
+        } else if key.eq_ignore_ascii_case("useSSL")
+            && matches!(kind, DatabaseKind::MySql | DatabaseKind::MariaDb)
+        {
             reject_duplicate(&mut seen_ssl, "ssl")?;
             ssl_mode = if parse_bool(&value, "useSSL")? {
                 SslMode::Require
             } else {
                 SslMode::Disable
             };
-        } else if key.eq_ignore_ascii_case("sslMode") && kind == DatabaseKind::MySql {
+        } else if key.eq_ignore_ascii_case("sslMode")
+            && matches!(kind, DatabaseKind::MySql | DatabaseKind::MariaDb)
+        {
             reject_duplicate(&mut seen_ssl, "ssl")?;
             ssl_mode = parse_ssl_mode(&value)
                 .ok_or_else(|| ProfileError::InvalidQueryParameter("sslMode".into()))?;
@@ -627,7 +685,8 @@ fn parse_server_url(
 
     let default_port = match kind {
         DatabaseKind::Postgres => 5432,
-        DatabaseKind::MySql => 3306,
+        DatabaseKind::MySql | DatabaseKind::MariaDb => 3306,
+        DatabaseKind::Oracle => 1521,
         DatabaseKind::SqlServer => 1433,
         DatabaseKind::Sqlite => unreachable!("server URL cannot be SQLite"),
     };
@@ -892,10 +951,24 @@ pub fn format_connection_url(
     if format == ConnectionUrlFormat::JdbcSqlServer {
         return format_jdbc_sql_server_url(profile);
     }
+    if format == ConnectionUrlFormat::JdbcOracle {
+        let host = profile.host.as_deref().ok_or(ProfileError::MissingHost)?;
+        let port = profile.port.ok_or(ProfileError::MissingHost)?;
+        let service = profile
+            .database
+            .as_deref()
+            .ok_or(ProfileError::MissingHost)?;
+        let mut output = format!("jdbc:oracle:thin:@{host}:{port}/{service}");
+        if let Some(user) = profile.user.as_deref().filter(|value| !value.is_empty()) {
+            output.push_str(&format!("?user={}", utf8_percent_encode(user, QUERY_VALUE)));
+        }
+        return Ok(output);
+    }
     let scheme = match format {
         ConnectionUrlFormat::Postgres => "postgres",
         ConnectionUrlFormat::PostgreSql | ConnectionUrlFormat::JdbcPostgreSql => "postgresql",
         ConnectionUrlFormat::MySql | ConnectionUrlFormat::JdbcMySql => "mysql",
+        ConnectionUrlFormat::MariaDb => "mariadb",
         ConnectionUrlFormat::SqlServer | ConnectionUrlFormat::JdbcSqlServer => "sqlserver",
         ConnectionUrlFormat::MsSql => "mssql",
         _ => return Err(ProfileError::IncompatibleFormat),
@@ -936,7 +1009,11 @@ pub fn format_connection_url(
         output.push_str(&utf8_percent_encode(database, URL_COMPONENT).to_string());
     }
     let mut query = Vec::new();
-    if profile.kind == DatabaseKind::Postgres {
+    if profile.kind == DatabaseKind::Oracle {
+        if let Some(user) = profile.user.as_deref().filter(|value| !value.is_empty()) {
+            query.push(format!("user={}", utf8_percent_encode(user, QUERY_VALUE)));
+        }
+    } else if profile.kind == DatabaseKind::Postgres {
         if let Some(schema) = profile
             .default_schema
             .as_deref()
@@ -948,7 +1025,7 @@ pub fn format_connection_url(
             ));
         }
         query.push(format!("sslmode={}", ssl_mode_value(profile.ssl_mode)));
-    } else if profile.kind == DatabaseKind::MySql {
+    } else if matches!(profile.kind, DatabaseKind::MySql | DatabaseKind::MariaDb) {
         query.push(format!("sslMode={}", ssl_mode_value(profile.ssl_mode)));
     } else {
         if let Some(schema) = profile

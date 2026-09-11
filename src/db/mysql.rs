@@ -161,6 +161,7 @@ ORDER BY BINARY schema_name
 #[derive(Clone, Debug)]
 pub struct MySqlAdapter {
     pool: MySqlPool,
+    kind: DatabaseKind,
     connection_id: Uuid,
     catalog_scope: CatalogScope,
 }
@@ -440,8 +441,10 @@ impl MySqlAdapter {
         profile: &ConnectionProfile,
         password: Option<&SecretString>,
     ) -> Result<Self, DatabaseError> {
-        if profile.kind != DatabaseKind::MySql {
-            return Err(DatabaseError::configuration("profile is not MySQL"));
+        if !matches!(profile.kind, DatabaseKind::MySql | DatabaseKind::MariaDb) {
+            return Err(DatabaseError::configuration(
+                "profile is not MySQL or MariaDB",
+            ));
         }
         let host = profile
             .host
@@ -480,6 +483,7 @@ impl MySqlAdapter {
             .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Network))?;
         Ok(Self {
             pool,
+            kind: profile.kind,
             connection_id: profile.id,
             catalog_scope: profile.catalog_scope.clone(),
         })
@@ -491,7 +495,7 @@ impl MySqlAdapter {
             .await
             .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Network))?;
         Ok(ServerInfo {
-            kind: DatabaseKind::MySql,
+            kind: self.kind,
             version: row.try_get("version").map_err(decode_error)?,
             database: row
                 .try_get::<Option<String>, _>("current_database")
@@ -592,7 +596,7 @@ impl MySqlAdapter {
             }
         ) {
             return Err(DatabaseError::unsupported_catalog_target(
-                DatabaseKind::MySql,
+                self.kind,
                 &request.key.target,
             ));
         }
@@ -606,8 +610,8 @@ impl MySqlAdapter {
             .fetch_one(&mut *connection)
             .await
             .map_err(sql_error)?;
-        if !supports_catalog_version(&version) {
-            return Err(unsupported_catalog_version(&version));
+        if !supports_catalog_version_for_kind(self.kind, &version) {
+            return Err(unsupported_catalog_version(self.kind, &version));
         }
         let mut transaction = connection
             .begin_with(CATALOG_PAGE_BEGIN_SQL)
@@ -691,8 +695,8 @@ impl MySqlAdapter {
             .fetch_one(&mut *connection)
             .await
             .map_err(sql_error)?;
-        if !supports_catalog_version(&version) {
-            return Err(unsupported_catalog_version(&version));
+        if !supports_catalog_version_for_kind(self.kind, &version) {
+            return Err(unsupported_catalog_version(self.kind, &version));
         }
         let mut transaction = connection
             .begin_with(CATALOG_PAGE_BEGIN_SQL)
@@ -3124,18 +3128,33 @@ fn bind_cell<'q>(
 }
 
 pub fn supports_catalog_version(version: &str) -> bool {
-    if version.to_ascii_lowercase().contains("mariadb") {
-        return false;
-    }
-    parse_version_triplet(version).is_some_and(|version| version >= (8, 0, 13))
+    supports_catalog_version_for_kind(DatabaseKind::MySql, version)
 }
 
-fn unsupported_catalog_version(version: &str) -> DatabaseError {
+pub fn supports_catalog_version_for_kind(kind: DatabaseKind, version: &str) -> bool {
+    match kind {
+        DatabaseKind::MySql => {
+            !version.to_ascii_lowercase().contains("mariadb")
+                && parse_version_triplet(version).is_some_and(|version| version >= (8, 0, 13))
+        }
+        DatabaseKind::MariaDb => {
+            version.to_ascii_lowercase().contains("mariadb")
+                && parse_version_triplet(version).is_some_and(|version| version >= (10, 5, 0))
+        }
+        _ => false,
+    }
+}
+
+fn unsupported_catalog_version(kind: DatabaseKind, version: &str) -> DatabaseError {
+    let product = match kind {
+        DatabaseKind::MariaDb => "MariaDB 10.5 or newer",
+        _ => "Oracle MySQL 8.0.13 or newer",
+    };
     DatabaseError {
         category: ErrorCategory::Unsupported,
-        code: Some("mysql_catalog_version_unsupported".to_owned()),
+        code: Some("mysql_compatible_catalog_version_unsupported".to_owned()),
         message: sanitize_terminal_text(&format!(
-            "MySQL catalog pages require Oracle MySQL 8.0.13 or newer; server reported {version}"
+            "catalog pages require {product}; server reported {version}"
         )),
         diagnostic: None,
     }

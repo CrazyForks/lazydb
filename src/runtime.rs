@@ -3278,6 +3278,8 @@ impl Runtime {
                 DatabaseConnection::Sqlite(_) => true,
                 DatabaseConnection::Postgres(_)
                 | DatabaseConnection::MySql(_)
+                | DatabaseConnection::MariaDb(_)
+                | DatabaseConnection::Oracle(_)
                 | DatabaseConnection::SqlServer(_) => false,
             };
             let worker = match database

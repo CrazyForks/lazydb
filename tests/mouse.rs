@@ -1661,7 +1661,7 @@ fn profile_url_mouse_copy_is_redacted_end_to_end() {
 fn rendered_driver_options_select_exact_kinds_and_are_disabled_while_busy() {
     let mut app = App::new(Vec::new());
     app.update(Action::OpenProfileManager);
-    let backend = TestBackend::new(80, 24);
+    let backend = TestBackend::new(120, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = UiState::new();
     terminal
@@ -1671,6 +1671,8 @@ fn rendered_driver_options_select_exact_kinds_and_are_disabled_while_busy() {
     for kind in [
         DatabaseKind::Postgres,
         DatabaseKind::MySql,
+        DatabaseKind::MariaDb,
+        DatabaseKind::Oracle,
         DatabaseKind::Sqlite,
     ] {
         assert_click_maps(
