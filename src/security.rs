@@ -39,6 +39,11 @@ impl Eq for RedactedSecret {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisplayLineProjection {
     pub text: String,
+    /// UTF-8 byte offset in the source for every character boundary.
+    pub source_byte_boundaries: Vec<usize>,
+    /// UTF-8 byte offset in the projected text for every source boundary.
+    pub source_to_display_bytes: Vec<usize>,
+    /// Display-cell offset for every source character boundary.
     pub source_to_display_cells: Vec<usize>,
 }
 
@@ -60,10 +65,14 @@ pub fn sanitize_terminal_text(value: &str) -> String {
 
 pub fn project_editor_line(value: &str) -> DisplayLineProjection {
     let mut text = String::with_capacity(value.len());
+    let mut source_byte_boundaries = Vec::with_capacity(value.chars().count() + 1);
+    let mut source_to_display_bytes = Vec::with_capacity(value.chars().count() + 1);
     let mut source_to_display_cells = Vec::with_capacity(value.chars().count() + 1);
     let mut cells = 0;
+    source_byte_boundaries.push(0);
+    source_to_display_bytes.push(0);
     source_to_display_cells.push(0);
-    for character in value.chars() {
+    for (source_byte, character) in value.char_indices() {
         match character {
             '\t' => {
                 let spaces = 4 - (cells % 4);
@@ -85,10 +94,14 @@ pub fn project_editor_line(value: &str) -> DisplayLineProjection {
             value if value.is_control() => format!("<0x{:02X}>", value as u32).len(),
             value => value.width().unwrap_or(0),
         };
+        source_byte_boundaries.push(source_byte + character.len_utf8());
+        source_to_display_bytes.push(text.len());
         source_to_display_cells.push(cells);
     }
     DisplayLineProjection {
         text,
+        source_byte_boundaries,
+        source_to_display_bytes,
         source_to_display_cells,
     }
 }

@@ -38,6 +38,7 @@ pub struct EditorSelection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditorRenderSpan {
     pub text: String,
+    /// Full-document UTF-8 byte range, half-open.
     pub source_start: usize,
     pub source_end: usize,
     pub kind: EditorHighlightKind,
@@ -66,7 +67,15 @@ pub enum EditorHighlightKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditorRenderLine {
     pub line: usize,
+    pub display_text: String,
     pub spans: Vec<EditorRenderSpan>,
+    /// Full-document UTF-8 byte range for this line's content, half-open.
+    pub source_start: usize,
+    pub source_end: usize,
+    /// UTF-8 byte offset in the source line for every character boundary.
+    pub source_byte_boundaries: Vec<usize>,
+    /// UTF-8 byte offset in the projected line for every source boundary.
+    pub source_to_display_bytes: Vec<usize>,
     /// Display-cell offset for every source character boundary, including the end.
     pub source_to_display_cells: Vec<usize>,
     pub current_statement: bool,

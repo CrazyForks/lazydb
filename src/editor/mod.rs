@@ -1017,43 +1017,44 @@ impl EditorWorkspace {
                     let end = highlight.range.end.min(line_end) - line_start;
                     if start > byte {
                         spans.push(render_span(
-                            &source,
                             byte,
                             start,
                             EditorHighlightKind::Plain,
                             statement,
                             line_start,
+                            &projection,
                         ));
                     }
                     if end > start {
                         spans.push(render_span(
-                            &source,
                             start,
                             end,
                             map_highlight(highlight.kind),
                             statement,
                             line_start,
+                            &projection,
                         ));
                     }
                     byte = byte.max(end);
                 }
                 if byte < source.len() {
                     spans.push(render_span(
-                        &source,
                         byte,
                         source.len(),
                         EditorHighlightKind::Plain,
                         statement,
                         line_start,
+                        &projection,
                     ));
                 }
                 EditorRenderLine {
                     line: first_line + offset,
+                    display_text: projection.text.clone(),
                     spans: if spans.is_empty() {
                         vec![EditorRenderSpan {
                             text: projection.text,
-                            source_start: 0,
-                            source_end: source.len(),
+                            source_start: line_start,
+                            source_end: line_end,
                             kind: EditorHighlightKind::Plain,
                             current_statement: statement.is_some_and(|range| {
                                 range.start < line_end && range.end > line_start
@@ -1062,6 +1063,10 @@ impl EditorWorkspace {
                     } else {
                         spans
                     },
+                    source_start: line_start,
+                    source_end: line_end,
+                    source_byte_boundaries: projection.source_byte_boundaries,
+                    source_to_display_bytes: projection.source_to_display_bytes,
                     source_to_display_cells: projection.source_to_display_cells,
                     current_statement,
                     statement_background_cells,
@@ -2840,18 +2845,32 @@ fn map_highlight(kind: sql::HighlightKind) -> EditorHighlightKind {
 }
 
 fn render_span(
-    source: &str,
     start: usize,
     end: usize,
     kind: EditorHighlightKind,
     statement: Option<sql::TextRange>,
     line_start: usize,
+    projection: &crate::security::DisplayLineProjection,
 ) -> EditorRenderSpan {
-    let text = source.get(start..end).unwrap_or_default();
+    let start_boundary = projection
+        .source_byte_boundaries
+        .binary_search(&start)
+        .unwrap_or_else(|index| index.min(projection.source_to_display_bytes.len() - 1));
+    let end_boundary = projection
+        .source_byte_boundaries
+        .binary_search(&end)
+        .unwrap_or_else(|index| index.min(projection.source_to_display_bytes.len() - 1));
+    let display_start = projection.source_to_display_bytes[start_boundary];
+    let display_end = projection.source_to_display_bytes[end_boundary];
+    let text = projection
+        .text
+        .get(display_start..display_end)
+        .unwrap_or_default()
+        .to_owned();
     EditorRenderSpan {
-        text: project_editor_line(text).text,
-        source_start: start,
-        source_end: end,
+        text,
+        source_start: line_start + start,
+        source_end: line_start + end,
         kind,
         current_statement: statement
             .is_some_and(|range| range.start < line_start + end && range.end > line_start + start),

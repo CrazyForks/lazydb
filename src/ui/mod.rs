@@ -3513,21 +3513,33 @@ pub(crate) fn editor_line_spans(
         .collect::<Vec<_>>();
     let mut display_cell = 0usize;
     let mut result: Vec<Span<'static>> = Vec::new();
-    for source_span in &line.spans {
-        let has_semantic_error = snapshot.semantic_diagnostics.iter().any(|diagnostic| {
-            diagnostic.range.start < source_span.source_end
-                && diagnostic.range.end > source_span.source_start
-        });
+    let source_boundaries = &line.source_byte_boundaries;
+    for boundary in 0..source_boundaries.len().saturating_sub(1) {
+        let source_start = line.source_start + source_boundaries[boundary];
+        let source_end = line.source_start + source_boundaries[boundary + 1];
+        let source_span = line
+            .spans
+            .iter()
+            .find(|span| span.source_start <= source_start && span.source_end >= source_end);
+        let kind = source_span.map_or(EditorHighlightKind::Plain, |span| span.kind);
+        let has_semantic_error =
+            diagnostic_covers_source(&snapshot.semantic_diagnostics, source_start, source_end);
         let default_foreground = if has_semantic_error {
             theme.error
         } else if syntax {
-            theme.syntax_color(editor_syntax_color(source_span.kind))
+            theme.syntax_color(editor_syntax_color(kind))
         } else {
             theme.text
         };
-        let mut source_offset = source_span.source_start;
-        for character in source_span.text.chars() {
+        let display_start = line.source_to_display_bytes[boundary];
+        let display_end = line.source_to_display_bytes[boundary + 1];
+        let projected = line
+            .display_text
+            .get(display_start..display_end)
+            .unwrap_or_default();
+        for character in projected.chars() {
             let width = character.width().unwrap_or(0);
+            let source_offset = source_boundaries[boundary];
             let foreground = if let Some((kind, timestamp_end)) = output_style {
                 if source_offset < timestamp_end {
                     theme.muted
@@ -3558,16 +3570,11 @@ pub(crate) fn editor_line_spans(
                 } else {
                     theme.surface
                 })
-                .add_modifier(
-                    if snapshot.semantic_diagnostics.iter().any(|diagnostic| {
-                        diagnostic.range.start < source_offset.saturating_add(character.len_utf8())
-                            && diagnostic.range.end > source_offset
-                    }) {
-                        Modifier::UNDERLINED
-                    } else {
-                        Modifier::empty()
-                    },
-                );
+                .add_modifier(if has_semantic_error {
+                    Modifier::UNDERLINED
+                } else {
+                    Modifier::empty()
+                });
             if let Some(previous) = result.last_mut()
                 && previous.style == style
             {
@@ -3576,29 +3583,30 @@ pub(crate) fn editor_line_spans(
                 result.push(Span::styled(character.to_string(), style));
             }
             display_cell = display_cell.saturating_add(width);
-            source_offset += character.len_utf8();
         }
     }
     result
+}
+
+fn diagnostic_covers_source(
+    diagnostics: &[crate::sql::SqlDiagnostic],
+    source_start: usize,
+    source_end: usize,
+) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.range.start < source_end && diagnostic.range.end > source_start
+    })
 }
 
 fn line_has_diagnostic(
     line: &crate::model::editor::EditorRenderLine,
     diagnostics: &[crate::sql::SqlDiagnostic],
 ) -> bool {
-    let Some(start) = line.spans.first().map(|span| span.source_start) else {
-        return false;
-    };
-    let end = line
-        .spans
-        .last()
-        .map(|span| span.source_end)
-        .unwrap_or(start);
     diagnostics.iter().any(|diagnostic| {
-        (diagnostic.range.start < end && diagnostic.range.end > start)
+        (diagnostic.range.start < line.source_end && diagnostic.range.end > line.source_start)
             || (diagnostic.range.start == diagnostic.range.end
-                && diagnostic.range.start >= start
-                && diagnostic.range.start <= end)
+                && diagnostic.range.start >= line.source_start
+                && diagnostic.range.start <= line.source_end)
     })
 }
 
@@ -6770,5 +6778,99 @@ mod completion_popup_tests {
             completion_popup_rect(anchor, 22, 6),
             Some(Rect::new(48, 7, 2, 6))
         );
+    }
+}
+
+#[cfg(test)]
+mod editor_diagnostic_tests {
+    use super::*;
+    use crate::model::editor::{
+        EditorMode, EditorPosition, EditorRenderLine, EditorRenderSnapshot, EditorRenderSpan,
+        EditorViewport,
+    };
+
+    fn diagnostic(start: usize, end: usize) -> crate::sql::SqlDiagnostic {
+        crate::sql::SqlDiagnostic {
+            range: crate::sql::TextRange::new(start, end),
+            message: "test".to_owned(),
+            code: "test",
+        }
+    }
+
+    #[test]
+    fn diagnostic_overlap_is_based_on_full_source_ranges() {
+        let diagnostics = [diagnostic(36, 46)];
+
+        assert!(!diagnostic_covers_source(&diagnostics, 29, 36));
+        assert!(!diagnostic_covers_source(&diagnostics, 46, 55));
+        assert!(diagnostic_covers_source(&diagnostics, 36, 46));
+        assert!(diagnostic_covers_source(&diagnostics, 40, 42));
+    }
+
+    #[test]
+    fn diagnostic_overlap_does_not_mark_adjacent_ranges() {
+        let diagnostics = [diagnostic(14, 26)];
+
+        assert!(!diagnostic_covers_source(&diagnostics, 29, 36));
+        assert!(diagnostic_covers_source(&diagnostics, 14, 26));
+    }
+
+    #[test]
+    fn editor_render_marks_only_the_diagnosed_source_character() {
+        let projection = crate::security::project_editor_line("SELECT ignore_col from sys_user");
+        let line = EditorRenderLine {
+            line: 2,
+            display_text: projection.text.clone(),
+            spans: vec![EditorRenderSpan {
+                text: projection.text.clone(),
+                source_start: 29,
+                source_end: 29 + "SELECT ignore_col from sys_user".len(),
+                kind: EditorHighlightKind::Plain,
+                current_statement: false,
+            }],
+            source_start: 29,
+            source_end: 29 + "SELECT ignore_col from sys_user".len(),
+            source_byte_boundaries: projection.source_byte_boundaries,
+            source_to_display_bytes: projection.source_to_display_bytes,
+            source_to_display_cells: projection.source_to_display_cells,
+            current_statement: false,
+            statement_background_cells: None,
+            selection_newline: false,
+        };
+        let snapshot = EditorRenderSnapshot {
+            revision: 0,
+            mode: EditorMode::Insert,
+            first_line: 0,
+            total_lines: 3,
+            viewport: EditorViewport {
+                width: 80,
+                height: 3,
+            },
+            horizontal_offset: 0,
+            max_line_width: line.display_text.len(),
+            lines: vec![line.clone()],
+            cursor: EditorPosition { line: 2, column: 0 },
+            cursor_screen_cell: None,
+            selections: Vec::new(),
+            selection_cells: Vec::new(),
+            prompt: None,
+            semantic_diagnostics: vec![diagnostic(36, 46)],
+        };
+        let spans = editor_line_spans(&line, &snapshot, Theme::default(), false, None, &[], None);
+        let error_cells = spans
+            .iter()
+            .flat_map(|span| {
+                std::iter::repeat_n(
+                    span.style.fg == Some(Theme::default().error)
+                        && span.style.add_modifier.contains(Modifier::UNDERLINED),
+                    span.content.as_ref().chars().count(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(error_cells, {
+            let mut expected = vec![false; "SELECT ignore_col from sys_user".len()];
+            expected[7..17].fill(true);
+            expected
+        });
     }
 }
