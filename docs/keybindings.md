@@ -21,7 +21,8 @@ the same key can safely mean different movements in different views.
 
 The configurable Leader commands currently include `Space b` (Dashboard),
 `Space c` (Explorer), `Space s` (console manager), `Space r/R` (run the current
-statement or complete buffer), and `Space d` (execution target selector).
+statement or complete buffer), `Space d` (execution target selector), and
+`Space D` (active workspace database selector).
 
 In the SQL Editor, the target and transaction status shown on the editor's
 top-right border are also mouse controls. Clicking the target opens the same
@@ -29,6 +30,9 @@ execution-target selector as `Space d`; clicking a valid target row confirms it
 immediately, just like selecting it and pressing `Enter`. The selector contains
 the profile default and currently loaded catalog targets, even when only two
 targets are available. Selecting the current target is a no-op.
+`Space D` and the workspace header database name select the active connection
+database without rebinding existing Console or Relation tabs; `Space d` remains
+the per-Console target selector.
 
 When the current SQL Editor transaction is idle, clicking the transaction status
 toggles between `Auto` and `Manual` immediately. With an active, aborted, or

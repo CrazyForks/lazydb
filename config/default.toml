@@ -80,6 +80,8 @@ run-leader-statement = ["Space r"]
 run-leader-buffer = ["Space R"]
 # Space-d opens the execution target selector.
 open-target-selector = ["Space d"]
+# Space-D opens the active connection's database selector.
+open-database-selector = ["Space D"]
 
 [keybindings.panes]
 # Ctrl-w h focuses the left pane.

@@ -263,6 +263,7 @@ pub struct App {
     resolving_deferred: Option<DeferredTransactionPrompt>,
     pending_target_console: Option<Uuid>,
     pending_editor_target_switch: Option<(Uuid, Uuid, u64)>,
+    pending_workspace_database_switch: Option<(Uuid, u64)>,
     connect_started_at: Option<Instant>,
     transaction_op_started_at: Option<(Uuid, Instant)>,
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
@@ -667,6 +668,7 @@ impl App {
             resolving_deferred: None,
             pending_target_console: None,
             pending_editor_target_switch: None,
+            pending_workspace_database_switch: None,
             connect_started_at: None,
             transaction_op_started_at: None,
             sql_editor_list: Default::default(),
@@ -2396,6 +2398,11 @@ impl App {
                     | Action::MoveTargetSelector(_)
                     | Action::ConfirmTargetSelector
                     | Action::CancelTargetSelector
+                    | Action::MoveDatabaseSelector(_)
+                    | Action::SelectDatabaseSelector(_)
+                    | Action::EditDatabaseSelector(_)
+                    | Action::ConfirmDatabaseSelector
+                    | Action::CancelDatabaseSelector
                     | Action::ConfirmClearTransactionOutcome
                     | Action::CancelClearTransactionOutcome
                     | Action::OpenSqlEditorList
@@ -2609,6 +2616,11 @@ impl App {
                             search.query.begin_selection(cursor);
                         }
                     }
+                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
+                        if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
+                            selector.search.begin_selection(cursor);
+                        }
+                    }
                 }
                 Vec::new()
             }
@@ -2767,6 +2779,11 @@ impl App {
                     crate::ui::text_selection::InputSelectionTarget::ExplorerSearch => {
                         if let Some(search) = self.explorer.search.as_mut() {
                             search.query.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
+                        if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
+                            selector.search.extend_selection(cursor);
                         }
                     }
                 }
@@ -3067,6 +3084,25 @@ impl App {
                             .search
                             .as_ref()
                             .and_then(|search| search.query.selected_text())
+                        {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text: text.to_owned(),
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
+                        if let Some(text) =
+                            self.overlay.as_ref().and_then(|overlay| match overlay {
+                                Overlay::DatabaseSelector(selector) => {
+                                    selector.search.selected_text()
+                                }
+                                _ => None,
+                            })
                         {
                             return vec![Command::WriteClipboard(ClipboardPayload {
                                 description: format!(
@@ -7767,6 +7803,152 @@ impl App {
                 });
                 Vec::new()
             }
+            Action::OpenDatabaseSelector => {
+                let Some(profile) = self.active_profile().cloned() else {
+                    self.notify_warning(
+                        "LazyDB",
+                        "No active connection; connect before selecting a database",
+                    );
+                    return Vec::new();
+                };
+                let Some(connection) = self.connection.active_identity() else {
+                    self.notify_warning(
+                        "LazyDB",
+                        "No active connection; connect before selecting a database",
+                    );
+                    return Vec::new();
+                };
+                let current = self
+                    .connection
+                    .target
+                    .as_ref()
+                    .map(|target| target.database.as_str())
+                    .unwrap_or_default();
+                let candidates = self.database_selector_candidates(&profile);
+                self.overlay = Some(Overlay::DatabaseSelector(
+                    crate::model::database_selector::DatabaseSelectorState::new(
+                        connection, candidates, current,
+                    ),
+                ));
+                let databases_loaded = self
+                    .explorer
+                    .normalized
+                    .profiles
+                    .get(&profile.id)
+                    .and_then(|state| {
+                        let owner = ExplorerOwnerId::Profile(profile.id);
+                        state.load_states.get(&owner)
+                    })
+                    .is_some_and(|state| {
+                        matches!(state, ExplorerLoadState::Loaded { next_cursor: None })
+                    });
+                if databases_loaded {
+                    Vec::new()
+                } else {
+                    self.start_catalog_request(
+                        CatalogTarget::Databases,
+                        None,
+                        CatalogRequestIntent::Explicit,
+                    )
+                }
+            }
+            Action::MoveDatabaseSelector(delta) => {
+                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
+                    selector.move_selection(delta);
+                }
+                Vec::new()
+            }
+            Action::SelectDatabaseSelector(index) => {
+                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut()
+                    && selector.select_filtered(index)
+                {
+                    return self.update(Action::ConfirmDatabaseSelector);
+                }
+                Vec::new()
+            }
+            Action::EditDatabaseSelector(edit) => {
+                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
+                    selector.search.apply(edit);
+                    selector.selected = selector
+                        .filtered_candidates()
+                        .first()
+                        .map(|(index, _)| *index)
+                        .unwrap_or(selector.selected);
+                }
+                Vec::new()
+            }
+            Action::ConfirmDatabaseSelector => {
+                let Some(Overlay::DatabaseSelector(selector)) = self.overlay.take() else {
+                    return Vec::new();
+                };
+                let Some(target) = selector.selected_target().cloned() else {
+                    return Vec::new();
+                };
+                if self.connection.pending_generation.is_some() {
+                    self.notify_warning(
+                        "Connection",
+                        "Wait for the current connection change to finish before selecting a database",
+                    );
+                    self.overlay = Some(Overlay::DatabaseSelector(selector));
+                    return Vec::new();
+                }
+                match self.workspace_exit_check() {
+                    WorkspaceExitCheck::Ready => {}
+                    WorkspaceExitCheck::Running => {
+                        self.notify_warning(
+                            "Connection",
+                            "Wait for running SQL or relation loads to finish before switching databases",
+                        );
+                        self.overlay = Some(Overlay::DatabaseSelector(selector));
+                        return Vec::new();
+                    }
+                    WorkspaceExitCheck::RelationTransaction => {
+                        self.notify_warning(
+                            "Connection",
+                            "Commit or roll back relation edits before switching databases",
+                        );
+                        self.overlay = Some(Overlay::DatabaseSelector(selector));
+                        return Vec::new();
+                    }
+                    WorkspaceExitCheck::ConsoleTransactions(ids) => {
+                        self.notify_warning(
+                            "Connection",
+                            format!(
+                                "Resolve {} active console transaction(s) before switching databases",
+                                ids.len()
+                            ),
+                        );
+                        self.overlay = Some(Overlay::DatabaseSelector(selector));
+                        return Vec::new();
+                    }
+                }
+                if Some(selector.connection) != self.connection.active_identity()
+                    || self
+                        .connection
+                        .target
+                        .as_ref()
+                        .is_some_and(|current| current.database == target.database)
+                {
+                    return Vec::new();
+                }
+                let commands = self.request_connection_target(target);
+                if !commands.is_empty() {
+                    // Workspace database changes must not rebind an existing Console target.
+                    self.pending_target_console = None;
+                    self.pending_editor_target_switch = None;
+                    self.pending_workspace_database_switch = self
+                        .connection
+                        .pending_generation
+                        .map(|generation| (selector.connection.profile_id, generation));
+                }
+                commands
+            }
+            Action::CancelDatabaseSelector => {
+                if matches!(self.overlay, Some(Overlay::DatabaseSelector(_))) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
             Action::OpenPageSizeSelector { relation } => {
                 let selected = self
                     .tabs
@@ -8505,6 +8687,11 @@ impl App {
                     return Vec::new();
                 }
                 let pending_matches = self.pending_connection_matches(profile_id, generation);
+                let workspace_database_switch = self.pending_workspace_database_switch.is_some_and(
+                    |(pending_profile_id, pending_generation)| {
+                        pending_profile_id == profile_id && pending_generation == generation
+                    },
+                );
                 let switch_elapsed = if pending_matches {
                     self.connect_started_at
                         .take()
@@ -8611,6 +8798,13 @@ impl App {
                 }
                 if editor_target_switch.is_none() {
                     self.explorer.connection_changed();
+                }
+                if workspace_database_switch {
+                    self.focus = Focus::Explorer;
+                    self.explorer.active_profile = Some(profile_id);
+                    self.explorer.normalized.selected =
+                        Some(crate::model::explorer::ExplorerNodeId::Profile(profile_id));
+                    self.pending_workspace_database_switch = None;
                 }
                 let interrupted_catalog_targets = if editor_target_switch.is_some() {
                     self.explorer
@@ -8739,6 +8933,11 @@ impl App {
                         pending_profile_id == profile_id && pending_generation == generation
                     },
                 );
+                let is_workspace_database_switch = self
+                    .pending_workspace_database_switch
+                    .is_some_and(|(pending_profile_id, pending_generation)| {
+                        pending_profile_id == profile_id && pending_generation == generation
+                    });
                 if self.pending_connection_matches(profile_id, generation) {
                     let target_console = self
                         .pending_editor_target_switch
@@ -8754,6 +8953,7 @@ impl App {
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
                     self.pending_target_console = None;
+                    self.pending_workspace_database_switch = None;
                     self.connection.status = if self.connection.profile_id.is_some() {
                         ConnectionStatus::Connected
                     } else {
@@ -8771,7 +8971,8 @@ impl App {
                     }
                     self.notify_error("Connection", message.clone());
                     if let Some(state) = self.explorer.normalized.profiles.get_mut(&profile_id) {
-                        if is_editor_target_switch && self.connection.profile_id == Some(profile_id)
+                        if (is_editor_target_switch || is_workspace_database_switch)
+                            && self.connection.profile_id == Some(profile_id)
                         {
                             state.status = ExplorerConnectionStatus::Online;
                         } else {
@@ -11947,6 +12148,40 @@ impl App {
             .collect()
     }
 
+    fn database_selector_candidates(&self, profile: &ConnectionProfile) -> Vec<ExecutionTarget> {
+        let mut databases = self
+            .execution_target_candidates(profile)
+            .into_iter()
+            .map(|target| target.database)
+            .collect::<Vec<_>>();
+        if let Some(state) = self.explorer.normalized.profiles.get(&profile.id) {
+            for database in state
+                .catalog
+                .roots()
+                .iter()
+                .filter_map(|id| state.catalog.get(id))
+                .filter_map(|entry| entry.qualified_name.database.clone())
+            {
+                if !databases.iter().any(|known| known == &database) {
+                    databases.push(database);
+                }
+            }
+        }
+        databases
+            .into_iter()
+            .map(|database| ExecutionTarget {
+                profile_id: profile.id,
+                schema: match profile.kind {
+                    DatabaseKind::MySql => Some(database.clone()),
+                    DatabaseKind::Sqlite => Some("main".to_owned()),
+                    DatabaseKind::Postgres | DatabaseKind::SqlServer => None,
+                },
+                database,
+            })
+            .filter(|target| target.is_valid(profile))
+            .collect()
+    }
+
     fn cancel_relation_requests_for_connection(
         &mut self,
         next_connection: Option<ConnectionIdentity>,
@@ -12232,6 +12467,7 @@ impl App {
                 | EditorEffect::SetDatabaseTarget(_)
                 | EditorEffect::SetSchemaTarget(_) => continue,
                 EditorEffect::OpenTargetSelector => Action::OpenTargetSelector,
+                EditorEffect::OpenDatabaseSelector => Action::OpenDatabaseSelector,
                 EditorEffect::ToggleTransaction => {
                     Action::SetTransactionMode(match self.active_console().transaction_mode {
                         TransactionMode::Auto => TransactionMode::Manual,
@@ -13541,6 +13777,11 @@ impl App {
                     search.query.clear_selection();
                 }
             }
+            crate::ui::text_selection::InputSelectionTarget::DatabaseSelectorSearch => {
+                if let Some(Overlay::DatabaseSelector(selector)) = self.overlay.as_mut() {
+                    selector.search.clear_selection();
+                }
+            }
         }
     }
 
@@ -13783,6 +14024,26 @@ impl App {
             state.status = ExplorerConnectionStatus::Online;
         }
         self.explorer.normalized = next_explorer;
+        if matches!(request.key.target, CatalogTarget::Databases) {
+            let current_database = self
+                .connection
+                .target
+                .as_ref()
+                .map(|target| target.database.clone())
+                .unwrap_or_default();
+            let candidates = self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+                .map(|profile| self.database_selector_candidates(profile));
+            if let (Some(Overlay::DatabaseSelector(selector)), Some(candidates)) =
+                (self.overlay.as_mut(), candidates)
+            {
+                if selector.connection == page.key.connection {
+                    selector.replace_candidates(candidates, &current_database);
+                }
+            }
+        }
         if let Some((target, hint)) = self.pending_catalog_selection.clone()
             && target == request.key.target
         {
@@ -13838,14 +14099,17 @@ impl App {
                 CatalogRequestIntent::Continuation,
             ));
         }
+        let database_selector_open = matches!(self.overlay, Some(Overlay::DatabaseSelector(_)));
         match &request.key.target {
             CatalogTarget::Databases => {
-                for entry in page.entries {
-                    commands.extend(self.start_catalog_request(
-                        CatalogTarget::schemas(entry.id).unwrap(),
-                        None,
-                        CatalogRequestIntent::Automatic,
-                    ));
+                if !database_selector_open {
+                    for entry in page.entries {
+                        commands.extend(self.start_catalog_request(
+                            CatalogTarget::schemas(entry.id).unwrap(),
+                            None,
+                            CatalogRequestIntent::Automatic,
+                        ));
+                    }
                 }
             }
             CatalogTarget::Schemas { .. } => {

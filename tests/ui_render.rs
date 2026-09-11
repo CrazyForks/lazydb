@@ -369,21 +369,18 @@ fn readonly_regions_register_help_dashboard_and_relation_detail_targets() {
 }
 
 #[test]
-fn connected_header_database_summary_is_readonly_detail_target() {
+fn connected_header_database_summary_opens_database_selector() {
     let app = fixture();
     let (_, state) = render_with_state(&app, 120, 36);
-    let detail = state
-        .hit_regions
-        .iter()
-        .find_map(|region| match &region.target {
-            HitTarget::OpenTextDetail(request) if request.title == "Connection database" => {
-                Some(request)
-            }
-            _ => None,
-        })
-        .expect("database detail target");
-    assert_eq!(detail.display_text, ":memory:");
-    assert_eq!(detail.copy_text, ":memory:");
+    assert!(
+        state
+            .hit_regions
+            .iter()
+            .any(|region| region.target == HitTarget::HeaderDatabase)
+    );
+    assert!(!state.hit_regions.iter().any(|region| {
+        matches!(&region.target, HitTarget::OpenTextDetail(request) if request.title == "Connection database")
+    }));
 }
 
 #[test]

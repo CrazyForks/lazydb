@@ -573,6 +573,22 @@ impl Keymap {
                 _ => None,
             };
         }
+        if matches!(app.overlay, Some(Overlay::DatabaseSelector(_))) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Enter => Some(Action::ConfirmDatabaseSelector),
+                KeyCode::Esc => Some(Action::CancelDatabaseSelector),
+                KeyCode::Down => Some(Action::MoveDatabaseSelector(1)),
+                KeyCode::Up => Some(Action::MoveDatabaseSelector(-1)),
+                KeyCode::Backspace => Some(Action::EditDatabaseSelector(
+                    crate::model::text_input::TextInputEdit::Backspace,
+                )),
+                KeyCode::Char(character) => Some(Action::EditDatabaseSelector(
+                    crate::model::text_input::TextInputEdit::Insert(character),
+                )),
+                _ => None,
+            };
+        }
         if matches!(app.overlay, Some(Overlay::PageSizeSelector { .. })) {
             self.pending = None;
             return match event.code {
@@ -2300,6 +2316,7 @@ fn configured_command_action(command: &str, app: &App) -> Option<Action> {
         "run-leader-statement" => Some(Action::RunActiveSql),
         "run-leader-buffer" => Some(Action::RunAllSql),
         "open-target-selector" => Some(Action::OpenTargetSelector),
+        "open-database-selector" => Some(Action::OpenDatabaseSelector),
         "results-copy-row-headers" if is_grid_navigation_focus(app) => Some(Action::CopyGridRow {
             include_headers: true,
         }),
@@ -4163,6 +4180,11 @@ mod tests {
         assert_eq!(
             keymap.map(key(KeyCode::Char('d')), &app),
             Some(Action::OpenTargetSelector)
+        );
+        assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('D')), &app),
+            Some(Action::OpenDatabaseSelector)
         );
     }
 

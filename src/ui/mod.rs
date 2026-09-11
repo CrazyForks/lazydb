@@ -151,6 +151,7 @@ pub enum HitTarget {
         max_offset: usize,
     },
     HeaderProfile,
+    HeaderDatabase,
     ProfileField(ProfileField),
     ProfileDriver(crate::profile::DatabaseKind),
     ProfileToggle(ProfileField),
@@ -192,6 +193,8 @@ pub enum HitTarget {
     EditorTransactionMenu,
     TargetSelectorRow(usize),
     TargetSelectorCancel,
+    DatabaseSelectorRow(usize),
+    DatabaseSelectorSearch,
     TransactionMenuItem(usize),
     TransactionMenuCancel,
     TransactionExitChoice(crate::model::transaction::TransactionExitChoice),
@@ -1103,6 +1106,7 @@ fn overlay_key(overlay: &Overlay) -> u8 {
         Overlay::ClearTransactionOutcome { .. } => 11,
         Overlay::TransactionMenu { .. } => 22,
         Overlay::TargetSelector { .. } => 12,
+        Overlay::DatabaseSelector(_) => 25,
         Overlay::DeleteConsole { .. } => 13,
         Overlay::SqlEditorList(_) => 14,
         Overlay::PageSizeSelector { .. } => 15,
@@ -1813,7 +1817,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
         .saturating_add(profile_width)
         .saturating_add("  /  ".cell_width());
     let database_width = database.cell_width();
-    if database_width > 0 && database_x < main_area.right() {
+    if app.connection.server.is_some() && database_width > 0 && database_x < main_area.right() {
         state.hit_regions.push(HitRegion {
             area: Rect::new(
                 database_x,
@@ -1821,10 +1825,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
                 database_width.min(main_area.right().saturating_sub(database_x)),
                 1,
             ),
-            target: HitTarget::OpenTextDetail(readonly_detail_request(
-                "Connection database",
-                database,
-            )),
+            target: HitTarget::HeaderDatabase,
         });
     }
 }
@@ -4327,6 +4328,76 @@ fn render_overlay(
             frame.render_widget(
                 Paragraph::new(lines)
                     .block(panel_block(" TARGET SELECTOR ", true, theme))
+                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
+                popup,
+            );
+        }
+        Overlay::DatabaseSelector(selector) => {
+            let filtered = selector.filtered_candidates();
+            let visible_count = filtered.len().min(8);
+            let height = (visible_count as u16 + 5).clamp(7, 14);
+            let popup = centered(area, 52.min(area.width.saturating_sub(2)), height);
+            frame.render_widget(Clear, popup);
+            let mut lines = vec![Line::from(Span::styled(
+                " SWITCH DATABASE ",
+                theme.title(true),
+            ))];
+            lines.push(Line::from(vec![
+                Span::styled("Search: ", Style::new().fg(theme.muted)),
+                Span::styled(selector.search.value(), Style::new().fg(theme.text)),
+            ]));
+            let search_area = Rect::new(popup.x + 1, popup.y + 1, popup.width.saturating_sub(2), 1);
+            state.hit_regions.push(HitRegion {
+                area: search_area,
+                target: HitTarget::DatabaseSelectorSearch,
+            });
+            register_input_selection_target(
+                state,
+                text_selection::InputSelectionTarget::DatabaseSelectorSearch,
+                search_area,
+                "Search: ",
+                &selector.search,
+                text_input_horizontal_offset(search_area, "Search: ", &selector.search),
+            );
+            lines.extend(filtered.iter().take(visible_count).map(|(index, target)| {
+                let selected = *index == selector.selected;
+                let marker = if selected { ">" } else { " " };
+                let current = if selector.is_current(&target.database) {
+                    " *"
+                } else {
+                    ""
+                };
+                Line::from(Span::styled(
+                    truncate_to_cells(
+                        &format!(
+                            "{marker} {}{current}",
+                            sanitize_terminal_text(&target.database)
+                        ),
+                        popup.width.saturating_sub(2) as usize,
+                    ),
+                    if selected {
+                        Style::new().fg(theme.text).bg(theme.selection)
+                    } else {
+                        Style::new().fg(theme.text)
+                    },
+                ))
+            }));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("Up/Down select  Enter switch  Esc cancel"));
+            for (row, (index, _)) in filtered.iter().take(visible_count).enumerate() {
+                state.hit_regions.push(HitRegion {
+                    area: Rect::new(
+                        popup.x + 1,
+                        popup.y + 2 + row as u16,
+                        popup.width.saturating_sub(2),
+                        1,
+                    ),
+                    target: HitTarget::DatabaseSelectorRow(*index),
+                });
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(panel_block(" SWITCH DATABASE ", true, theme))
                     .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
                 popup,
             );

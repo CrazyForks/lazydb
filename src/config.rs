@@ -33,6 +33,7 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "run-leader-statement",
     "run-leader-buffer",
     "open-target-selector",
+    "open-database-selector",
     "focus-pane-left",
     "focus-pane-down",
     "focus-pane-up",

@@ -165,6 +165,7 @@ pub enum Overlay {
         candidates: Vec<ExecutionTarget>,
         selected: usize,
     },
+    DatabaseSelector(crate::model::database_selector::DatabaseSelectorState),
     PageSizeSelector {
         relation: bool,
         selected: usize,
