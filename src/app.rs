@@ -13292,20 +13292,20 @@ impl App {
         {
             return Vec::new();
         }
-        let Some(scope) = self
-            .profiles
-            .iter()
-            .find(|profile| profile.id == connection.profile_id)
-            .map(|profile| profile.catalog_scope.clone())
-        else {
-            return Vec::new();
-        };
         let owner = owner_for_target(connection.profile_id, &target);
         let Some(state) = self
             .explorer
             .normalized
             .profiles
             .get_mut(&connection.profile_id)
+        else {
+            return Vec::new();
+        };
+        let Some(scope) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == connection.profile_id)
+            .map(|profile| profile.catalog_scope.clone())
         else {
             return Vec::new();
         };
@@ -13595,6 +13595,14 @@ impl App {
         if relation.profile_id() != connection.profile_id {
             return Vec::new();
         }
+        let Some(scope) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == connection.profile_id)
+            .map(|profile| profile.catalog_scope.clone())
+        else {
+            return Vec::new();
+        };
         let Some(state) = self
             .explorer
             .normalized
@@ -13615,6 +13623,7 @@ impl App {
             catalog_epoch: state.catalog_epoch,
             request_id,
             relation,
+            scope,
         }]
     }
 

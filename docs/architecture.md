@@ -44,7 +44,10 @@ status. `EmptyProfiles` is a real empty-state node, not a popup; its action
 starts a new profile draft. Catalog requests identify connection, catalog epoch,
 request id, target, cursor, and scope. Pages are loaded lazily, validated before
 mutation, and stale or mismatched results are discarded. A failed refresh
-preserves the previous tree as stale where possible.
+preserves the previous tree as stale where possible. Relation data, DDL, and
+identity-recovery operations also receive the request's immutable scope
+snapshot; adapter connection state is not authoritative after a profile's
+Visible Objects settings change.
 
 Explorer search has two projections. `/` is a synchronous find over a snapshot of
 the normal `visible()` projection, so collapsed descendants and unloaded pages are

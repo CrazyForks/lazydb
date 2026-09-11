@@ -31,7 +31,7 @@ use crate::{
         workspace::{ConnectionIdentity, Focus, PaneLayoutMetrics, PaneResize, PaneSplit},
     },
     persistence::secrets::SecretStoreAvailability,
-    profile::{ConnectionProfile, DatabaseKind},
+    profile::{CatalogScope, ConnectionProfile, DatabaseKind},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1102,6 +1102,7 @@ pub enum Command {
         catalog_epoch: u64,
         request_id: u64,
         relation: CatalogId,
+        scope: CatalogScope,
     },
     ReconcileCatalogRelation {
         connection: ConnectionIdentity,

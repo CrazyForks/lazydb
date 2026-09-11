@@ -214,6 +214,27 @@ impl MySqlSearchCandidate {
 }
 
 impl MySqlAdapter {
+    pub async fn preview_relation_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &CatalogScope,
+        options: &crate::model::relation::RelationPreviewOptions,
+        page: crate::model::pagination::PageRequest,
+    ) -> Result<crate::db::RelationPreview, DatabaseError> {
+        let mut adapter = self.clone();
+        adapter.catalog_scope = scope.clone();
+        adapter.preview_relation(relation, options, page).await
+    }
+
+    pub async fn relation_ddl_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &CatalogScope,
+    ) -> Result<RelationDdl, DatabaseError> {
+        let mut adapter = self.clone();
+        adapter.catalog_scope = scope.clone();
+        adapter.relation_ddl(relation).await
+    }
     pub const MONITOR_STATUS_SQL: &str = "SHOW GLOBAL STATUS WHERE Variable_name IN ('Queries','Com_commit','Com_rollback','Com_select','Com_insert','Com_update','Com_delete','Threads_connected','Threads_running','Innodb_buffer_pool_read_requests','Innodb_buffer_pool_reads','Created_tmp_files','Bytes_received','Bytes_sent','Connections','Aborted_clients','Aborted_connects','Uptime')";
     pub const MONITOR_METADATA_SQL: &str =
         "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('version','max_connections')";

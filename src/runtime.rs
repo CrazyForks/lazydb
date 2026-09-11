@@ -479,7 +479,14 @@ impl Runtime {
                 catalog_epoch,
                 request_id,
                 relation,
-            } => self.resolve_catalog_relation(connection, catalog_epoch, request_id, relation),
+                scope,
+            } => self.resolve_catalog_relation(
+                connection,
+                catalog_epoch,
+                request_id,
+                relation,
+                scope,
+            ),
             Command::ReconcileCatalogRelation {
                 connection,
                 old_relation,
@@ -1511,6 +1518,7 @@ impl Runtime {
         catalog_epoch: u64,
         request_id: u64,
         relation: crate::db::catalog::CatalogId,
+        scope: crate::profile::CatalogScope,
     ) {
         let sender = self.event_sender.clone();
         let database = Arc::clone(&self.connection);
@@ -1526,7 +1534,10 @@ impl Runtime {
                 });
                 return;
             };
-            match database.resolve_relation_identity(&relation).await {
+            match database
+                .resolve_relation_identity_with_scope(&relation, &scope)
+                .await
+            {
                 Ok(entry) => {
                     let _ = sender.send(Action::CatalogRelationResolved {
                         connection,
@@ -2021,15 +2032,16 @@ impl Runtime {
             };
             let result = match task_request.kind {
                 crate::model::relation::RelationRequestKind::Preview => database
-                    .preview_relation(
+                    .preview_relation_with_scope(
                         &task_request.relation.object_id,
+                        &task_request.scope,
                         &task_request.options,
                         task_request.page,
                     )
                     .await
                     .map(crate::model::relation::RelationSnapshot::Preview),
                 crate::model::relation::RelationRequestKind::Ddl => database
-                    .relation_ddl(&task_request.relation.object_id)
+                    .relation_ddl_with_scope(&task_request.relation.object_id, &task_request.scope)
                     .await
                     .map(|snapshot| {
                         crate::model::relation::RelationSnapshot::Ddl(Box::new(snapshot))
