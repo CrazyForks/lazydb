@@ -500,6 +500,11 @@ pub enum Action {
         rows: isize,
         columns: isize,
     },
+    EditorSetScrollAxis {
+        session_id: Uuid,
+        vertical: bool,
+        offset: usize,
+    },
     EditorScrollBy {
         session_id: Uuid,
         rows: isize,
@@ -978,6 +983,7 @@ pub enum Action {
         direction: isize,
         amount: crate::model::explorer::ExplorerScrollAmount,
     },
+    ExplorerSetScrollOffset(usize),
     ExplorerAlignSelected(crate::model::explorer::ExplorerNodeAlignment),
     ExplorerFindOpen,
     ExplorerFindInsert(char),

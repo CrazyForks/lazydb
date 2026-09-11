@@ -7403,6 +7403,14 @@ impl App {
                 );
                 Vec::new()
             }
+            Action::EditorSetScrollAxis {
+                session_id,
+                vertical,
+                offset,
+            } => {
+                let _ = self.editor.set_scroll_axis(session_id, vertical, offset);
+                Vec::new()
+            }
             Action::EditorScrollBy {
                 session_id,
                 rows,
@@ -9835,6 +9843,10 @@ impl App {
             }
             Action::ExplorerScrollNodes { direction, amount } => {
                 self.explorer.scroll_nodes(direction, amount);
+                Vec::new()
+            }
+            Action::ExplorerSetScrollOffset(offset) => {
+                self.explorer.set_scroll_offset(offset);
                 Vec::new()
             }
             Action::ExplorerAlignSelected(alignment) => {

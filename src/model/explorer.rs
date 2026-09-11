@@ -1581,6 +1581,39 @@ impl ExplorerTreeState {
         self.update_scroll(selected_index, rows.len());
     }
 
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        let rows = self.visible();
+        if rows.is_empty() || self.viewport_height == 0 {
+            self.scroll = 0;
+            return;
+        }
+        self.scroll = offset.min(rows.len().saturating_sub(1));
+        let viewport = self.viewport(self.viewport_height);
+        let pinned = viewport
+            .pinned
+            .iter()
+            .map(|row| &row.id)
+            .collect::<HashSet<_>>();
+        let Some(selected_index) = self
+            .selected
+            .as_ref()
+            .and_then(|selected| rows.iter().position(|row| &row.id == selected))
+        else {
+            return;
+        };
+        if pinned.contains(&rows[selected_index].id) {
+            return;
+        }
+        let body_height = viewport.body_height.max(1);
+        if selected_index < self.scroll || selected_index >= self.scroll.saturating_add(body_height)
+        {
+            let visible_index = selected_index
+                .clamp(self.scroll, self.scroll.saturating_add(body_height - 1))
+                .min(rows.len() - 1);
+            self.selected = Some(rows[visible_index].id.clone());
+        }
+    }
+
     fn scroll_lines(&mut self, rows: &[VisibleExplorerNode], direction: isize, lines: usize) {
         let Some(selected_index) = self
             .selected

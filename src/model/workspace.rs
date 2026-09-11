@@ -1252,6 +1252,18 @@ impl ExplorerState {
         self.sync_selected_index();
     }
 
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        if self.search.is_some() {
+            let row_count = self.visible_search().len();
+            if let Some(search) = self.search.as_mut() {
+                search.scroll = offset.min(row_count.saturating_sub(1));
+            }
+        } else {
+            self.normalized.set_scroll_offset(offset);
+        }
+        self.sync_selected_index();
+    }
+
     pub fn align_selected(&mut self, alignment: ExplorerNodeAlignment) {
         self.normalized.align_selected(alignment);
         self.sync_selected_index();
