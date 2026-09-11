@@ -1347,6 +1347,13 @@ impl Keymap {
             {
                 return Some(Action::EditorKey(event));
             }
+            if event.modifiers == KeyModifiers::CONTROL
+                && app.focus == Focus::Editor
+                && app.active_editor_mode() == EditorMode::Normal
+                && matches!(event.code, KeyCode::Char('o' | 'i'))
+            {
+                return Some(Action::EditorKey(event));
+            }
             return match event.code {
                 KeyCode::Char('u')
                     if app.focus == Focus::Editor
@@ -3393,6 +3400,27 @@ mod tests {
             ),
             Some(Action::CloseOtherTabs)
         );
+    }
+
+    #[test]
+    fn editor_normal_ctrl_o_and_ctrl_i_are_forwarded_to_the_editor() {
+        let mut app = App::new(Vec::new());
+        app.focus = Focus::Editor;
+        app.update(Action::EditorKey(key(KeyCode::Esc)));
+        let mut keymap = Keymap::default();
+
+        assert!(matches!(
+            keymap.map(control_key('o'), &app),
+            Some(Action::EditorKey(event))
+                if event.code == KeyCode::Char('o')
+                    && event.modifiers == KeyModifiers::CONTROL
+        ));
+        assert!(matches!(
+            keymap.map(control_key('i'), &app),
+            Some(Action::EditorKey(event))
+                if event.code == KeyCode::Char('i')
+                    && event.modifiers == KeyModifiers::CONTROL
+        ));
     }
 
     fn assert_leader_shortcut(app: &App, code: char, expected: Action) {
