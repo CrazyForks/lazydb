@@ -45,6 +45,8 @@ if command -v sha256sum >/dev/null 2>&1; then HASH=sha256sum; else command -v sh
 
 if [ -n "${LAZYDB_CONFIG_HOME:-}" ]; then
     DATA_HOME=$LAZYDB_CONFIG_HOME
+elif [ -f "$HOME/lazydb/connections.toml" ] || [ -f "$HOME/lazydb/credential.key" ] || [ -f "$HOME/lazydb/settings.toml" ] || [ -f "$HOME/lazydb/workspace.toml" ] || [ -f "$HOME/lazydb/install.json" ] || [ -d "$HOME/lazydb/releases" ] || [ -d "$HOME/lazydb/sql" ]; then
+    DATA_HOME="$HOME/lazydb"
 elif [ -f "$HOME/.config/lazydb/connections.toml" ] || [ -f "$HOME/.config/lazydb/credential.key" ] || [ -f "$HOME/.config/lazydb/settings.toml" ] || [ -f "$HOME/.config/lazydb/workspace.toml" ] || [ -f "$HOME/.config/lazydb/install.json" ] || [ -d "$HOME/.config/lazydb/releases" ] || [ -d "$HOME/.config/lazydb/sql" ]; then
     DATA_HOME="$HOME/.config/lazydb"
 elif [ -f "$HOME/.local/share/lazydb/connections.toml" ] || [ -f "$HOME/.local/share/lazydb/credential.key" ] || [ -f "$HOME/.local/share/lazydb/settings.toml" ] || [ -f "$HOME/.local/share/lazydb/workspace.toml" ] || [ -f "$HOME/.local/share/lazydb/install.json" ] || [ -d "$HOME/.local/share/lazydb/releases" ] || [ -d "$HOME/.local/share/lazydb/sql" ]; then

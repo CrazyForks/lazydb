@@ -354,7 +354,7 @@ currently unavailable; use the Pages installer or Homebrew instead.
 
 M0 loads connection profiles from the platform configuration directory:
 
-- macOS/Linux: `$HOME/.config/lazydb/connections.toml` by default, or
+- macOS/Linux: `$HOME/lazydb/connections.toml` by default, or
   `$LAZYDB_CONFIG_HOME/connections.toml` when the environment variable is set
 - Windows: `%APPDATA%\\lazydb\\connections.toml`
 

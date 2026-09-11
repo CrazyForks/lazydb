@@ -116,6 +116,13 @@ HOME="$TMP/fresh-home" LAZYDB_CONFIG_HOME= XDG_DATA_HOME="$TMP/fresh-data" \
 [ -L "$TMP/fresh-home/lazydb/current" ]
 [ -f "$TMP/fresh-home/lazydb/install.json" ]
 [ ! -e "$TMP/fresh-data/lazydb" ]
+mkdir -p "$TMP/preferred-home/lazydb" "$TMP/preferred-home/.config/lazydb"
+printf '%s\n' preferred > "$TMP/preferred-home/lazydb/settings.toml"
+printf '%s\n' legacy > "$TMP/preferred-home/.config/lazydb/settings.toml"
+HOME="$TMP/preferred-home" LAZYDB_CONFIG_HOME= \
+    sh "$ROOT/install.sh" --install-dir "$TMP/preferred-install" >/dev/null
+[ -f "$TMP/preferred-home/lazydb/install.json" ]
+[ ! -e "$TMP/preferred-home/.config/lazydb/install.json" ]
 mkdir -p "$TMP/legacy-home/.config/lazydb"
 printf '%s\n' legacy > "$TMP/legacy-home/.config/lazydb/settings.toml"
 HOME="$TMP/legacy-home" LAZYDB_CONFIG_HOME= \
