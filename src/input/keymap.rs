@@ -2245,6 +2245,11 @@ fn map_pending(
         return None;
     }
     match (pending, event.code) {
+        (Pending::Leader, KeyCode::Char('B')) if app.active_console_opt().is_some() => {
+            Some(Action::OpenConsoleTargetSelector {
+                console_id: app.active_console_opt().expect("checked above").id,
+            })
+        }
         (Pending::Leader, KeyCode::Char('q')) => Some(Action::CloseActiveTab),
         (Pending::Leader, KeyCode::Char('x')) => Some(Action::RequestDeleteActiveConsole),
         (Pending::Leader, KeyCode::Char('m')) => Some(Action::OpenNotificationHistory),

@@ -3785,6 +3785,7 @@ mod tests {
                 Overlay::TargetSelector {
                     candidates: Vec::new(),
                     selected: 0,
+                    console_id: None,
                 },
                 ShortcutContext::TargetSelector,
             ),

@@ -16,6 +16,7 @@ pub struct SqlDiagnostic {
 pub struct DiagnosticScheduleKey {
     pub console_id: Uuid,
     pub document_revision: u64,
+    pub connection: Option<crate::model::workspace::ConnectionIdentity>,
     pub target: Option<crate::model::execution_target::ExecutionTarget>,
     pub dialect: SqlDialect,
     pub catalog_generation: u64,

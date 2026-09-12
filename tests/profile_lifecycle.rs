@@ -72,10 +72,16 @@ async fn drain_catalog(
         let Ok(Some(action)) = timeout(Duration::from_millis(100), receiver.recv()).await else {
             break;
         };
-        assert!(matches!(
-            action,
-            Action::CatalogPageLoaded(_) | Action::CatalogPageFailed { .. }
-        ));
+        assert!(
+            matches!(
+                action,
+                Action::CatalogPageLoaded(_)
+                    | Action::CatalogPageFailed { .. }
+                    | Action::DisconnectCompleted { .. }
+                    | Action::DiagnosticDue(_)
+            ),
+            "unexpected catalog action: {action:?}"
+        );
         dispatch(app, runtime, action);
     }
 }
@@ -144,11 +150,19 @@ async fn query(
         commands.as_slice(),
         [Command::RunQuery { .. } | Command::RunQueryPage { .. }]
     ));
-    let action = apply_next(app, runtime, receiver).await;
-    assert!(matches!(
-        action,
-        Action::QueryFinished { .. } | Action::QueryPageFinished { .. }
-    ));
+    loop {
+        let action = apply_next(app, runtime, receiver).await;
+        if matches!(
+            action,
+            Action::QueryFinished { .. } | Action::QueryPageFinished { .. }
+        ) {
+            break;
+        }
+        assert!(matches!(
+            action,
+            Action::DiagnosticDue(_) | Action::CompletionDue(_)
+        ));
+    }
     assert!(app.active_console().outcome.is_some());
 }
 
@@ -324,12 +338,24 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
         },
     );
     dispatch(&mut app, &mut runtime, Action::ActivateProfileDelete);
-    let (deleted, commands) = apply_next_with_commands(&mut app, &mut runtime, &mut receiver).await;
+    let (deleted, commands) = loop {
+        let (action, commands) =
+            apply_next_with_commands(&mut app, &mut runtime, &mut receiver).await;
+        if matches!(action, Action::ProfileDeleted { .. }) {
+            break (action, commands);
+        }
+        assert!(matches!(
+            action,
+            Action::DiagnosticDue(_)
+                | Action::CompletionDue(_)
+                | Action::DisconnectCompleted { .. }
+        ));
+    };
     assert!(matches!(
         deleted,
         Action::ProfileDeleted {
             profile_id,
-            active_connection: None,
+            active_connection: Some(_),
             ..
         } if profile_id == beta_id
     ));
@@ -363,7 +389,18 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
         },
     );
     dispatch(&mut app, &mut runtime, Action::ActivateProfileDelete);
-    let deleted = apply_next(&mut app, &mut runtime, &mut receiver).await;
+    let deleted = loop {
+        let action = apply_next(&mut app, &mut runtime, &mut receiver).await;
+        if matches!(action, Action::ProfileDeleted { .. }) {
+            break action;
+        }
+        assert!(matches!(
+            action,
+            Action::DiagnosticDue(_)
+                | Action::CompletionDue(_)
+                | Action::DisconnectCompleted { .. }
+        ));
+    };
     assert!(matches!(
         deleted,
         Action::ProfileDeleted {

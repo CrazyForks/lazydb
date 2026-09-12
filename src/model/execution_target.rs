@@ -1,7 +1,179 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::model::explorer::ExplorerNodeId;
 use crate::profile::{ConnectionProfile, DatabaseKind};
+
+pub fn resolve_default_target(
+    selected: Option<&ExplorerNodeId>,
+    profiles: &[ConnectionProfile],
+    recent: &[ExecutionTarget],
+) -> Option<ExecutionTarget> {
+    let profile_for = |id| profiles.iter().find(|profile| profile.id == id);
+    let selected_target = match selected {
+        Some(ExplorerNodeId::Profile(id)) => profile_for(*id).map(ExecutionTarget::from_profile),
+        Some(ExplorerNodeId::Catalog(id))
+            if matches!(
+                id.kind,
+                crate::db::catalog::CatalogKind::Database | crate::db::catalog::CatalogKind::Schema
+            ) =>
+        {
+            let profile = profile_for(id.profile_id())?;
+            let database = id.native_path.first()?.clone();
+            let schema = (id.kind == crate::db::catalog::CatalogKind::Schema)
+                .then(|| id.native_path.get(1).cloned())
+                .flatten();
+            Some(ExecutionTarget {
+                profile_id: profile.id,
+                database,
+                schema,
+            })
+        }
+        _ => None,
+    };
+    if let Some(target) = selected_target.filter(|target| {
+        profile_for(target.profile_id).is_some_and(|profile| target.is_valid(profile))
+    }) {
+        return Some(target);
+    }
+    if let Some(target) = recent.iter().find(|target| {
+        profile_for(target.profile_id).is_some_and(|profile| target.is_valid(profile))
+    }) {
+        return Some(target.clone());
+    }
+    profiles
+        .iter()
+        .min_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+        })
+        .map(ExecutionTarget::from_profile)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::catalog::{CatalogId, CatalogKind};
+
+    fn profile(id: Uuid, name: &str) -> ConnectionProfile {
+        ConnectionProfile {
+            id,
+            name: name.into(),
+            access: crate::profile::ProfileAccess::Global,
+            group_id: None,
+            kind: DatabaseKind::Postgres,
+            url_format: Default::default(),
+            host: Some("localhost".into()),
+            port: None,
+            user: Some("user".into()),
+            database: Some("app".into()),
+            default_schema: Some("public".into()),
+            sqlite_path: None,
+            ssl_mode: Default::default(),
+            credential_policy: Default::default(),
+            read_only: false,
+            environment: Default::default(),
+            catalog_scope: crate::profile::CatalogScope {
+                databases: crate::profile::CatalogSelection::All,
+            },
+        }
+    }
+
+    #[test]
+    fn default_target_resolution_is_table_driven() {
+        let first = Uuid::from_u128(1);
+        let second = Uuid::from_u128(2);
+        let profiles = vec![profile(first, "zulu"), profile(second, "alpha")];
+        let mru = ExecutionTarget {
+            profile_id: first,
+            database: "app".into(),
+            schema: Some("public".into()),
+        };
+        let database = CatalogId::new(second, CatalogKind::Database, ["analytics"]);
+        let schema = CatalogId::new(second, CatalogKind::Schema, ["analytics", "reporting"]);
+        let cases = [
+            (
+                "profile node",
+                Some(ExplorerNodeId::Profile(first)),
+                vec![],
+                first,
+                "app",
+                "public",
+            ),
+            (
+                "database node",
+                Some(ExplorerNodeId::Catalog(database)),
+                vec![],
+                second,
+                "analytics",
+                "",
+            ),
+            (
+                "schema node",
+                Some(ExplorerNodeId::Catalog(schema)),
+                vec![],
+                second,
+                "analytics",
+                "reporting",
+            ),
+            (
+                "mru",
+                Some(ExplorerNodeId::Others),
+                vec![mru],
+                first,
+                "app",
+                "public",
+            ),
+            (
+                "stable profile",
+                Some(ExplorerNodeId::Others),
+                vec![],
+                second,
+                "app",
+                "public",
+            ),
+        ];
+        for (name, selected, recent, id, database, schema) in cases {
+            let target = resolve_default_target(selected.as_ref(), &profiles, &recent)
+                .unwrap_or_else(|| panic!("{name} should resolve"));
+            assert_eq!(target.profile_id, id, "{name}");
+            assert_eq!(target.database, database, "{name}");
+            if schema.is_empty() {
+                assert_eq!(target.schema, None, "{name}");
+            } else {
+                assert_eq!(target.schema.as_deref(), Some(schema), "{name}");
+            }
+        }
+        assert!(resolve_default_target(None, &[], &[]).is_none());
+        assert!(
+            resolve_default_target(
+                Some(&ExplorerNodeId::Others),
+                &profiles,
+                &[ExecutionTarget {
+                    profile_id: Uuid::from_u128(9),
+                    database: "app".into(),
+                    schema: Some("public".into())
+                }],
+            )
+            .is_some()
+        );
+        assert_eq!(
+            resolve_default_target(
+                Some(&ExplorerNodeId::Others),
+                &profiles,
+                &[ExecutionTarget {
+                    profile_id: Uuid::from_u128(9),
+                    database: "deleted".into(),
+                    schema: Some("public".into()),
+                }],
+            )
+            .unwrap()
+            .profile_id,
+            second
+        );
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ExecutionTarget {

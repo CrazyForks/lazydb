@@ -2119,6 +2119,79 @@ fn overflowing_workspace_tabs_keep_the_active_tab_visible() {
 }
 
 #[test]
+fn console_tabs_render_profile_suffix_without_mutating_persisted_name() {
+    let profile = import_connection_url("sqlite::memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
+    let target = ExecutionTarget::from_profile(&profile);
+    let console = app.active_console_mut();
+    console.name = "analysis".into();
+    console.execution_target = Some(target);
+
+    let output = render(&app, 120, 20);
+
+    assert!(output.contains("analysis @warehouse"), "{output}");
+    assert_eq!(app.active_console().name, "analysis");
+}
+
+#[test]
+fn console_tab_hitbox_matches_the_rendered_truncated_unicode_label() {
+    let profile = import_connection_url("sqlite::memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
+    app.active_console_mut().name = "分析与结果".into();
+    app.active_console_mut().execution_target = Some(ExecutionTarget::from_profile(&profile));
+
+    let _ = render_buffer_with_icons(&app, 42, 20, IconSet::new(IconMode::Ascii));
+}
+
+#[test]
+fn console_manager_renders_profile_and_connection_state_and_searches_all_target_parts() {
+    let profile = import_connection_url("sqlite::memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
+    let id = app.active_console().id;
+    app.active_console_mut().name = "analysis".into();
+    app.active_console_mut().execution_target = Some(ExecutionTarget {
+        profile_id: profile.id,
+        database: "analytics_db".into(),
+        schema: Some("reporting".into()),
+    });
+    let target = app.active_console().execution_target.clone();
+    let console_id = app.active_console().id;
+    app.sql_editors
+        .iter_mut()
+        .find(|record| record.id == console_id)
+        .map(|record| {
+            record.name = "analysis".into();
+            record.execution_target = target;
+        })
+        .unwrap();
+    app.update(Action::OpenSqlEditorList);
+
+    let output = render(&app, 120, 30);
+
+    assert!(output.contains("analytics_db"), "{output}");
+    assert!(output.contains("OPEN"), "{output}");
+    assert!(output.contains("warehouse"), "{output}");
+    assert!(!output.contains("default"), "{output}");
+    assert!(app.sql_editors.iter().any(|record| record.id == id));
+
+    app.update(Action::SqlEditorListSearchStart);
+    for character in "reporting".chars() {
+        app.update(Action::SqlEditorListInputInsert(character));
+    }
+    let output = render(&app, 120, 30);
+    assert!(output.contains("analysis"), "{output}");
+}
+
+#[test]
 fn workspace_tab_arrows_are_hidden_when_all_tabs_fit() {
     let mut app = App::new(Vec::new());
     app.tabs.clear();
@@ -2202,7 +2275,7 @@ fn workspace_tab_viewport_recalculates_after_resize() {
             .any(|region| region.target == HitTarget::Tab(app.active_tab))
     );
 
-    let mut wide = Terminal::new(TestBackend::new(120, 20)).unwrap();
+    let mut wide = Terminal::new(TestBackend::new(200, 20)).unwrap();
     wide.draw(|frame| ui::render_with_state(frame, &app, &mut state))
         .unwrap();
     assert!(
@@ -2910,7 +2983,7 @@ fn console_manager_renders_sorted_open_and_closed_consoles() {
     let app = console_manager_fixture();
     let output = render(&app, 100, 30);
 
-    assert_order(&output, &["charlie", "alpha", "Beta", "console"]);
+    assert_order(&output, &["alpha", "Beta", "charlie", "console"]);
     assert!(output.contains("OPEN"), "{output}");
     assert!(output.contains("CLOSED"), "{output}");
     assert!(output.contains("a new"), "{output}");
@@ -5969,13 +6042,13 @@ fn workspace_tabs_publish_close_targets_for_each_tab() {
 }
 
 #[test]
-fn default_console_tab_has_no_close_target() {
+fn first_console_tab_has_a_close_target() {
     let app = App::new(Vec::new());
     let id = app.active_console().id;
     let (_, state) = render_with_state(&app, 120, 36);
 
     assert!(
-        !state
+        state
             .hit_regions
             .iter()
             .any(|region| region.target == HitTarget::CloseTab(id))
@@ -6674,6 +6747,7 @@ fn target_selector_renders_visible_rows_and_mouse_regions() {
     app.overlay = Some(Overlay::TargetSelector {
         candidates,
         selected: 23,
+        console_id: None,
     });
 
     let (output, state) = render_with_state(&app, 80, 24);

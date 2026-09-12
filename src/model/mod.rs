@@ -10,6 +10,7 @@ pub mod explorer;
 pub mod explorer_add;
 pub mod notification;
 pub mod pagination;
+pub mod pending_execution;
 pub mod profile_group;
 pub mod profile_manager;
 pub mod profile_organization;

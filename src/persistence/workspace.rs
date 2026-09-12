@@ -12,7 +12,7 @@ use crate::db::catalog::{CatalogId, CatalogKind, QualifiedName};
 use crate::model::relation::RelationView;
 use crate::model::{execution_target::ExecutionTarget, transaction::TransactionMode};
 
-const WORKSPACE_VERSION: u16 = 4;
+const WORKSPACE_VERSION: u16 = 5;
 
 #[derive(Debug, Error)]
 pub enum WorkspaceError {
@@ -33,8 +33,18 @@ pub enum WorkspaceError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkspaceFile {
     pub version: u16,
+    #[serde(default)]
     pub active_profile: Option<Uuid>,
+    #[serde(default)]
     pub profiles: Vec<PersistedProfileWorkspace>,
+    #[serde(default)]
+    pub active_tab: Option<Uuid>,
+    #[serde(default)]
+    pub consoles: Vec<PersistedConsole>,
+    #[serde(default)]
+    pub tabs: Vec<PersistedTab>,
+    #[serde(default)]
+    pub recent_targets: Vec<ExecutionTarget>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -106,6 +116,8 @@ pub struct WorkspaceSnapshot {
     // Kept only until the app snapshot code is migrated in a later task.
     pub active_console: Uuid,
     pub consoles: Vec<PersistedConsole>,
+    pub tabs: Vec<PersistedTab>,
+    pub recent_targets: Vec<ExecutionTarget>,
 }
 
 #[derive(Clone, Debug)]
@@ -160,27 +172,43 @@ impl WorkspaceStore {
             .and_then(toml::Value::as_integer)
             .and_then(|version| u16::try_from(version).ok())
             .ok_or_else(|| WorkspaceError::Invalid("workspace version is missing".into()))?;
-        let (active_profile, active_console, profiles) = if matches!(version, 3 | WORKSPACE_VERSION)
-        {
-            let file: WorkspaceFile = toml::from_str(&contents)?;
-            (file.active_profile, Uuid::nil(), file.profiles)
-        } else if matches!(version, 1 | 2) {
-            let mut file: LegacyWorkspaceFile = toml::from_str(&contents)?;
-            if version == 1 {
-                for console in &mut file.consoles {
-                    console.open = true;
+        let (active_profile, active_console, consoles, tabs, profiles, recent_targets) =
+            if matches!(version, 3 | 4 | WORKSPACE_VERSION) {
+                let file: WorkspaceFile = toml::from_str(&contents)?;
+                (
+                    file.active_profile,
+                    file.active_tab.unwrap_or(Uuid::nil()),
+                    file.consoles,
+                    file.tabs,
+                    file.profiles,
+                    file.recent_targets,
+                )
+            } else if matches!(version, 1 | 2) {
+                let mut file: LegacyWorkspaceFile = toml::from_str(&contents)?;
+                if version == 1 {
+                    for console in &mut file.consoles {
+                        console.open = true;
+                    }
                 }
-            }
-            (None, file.active_console, migrate_legacy(file))
-        } else {
-            return Err(WorkspaceError::UnsupportedVersion {
-                found: version,
-                expected: WORKSPACE_VERSION,
-            });
-        };
+                let active_console = file.active_console;
+                (
+                    None,
+                    active_console,
+                    Vec::new(),
+                    Vec::new(),
+                    migrate_legacy(file),
+                    Vec::new(),
+                )
+            } else {
+                return Err(WorkspaceError::UnsupportedVersion {
+                    found: version,
+                    expected: WORKSPACE_VERSION,
+                });
+            };
         let sql = profiles
             .iter()
             .flat_map(|profile| profile.consoles.iter())
+            .chain(consoles.iter())
             .map(|console| {
                 let path = self.sql_dir.join(&console.sql_file);
                 let text = fs::read_to_string(path).unwrap_or_default();
@@ -192,7 +220,9 @@ impl WorkspaceStore {
             profiles,
             sql,
             active_console,
-            consoles: Vec::new(),
+            consoles,
+            tabs,
+            recent_targets,
         };
         validate_snapshot(&snapshot)?;
         Ok(Some(snapshot))
@@ -219,6 +249,10 @@ impl WorkspaceStore {
             version: WORKSPACE_VERSION,
             active_profile: snapshot.active_profile,
             profiles: snapshot.profiles.clone(),
+            active_tab: (snapshot.active_console != Uuid::nil()).then_some(snapshot.active_console),
+            consoles: snapshot.consoles.clone(),
+            tabs: snapshot.tabs.clone(),
+            recent_targets: snapshot.recent_targets.clone(),
         };
         let temporary = self.manifest.with_extension("toml.tmp");
         let mut manifest_file = File::create(&temporary)?;
@@ -341,6 +375,40 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                 }
             }
         }
+    }
+    for console in &snapshot.consoles {
+        if console.sql_file.as_path() != Path::new(&format!("{}.sql", console.id)) {
+            return Err(WorkspaceError::Invalid(format!(
+                "invalid SQL file for console {}",
+                console.id
+            )));
+        }
+        if !console_ids.insert(console.id) {
+            return Err(WorkspaceError::Invalid("duplicate console ID".into()));
+        }
+    }
+    let mut global_tab_ids = std::collections::HashSet::new();
+    for tab in &snapshot.tabs {
+        let id = tab_id(tab);
+        if !global_tab_ids.insert(id) {
+            return Err(WorkspaceError::Invalid("duplicate open tab ID".into()));
+        }
+        if let PersistedTab::Console { console_id } = tab
+            && !snapshot
+                .consoles
+                .iter()
+                .any(|console| console.id == *console_id)
+        {
+            return Err(WorkspaceError::Invalid(
+                "console tab references a missing console".into(),
+            ));
+        }
+    }
+    if !snapshot.tabs.is_empty()
+        && snapshot.active_console != Uuid::nil()
+        && !global_tab_ids.contains(&snapshot.active_console)
+    {
+        return Err(WorkspaceError::Invalid("active tab is not open".into()));
     }
     if snapshot
         .active_profile

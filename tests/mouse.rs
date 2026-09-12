@@ -559,6 +559,7 @@ fn overlay_hit_target_takes_precedence_over_underlying_text_selection() {
     app.overlay = Some(Overlay::TargetSelector {
         candidates: Vec::new(),
         selected: 0,
+        console_id: None,
     });
     let mut ui = UiState::new();
     let session_id = Uuid::new_v4();
@@ -591,6 +592,7 @@ fn target_selector_rows_and_cancel_map_to_selection_actions() {
     app.overlay = Some(Overlay::TargetSelector {
         candidates: Vec::new(),
         selected: 0,
+        console_id: None,
     });
     let mut ui = UiState::new();
     ui.hit_regions.extend([
@@ -739,6 +741,7 @@ fn selecting_target_selector_row_confirms_on_click() {
     app.overlay = Some(Overlay::TargetSelector {
         candidates: vec![target],
         selected: 0,
+        console_id: None,
     });
 
     app.update(Action::SelectTargetSelector(0));
@@ -1154,6 +1157,42 @@ fn maps_tabs_tree_rows_and_result_cells_from_rendered_hit_regions() {
 }
 
 #[test]
+fn rendered_connection_suffix_tab_label_maps_mouse_click_to_activation() {
+    let profile = lazydb::profile::import_connection_url("sqlite::memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
+    let tab_id = app.active_console().id;
+    app.active_console_mut().name = "分析".into();
+    app.active_console_mut().execution_target =
+        Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&profile));
+    app.update(Action::NewConsole);
+    let expected_index = app.tabs.iter().position(|tab| tab.id() == tab_id).unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut ui_state = UiState::new();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut ui_state))
+        .unwrap();
+    let tab_region = ui_state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::Tab(expected_index))
+        .expect("rendered tab label hitbox");
+    let click = mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        tab_region.area.right().saturating_sub(1),
+        tab_region.area.y,
+    );
+
+    assert_eq!(
+        map_mouse(click, &ui_state, &app),
+        Some(Action::ActivateTab(expected_index))
+    );
+}
+
+#[test]
 fn workspace_tab_overflow_arrows_activate_adjacent_hidden_tabs() {
     let mut app = App::new(Vec::new());
     app.tabs.clear();
@@ -1173,8 +1212,8 @@ fn workspace_tab_overflow_arrows_activate_adjacent_hidden_tabs() {
     assert_click_maps(
         &state,
         &app,
-        &HitTarget::TabScrollRight(3),
-        Action::ActivateTab(3),
+        &HitTarget::TabScrollRight(2),
+        Action::ActivateTab(2),
     );
 
     app.active_tab = 3;
@@ -1184,8 +1223,8 @@ fn workspace_tab_overflow_arrows_activate_adjacent_hidden_tabs() {
     assert_click_maps(
         &state,
         &app,
-        &HitTarget::TabScrollLeft(0),
-        Action::ActivateTab(0),
+        &HitTarget::TabScrollLeft(1),
+        Action::ActivateTab(1),
     );
 }
 
@@ -2590,7 +2629,15 @@ fn assert_click_maps(ui: &UiState, app: &App, target: &HitTarget, expected: Acti
         .hit_regions
         .iter()
         .find(|region| &region.target == target)
-        .unwrap();
+        .unwrap_or_else(|| {
+            panic!(
+                "missing hit target: {target:?}; available: {:?}",
+                ui.hit_regions
+                    .iter()
+                    .map(|region| &region.target)
+                    .collect::<Vec<_>>()
+            )
+        });
     let event = mouse(
         MouseEventKind::Down(MouseButton::Left),
         region.area.x,

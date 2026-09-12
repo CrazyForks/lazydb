@@ -547,6 +547,9 @@ pub enum Action {
     CancelClearTransactionOutcome,
     ToggleClearTransactionOutcomeFocus,
     OpenTargetSelector,
+    OpenConsoleTargetSelector {
+        console_id: Uuid,
+    },
     OpenDatabaseSelector,
     SelectDatabaseSelector(usize),
     MoveDatabaseSelector(isize),

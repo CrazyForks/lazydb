@@ -51,6 +51,7 @@ fn workspace_v3_round_trip_restores_two_profile_workspaces_and_durable_state() {
     let relation_b = Uuid::new_v4();
     let console_b = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile_b),
         profiles: vec![
             PersistedProfileWorkspace {
@@ -98,6 +99,7 @@ fn workspace_v3_round_trip_restores_two_profile_workspaces_and_durable_state() {
         ],
         active_console: Uuid::nil(),
         consoles: Vec::new(),
+        tabs: Vec::new(),
     };
     store.save(&snapshot).unwrap();
     let restored = store.load().unwrap().unwrap();
@@ -123,6 +125,7 @@ fn workspace_round_trip_preserves_open_and_closed_console_sql_and_names() {
     let open_id = Uuid::new_v4();
     let closed_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile_id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id,
@@ -141,6 +144,7 @@ fn workspace_round_trip_preserves_open_and_closed_console_sql_and_names() {
         ],
         active_console: Uuid::nil(),
         consoles: Vec::new(),
+        tabs: Vec::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -161,6 +165,7 @@ fn saving_an_unchanged_sql_document_does_not_rewrite_its_file() {
     let profile_id = Uuid::new_v4();
     let console_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile_id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id,
@@ -171,6 +176,7 @@ fn saving_an_unchanged_sql_document_does_not_rewrite_its_file() {
         sql: vec![(console_id, "select 1;".into())],
         active_console: Uuid::nil(),
         consoles: Vec::new(),
+        tabs: Vec::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -198,6 +204,49 @@ fn missing_workspace_is_empty_and_unsupported_version_is_rejected() {
         store.load(),
         Err(lazydb::persistence::workspace::WorkspaceError::UnsupportedVersion { .. })
     ));
+}
+
+#[test]
+fn workspace_v5_round_trip_persists_global_consoles_tabs_and_active_tab() {
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    let profile_id = Uuid::new_v4();
+    let console_id = Uuid::new_v4();
+    let snapshot = WorkspaceSnapshot {
+        active_profile: None,
+        profiles: Vec::new(),
+        sql: vec![(console_id, "select global;".into())],
+        active_console: console_id,
+        consoles: vec![console(profile_id, console_id, "global", true)],
+        tabs: vec![PersistedTab::Console { console_id }],
+        recent_targets: Vec::new(),
+    };
+
+    store.save(&snapshot).unwrap();
+    let manifest = std::fs::read_to_string(temp.path().join("workspace.toml")).unwrap();
+    assert!(manifest.contains("version = 5"));
+    assert!(manifest.contains("active_tab"));
+    assert!(manifest.contains("[[consoles]]"));
+    assert!(manifest.contains("[[tabs]]"));
+
+    let restored = store.load().unwrap().unwrap();
+    assert_eq!(restored.active_console, console_id);
+    assert_eq!(restored.consoles, snapshot.consoles);
+    assert_eq!(restored.tabs, snapshot.tabs);
+    assert_eq!(restored.sql, snapshot.sql);
+}
+
+#[test]
+fn workspace_v4_load_migrates_missing_global_fields_to_empty() {
+    let temp = TempDir::new().unwrap();
+    let manifest = temp.path().join("workspace.toml");
+    let store = WorkspaceStore::new(manifest.clone(), temp.path().join("sql"));
+    std::fs::write(&manifest, "version = 4\nprofiles = []\n").unwrap();
+
+    let restored = store.load().unwrap().unwrap();
+    assert_eq!(restored.active_console, Uuid::nil());
+    assert!(restored.consoles.is_empty());
+    assert!(restored.tabs.is_empty());
 }
 
 #[test]
@@ -315,6 +364,8 @@ fn valid_snapshot() -> WorkspaceSnapshot {
         sql: vec![(console_id, "select 1".into())],
         active_console: Uuid::nil(),
         consoles: Vec::new(),
+        tabs: Vec::new(),
+        recent_targets: Vec::new(),
     }
 }
 
