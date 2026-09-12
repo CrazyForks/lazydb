@@ -105,26 +105,71 @@ async fn oracle_discovers_and_loads_basic_catalog_when_configured() {
     };
     let groups_page = connection.load_catalog_page(&groups_request).await.unwrap();
     assert_eq!(groups_page.group_summaries.len(), 3);
-    let objects_request = CatalogRequest {
-        key: CatalogRequestKey {
-            connection: identity,
-            catalog_epoch: 1,
-            request_id: 4,
-            target: CatalogTarget::Objects {
-                schema,
-                group: lazydb::db::catalog::ObjectGroup::Tables,
+    assert_eq!(
+        groups_page.total_count,
+        lazydb::db::catalog::CatalogCount::Exact(3)
+    );
+    assert!(groups_page.group_summaries.iter().all(|summary| matches!(
+        summary.object_count,
+        lazydb::db::catalog::CatalogCount::Exact(_)
+    )));
+
+    let mut table_entries = Vec::new();
+    for (request_id, group) in [
+        (4, lazydb::db::catalog::ObjectGroup::Tables),
+        (5, lazydb::db::catalog::ObjectGroup::Views),
+        (6, lazydb::db::catalog::ObjectGroup::Sequences),
+    ] {
+        let mut objects_request = CatalogRequest {
+            key: CatalogRequestKey {
+                connection: identity,
+                catalog_epoch: 1,
+                request_id,
+                target: CatalogTarget::Objects {
+                    schema: schema.clone(),
+                    group,
+                },
+                cursor: None,
             },
-            cursor: None,
-        },
-        scope: imported.profile.catalog_scope.clone(),
-        page_size: 10,
-    };
-    let objects_page = connection
-        .load_catalog_page(&objects_request)
-        .await
-        .unwrap();
-    assert!(!objects_page.entries.is_empty());
-    let relation = objects_page.entries[0].id.clone();
+            scope: imported.profile.catalog_scope.clone(),
+            page_size: 2,
+        };
+        let mut expected_total = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = connection
+                .load_catalog_page(&objects_request)
+                .await
+                .unwrap();
+            page.validate_for(&objects_request).unwrap();
+            if let Some(total) = expected_total {
+                assert_eq!(page.total_count, total);
+            } else {
+                assert!(matches!(
+                    page.total_count,
+                    lazydb::db::catalog::CatalogCount::Exact(_)
+                ));
+                expected_total = Some(page.total_count);
+            }
+            for entry in &page.entries {
+                assert!(seen.insert(entry.id.clone()));
+            }
+            if group == lazydb::db::catalog::ObjectGroup::Tables {
+                table_entries.extend(page.entries.iter().cloned());
+            }
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            objects_request.key.request_id += 1;
+            objects_request.key.cursor = Some(cursor);
+        }
+        assert_eq!(
+            expected_total,
+            Some(lazydb::db::catalog::CatalogCount::Exact(seen.len() as u64))
+        );
+    }
+    assert!(!table_entries.is_empty());
+    let relation = table_entries[0].id.clone();
     let preview = connection
         .preview_relation(
             &relation,
