@@ -143,7 +143,7 @@ fn dialect_builtins(dialect: SqlDialect) -> &'static [Builtin] {
         SqlDialect::MySql => MYSQL,
         SqlDialect::SqlServer => SQL_SERVER,
         SqlDialect::Sqlite => SQLITE,
-        SqlDialect::Generic => &[],
+        SqlDialect::Generic | SqlDialect::Oracle => &[],
     }
 }
 
@@ -166,6 +166,6 @@ fn default_value_dialect_builtins(dialect: SqlDialect) -> &'static [Builtin] {
                 detail: "SYSDATETIME()",
             },
         ],
-        SqlDialect::MySql | SqlDialect::Sqlite | SqlDialect::Generic => &[],
+        SqlDialect::MySql | SqlDialect::Sqlite | SqlDialect::Generic | SqlDialect::Oracle => &[],
     }
 }

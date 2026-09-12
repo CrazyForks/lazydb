@@ -845,7 +845,7 @@ fn relation_insert_text(
                 vec![schema.or(database).unwrap_or_default(), object]
             }
         }
-        SqlDialect::Postgres | SqlDialect::SqlServer | SqlDialect::Generic => {
+        SqlDialect::Postgres | SqlDialect::SqlServer | SqlDialect::Generic | SqlDialect::Oracle => {
             if database.is_some_and(|value| {
                 context
                     .database
@@ -1799,21 +1799,24 @@ fn keywords_for_completion(
         return match stage {
             OrderingStage::Expression => &[],
             OrderingStage::Direction => match dialect {
-                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
-                    &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"]
-                }
+                SqlDialect::Postgres
+                | SqlDialect::Sqlite
+                | SqlDialect::Generic
+                | SqlDialect::Oracle => &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"],
                 SqlDialect::MySql | SqlDialect::SqlServer => &["ASC", "DESC"],
             },
             OrderingStage::AfterDirection => match dialect {
-                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
-                    &["NULLS FIRST", "NULLS LAST"]
-                }
+                SqlDialect::Postgres
+                | SqlDialect::Sqlite
+                | SqlDialect::Generic
+                | SqlDialect::Oracle => &["NULLS FIRST", "NULLS LAST"],
                 SqlDialect::MySql | SqlDialect::SqlServer => &[],
             },
             OrderingStage::NullPlacement => match dialect {
-                SqlDialect::Postgres | SqlDialect::Sqlite | SqlDialect::Generic => {
-                    &["FIRST", "LAST"]
-                }
+                SqlDialect::Postgres
+                | SqlDialect::Sqlite
+                | SqlDialect::Generic
+                | SqlDialect::Oracle => &["FIRST", "LAST"],
                 SqlDialect::MySql | SqlDialect::SqlServer => &[],
             },
             OrderingStage::Complete => &[],
@@ -2921,7 +2924,7 @@ fn keywords(
                 "REFERENCES",
                 "CHECK",
             ],
-            SqlDialect::Sqlite => &[],
+            SqlDialect::Sqlite | SqlDialect::Oracle => &[],
         },
         Context::Ddl(DdlContext::AlterColumnType(_)) => &[],
         Context::Ddl(DdlContext::NewColumnName) => &[],
@@ -3000,6 +3003,18 @@ fn ddl_object_keywords(dialect: SqlDialect, _create: bool) -> &'static [&'static
         ],
         SqlDialect::Sqlite => &["TABLE", "VIEW", "INDEX", "TRIGGER"],
         SqlDialect::Generic => &["TABLE", "VIEW", "INDEX", "SCHEMA", "DATABASE"],
+        SqlDialect::Oracle => &[
+            "TABLE",
+            "VIEW",
+            "INDEX",
+            "SEQUENCE",
+            "SYNONYM",
+            "FUNCTION",
+            "PROCEDURE",
+            "PACKAGE",
+            "TRIGGER",
+            "TYPE",
+        ],
     }
 }
 
@@ -3052,7 +3067,7 @@ fn alter_table_action_keywords(dialect: SqlDialect) -> &'static [&'static str] {
             "ADD CONSTRAINT",
             "DROP CONSTRAINT",
         ],
-        SqlDialect::Generic => &[
+        SqlDialect::Generic | SqlDialect::Oracle => &[
             "ADD COLUMN",
             "ALTER COLUMN",
             "DROP COLUMN",
@@ -3110,6 +3125,17 @@ fn data_types_for_context(context: Context, dialect: SqlDialect) -> &'static [&'
         ],
         SqlDialect::Sqlite => &["BLOB", "INTEGER", "NUMERIC", "REAL", "TEXT"],
         SqlDialect::Generic => &["BIGINT", "BOOLEAN", "INTEGER", "NUMERIC", "TEXT", "VARCHAR"],
+        SqlDialect::Oracle => &[
+            "BINARY_FLOAT",
+            "BINARY_DOUBLE",
+            "CHAR",
+            "CLOB",
+            "DATE",
+            "NUMBER",
+            "RAW",
+            "TIMESTAMP",
+            "VARCHAR2",
+        ],
     }
 }
 

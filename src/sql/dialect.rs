@@ -4,6 +4,7 @@ pub enum SqlDialect {
     MySql,
     SqlServer,
     Sqlite,
+    Oracle,
     #[default]
     Generic,
 }
@@ -16,7 +17,7 @@ impl SqlDialect {
             crate::profile::DatabaseKind::MariaDb => Self::MySql,
             crate::profile::DatabaseKind::SqlServer => Self::SqlServer,
             crate::profile::DatabaseKind::Sqlite => Self::Sqlite,
-            crate::profile::DatabaseKind::Oracle => Self::Generic,
+            crate::profile::DatabaseKind::Oracle => Self::Oracle,
         }
     }
 }
@@ -28,5 +29,6 @@ pub(crate) fn parser_dialect(dialect: SqlDialect) -> &'static dyn sqlparser::dia
         SqlDialect::SqlServer => &sqlparser::dialect::MsSqlDialect {},
         SqlDialect::Sqlite => &sqlparser::dialect::SQLiteDialect {},
         SqlDialect::Generic => &sqlparser::dialect::GenericDialect {},
+        SqlDialect::Oracle => &sqlparser::dialect::GenericDialect {},
     }
 }
