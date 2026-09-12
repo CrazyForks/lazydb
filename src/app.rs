@@ -12860,7 +12860,7 @@ impl App {
         match kind {
             DatabaseKind::Postgres => SqlDialect::Postgres,
             DatabaseKind::MySql | DatabaseKind::MariaDb => SqlDialect::MySql,
-            DatabaseKind::Oracle => SqlDialect::Generic,
+            DatabaseKind::Oracle => SqlDialect::Oracle,
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::SqlServer => SqlDialect::SqlServer,
         }
@@ -12870,7 +12870,7 @@ impl App {
         match self.active_profile().map(|profile| profile.kind) {
             Some(DatabaseKind::Postgres) => SqlDialect::Postgres,
             Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => SqlDialect::MySql,
-            Some(DatabaseKind::Oracle) => SqlDialect::Generic,
+            Some(DatabaseKind::Oracle) => SqlDialect::Oracle,
             Some(DatabaseKind::Sqlite) => SqlDialect::Sqlite,
             Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
             None => SqlDialect::Generic,

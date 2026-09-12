@@ -7,6 +7,7 @@ use lazydb::{
     },
     identity::ConnectionIdentity,
     profile::import_connection_url,
+    sql::{SqlDialect, build_paginated_query},
 };
 use secrecy::SecretString;
 
@@ -253,5 +254,52 @@ async fn oracle_reads_typed_read_only_results_when_configured() {
     assert_eq!(row[0], lazydb::db::value::CellValue::Integer(42));
     assert!(matches!(row[1], lazydb::db::value::CellValue::DateTime(_)));
     assert_eq!(row[2], lazydb::db::value::CellValue::Text("Ada".into()));
+    connection.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires a configured Oracle 12c+ test database"]
+async fn oracle_query_pagination_required() {
+    let url = std::env::var("LAZYDB_TEST_ORACLE_URL").expect("LAZYDB_TEST_ORACLE_URL is required");
+    let user =
+        std::env::var("LAZYDB_TEST_ORACLE_USER").expect("LAZYDB_TEST_ORACLE_USER is required");
+    let password = std::env::var("LAZYDB_TEST_ORACLE_PASSWORD")
+        .expect("LAZYDB_TEST_ORACLE_PASSWORD is required");
+    let mut imported = import_connection_url(&url, Some("oracle-pagination-required")).unwrap();
+    imported.profile.user = Some(user);
+    let connection =
+        DatabaseConnection::connect(&imported.profile, Some(&SecretString::from(password)))
+            .await
+            .expect("Oracle connection must be available for required pagination test");
+
+    let source = (1..=25)
+        .map(|id| format!("SELECT CAST({id} AS NUMBER(10,0)) AS id FROM dual"))
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let source = format!("SELECT id FROM ({source}) ordered_rows ORDER BY id");
+    let page_size = lazydb::model::pagination::PageSize::Ten;
+    for (offset, expected_visible, expected_next) in [(0, 10, true), (10, 10, true), (20, 5, false)]
+    {
+        let page = lazydb::model::pagination::PageRequest::at(page_size, offset);
+        let query = build_paginated_query(&source, SqlDialect::Oracle, page)
+            .expect("test source should be a supported read-only query");
+        let outcome = connection.execute(&query.page_sql).await.unwrap();
+        let fetched = outcome.stats.row_count;
+        let pagination = lazydb::model::pagination::ResultPagination::from_page(page, fetched);
+        assert_eq!(pagination.visible_rows, expected_visible);
+        assert_eq!(pagination.has_next, expected_next);
+    }
+
+    let count_query = build_paginated_query(
+        &source,
+        SqlDialect::Oracle,
+        lazydb::model::pagination::PageRequest::first(page_size),
+    )
+    .unwrap();
+    let count = connection.execute(&count_query.count_sql).await.unwrap();
+    assert_eq!(
+        count.result_sets[0].rows[0][0],
+        lazydb::db::value::CellValue::Integer(25)
+    );
     connection.close().await;
 }
