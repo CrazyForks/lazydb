@@ -156,6 +156,12 @@ pub fn validate_transaction_control(
 }
 
 fn classify_single(sql: &str, dialect: SqlDialect) -> TransactionSqlClassification {
+    if dialect == SqlDialect::Oracle && is_oracle_program(sql) {
+        return TransactionSqlClassification::Data {
+            risk: SqlRisk::Unknown,
+            mysql_implicit_commit: false,
+        };
+    }
     let tokens = tokenize(sql);
     if tokens.is_empty() {
         return TransactionSqlClassification::Unsupported(TransactionSqlError::Empty);
@@ -221,6 +227,13 @@ fn classify_single(sql: &str, dialect: SqlDialect) -> TransactionSqlClassificati
         risk,
         mysql_implicit_commit: dialect == SqlDialect::MySql && risk == SqlRisk::Ddl,
     }
+}
+
+fn is_oracle_program(sql: &str) -> bool {
+    matches!(
+        crate::sql::oracle::prepare_oracle_statement(sql),
+        Ok(std::borrow::Cow::Borrowed(value)) if value.trim_start().to_ascii_uppercase().starts_with("BEGIN")
+    ) || sql.trim_start().to_ascii_uppercase().starts_with("DECLARE")
 }
 
 fn is_control(classification: &TransactionSqlClassification) -> bool {

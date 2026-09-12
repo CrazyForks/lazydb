@@ -35,7 +35,7 @@ pub fn format_sql(sql: &str, dialect: SqlDialect) -> Result<String, FormatError>
         SqlDialect::MySql => &MySqlDialect {},
         SqlDialect::SqlServer => &MsSqlDialect {},
         SqlDialect::Sqlite => &SQLiteDialect {},
-        SqlDialect::Generic => &GenericDialect {},
+        SqlDialect::Generic | SqlDialect::Oracle => &GenericDialect {},
     };
     let before = meaningful_tokens(parser_dialect, sql);
     let after = meaningful_tokens(parser_dialect, &formatted);

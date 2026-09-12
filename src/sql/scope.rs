@@ -191,6 +191,9 @@ fn first_code_offset(text: &str, dialect: SqlDialect) -> Option<usize> {
 }
 
 fn statement_boundaries(text: &str, dialect: SqlDialect) -> Vec<(usize, usize)> {
+    if dialect == SqlDialect::Oracle {
+        return super::oracle::scan_statement_boundaries(text).unwrap_or_default();
+    }
     let bytes = text.as_bytes();
     let mut boundaries = Vec::new();
     let mut start = 0;
@@ -207,6 +210,14 @@ fn statement_boundaries(text: &str, dialect: SqlDialect) -> Vec<(usize, usize)> 
                 b'"' => {
                     state = State::DoubleQuote;
                     index += 1;
+                }
+                b'q' | b'Q' | b'n' | b'N'
+                    if matches!(dialect, SqlDialect::Oracle)
+                        && oracle_quote_delimiter(bytes, index).is_some() =>
+                {
+                    let (end, closing) = oracle_quote_delimiter(bytes, index).unwrap();
+                    state = State::OracleQuote(closing);
+                    index = end;
                 }
                 b'`' if matches!(dialect, SqlDialect::MySql | SqlDialect::Generic) => {
                     state = State::Backtick;
@@ -282,6 +293,14 @@ fn statement_boundaries(text: &str, dialect: SqlDialect) -> Vec<(usize, usize)> 
                     index += 1;
                 }
             }
+            State::OracleQuote(closing) => {
+                if bytes[index] == closing && bytes.get(index + 1) == Some(&b'\'') {
+                    index += 2;
+                    state = State::Normal;
+                } else {
+                    index += 1;
+                }
+            }
         }
     }
     boundaries.push((start, bytes.len()));
@@ -298,6 +317,7 @@ enum State {
     LineComment,
     BlockComment,
     DollarQuote(TextRange),
+    OracleQuote(u8),
 }
 
 fn advance_quoted(bytes: &[u8], index: &mut usize, quote: u8, state: &mut State) {
@@ -326,6 +346,29 @@ fn dash_comment_allowed(bytes: &[u8], index: usize, dialect: SqlDialect) -> bool
     } else {
         true
     }
+}
+
+fn oracle_quote_delimiter(bytes: &[u8], index: usize) -> Option<(usize, u8)> {
+    let quote_index = if matches!(bytes.get(index), Some(b'n' | b'N'))
+        && matches!(bytes.get(index + 1), Some(b'q' | b'Q'))
+    {
+        index + 2
+    } else if matches!(bytes.get(index), Some(b'q' | b'Q')) {
+        index + 1
+    } else {
+        return None;
+    };
+    if bytes.get(quote_index) != Some(&b'\'') {
+        return None;
+    }
+    let closing = match bytes.get(quote_index + 1).copied()? {
+        b'[' => b']',
+        b'(' => b')',
+        b'{' => b'}',
+        b'<' => b'>',
+        delimiter => delimiter,
+    };
+    Some((quote_index + 2, closing))
 }
 
 fn skip_block_comment(text: &str, mut index: usize) -> usize {

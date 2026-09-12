@@ -318,7 +318,7 @@ impl OracleAdapter {
                 cursor: None,
             },
             scope: crate::profile::CatalogScope::for_profile(
-                DatabaseKind::Oracle,
+                crate::profile::DatabaseKind::Oracle,
                 database,
                 Some(schema),
             ),
@@ -421,7 +421,14 @@ impl OracleAdapter {
         }
         #[cfg(feature = "driver-oracle")]
         {
-            let sql = sql.to_owned();
+            let sql = crate::sql::oracle::prepare_oracle_statement(sql)
+                .map_err(|error| DatabaseError {
+                    category: ErrorCategory::Sql,
+                    code: Some("oracle_sql_prepare_error".into()),
+                    message: error.to_string(),
+                    diagnostic: None,
+                })?
+                .into_owned();
             let connection = Arc::clone(&self.connection);
             tokio::task::spawn_blocking(move || {
                 let connection = connection
@@ -975,6 +982,7 @@ fn decode_value(
 fn oracle_error(error: impl std::fmt::Display) -> DatabaseError {
     let message = sanitize_terminal_text(&error.to_string());
     let lowered = message.to_ascii_lowercase();
+    let code = oracle_error_code(&message);
     let category = if lowered.contains("ora-01017")
         || lowered.contains("ora-28000")
         || lowered.contains("authentication")
@@ -1001,10 +1009,24 @@ fn oracle_error(error: impl std::fmt::Display) -> DatabaseError {
     };
     DatabaseError {
         category,
-        code: Some("oracle_error".into()),
+        code,
         message,
         diagnostic: None,
     }
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_error_code(message: &str) -> Option<String> {
+    let bytes = message.as_bytes();
+    let marker = bytes
+        .windows(4)
+        .position(|window| window.eq_ignore_ascii_case(b"ORA-"))?;
+    let digits = bytes
+        .get(marker + 4..)?
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    (digits > 0).then(|| message[marker..marker + 4 + digits].to_ascii_uppercase())
 }
 
 #[cfg(feature = "driver-oracle")]

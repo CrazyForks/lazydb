@@ -161,7 +161,9 @@ impl From<crate::profile::DatabaseKind> for LspDialect {
             crate::sql::SqlDialect::Postgres => Self::Postgres,
             crate::sql::SqlDialect::MySql => Self::MySql,
             crate::sql::SqlDialect::SqlServer => Self::SqlServer,
-            crate::sql::SqlDialect::Sqlite | crate::sql::SqlDialect::Generic => Self::Sqlite,
+            crate::sql::SqlDialect::Sqlite
+            | crate::sql::SqlDialect::Generic
+            | crate::sql::SqlDialect::Oracle => Self::Sqlite,
         }
     }
 }

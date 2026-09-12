@@ -92,6 +92,30 @@ fn cursor_on_semicolon_selects_statement_but_gap_does_not() {
 }
 
 #[test]
+fn oracle_scope_ignores_semicolons_inside_alternative_quoted_literals() {
+    let text = "SELECT q'[a;b]' AS value FROM dual; SELECT 2 FROM dual;";
+    let first = text.find("q'").unwrap();
+    assert_eq!(
+        resolve_scope(text, first, None, SqlDialect::Oracle).map(|scope| scope.sql),
+        Some("SELECT q'[a;b]' AS value FROM dual;".to_owned())
+    );
+}
+
+#[test]
+fn oracle_scope_keeps_anonymous_block_together() {
+    let text = "BEGIN\n  IF 1 = 1 THEN NULL; END IF;\nEND;\n/\nSELECT 2 FROM dual;";
+    let cursor = text.find("NULL").unwrap();
+    assert_eq!(
+        scan_statements(text, SqlDialect::Oracle)[0].get(text),
+        Some("BEGIN\n  IF 1 = 1 THEN NULL; END IF;\nEND;\n/")
+    );
+    assert_eq!(
+        resolve_scope(text, cursor, None, SqlDialect::Oracle).map(|scope| scope.sql),
+        Some("BEGIN\n  IF 1 = 1 THEN NULL; END IF;\nEND;\n/".to_owned())
+    );
+}
+
+#[test]
 fn whitespace_inside_statement_resolves_to_current_scope() {
     let text = "Select * from sys_user";
 

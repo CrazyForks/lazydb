@@ -157,3 +157,18 @@ fn sql_server_go_batches_are_separate_and_ddl_is_transactional() {
         }
     );
 }
+
+#[test]
+fn oracle_anonymous_blocks_are_data_not_transaction_controls() {
+    assert_eq!(
+        classify_transaction_sql("BEGIN NULL; END;", SqlDialect::Oracle),
+        TransactionSqlClassification::Data {
+            risk: SqlRisk::Unknown,
+            mysql_implicit_commit: false,
+        }
+    );
+    assert_eq!(
+        classify_transaction_sql("BEGIN", SqlDialect::Oracle),
+        TransactionSqlClassification::Control(TransactionControl::Begin(BeginRequest::Canonical))
+    );
+}

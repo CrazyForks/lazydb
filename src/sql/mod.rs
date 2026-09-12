@@ -16,6 +16,7 @@ mod execution;
 mod format;
 mod highlight;
 mod identifier_match;
+pub mod oracle;
 mod range;
 mod relation_filter;
 mod risk;

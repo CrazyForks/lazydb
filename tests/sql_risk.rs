@@ -88,3 +88,15 @@ fn sql_server_classifies_every_go_batch() {
     );
     assert_eq!(malformed.risks, vec![SqlRisk::Unknown, SqlRisk::Dml]);
 }
+
+#[test]
+fn oracle_statement_terminators_do_not_change_read_only_risk() {
+    assert_eq!(
+        classify_sql("SELECT 1 FROM dual;", SqlDialect::Oracle),
+        classify_sql("SELECT 1 FROM dual", SqlDialect::Oracle)
+    );
+    assert_eq!(
+        classify_sql("BEGIN NULL; END;", SqlDialect::Oracle).risks,
+        vec![SqlRisk::Unknown]
+    );
+}
