@@ -76,6 +76,13 @@ WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ?
 ORDER BY BINARY index_name, seq_in_index
 "#;
 
+const CATALOG_PAGE_INDEXES_MARIADB_SQL: &str = r#"
+SELECT index_name, non_unique, seq_in_index, column_name, NULL AS expression
+FROM information_schema.statistics
+WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ?
+ORDER BY BINARY index_name, seq_in_index
+"#;
+
 const PROBE_SQL: &str = "SELECT VERSION() AS version, DATABASE() AS current_database";
 
 pub const CATALOG_PAGE_BEGIN_SQL: &str = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY";
@@ -1870,7 +1877,12 @@ impl MySqlAdapter {
         database: &str,
         relation: &str,
     ) -> Result<Vec<MySqlIndexInfo>, DatabaseError> {
-        let rows = sqlx::query(CATALOG_PAGE_INDEXES_SQL)
+        let index_sql = if self.kind == DatabaseKind::MariaDb {
+            CATALOG_PAGE_INDEXES_MARIADB_SQL
+        } else {
+            CATALOG_PAGE_INDEXES_SQL
+        };
+        let rows = sqlx::query(index_sql)
             .bind(database)
             .bind(relation)
             .fetch_all(&mut *connection)
