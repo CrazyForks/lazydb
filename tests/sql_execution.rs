@@ -33,6 +33,33 @@ fn connected_app(policy: ConfirmationPolicy) -> App {
     app
 }
 
+fn oracle_connected_app(policy: ConfirmationPolicy) -> App {
+    let profile = import_connection_url(
+        "jdbc:oracle:thin:@localhost:1521/XEPDB1?user=test_user",
+        Some("oracle-test"),
+    )
+    .unwrap()
+    .profile;
+    let identity = ConnectionIdentity {
+        profile_id: profile.id,
+        generation: 1,
+    };
+    let mut app = App::with_confirmation_policy(vec![profile], policy);
+    app.update(Action::ConnectionSucceeded {
+        profile_id: identity.profile_id,
+        generation: identity.generation,
+        server: ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Oracle,
+            version: "19c".into(),
+            database: "XEPDB1".into(),
+            current_user: Some("TEST_USER".into()),
+        },
+        mutation_capabilities: Default::default(),
+    });
+    app.connection.target = app.active_console().execution_target.clone();
+    app
+}
+
 fn dispatch_editor_key(app: &mut App, keymap: &mut lazydb::input::keymap::Keymap, event: KeyEvent) {
     if let Some(action) = keymap.map(event, app) {
         app.update(action);
@@ -48,6 +75,44 @@ fn current_run_does_not_fall_back_to_the_whole_buffer() {
     assert!(
         matches!(commands.as_slice(), [Command::RunQueryPage { source_sql, page, .. }] if source_sql == "SELECT 1;" && *page == lazydb::model::pagination::PageRequest::first(lazydb::model::pagination::PageSize::default()))
     );
+}
+
+#[test]
+fn oracle_editor_dispatch_keeps_source_and_uses_oracle_pagination() {
+    let mut app = oracle_connected_app(ConfirmationPolicy::RiskyOnly);
+    let source = "SELECT 1 FROM dual;";
+    app.update(Action::ReplaceEditor(source.into()));
+
+    let commands = app.update(Action::RunActiveSql);
+    let [
+        Command::RunQueryPage {
+            source_sql,
+            dialect,
+            page,
+            ..
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("Oracle SELECT should dispatch through the paginated query path");
+    };
+    assert_eq!(source_sql, source);
+    assert_eq!(*dialect, SqlDialect::Oracle);
+    assert_eq!(
+        *page,
+        lazydb::model::pagination::PageRequest::first(
+            lazydb::model::pagination::PageSize::default()
+        )
+    );
+
+    let query = lazydb::sql::build_paginated_query(source_sql, *dialect, *page).unwrap();
+    assert!(
+        query
+            .page_sql
+            .contains("OFFSET 0 ROWS FETCH NEXT 501 ROWS ONLY")
+    );
+    assert!(query.page_sql.contains(") lazydb_page"));
+    assert!(!query.page_sql.contains(" LIMIT "));
+    assert!(query.count_sql.contains(") lazydb_count"));
 }
 
 #[test]

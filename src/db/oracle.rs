@@ -7,6 +7,9 @@ use std::time::Instant;
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
 
+#[cfg(feature = "driver-oracle")]
+use super::DatabaseDiagnostic;
+#[cfg_attr(not(feature = "driver-oracle"), allow(unused_imports))]
 use super::catalog::{
     CatalogCount, CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, CatalogPage,
     CatalogRequest, CatalogTarget, ColumnMetadata, DdlProvenance, DiscoveredDatabase, ObjectGroup,
@@ -442,10 +445,17 @@ impl OracleAdapter {
                 let connection = connection
                     .lock()
                     .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
-                let mut statement = connection.statement(&sql).build().map_err(oracle_error)?;
+                let mut statement = connection
+                    .statement(&sql)
+                    .build()
+                    .map_err(|error| oracle_error_with_query(error, &sql))?;
                 if !statement.is_query() {
-                    statement.execute(&[]).map_err(oracle_error)?;
-                    let affected_rows = statement.row_count().map_err(oracle_error)?;
+                    statement
+                        .execute(&[])
+                        .map_err(|error| oracle_error_with_query(error, &sql))?;
+                    let affected_rows = statement
+                        .row_count()
+                        .map_err(|error| oracle_error_with_query(error, &sql))?;
                     return Ok(QueryOutcome::from_result_set(
                         ResultSet {
                             columns: Vec::new(),
@@ -456,7 +466,9 @@ impl OracleAdapter {
                         std::time::Duration::ZERO,
                     ));
                 }
-                let rows = statement.query(&[]).map_err(oracle_error)?;
+                let rows = statement
+                    .query(&[])
+                    .map_err(|error| oracle_error_with_query(error, &sql))?;
                 let columns = rows
                     .column_info()
                     .iter()
@@ -475,7 +487,7 @@ impl OracleAdapter {
                 let mut retained_bytes = 0usize;
                 let mut truncated = false;
                 for row in rows {
-                    let row = row.map_err(oracle_error)?;
+                    let row = row.map_err(|error| oracle_error_with_query(error, &sql))?;
                     fetched_row_count = fetched_row_count.saturating_add(1);
                     if result.rows.len() >= budget.max_rows {
                         truncated = true;
@@ -1029,6 +1041,16 @@ fn oracle_error(error: impl std::fmt::Display) -> DatabaseError {
         message,
         diagnostic: None,
     }
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_error_with_query(error: impl std::fmt::Display, query: &str) -> DatabaseError {
+    let mut error = oracle_error(error);
+    error.diagnostic = Some(Box::new(DatabaseDiagnostic {
+        context: Some(format!("Executed SQL: {}", sanitize_terminal_text(query))),
+        ..DatabaseDiagnostic::default()
+    }));
+    error
 }
 
 #[cfg(feature = "driver-oracle")]

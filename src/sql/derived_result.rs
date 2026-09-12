@@ -51,8 +51,10 @@ pub fn build_derived_query(
     let source = parse_source(source, dialect)?;
     let options = validate_relation_preview_options(where_clause, order_by_clause, dialect)
         .map_err(|error| DerivedQueryError(error.to_string()))?;
-    let result_alias = derived_alias(dialect, "__lazydb_result");
-    let mut sql = format!("SELECT * FROM ({source}) AS {result_alias}");
+    let mut sql = format!(
+        "SELECT * FROM {}",
+        derived_source(&source, dialect, "__lazydb_result")
+    );
     let order_by = options.order_by_clause.clone();
     if let Some(clause) = options.where_clause {
         sql.push_str(" WHERE ");
@@ -77,8 +79,10 @@ pub fn build_derived_paginated_query(
     let source = parse_source(source, dialect)?;
     let options = validate_relation_preview_options(where_clause, order_by_clause, dialect)
         .map_err(|error| DerivedQueryError(error.to_string()))?;
-    let result_alias = derived_alias(dialect, "__lazydb_result");
-    let mut sql = format!("SELECT * FROM ({source}) AS {result_alias}");
+    let mut sql = format!(
+        "SELECT * FROM {}",
+        derived_source(&source, dialect, "__lazydb_result")
+    );
     let order_by = options.order_by_clause.clone();
     if let Some(clause) = options.where_clause {
         sql.push_str(" WHERE ");
@@ -95,6 +99,19 @@ fn wrap_paginated_source(
 ) -> PaginatedSql {
     let limit = page.size.lookahead_limit();
     let offset = page.offset;
+    if dialect == SqlDialect::Oracle {
+        let page_source = derived_source(source, dialect, "__lazydb_page");
+        let count_source = derived_source(source, dialect, "__lazydb_count");
+        let order_by = order_by
+            .map(|clause| format!(" ORDER BY {clause}"))
+            .unwrap_or_default();
+        return PaginatedSql {
+            page_sql: format!(
+                "SELECT * FROM {page_source}{order_by} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
+            ),
+            count_sql: format!("SELECT COUNT(*) FROM {count_source}"),
+        };
+    }
     if dialect == SqlDialect::SqlServer {
         let page_alias = derived_alias(dialect, "__lazydb_page");
         let count_alias = derived_alias(dialect, "__lazydb_count");
@@ -117,6 +134,13 @@ fn wrap_paginated_source(
     }
 }
 
+fn derived_source(source: &str, dialect: SqlDialect, name: &str) -> String {
+    if dialect == SqlDialect::Oracle {
+        return format!("(\n{source}\n) {}", name.trim_start_matches('_'));
+    }
+    format!("({source}) AS {}", derived_alias(dialect, name))
+}
+
 fn derived_alias(dialect: SqlDialect, name: &str) -> String {
     if dialect == SqlDialect::SqlServer {
         format!("[{name}]")
@@ -126,6 +150,13 @@ fn derived_alias(dialect: SqlDialect, name: &str) -> String {
 }
 
 fn parse_source(source: &str, dialect: SqlDialect) -> Result<String, DerivedQueryError> {
+    let prepared = if dialect == SqlDialect::Oracle {
+        super::oracle::prepare_oracle_statement(source)
+            .map_err(|error| DerivedQueryError(error.to_string()))?
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    };
+    let source = prepared.as_ref();
     let statements = Parser::parse_sql(parser_dialect(dialect), source)
         .map_err(|error| DerivedQueryError(format!("source query cannot be parsed: {error}")))?;
     let [Statement::Query(query)] = statements.as_slice() else {
@@ -145,11 +176,15 @@ fn parse_source(source: &str, dialect: SqlDialect) -> Result<String, DerivedQuer
         ));
     }
     let source = source.trim_end();
-    Ok(source
-        .strip_suffix(';')
-        .unwrap_or(source)
-        .trim_end()
-        .to_owned())
+    if dialect == SqlDialect::Oracle {
+        Ok(source.to_owned())
+    } else {
+        Ok(source
+            .strip_suffix(';')
+            .unwrap_or(source)
+            .trim_end()
+            .to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +315,72 @@ mod tests {
             query.count_sql,
             "SELECT COUNT(*) FROM (SELECT * FROM (SELECT id FROM users) AS [__lazydb_result] WHERE id > 1) AS [__lazydb_count]"
         );
+    }
+
+    #[test]
+    fn oracle_first_page_uses_offset_fetch_and_oracle_aliases() {
+        let query = build_paginated_query(
+            "SELECT * FROM MFGSUPPORT.ACCESSORY_BINDING;",
+            SqlDialect::Oracle,
+            PageRequest::first(crate::model::pagination::PageSize::default()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.page_sql,
+            "SELECT * FROM (\nSELECT * FROM MFGSUPPORT.ACCESSORY_BINDING\n) lazydb_page OFFSET 0 ROWS FETCH NEXT 501 ROWS ONLY"
+        );
+        assert_eq!(
+            query.count_sql,
+            "SELECT COUNT(*) FROM (\nSELECT * FROM MFGSUPPORT.ACCESSORY_BINDING\n) lazydb_count"
+        );
+    }
+
+    #[test]
+    fn oracle_filtered_page_and_count_use_oracle_aliases() {
+        let query = build_derived_paginated_query(
+            "SELECT id FROM sample_data;",
+            "id > 1",
+            "id DESC",
+            SqlDialect::Oracle,
+            PageRequest::at(crate::model::pagination::PageSize::Ten, 20),
+        )
+        .unwrap();
+
+        assert_eq!(
+            query.page_sql,
+            "SELECT * FROM (\nSELECT * FROM (\nSELECT id FROM sample_data\n) lazydb_result WHERE id > 1\n) lazydb_page ORDER BY id DESC OFFSET 20 ROWS FETCH NEXT 11 ROWS ONLY"
+        );
+        assert_eq!(
+            query.count_sql,
+            "SELECT COUNT(*) FROM (\nSELECT * FROM (\nSELECT id FROM sample_data\n) lazydb_result WHERE id > 1\n) lazydb_count"
+        );
+    }
+
+    #[test]
+    fn oracle_prepares_terminators_without_changing_quoted_semicolons() {
+        let query = build_paginated_query(
+            "SELECT ';' AS value FROM dual; -- tail",
+            SqlDialect::Oracle,
+            PageRequest::first(crate::model::pagination::PageSize::Ten),
+        )
+        .unwrap();
+
+        assert!(query.page_sql.contains("SELECT ';' AS value FROM dual"));
+        assert!(query.page_sql.contains("-- tail\n) lazydb_page"));
+        assert!(!query.page_sql.contains("dual;"));
+    }
+
+    #[test]
+    fn oracle_rejects_multiple_statements_before_wrapping() {
+        let error = build_paginated_query(
+            "SELECT 1 FROM dual; SELECT 2 FROM dual",
+            SqlDialect::Oracle,
+            PageRequest::first(crate::model::pagination::PageSize::Ten),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("one SQL statement"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ queries or terminate sessions.
 | PostgreSQL | PostgreSQL 12 or newer | Database + schema | Tables, views, materialized views, sequences, functions, procedures, types | Type family, defaults, identity, generated expressions, character length, collation, comments; numeric precision/scale is not advertised |
 | MySQL | Oracle MySQL 8.0.13 or newer | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
 | MariaDB | MariaDB 10.5 or newer; uses the MySQL-compatible transport and catalog contract | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
-| Oracle | Profile/URL recognition, native connect/probe, basic query, catalog, preview, and DDL implemented; advanced contract pending | Service + owner/schema | Tables, views, sequences, columns, indexes, primary/unique/check constraints | Type family, defaults, numeric precision/scale, character length; advanced LOB metadata pending |
+| Oracle | Profile/URL recognition, native connect/probe, basic query, catalog, preview, DDL, and generated result pagination implemented for Oracle 12c+; advanced contract pending | Service + owner/schema | Tables, views, sequences, columns, indexes, primary/unique/check constraints | Type family, defaults, numeric precision/scale, character length; advanced LOB metadata pending |
 | SQL Server | SQL Server 2012 or newer | Database + schema | Tables, views, functions, procedures, sequences, triggers; relation children include columns, indexes, keys, and foreign keys | Type family, defaults, identity, computed/generated expressions, numeric precision/scale, character length, collation, comments, and rowversion metadata |
 | SQLite | SQLite metadata support through native schema tables; no server-version gate | Database + attached schema aliases | Tables, views, triggers | Default expressions and hidden-column metadata; unsupported fields are represented as unsupported |
 
@@ -74,6 +74,13 @@ rows are read-only and cannot be toggled separately. If discovery is stale or
 unavailable, saved selections remain visible with a warning.
 
 ## Catalog Paging
+
+SQL Editor result pages and relation previews use Oracle's `OFFSET ... ROWS
+FETCH NEXT ... ROWS ONLY` syntax and therefore require Oracle Database 12c or
+newer. Result paging does not add a default ordering: queries without an
+`ORDER BY` may have an unstable row order between pages. Complex queries that
+cannot be safely parsed as one read-only statement remain on the unwrapped
+execution path.
 
 ### PostgreSQL Schema Owners
 
