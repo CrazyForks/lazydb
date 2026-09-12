@@ -299,6 +299,8 @@ async fn catalog_page_exposes_scoped_mysql_objects_and_rich_metadata_when_config
             .unwrap();
     let configured_database = database.probe().await.unwrap().database;
     let lower_case_table_names = mysql_integer(&database, "SELECT @@lower_case_table_names").await;
+    let supports_functional_indexes =
+        std::env::var("LAZYDB_TEST_MYSQL_FUNCTIONAL_INDEX").map_or(true, |value| value != "0");
     assert!(
         !configured_database.is_empty(),
         "LAZYDB_TEST_MYSQL_URL must select a database"
@@ -368,10 +370,15 @@ async fn catalog_page_exposes_scoped_mysql_objects_and_rich_metadata_when_config
         if database_fixture.created_databases() {
             assert!(baseline_counts.values().all(|count| *count == CatalogCount::Exact(0)));
         }
+        let functional_index = if supports_functional_indexes {
+            format!(", INDEX {prefix}child_code_lower_idx ((LOWER(code)))")
+        } else {
+            String::new()
+        };
         database
             .execute(&format!(
                 "CREATE TABLE {qdb}.{qparent} (tenant_id INT NOT NULL, parent_id INT NOT NULL, CONSTRAINT {prefix}parent_pk PRIMARY KEY (tenant_id, parent_id)); \
-                 CREATE TABLE {qdb}.{qchild} (id BIGINT NOT NULL AUTO_INCREMENT, tenant_id INT NOT NULL, owner_id INT NOT NULL, code VARCHAR(40) NOT NULL DEFAULT 'new' COMMENT 'code column comment', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, code_upper VARCHAR(40) GENERATED ALWAYS AS (UPPER(code)) STORED, CONSTRAINT {prefix}child_pk PRIMARY KEY (id, tenant_id), CONSTRAINT {prefix}child_tenant_code_uq UNIQUE (tenant_id, code), CONSTRAINT {prefix}child_parent_fk FOREIGN KEY (tenant_id, owner_id) REFERENCES {qdb}.{qparent} (tenant_id, parent_id), INDEX {prefix}child_owner_code_idx (owner_id, code), INDEX {prefix}child_code_lower_idx ((LOWER(code)))) COMMENT='child table comment'; \
+                 CREATE TABLE {qdb}.{qchild} (id BIGINT NOT NULL AUTO_INCREMENT, tenant_id INT NOT NULL, owner_id INT NOT NULL, code VARCHAR(40) NOT NULL DEFAULT 'new' COMMENT 'code column comment', created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, code_upper VARCHAR(40) GENERATED ALWAYS AS (UPPER(code)) STORED, CONSTRAINT {prefix}child_pk PRIMARY KEY (id, tenant_id), CONSTRAINT {prefix}child_tenant_code_uq UNIQUE (tenant_id, code), CONSTRAINT {prefix}child_parent_fk FOREIGN KEY (tenant_id, owner_id) REFERENCES {qdb}.{qparent} (tenant_id, parent_id), INDEX {prefix}child_owner_code_idx (owner_id, code){functional_index}) COMMENT='child table comment'; \
                  CREATE TABLE {qdb}.{qsecond} (id INT PRIMARY KEY); \
                  CREATE VIEW {qdb}.{qview} AS SELECT tenant_id, id, code FROM {qdb}.{qchild}; \
                  CREATE FUNCTION {qdb}.{qfunction}(value INT) RETURNS INT DETERMINISTIC RETURN value + 1; \
@@ -606,7 +613,11 @@ async fn catalog_page_exposes_scoped_mysql_objects_and_rich_metadata_when_config
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(indexes.len(), 5, "one entry per native MySQL index");
+        assert_eq!(
+            indexes.len(),
+            if supports_functional_indexes { 5 } else { 4 },
+            "one entry per native MySQL index"
+        );
         let (_, composite_index) = indexes
             .iter()
             .find(|(entry, _)| entry.qualified_name.object == format!("{prefix}child_owner_code_idx"))
@@ -618,14 +629,16 @@ async fn catalog_page_exposes_scoped_mysql_objects_and_rich_metadata_when_config
                 unique: false,
             }
         );
-        let (_, functional_index) = indexes
-            .iter()
-            .find(|(entry, _)| entry.qualified_name.object == format!("{prefix}child_code_lower_idx"))
-            .unwrap();
-        assert_eq!(functional_index.columns.len(), 1);
-        let expression = functional_index.columns[0].to_ascii_lowercase();
-        assert!(expression.contains("lower"));
-        assert!(expression.contains("code"));
+        if supports_functional_indexes {
+            let (_, functional_index) = indexes
+                .iter()
+                .find(|(entry, _)| entry.qualified_name.object == format!("{prefix}child_code_lower_idx"))
+                .unwrap();
+            assert_eq!(functional_index.columns.len(), 1);
+            let expression = functional_index.columns[0].to_ascii_lowercase();
+            assert!(expression.contains("lower"));
+            assert!(expression.contains("code"));
+        }
         let primary = one_constraint(&children.entries, CatalogKind::PrimaryKey);
         let unique = one_constraint(&children.entries, CatalogKind::UniqueConstraint);
         let foreign = one_constraint(&children.entries, CatalogKind::ForeignKey);

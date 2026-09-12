@@ -155,7 +155,7 @@ jobs:
       - name: MySQL adapter tests
         run: timeout 10m cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
       - name: MariaDB adapter tests
-        run: timeout 10m env LAZYDB_TEST_MYSQL_URL="$LAZYDB_TEST_MARIADB_URL" cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
+        run: timeout 10m env LAZYDB_TEST_MYSQL_FUNCTIONAL_INDEX=0 LAZYDB_TEST_MYSQL_URL="$LAZYDB_TEST_MARIADB_URL" cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
       - name: SQL Server adapter tests
         run: timeout 10m cargo test --locked --test sqlserver_adapter -- --nocapture --test-threads=1
       - name: SQL Server transaction tests

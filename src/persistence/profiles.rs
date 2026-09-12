@@ -379,6 +379,14 @@ fn preserve_unavailable_profiles(
     let existing_document = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| PersistenceError::InvalidStructure(error.to_string()))?;
+    // Older versions are migrated by `load_report`; don't retain their legacy
+    // fields as though they were unavailable profiles from the current schema.
+    if existing_document["version"]
+        .as_integer()
+        .is_some_and(|version| version < i64::from(PROFILE_FILE_VERSION))
+    {
+        return Ok(generated.to_owned());
+    }
     let Some(existing_profiles) = existing_document["profiles"].as_array_of_tables() else {
         return Ok(generated.to_owned());
     };
