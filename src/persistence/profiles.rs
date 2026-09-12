@@ -392,11 +392,36 @@ fn preserve_unavailable_profiles(
     };
     let mut unavailable = Vec::new();
     for table in existing_profiles.iter() {
-        let table_value = toml::from_str::<toml::Value>(&table.to_string());
-        let known_profile = table_value
-            .ok()
-            .and_then(|value| value.try_into::<ConnectionProfile>().ok())
-            .is_some();
+        let known_profile = table
+            .get("kind")
+            .and_then(toml_edit::Item::as_str)
+            .is_some_and(|kind| {
+                matches!(
+                    kind,
+                    "postgres" | "mysql" | "mariadb" | "oracle" | "sqlserver" | "sqlite"
+                )
+            })
+            && table.iter().all(|(key, _)| {
+                matches!(
+                    key,
+                    "id" | "name"
+                        | "access"
+                        | "group_id"
+                        | "kind"
+                        | "url_format"
+                        | "host"
+                        | "port"
+                        | "user"
+                        | "database"
+                        | "default_schema"
+                        | "sqlite_path"
+                        | "ssl_mode"
+                        | "credential_policy"
+                        | "read_only"
+                        | "environment"
+                        | "catalog_scope"
+                )
+            });
         if !known_profile {
             unavailable.push(table.clone());
         }

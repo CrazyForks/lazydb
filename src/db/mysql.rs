@@ -1877,7 +1877,16 @@ impl MySqlAdapter {
         database: &str,
         relation: &str,
     ) -> Result<Vec<MySqlIndexInfo>, DatabaseError> {
-        let index_sql = if self.kind == DatabaseKind::MariaDb {
+        // The MariaDB integration test intentionally uses a MySQL URL so the
+        // adapter remains MySQL-compatible. Detect the server product rather
+        // than relying on the profile kind when selecting metadata columns.
+        let server_version: String = sqlx::query_scalar("SELECT VERSION()")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(sql_error)?;
+        let index_sql = if self.kind == DatabaseKind::MariaDb
+            || server_version.to_ascii_lowercase().contains("mariadb")
+        {
             CATALOG_PAGE_INDEXES_MARIADB_SQL
         } else {
             CATALOG_PAGE_INDEXES_SQL
