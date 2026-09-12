@@ -679,7 +679,7 @@ fn url_commit_is_atomic_and_moves_password_to_secret() {
 }
 
 #[test]
-fn structured_edits_refresh_url_and_invalid_port_keeps_last_valid_url() {
+fn structured_edits_refresh_url_and_invalid_port_invalidates_the_url() {
     let mut state = ProfileManagerState::new(false);
     state.start_new(DatabaseKind::Postgres);
     let original = state.draft.as_ref().unwrap().url_display();
@@ -690,7 +690,17 @@ fn structured_edits_refresh_url_and_invalid_port_keeps_last_valid_url() {
 
     state.focus_field(ProfileField::Port);
     state.paste("invalid");
-    assert_eq!(state.draft.as_ref().unwrap().url_display(), changed);
+    assert!(state.draft.as_ref().unwrap().url_display().is_empty());
+    assert_eq!(
+        state
+            .draft
+            .as_ref()
+            .unwrap()
+            .url_generation_error()
+            .unwrap()
+            .field,
+        ProfileField::Port
+    );
     assert_eq!(
         state
             .draft
@@ -809,6 +819,20 @@ fn url_format_cycles_only_compatible_values_and_driver_resets_default() {
             .url_display()
             .starts_with("sqlserver://")
     );
+}
+
+#[test]
+fn switching_to_oracle_does_not_keep_the_previous_driver_url() {
+    let mut state = ProfileManagerState::new(false);
+    state.start_new(DatabaseKind::MariaDb);
+    let previous = state.draft.as_ref().unwrap().url_display();
+    assert!(previous.starts_with("mariadb://"));
+
+    state.select_driver(DatabaseKind::Oracle);
+
+    let draft = state.draft.as_ref().unwrap();
+    assert_eq!(draft.kind, DatabaseKind::Oracle);
+    assert!(draft.url_display().is_empty());
 }
 
 #[test]

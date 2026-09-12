@@ -183,9 +183,13 @@ fn render_form(
         render_field_cursor(layout.url, draft, ProfileField::Url, state);
     }
     let help = if manager.selected_field == ProfileField::Url {
-        url_help(draft.kind)
+        let format_help = url_help(draft.kind);
+        draft.url_generation_error().map_or_else(
+            || format_help.to_owned(),
+            |error| format!("{format_help} · {}", error.message),
+        )
     } else {
-        ""
+        String::new()
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::new().fg(theme.muted).bg(theme.surface)),
@@ -509,7 +513,7 @@ fn render_field(
                     .bg(theme.surface),
             ),
             Span::styled(
-                format!("{:<20}", field_label(field)),
+                format!("{:<20}", field_label(field, draft.kind)),
                 Style::new()
                     .fg(if active { theme.action } else { theme.muted })
                     .bg(theme.surface)
@@ -1098,7 +1102,7 @@ fn url_help(kind: DatabaseKind) -> &'static str {
     }
 }
 
-fn field_label(field: ProfileField) -> &'static str {
+fn field_label(field: ProfileField, kind: DatabaseKind) -> &'static str {
     match field {
         ProfileField::Kind => "Driver",
         ProfileField::UrlFormat => "URL format",
@@ -1108,6 +1112,7 @@ fn field_label(field: ProfileField) -> &'static str {
         ProfileField::Port => "Port",
         ProfileField::User => "User",
         ProfileField::Password => "Password",
+        ProfileField::Database if kind == DatabaseKind::Oracle => "Service Name",
         ProfileField::Database => "Database",
         ProfileField::Schema => "Default schema",
         ProfileField::VisibleObjects => "Visible objects",

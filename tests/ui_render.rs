@@ -6837,7 +6837,14 @@ fn profile_url_help_follows_the_selected_driver_when_focused() {
             4 => "Accepts sqlserver://",
             _ => "Accepts sqlite://",
         };
-        assert!(focused.contains(help), "missing URL help: {focused}");
+        if cycle == 3 {
+            assert!(
+                focused.contains("service name is required"),
+                "missing URL generation help: {focused}"
+            );
+        } else {
+            assert!(focused.contains(help), "missing URL help: {focused}");
+        }
     }
 }
 

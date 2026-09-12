@@ -427,6 +427,10 @@ pub enum ProfileError {
     UnsupportedScheme(String),
     #[error("connection URL is missing a host")]
     MissingHost,
+    #[error("connection URL is missing a port")]
+    MissingPort,
+    #[error("connection URL is missing an Oracle service name")]
+    MissingOracleService,
     #[error("SQLite URL is missing a database path")]
     MissingSqlitePath,
     #[error("connection URL contains unknown query parameter `{0}`")]
@@ -953,11 +957,12 @@ pub fn format_connection_url(
     }
     if format == ConnectionUrlFormat::JdbcOracle {
         let host = profile.host.as_deref().ok_or(ProfileError::MissingHost)?;
-        let port = profile.port.ok_or(ProfileError::MissingHost)?;
+        let port = profile.port.ok_or(ProfileError::MissingPort)?;
         let service = profile
             .database
             .as_deref()
-            .ok_or(ProfileError::MissingHost)?;
+            .filter(|value| !value.is_empty())
+            .ok_or(ProfileError::MissingOracleService)?;
         let mut output = format!("jdbc:oracle:thin:@{host}:{port}/{service}");
         if let Some(user) = profile.user.as_deref().filter(|value| !value.is_empty()) {
             output.push_str(&format!("?user={}", utf8_percent_encode(user, QUERY_VALUE)));
