@@ -512,6 +512,22 @@ impl ProfileValidationError {
     }
 }
 
+fn url_generation_error(error: crate::profile::ProfileError) -> ProfileValidationError {
+    let (field, message) = match error {
+        crate::profile::ProfileError::MissingHost => (ProfileField::Host, "host is required"),
+        crate::profile::ProfileError::MissingPort => (ProfileField::Port, "port is required"),
+        crate::profile::ProfileError::MissingOracleService => {
+            (ProfileField::Database, "service name is required")
+        }
+        crate::profile::ProfileError::MissingSqlitePath => (
+            ProfileField::SqlitePath,
+            "SQLite path is required when memory mode is disabled",
+        ),
+        _ => (ProfileField::Url, "connection URL could not be generated"),
+    };
+    ProfileValidationError::new(field, message)
+}
+
 impl fmt::Display for ProfileValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.message)
@@ -575,6 +591,7 @@ pub struct ProfileDraft {
     url_selection: Option<(usize, usize)>,
     url_pending: bool,
     url_error: Option<String>,
+    url_generation_error: Option<ProfileValidationError>,
     pub name: TextInput,
     pub host: TextInput,
     pub port: TextInput,
@@ -636,6 +653,7 @@ impl ProfileDraft {
             url_selection: None,
             url_pending: false,
             url_error: None,
+            url_generation_error: None,
             name: TextInput::default(),
             host: TextInput::from(host),
             port: TextInput::from(port),
@@ -695,6 +713,7 @@ impl ProfileDraft {
             url_selection: None,
             url_pending: false,
             url_error: None,
+            url_generation_error: None,
             name: TextInput::from(profile.name.clone()),
             host: TextInput::from(profile.host.clone().unwrap_or_default()),
             port: TextInput::from(
@@ -807,6 +826,10 @@ impl ProfileDraft {
 
     pub fn url_error(&self) -> Option<&str> {
         self.url_error.as_deref()
+    }
+
+    pub fn url_generation_error(&self) -> Option<&ProfileValidationError> {
+        self.url_generation_error.as_ref()
     }
 
     pub fn commit_url(&mut self) -> Result<(), ProfileValidationError> {
@@ -1475,32 +1498,60 @@ impl ProfileDraft {
     fn mark_url_edited(&mut self) {
         self.url_pending = true;
         self.url_error = None;
+        self.url_generation_error = None;
         self.url_selection = None;
     }
 
     fn refresh_url(&mut self) {
-        let Ok(profile) = self.connection_profile_for_url() else {
-            return;
+        let profile = match self.connection_profile_for_url() {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.url.set("");
+                self.url_selection = None;
+                self.url_pending = false;
+                self.url_error = None;
+                self.url_generation_error = Some(error);
+                return;
+            }
         };
-        let Ok(url) = format_connection_url(&profile, self.url_format) else {
-            return;
+        let url = match format_connection_url(&profile, self.url_format) {
+            Ok(url) => url,
+            Err(error) => {
+                self.url.set("");
+                self.url_selection = None;
+                self.url_pending = false;
+                self.url_error = None;
+                self.url_generation_error = Some(url_generation_error(error));
+                return;
+            }
         };
         self.url.set(url);
         self.url_selection = None;
         self.url_pending = false;
         self.url_error = None;
+        self.url_generation_error = None;
     }
 
-    fn connection_profile_for_url(&self) -> Result<ConnectionProfile, ()> {
+    fn connection_profile_for_url(&self) -> Result<ConnectionProfile, ProfileValidationError> {
         let (host, port, user, database, default_schema, sqlite_path) = match self.kind {
             DatabaseKind::Postgres
             | DatabaseKind::MySql
             | DatabaseKind::MariaDb
             | DatabaseKind::SqlServer => {
-                let host = optional(&self.host).ok_or(())?;
-                let port = self.port.value().trim().parse::<u16>().map_err(|_| ())?;
+                let host = optional(&self.host).ok_or_else(|| {
+                    ProfileValidationError::new(ProfileField::Host, "host is required")
+                })?;
+                let port = self.port.value().trim().parse::<u16>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    )
+                })?;
                 if port == 0 {
-                    return Err(());
+                    return Err(ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    ));
                 }
                 (
                     Some(host),
@@ -1513,20 +1564,44 @@ impl ProfileDraft {
                     None,
                 )
             }
-            DatabaseKind::Oracle => (
-                optional(&self.host),
-                self.port.value().trim().parse::<u16>().ok(),
-                optional(&self.user),
-                optional(&self.database),
-                None,
-                None,
-            ),
+            DatabaseKind::Oracle => {
+                let port = self.port.value().trim().parse::<u16>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    )
+                })?;
+                if port == 0 {
+                    return Err(ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    ));
+                }
+                (
+                    Some(optional(&self.host).ok_or_else(|| {
+                        ProfileValidationError::new(ProfileField::Host, "host is required")
+                    })?),
+                    Some(port),
+                    optional(&self.user),
+                    Some(optional(&self.database).ok_or_else(|| {
+                        ProfileValidationError::new(
+                            ProfileField::Database,
+                            "service name is required",
+                        )
+                    })?),
+                    None,
+                    None,
+                )
+            }
             DatabaseKind::Sqlite => {
                 let path = (!self.sqlite_memory)
                     .then(|| optional(&self.sqlite_path).map(PathBuf::from))
                     .flatten();
                 if !self.sqlite_memory && path.is_none() {
-                    return Err(());
+                    return Err(ProfileValidationError::new(
+                        ProfileField::SqlitePath,
+                        "SQLite path is required when memory mode is disabled",
+                    ));
                 }
                 (
                     None,
