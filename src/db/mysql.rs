@@ -77,7 +77,7 @@ ORDER BY BINARY index_name, seq_in_index
 "#;
 
 const CATALOG_PAGE_INDEXES_MARIADB_SQL: &str = r#"
-SELECT index_name, non_unique, seq_in_index, column_name, NULL AS expression
+SELECT index_name, non_unique, CAST(seq_in_index AS UNSIGNED), column_name, NULL AS expression
 FROM information_schema.statistics
 WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ?
 ORDER BY BINARY index_name, seq_in_index
