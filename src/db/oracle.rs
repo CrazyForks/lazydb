@@ -211,7 +211,7 @@ impl OracleAdapter {
                     &mut entries,
                     request.page_size,
                     |entry| entry.qualified_name.object.clone(),
-                    |entry| entry.id.native_path.join("."),
+                    |entry| entry.qualified_name.object.clone(),
                 )
                 .map_err(|error| oracle_error(error.to_string()))?;
                 CatalogPage::new(&request, entries, CatalogCount::Unknown, next_cursor)
@@ -646,24 +646,39 @@ fn oracle_catalog_entries(
             )
             .map_err(oracle_error)?,
         CatalogTarget::Objects { group, .. } => {
-            let view = match group {
-                ObjectGroup::Tables => "all_tables",
-                ObjectGroup::Views => "all_views",
-                ObjectGroup::Sequences => "all_sequences",
-                _ => return Ok(Vec::new()),
-            };
-            let column = match group {
-                ObjectGroup::Views => "view_name",
-                _ => "table_name",
+            let Some((view, name_column, owner_column)) = oracle_object_columns(*group) else {
+                return Ok(Vec::new());
             };
             let owner_filter = schema.as_deref().unwrap_or_default().to_owned();
+            let cursor_name = request
+                .key
+                .cursor
+                .as_ref()
+                .map(|cursor| {
+                    let (sort_key, tie_breaker) = cursor
+                        .keyset_parts()
+                        .map_err(|error| oracle_error(error.to_string()))?;
+                    if sort_key != tie_breaker {
+                        return Err(oracle_error("Oracle object cursor components differ"));
+                    }
+                    Ok(sort_key.to_owned())
+                })
+                .transpose()?;
+            let sql = oracle_object_sql(
+                view,
+                name_column,
+                owner_column,
+                limit,
+                cursor_name.is_some(),
+            );
+            let bindings = match cursor_name.as_ref() {
+                Some(cursor_name) => {
+                    vec![&owner_filter as &dyn oracle::sql_type::ToSql, cursor_name]
+                }
+                None => vec![&owner_filter as &dyn oracle::sql_type::ToSql],
+            };
             connection
-                .query(
-                    &format!(
-                        "SELECT {column} FROM {view} WHERE owner = :1 ORDER BY {column} FETCH FIRST {limit} ROWS ONLY"
-                    ),
-                    &[&owner_filter],
-                )
+                .query(&sql, &bindings)
                 .map_err(oracle_error)?
         }
         CatalogTarget::Groups { .. } => return Ok(Vec::new()),
@@ -848,14 +863,16 @@ fn oracle_catalog_entries(
                 .map_err(oracle_error)?,
         );
     }
-    if let Some(cursor) = request.key.cursor.as_ref() {
+    if !matches!(request.key.target, CatalogTarget::Objects { .. })
+        && let Some(cursor) = request.key.cursor.as_ref()
+    {
         let (sort_key, tie_breaker) = cursor
             .keyset_parts()
             .map_err(|error| oracle_error(error.to_string()))?;
         names.retain(|name| (name.as_str(), name.as_str()) > (sort_key, tie_breaker));
     }
     let mut entries = Vec::new();
-    for name in names.into_iter().take(request.page_size) {
+    for name in names {
         let entry = match &request.key.target {
             CatalogTarget::Databases => CatalogEntry::database(
                 CatalogId::new(
@@ -942,6 +959,76 @@ fn oracle_catalog_entries(
         entries.push(entry);
     }
     Ok(entries)
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_columns(group: ObjectGroup) -> Option<(&'static str, &'static str, &'static str)> {
+    match group {
+        ObjectGroup::Tables => Some(("all_tables", "table_name", "owner")),
+        ObjectGroup::Views => Some(("all_views", "view_name", "owner")),
+        ObjectGroup::Sequences => Some(("all_sequences", "sequence_name", "sequence_owner")),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_sql(
+    view: &str,
+    name_column: &str,
+    owner_column: &str,
+    limit: usize,
+    has_cursor: bool,
+) -> String {
+    let cursor_filter = if has_cursor {
+        format!(" AND NLSSORT({name_column}, 'NLS_SORT=BINARY') > NLSSORT(:2, 'NLS_SORT=BINARY')")
+    } else {
+        String::new()
+    };
+    format!(
+        "SELECT {name_column} FROM {view} WHERE {owner_column} = :1{cursor_filter} ORDER BY NLSSORT({name_column}, 'NLS_SORT=BINARY') FETCH FIRST {limit} ROWS ONLY"
+    )
+}
+
+#[cfg(all(test, feature = "driver-oracle"))]
+mod tests {
+    use super::{oracle_object_columns, oracle_object_sql};
+    use crate::db::catalog::{ObjectGroup, finalize_keyset_page};
+
+    #[test]
+    fn oracle_object_columns_match_dictionary_view_contract() {
+        assert_eq!(
+            oracle_object_columns(ObjectGroup::Tables),
+            Some(("all_tables", "table_name", "owner"))
+        );
+        assert_eq!(
+            oracle_object_columns(ObjectGroup::Views),
+            Some(("all_views", "view_name", "owner"))
+        );
+        assert_eq!(
+            oracle_object_columns(ObjectGroup::Sequences),
+            Some(("all_sequences", "sequence_name", "sequence_owner"))
+        );
+    }
+
+    #[test]
+    fn oracle_object_sql_filters_cursor_before_fetch() {
+        let sql = oracle_object_sql("all_sequences", "sequence_name", "sequence_owner", 11, true);
+        assert!(sql.contains("sequence_owner = :1"));
+        assert!(sql.contains("NLSSORT(sequence_name, 'NLS_SORT=BINARY') > NLSSORT(:2"));
+        assert!(sql.contains("ORDER BY NLSSORT(sequence_name, 'NLS_SORT=BINARY')"));
+        assert!(sql.contains("FETCH FIRST 11 ROWS ONLY"));
+        assert!(sql.find(":2").unwrap() < sql.find("FETCH FIRST").unwrap());
+    }
+
+    #[test]
+    fn oracle_object_page_uses_the_name_for_both_cursor_parts() {
+        let mut names = vec!["A.B".to_owned(), "C".to_owned(), "D".to_owned()];
+        let cursor = finalize_keyset_page(&mut names, 2, |name| name.clone(), |name| name.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(names, ["A.B", "C"]);
+        assert_eq!(cursor.keyset_parts().unwrap(), ("C", "C"));
+    }
 }
 
 #[cfg(not(feature = "driver-oracle"))]

@@ -144,6 +144,87 @@ async fn oracle_discovers_and_loads_basic_catalog_when_configured() {
 }
 
 #[tokio::test]
+async fn oracle_sequences_catalog_loads_when_configured() {
+    let (Ok(url), Ok(user), Ok(password)) = (
+        std::env::var("LAZYDB_TEST_ORACLE_URL"),
+        std::env::var("LAZYDB_TEST_ORACLE_USER"),
+        std::env::var("LAZYDB_TEST_ORACLE_PASSWORD"),
+    ) else {
+        return;
+    };
+    let mut imported = import_connection_url(&url, Some("oracle-sequences-test")).unwrap();
+    imported.profile.user = Some(user);
+    let connection =
+        match DatabaseConnection::connect(&imported.profile, Some(&SecretString::from(password)))
+            .await
+        {
+            Ok(connection) => connection,
+            Err(error) if error.message.contains("DPI-1047") => return,
+            Err(error) => panic!("Oracle connection failed: {error}"),
+        };
+    let identity = ConnectionIdentity {
+        profile_id: imported.profile.id,
+        generation: 1,
+    };
+    let database_request = CatalogRequest {
+        key: CatalogRequestKey {
+            connection: identity,
+            catalog_epoch: 1,
+            request_id: 1,
+            target: CatalogTarget::Databases,
+            cursor: None,
+        },
+        scope: imported.profile.catalog_scope.clone(),
+        page_size: 10,
+    };
+    let database_page = connection
+        .load_catalog_page(&database_request)
+        .await
+        .unwrap();
+    let database = database_page.entries[0].id.clone();
+    let schema_request = CatalogRequest {
+        key: CatalogRequestKey {
+            connection: identity,
+            catalog_epoch: 1,
+            request_id: 2,
+            target: CatalogTarget::Schemas { database },
+            cursor: None,
+        },
+        scope: imported.profile.catalog_scope.clone(),
+        page_size: 10,
+    };
+    let schema_page = connection.load_catalog_page(&schema_request).await.unwrap();
+    let schema = schema_page.entries[0].id.clone();
+    let sequence_request = CatalogRequest {
+        key: CatalogRequestKey {
+            connection: identity,
+            catalog_epoch: 1,
+            request_id: 3,
+            target: CatalogTarget::Objects {
+                schema: schema.clone(),
+                group: lazydb::db::catalog::ObjectGroup::Sequences,
+            },
+            cursor: None,
+        },
+        scope: imported.profile.catalog_scope.clone(),
+        page_size: 10,
+    };
+    let sequence_page = connection
+        .load_catalog_page(&sequence_request)
+        .await
+        .unwrap();
+    for entry in &sequence_page.entries {
+        assert_eq!(entry.id.kind, lazydb::db::catalog::CatalogKind::Sequence);
+        assert_eq!(entry.parent_id.as_ref(), Some(&schema));
+        assert_eq!(
+            entry.qualified_name.schema,
+            schema.native_path.last().cloned()
+        );
+    }
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn oracle_reads_typed_read_only_results_when_configured() {
     let (Ok(url), Ok(user), Ok(password)) = (
         std::env::var("LAZYDB_TEST_ORACLE_URL"),
