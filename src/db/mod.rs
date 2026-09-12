@@ -719,9 +719,7 @@ impl DatabaseConnection {
             Self::Postgres(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::MySql(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::MariaDb(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
-            Self::Oracle(_) => Err(DatabaseError::configuration(
-                "Oracle relation DDL is not implemented yet",
-            )),
+            Self::Oracle(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::Sqlite(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::SqlServer(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
         }
