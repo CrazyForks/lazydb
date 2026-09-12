@@ -787,38 +787,16 @@ fn oracle_object_page(
         .ok_or_else(|| oracle_error("invalid Oracle schema identity"))?;
     let cursor = oracle_object_cursor(request)?;
     let limit = request.page_size.saturating_add(1);
-    let cursor_predicate = cursor.map_or(String::new(), |_| {
-        format!(
-            " AND NLSSORT({name}, 'NLS_SORT=BINARY') > NLSSORT(:3, 'NLS_SORT=BINARY')",
-            name = description.name_column
-        )
-    });
-    let sql = format!(
-        "WITH object_count AS (\
-             SELECT COUNT(*) AS total_count FROM {dictionary} WHERE {owner_column} = :1\
-         ), page_rows AS (\
-             SELECT {name_column} AS object_name FROM {dictionary}\
-             WHERE {owner_column} = :2{cursor_predicate}\
-             ORDER BY NLSSORT({name_column}, 'NLS_SORT=BINARY')\
-             FETCH FIRST {limit} ROWS ONLY\
-         )\
-         SELECT c.total_count, p.object_name FROM object_count c\
-         LEFT JOIN page_rows p ON 1 = 1\
-         ORDER BY NLSSORT(p.object_name, 'NLS_SORT=BINARY')",
-        dictionary = description.dictionary,
-        owner_column = description.owner_column,
-        name_column = description.name_column,
-        cursor_predicate = cursor_predicate,
-    );
+    let sql = oracle_object_page_sql(description, cursor.is_some(), limit);
     let rows = match cursor {
         Some((_, cursor_name)) => connection.query(&sql, &[owner, owner, &cursor_name]),
         None => connection.query(&sql, &[owner, owner]),
     }
-    .map_err(oracle_error)?;
+    .map_err(|error| oracle_error_with_query(error, &sql))?;
     let mut total_count = None;
     let mut names = Vec::new();
     for row in rows {
-        let row = row.map_err(oracle_error)?;
+        let row = row.map_err(|error| oracle_error_with_query(error, &sql))?;
         let count: i64 = row.get(0).map_err(oracle_error)?;
         let count = u64::try_from(count).map_err(oracle_error)?;
         if total_count
@@ -846,6 +824,45 @@ fn oracle_object_page(
         next_cursor,
     )
     .map_err(|error| oracle_error(error.to_string()))
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_page_sql(
+    description: OracleObjectGroup,
+    has_cursor: bool,
+    limit: usize,
+) -> String {
+    let cursor_predicate = if has_cursor {
+        format!(
+            " AND NLSSORT({name}, 'NLS_SORT=BINARY') > NLSSORT(:3, 'NLS_SORT=BINARY')",
+            name = description.name_column,
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        r#"
+WITH object_count AS (
+    SELECT COUNT(*) AS total_count
+    FROM {dictionary}
+    WHERE {owner_column} = :1
+), page_rows AS (
+    SELECT {name_column} AS object_name
+    FROM {dictionary}
+    WHERE {owner_column} = :2{cursor_predicate}
+    ORDER BY NLSSORT({name_column}, 'NLS_SORT=BINARY')
+    FETCH FIRST {limit} ROWS ONLY
+)
+SELECT c.total_count, p.object_name
+FROM object_count c
+LEFT JOIN page_rows p ON 1 = 1
+ORDER BY NLSSORT(p.object_name, 'NLS_SORT=BINARY')
+"#,
+        dictionary = description.dictionary,
+        owner_column = description.owner_column,
+        name_column = description.name_column,
+        cursor_predicate = cursor_predicate,
+    )
 }
 
 #[cfg(feature = "driver-oracle")]
@@ -1321,6 +1338,34 @@ mod tests {
         let invalid = CatalogCursor::from_keyset("A.B", "A.B2").unwrap();
         assert!(oracle_object_cursor_parts(Some(&invalid)).is_err());
         assert!(oracle_object_cursor_parts(Some(&CatalogCursor::new("bad"))).is_err());
+    }
+
+    #[test]
+    fn oracle_object_page_sql_preserves_token_boundaries() {
+        for description in oracle_object_groups() {
+            for has_cursor in [false, true] {
+                let sql = oracle_object_page_sql(description, has_cursor, 11);
+                let normalized = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(normalized.contains(&format!(
+                    "FROM {} WHERE {} = :2",
+                    description.dictionary, description.owner_column,
+                )));
+                assert!(normalized.contains("FROM object_count c LEFT JOIN page_rows p"));
+                assert!(normalized.contains("ON 1 = 1 ORDER BY"));
+                assert!(normalized.contains(&format!(
+                    "SELECT {} AS object_name FROM {}",
+                    description.name_column, description.dictionary,
+                )));
+                assert!(normalized.contains("FETCH FIRST 11 ROWS ONLY"));
+                if has_cursor {
+                    assert!(normalized.contains(&format!(
+                        "{} = :2 AND NLSSORT({},",
+                        description.owner_column, description.name_column,
+                    )));
+                    assert!(normalized.contains("NLS_SORT=BINARY') ORDER BY"));
+                }
+            }
+        }
     }
 
     #[test]
