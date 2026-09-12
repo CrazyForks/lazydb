@@ -833,6 +833,33 @@ fn switching_to_oracle_does_not_keep_the_previous_driver_url() {
     let draft = state.draft.as_ref().unwrap();
     assert_eq!(draft.kind, DatabaseKind::Oracle);
     assert!(draft.url_display().is_empty());
+    assert_eq!(
+        draft.oracle_url_preview().as_deref(),
+        Some("jdbc:oracle:thin:@localhost:1521/<service-name>")
+    );
+}
+
+#[test]
+fn oracle_url_preview_tracks_missing_fields_without_becoming_real_url() {
+    let mut draft = ProfileDraft::new(DatabaseKind::Oracle);
+    assert!(draft.url_display().is_empty());
+    assert_eq!(
+        draft.oracle_url_preview().as_deref(),
+        Some("jdbc:oracle:thin:@localhost:1521/<service-name>")
+    );
+
+    draft.paste(ProfileField::Database, "app_service");
+    assert_eq!(
+        draft.url_display(),
+        "jdbc:oracle:thin:@localhost:1521/app_service"
+    );
+    assert!(draft.oracle_url_preview().is_none());
+
+    for _ in 0.."app_service".chars().count() {
+        draft.backspace(ProfileField::Database);
+    }
+    assert!(draft.url_display().is_empty());
+    assert!(draft.oracle_url_preview().is_some());
 }
 
 #[test]
@@ -881,6 +908,10 @@ fn visible_fields_follow_the_selected_driver_and_sqlite_mode() {
 
     let mysql = ProfileDraft::new(DatabaseKind::MySql);
     assert!(!mysql.visible_fields().contains(&ProfileField::Schema));
+
+    let oracle = ProfileDraft::new(DatabaseKind::Oracle);
+    assert!(!oracle.visible_fields().contains(&ProfileField::Schema));
+    assert!(oracle.visible_fields().contains(&ProfileField::Database));
 
     let mut sqlite = ProfileDraft::new(DatabaseKind::Sqlite);
     assert!(sqlite.visible_fields().contains(&ProfileField::SqlitePath));

@@ -182,12 +182,16 @@ fn render_form(
     if manager.selected_field == ProfileField::Url && !busy {
         render_field_cursor(layout.url, draft, ProfileField::Url, state);
     }
-    let help = if manager.selected_field == ProfileField::Url {
-        let format_help = url_help(draft.kind);
-        draft.url_generation_error().map_or_else(
-            || format_help.to_owned(),
-            |error| format!("{format_help} · {}", error.message),
-        )
+    let help = if let Some(error) = draft.url_generation_error() {
+        if draft.oracle_url_preview().is_some() {
+            format!("Preview only · {}", error.message)
+        } else if manager.selected_field == ProfileField::Url {
+            format!("{} · {}", url_help(draft.kind), error.message)
+        } else {
+            error.message.clone()
+        }
+    } else if manager.selected_field == ProfileField::Url {
+        url_help(draft.kind).to_owned()
     } else {
         String::new()
     };
@@ -550,7 +554,7 @@ fn render_field(
                 source_start: 0,
             },
         ));
-    } else if field == ProfileField::Url {
+    } else if field == ProfileField::Url && (active || draft.oracle_url_preview().is_none()) {
         let display = safe_line(&draft.url_display());
         let projection = crate::security::project_editor_line(&display);
         state.input_selection_targets.push((
@@ -564,7 +568,15 @@ fn render_field(
             },
         ));
     }
-    let mut value = field_value(draft, field);
+    let showing_preview =
+        field == ProfileField::Url && !active && draft.oracle_url_preview().is_some();
+    let mut value = if showing_preview {
+        draft
+            .oracle_url_preview()
+            .map_or_else(|| field_value(draft, field), |preview| safe_line(&preview))
+    } else {
+        field_value(draft, field)
+    };
     if field == ProfileField::Url && !active {
         value = truncate_display(&value, value_area.width);
     }
@@ -604,7 +616,13 @@ fn render_field(
         );
     } else {
         frame.render_widget(
-            Paragraph::new(value).style(value_style).scroll((0, scroll)),
+            Paragraph::new(value)
+                .style(if showing_preview {
+                    value_style.fg(theme.muted)
+                } else {
+                    value_style
+                })
+                .scroll((0, scroll)),
             value_area,
         );
     }

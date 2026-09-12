@@ -9,6 +9,15 @@ use std::{
 use secrecy::{ExposeSecret, SecretString, zeroize::Zeroizing};
 use uuid::Uuid;
 
+const URL_QUERY_VALUE: &percent_encoding::AsciiSet =
+    &percent_encoding::CONTROLS.add(b'&').add(b'=').add(b'+');
+const URL_COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'<')
+    .add(b'>')
+    .add(b'`');
+
 use crate::{
     db::{
         ServerInfo,
@@ -766,6 +775,35 @@ impl ProfileDraft {
         redact_url_query_passwords(&redact_url_password(self.url.value()).0)
     }
 
+    pub fn oracle_url_preview(&self) -> Option<String> {
+        if self.kind != DatabaseKind::Oracle
+            || self.url_pending
+            || self.url_generation_error.is_none()
+        {
+            return None;
+        }
+
+        let host =
+            non_empty(&self.host).map_or_else(|| "<host>".to_owned(), |value| value.to_owned());
+        let port = match self.port.value().trim().parse::<u16>() {
+            Ok(port) if port > 0 => port.to_string(),
+            Ok(_) | Err(_) if self.port.value().trim().is_empty() => "<port>".to_owned(),
+            Ok(_) | Err(_) => "<invalid-port>".to_owned(),
+        };
+        let service = non_empty(&self.database).map_or_else(
+            || "<service-name>".to_owned(),
+            |value| percent_encoding::utf8_percent_encode(value, URL_COMPONENT).to_string(),
+        );
+        let mut preview = format!("jdbc:oracle:thin:@{host}:{port}/{service}");
+        if let Some(user) = non_empty(&self.user) {
+            preview.push_str("?user=");
+            preview.push_str(
+                &percent_encoding::utf8_percent_encode(user, URL_QUERY_VALUE).to_string(),
+            );
+        }
+        Some(preview)
+    }
+
     pub fn url_cursor(&self) -> usize {
         let raw = self.url.value();
         let (display, password_ranges) = redact_url_password(raw);
@@ -1096,7 +1134,7 @@ impl ProfileDraft {
             (DatabaseKind::Sqlite, false) => &SQLITE_FILE_FIELDS,
             (DatabaseKind::Sqlite, true) => &SQLITE_MEMORY_FIELDS,
             (DatabaseKind::MariaDb, _) => &MYSQL_FIELDS,
-            (DatabaseKind::Oracle, _) => &POSTGRES_FIELDS,
+            (DatabaseKind::Oracle, _) => &ORACLE_FIELDS,
         }
     }
 
@@ -1410,17 +1448,19 @@ impl ProfileDraft {
 
         self.invalidate_catalog_discovery();
         let previous = self.kind;
+        if let Some(target_port) = default_port(kind)
+            && (self.port.value().trim().is_empty()
+                || default_port(previous)
+                    .is_some_and(|port| self.port.value().trim() == port.to_string()))
+        {
+            self.port.set(target_port.to_string());
+        }
         self.kind = kind;
         self.url_format = ConnectionUrlFormat::default_for(kind);
         match kind {
             DatabaseKind::Postgres => {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
-                }
-                if self.port.value().trim().is_empty()
-                    || (previous == DatabaseKind::MySql && self.port.value() == "3306")
-                {
-                    self.port.set("5432");
                 }
                 if self.schema.value().trim().is_empty() || self.schema.value() == "main" {
                     self.schema.set("public");
@@ -1433,11 +1473,6 @@ impl ProfileDraft {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
                 }
-                if self.port.value().trim().is_empty()
-                    || (previous == DatabaseKind::Postgres && self.port.value() == "5432")
-                {
-                    self.port.set("3306");
-                }
                 if self.schema.value() == "public" || self.schema.value() == "main" {
                     self.schema.set("");
                 }
@@ -1448,15 +1483,6 @@ impl ProfileDraft {
             DatabaseKind::SqlServer => {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
-                }
-                if self.port.value().trim().is_empty()
-                    || matches!(
-                        (previous, self.port.value()),
-                        (DatabaseKind::Postgres, "5432")
-                            | (DatabaseKind::MySql | DatabaseKind::MariaDb, "3306")
-                    )
-                {
-                    self.port.set("1433");
                 }
                 if self.schema.value().trim().is_empty()
                     || self.schema.value() == "public"
@@ -1472,16 +1498,6 @@ impl ProfileDraft {
             DatabaseKind::Oracle => {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
-                }
-                if self.port.value().trim().is_empty()
-                    || matches!(
-                        (previous, self.port.value()),
-                        (DatabaseKind::MySql | DatabaseKind::MariaDb, "3306")
-                            | (DatabaseKind::Postgres, "5432")
-                            | (DatabaseKind::SqlServer, "1433")
-                    )
-                {
-                    self.port.set("1521");
                 }
                 if self.schema.value() == "public" || self.schema.value() == "main" {
                     self.schema.set("");
@@ -2311,6 +2327,21 @@ fn required(
     }
 }
 
+fn non_empty(input: &TextInput) -> Option<&str> {
+    let value = input.value().trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn default_port(kind: DatabaseKind) -> Option<u16> {
+    match kind {
+        DatabaseKind::Postgres => Some(5432),
+        DatabaseKind::MySql | DatabaseKind::MariaDb => Some(3306),
+        DatabaseKind::Oracle => Some(1521),
+        DatabaseKind::SqlServer => Some(1433),
+        DatabaseKind::Sqlite => None,
+    }
+}
+
 fn optional(input: &TextInput) -> Option<String> {
     let value = input.value().trim();
     (!value.is_empty()).then(|| value.to_owned())
@@ -2665,6 +2696,26 @@ const POSTGRES_FIELDS: [ProfileField; 18] = [
     ProfileField::Port,
     ProfileField::Database,
     ProfileField::Schema,
+    ProfileField::VisibleObjects,
+    ProfileField::User,
+    ProfileField::Password,
+    ProfileField::PasswordStorage,
+    ProfileField::SslMode,
+    ProfileField::Environment,
+    ProfileField::ReadOnly,
+    ProfileField::Url,
+    ProfileField::Test,
+    ProfileField::Save,
+    ProfileField::SaveAndConnect,
+    ProfileField::Cancel,
+];
+
+const ORACLE_FIELDS: [ProfileField; 17] = [
+    ProfileField::Kind,
+    ProfileField::Name,
+    ProfileField::Host,
+    ProfileField::Port,
+    ProfileField::Database,
     ProfileField::VisibleObjects,
     ProfileField::User,
     ProfileField::Password,
