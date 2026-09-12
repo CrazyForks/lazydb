@@ -17220,9 +17220,7 @@ impl App {
                 refresh
                     || matches!(
                         tab.ddl,
-                        RelationLoad::Empty
-                            | RelationLoad::Failed { .. }
-                            | RelationLoad::Cancelled { .. }
+                        RelationLoad::Empty | RelationLoad::Cancelled { .. }
                     )
             }
         };
@@ -17445,12 +17443,18 @@ impl App {
                 } = &tab.ddl
                     && pending == &request
                 {
+                    let save_after_metadata_load = tab
+                        .edit
+                        .as_ref()
+                        .is_some_and(|edit| edit.save_after_metadata_load);
                     if let Some(edit) = tab.edit.as_mut() {
                         edit.save_after_metadata_load = false;
                     }
-                    metadata_error = Some(format!(
-                        "Could not load relation metadata for saving: {message}"
-                    ));
+                    metadata_error = Some(if save_after_metadata_load {
+                        format!("Could not load relation metadata for saving: {message}")
+                    } else {
+                        format!("Could not load relation DDL: {message}")
+                    });
                     tab.ddl = RelationLoad::Failed {
                         message,
                         previous: previous.clone(),

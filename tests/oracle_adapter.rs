@@ -135,6 +135,11 @@ async fn oracle_discovers_and_loads_basic_catalog_when_configured() {
     assert!(!preview.result.result_sets.is_empty());
     let ddl = connection.relation_ddl(&relation).await.unwrap();
     assert!(ddl.sql.contains("CREATE TABLE"));
+    let scoped_ddl = connection
+        .relation_ddl_with_scope(&relation, &imported.profile.catalog_scope)
+        .await
+        .unwrap();
+    assert!(scoped_ddl.sql.contains("CREATE TABLE"));
     connection.close().await;
 }
 

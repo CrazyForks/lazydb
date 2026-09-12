@@ -20,9 +20,7 @@ use super::query::{QueryBudget, QueryOutcome};
 use super::transaction::{TransactionBackend, TransactionError};
 use super::{DatabaseError, ErrorCategory, ServerInfo};
 use crate::db::RelationPreview;
-use crate::profile::ConnectionProfile;
-#[cfg(feature = "driver-oracle")]
-use crate::profile::DatabaseKind;
+use crate::profile::{ConnectionProfile, DatabaseKind};
 #[cfg(feature = "driver-oracle")]
 use crate::security::sanitize_terminal_text;
 use futures_util::future::BoxFuture;
@@ -280,6 +278,21 @@ impl OracleAdapter {
     }
 
     pub async fn relation_ddl(&self, relation: &CatalogId) -> Result<RelationDdl, DatabaseError> {
+        let [database, schema, _] = relation.native_path.as_slice() else {
+            return Err(DatabaseError::configuration(
+                "invalid Oracle relation identity",
+            ));
+        };
+        let scope =
+            crate::profile::CatalogScope::for_profile(DatabaseKind::Oracle, database, Some(schema));
+        self.relation_ddl_with_scope(relation, &scope).await
+    }
+
+    pub async fn relation_ddl_with_scope(
+        &self,
+        relation: &CatalogId,
+        scope: &crate::profile::CatalogScope,
+    ) -> Result<RelationDdl, DatabaseError> {
         if relation.profile_id() != self.connection_id || !relation.kind.is_relation() {
             return Err(DatabaseError::configuration(
                 "invalid Oracle relation target",
@@ -290,7 +303,16 @@ impl OracleAdapter {
                 "invalid Oracle relation identity",
             ));
         };
-        let qualified = format!("{}.{}", quote_identifier(schema), quote_identifier(name));
+        if database != &self.database {
+            return Err(DatabaseError::configuration(
+                "Oracle relation belongs to another service",
+            ));
+        }
+        if !scope.allows_schema(database, schema) {
+            return Err(DatabaseError::configuration(
+                "Oracle relation is outside the active catalog scope",
+            ));
+        }
         let relation_entry = CatalogEntry::relation(
             relation.clone(),
             CatalogId::new(self.connection_id, CatalogKind::Schema, [database, schema]),
@@ -299,7 +321,12 @@ impl OracleAdapter {
                 schema: Some(schema.clone()),
                 object: name.clone(),
             },
-            "TABLE",
+            match relation.kind {
+                CatalogKind::Table => "TABLE",
+                CatalogKind::View => "VIEW",
+                CatalogKind::MaterializedView => "MATERIALIZED_VIEW",
+                _ => unreachable!("relation kind was validated above"),
+            },
             OptionalMetadata::Unsupported,
             true,
         )
@@ -317,69 +344,50 @@ impl OracleAdapter {
                 },
                 cursor: None,
             },
-            scope: crate::profile::CatalogScope::for_profile(
-                DatabaseKind::Oracle,
-                database,
-                Some(schema),
-            ),
+            scope: scope.clone(),
             page_size: 500,
         };
         let children = self.load_catalog_page(&request).await?;
-        if let Some(sql) = self.native_relation_ddl(schema, name).await? {
-            return Ok(RelationDdl {
-                relation: relation_entry,
-                children,
-                sql,
-                provenance: DdlProvenance::NativeCatalog,
-            });
+        if children.completeness != super::catalog::CatalogCompleteness::Complete {
+            return Err(DatabaseError::configuration(
+                "Oracle relation metadata exceeds the catalog page limit",
+            ));
         }
-        let definitions = children
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let CatalogMetadata::Column(metadata) = &entry.metadata else {
-                    return None;
-                };
-                let mut definition = format!(
-                    "    {} {}",
-                    quote_identifier(&entry.qualified_name.object),
-                    metadata.native_type
-                );
-                if !metadata.nullable {
-                    definition.push_str(" NOT NULL");
-                }
-                if let OptionalMetadata::Supported(Some(default)) = &metadata.default_expression {
-                    definition.push_str(" DEFAULT ");
-                    definition.push_str(default.trim());
-                }
-                Some(definition)
-            })
-            .collect::<Vec<_>>();
-        let sql = format!(
-            "CREATE TABLE {qualified} (\n{}\n);",
-            definitions.join(",\n")
-        );
+        let sql = self
+            .native_relation_ddl(relation.kind, schema, name)
+            .await?;
         Ok(RelationDdl {
             relation: relation_entry,
             children,
             sql,
-            provenance: DdlProvenance::AdapterGenerated,
+            provenance: DdlProvenance::NativeCatalog,
         })
     }
 
     async fn native_relation_ddl(
         &self,
+        kind: CatalogKind,
         schema: &str,
         name: &str,
-    ) -> Result<Option<String>, DatabaseError> {
+    ) -> Result<String, DatabaseError> {
         #[cfg(not(feature = "driver-oracle"))]
         {
-            let _ = (schema, name);
-            Ok(None)
+            let _ = (kind, schema, name);
+            Err(oracle_disabled())
         }
         #[cfg(feature = "driver-oracle")]
         {
             let connection = Arc::clone(&self.connection);
+            let object_type = match kind {
+                CatalogKind::Table => "TABLE",
+                CatalogKind::View => "VIEW",
+                CatalogKind::MaterializedView => "MATERIALIZED_VIEW",
+                _ => {
+                    return Err(DatabaseError::configuration(
+                        "unsupported Oracle relation kind",
+                    ));
+                }
+            };
             let schema = schema.to_owned();
             let name = name.to_owned();
             tokio::task::spawn_blocking(move || {
@@ -387,15 +395,15 @@ impl OracleAdapter {
                     .lock()
                     .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
                 let row = connection.query_row(
-                    "SELECT DBMS_METADATA.GET_DDL('TABLE', :1, :2) FROM dual",
-                    &[&name, &schema],
+                    "SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM dual",
+                    &[&object_type, &name, &schema],
                 );
                 match row {
                     Ok(row) => {
                         let ddl: Option<String> = row.get(0).map_err(oracle_error)?;
-                        Ok(ddl.filter(|value| !value.trim().is_empty()))
+                        ddl.filter(|value| !value.trim().is_empty())
+                            .ok_or_else(|| oracle_error("Oracle returned empty relation DDL"))
                     }
-                    Err(error) if error.to_string().contains("ORA-31603") => Ok(None),
                     Err(error) => Err(oracle_error(error)),
                 }
             })
@@ -715,19 +723,27 @@ fn oracle_catalog_entries(
             }
             let constraint_rows = connection
                 .query(
-                    "SELECT c.constraint_name, c.constraint_type, LISTAGG(cc.column_name, ',') WITHIN GROUP (ORDER BY cc.position) FROM all_constraints c JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name AND cc.table_name = c.table_name WHERE c.owner = :1 AND c.table_name = :2 AND c.constraint_type IN ('P', 'U', 'C') GROUP BY c.constraint_name, c.constraint_type ORDER BY c.constraint_name",
+                    "SELECT c.constraint_name, c.constraint_type, cc.column_name, cc.position FROM all_constraints c LEFT JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name AND cc.table_name = c.table_name WHERE c.owner = :1 AND c.table_name = :2 AND c.constraint_type IN ('P', 'U', 'C') ORDER BY c.constraint_name, cc.position",
                     &[&owner, &table],
                 )
                 .map_err(oracle_error)?;
+            let mut constraints: std::collections::BTreeMap<
+                String,
+                (String, Vec<String>),
+            > = std::collections::BTreeMap::new();
             for row in constraint_rows {
                 let row = row.map_err(oracle_error)?;
                 let constraint_name: String = row.get(0).map_err(oracle_error)?;
                 let constraint_type: String = row.get(1).map_err(oracle_error)?;
-                let columns: String = row.get(2).map_err(oracle_error)?;
-                let columns = columns
-                    .split(',')
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>();
+                let column: Option<String> = row.get(2).map_err(oracle_error)?;
+                let entry = constraints
+                    .entry(constraint_name)
+                    .or_insert_with(|| (constraint_type, Vec::new()));
+                if let Some(column) = column {
+                    entry.1.push(column);
+                }
+            }
+            for (constraint_name, (constraint_type, columns)) in constraints {
                 let kind = match constraint_type.as_str() {
                     "P" => CatalogKind::PrimaryKey,
                     "U" => CatalogKind::UniqueConstraint,
