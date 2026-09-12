@@ -12205,9 +12205,9 @@ impl App {
             .map(|database| ExecutionTarget {
                 profile_id: profile.id,
                 schema: match profile.kind {
-                    DatabaseKind::MySql => Some(database.clone()),
+                    DatabaseKind::MySql | DatabaseKind::MariaDb => Some(database.clone()),
                     DatabaseKind::Sqlite => Some("main".to_owned()),
-                    DatabaseKind::Postgres | DatabaseKind::SqlServer => None,
+                    DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => None,
                 },
                 database,
             })
@@ -12859,7 +12859,8 @@ impl App {
         };
         match kind {
             DatabaseKind::Postgres => SqlDialect::Postgres,
-            DatabaseKind::MySql => SqlDialect::MySql,
+            DatabaseKind::MySql | DatabaseKind::MariaDb => SqlDialect::MySql,
+            DatabaseKind::Oracle => SqlDialect::Generic,
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::SqlServer => SqlDialect::SqlServer,
         }
