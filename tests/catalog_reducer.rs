@@ -1297,6 +1297,141 @@ fn group_continuations_append_in_order_and_reject_cross_page_duplicates_atomical
 }
 
 #[test]
+fn accepted_object_page_synchronizes_group_count_in_both_directions() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let target = CatalogTarget::groups(schema.id.clone()).unwrap();
+    let groups = pending_request(&app, profile.id, &target);
+    app.update(Action::CatalogPageLoaded(
+        CatalogPage::groups(
+            &groups,
+            vec![CatalogGroupSummary {
+                group: ObjectGroup::Tables,
+                object_count: CatalogCount::Exact(10),
+            }],
+            CatalogCount::Exact(1),
+            None,
+        )
+        .unwrap(),
+    ));
+
+    let target = CatalogTarget::objects(schema.id.clone(), ObjectGroup::Tables).unwrap();
+    let first = pending_request(&app, profile.id, &target);
+    app.update(Action::CatalogPageLoaded(
+        CatalogPage::new(
+            &first,
+            (0..8)
+                .map(|index| relation(profile.id, &schema.id, &format!("users_{index}")))
+                .collect(),
+            CatalogCount::Exact(8),
+            None,
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        catalog(&app, profile.id)
+            .group_state(&schema.id, ObjectGroup::Tables)
+            .unwrap()
+            .count,
+        CatalogCount::Exact(8)
+    );
+
+    let second = refresh(
+        &mut app,
+        ExplorerNodeId::Group {
+            parent: schema.id.clone(),
+            group: ObjectGroup::Tables,
+        },
+    );
+    app.update(Action::CatalogPageLoaded(
+        CatalogPage::new(
+            &second,
+            (0..12)
+                .map(|index| relation(profile.id, &schema.id, &format!("users_{index}")))
+                .collect(),
+            CatalogCount::Exact(12),
+            None,
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        catalog(&app, profile.id)
+            .group_state(&schema.id, ObjectGroup::Tables)
+            .unwrap()
+            .count,
+        CatalogCount::Exact(12)
+    );
+}
+
+#[test]
+fn accepted_object_page_does_not_downgrade_group_count_knowledge() {
+    let (mut app, profile) = connected_app();
+    let database = install_database(&mut app, &profile);
+    let schema = install_schema(&mut app, &profile, &database);
+    let groups_target = CatalogTarget::groups(schema.id.clone()).unwrap();
+    let groups = pending_request(&app, profile.id, &groups_target);
+    app.update(Action::CatalogPageLoaded(
+        CatalogPage::groups(
+            &groups,
+            vec![CatalogGroupSummary {
+                group: ObjectGroup::Tables,
+                object_count: CatalogCount::AtLeast(8),
+            }],
+            CatalogCount::Exact(1),
+            None,
+        )
+        .unwrap(),
+    ));
+
+    let target = CatalogTarget::objects(schema.id.clone(), ObjectGroup::Tables).unwrap();
+    let mut request = pending_request(&app, profile.id, &target);
+    set_pending_page_size(&mut app, &mut request, 1);
+    let page = CatalogPage::new(
+        &request,
+        vec![relation(profile.id, &schema.id, "users")],
+        CatalogCount::AtLeast(3),
+        Some(CatalogCursor::from_keyset("users", "users").unwrap()),
+    )
+    .unwrap();
+    app.update(Action::CatalogPageLoaded(page));
+    assert_eq!(
+        catalog(&app, profile.id)
+            .group_state(&schema.id, ObjectGroup::Tables)
+            .unwrap()
+            .count,
+        CatalogCount::AtLeast(8)
+    );
+
+    let mut refresh = refresh(
+        &mut app,
+        ExplorerNodeId::Group {
+            parent: schema.id.clone(),
+            group: ObjectGroup::Tables,
+        },
+    );
+    set_pending_page_size(&mut app, &mut refresh, 5);
+    app.update(Action::CatalogPageLoaded(
+        CatalogPage::new(
+            &refresh,
+            (0..5)
+                .map(|index| relation(profile.id, &schema.id, &format!("users_{index}")))
+                .collect(),
+            CatalogCount::Exact(5),
+            None,
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        catalog(&app, profile.id)
+            .group_state(&schema.id, ObjectGroup::Tables)
+            .unwrap()
+            .count,
+        CatalogCount::Exact(5)
+    );
+}
+
+#[test]
 fn search_preload_schedules_supported_non_relation_groups() {
     let (mut app, profile) = connected_app();
     let database = install_database(&mut app, &profile);

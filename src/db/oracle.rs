@@ -9,11 +9,14 @@ use secrecy::SecretString;
 
 #[cfg(feature = "driver-oracle")]
 use super::DatabaseDiagnostic;
-#[cfg_attr(not(feature = "driver-oracle"), allow(unused_imports))]
+#[cfg(feature = "driver-oracle")]
 use super::catalog::{
-    CatalogCount, CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, CatalogPage,
-    CatalogRequest, CatalogTarget, ColumnMetadata, DdlProvenance, DiscoveredDatabase, ObjectGroup,
-    OptionalMetadata, QualifiedName, RelationDdl, finalize_keyset_page,
+    CatalogCount, CatalogCursor, CatalogMetadata, ColumnMetadata, DiscoveredDatabase, ObjectGroup,
+    finalize_keyset_page,
+};
+use super::catalog::{
+    CatalogEntry, CatalogId, CatalogKind, CatalogPage, CatalogRequest, CatalogTarget,
+    DdlProvenance, OptionalMetadata, QualifiedName, RelationDdl,
 };
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
@@ -206,10 +209,13 @@ impl OracleAdapter {
                 let connection = connection
                     .lock()
                     .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
-                let mut entries = oracle_catalog_entries(&connection, &request, &database)?;
                 if matches!(request.key.target, CatalogTarget::Groups { .. }) {
-                    return oracle_group_page(&request);
+                    return oracle_group_page(&connection, &request);
                 }
+                if matches!(request.key.target, CatalogTarget::Objects { .. }) {
+                    return oracle_object_page(&connection, &request, &database);
+                }
+                let mut entries = oracle_catalog_entries(&connection, &request, &database)?;
                 let next_cursor = finalize_keyset_page(
                     &mut entries,
                     request.page_size,
@@ -607,20 +613,299 @@ pub fn quote_identifier(value: &str) -> String {
 }
 
 #[cfg(feature = "driver-oracle")]
-fn oracle_group_page(request: &CatalogRequest) -> Result<CatalogPage, DatabaseError> {
-    let groups = [
-        (ObjectGroup::Tables, "tables"),
-        (ObjectGroup::Views, "views"),
-        (ObjectGroup::Sequences, "sequences"),
-    ]
-    .into_iter()
-    .map(|(group, _)| super::catalog::CatalogGroupSummary {
-        group,
-        object_count: CatalogCount::Unknown,
-    })
-    .collect();
-    CatalogPage::groups(request, groups, CatalogCount::Unknown, None)
+fn oracle_group_page(
+    connection: &oracle::Connection,
+    request: &CatalogRequest,
+) -> Result<CatalogPage, DatabaseError> {
+    let owner = match &request.key.target {
+        CatalogTarget::Groups { schema } => {
+            let [_, owner] = schema.native_path.as_slice() else {
+                return Err(oracle_error("invalid Oracle schema identity"));
+            };
+            owner.clone()
+        }
+        _ => return Err(oracle_error("invalid Oracle groups request")),
+    };
+    let rows = connection
+        .query(
+            "SELECT 'tables' AS group_key, COUNT(*) AS object_count FROM all_tables WHERE owner = :1 \
+             UNION ALL \
+             SELECT 'views' AS group_key, COUNT(*) AS object_count FROM all_views WHERE owner = :2 \
+             UNION ALL \
+             SELECT 'sequences' AS group_key, COUNT(*) AS object_count FROM all_sequences WHERE sequence_owner = :3",
+            &[&owner, &owner, &owner],
+        )
+        .map_err(oracle_error)?;
+    let mut counts = [None; 3];
+    for row in rows {
+        let row = row.map_err(oracle_error)?;
+        let key: String = row.get(0).map_err(oracle_error)?;
+        let count: i64 = row.get(1).map_err(oracle_error)?;
+        let count = u64::try_from(count).map_err(oracle_error)?;
+        let index = oracle_object_groups()
+            .iter()
+            .position(|description| description.key == key)
+            .ok_or_else(|| oracle_error(format!("unknown Oracle object group: {key}")))?;
+        if counts[index].replace(CatalogCount::Exact(count)).is_some() {
+            return Err(oracle_error(format!(
+                "duplicate Oracle object group: {key}"
+            )));
+        }
+    }
+    let groups = oracle_object_groups()
+        .into_iter()
+        .enumerate()
+        .map(|(index, description)| {
+            Ok((
+                format!("{:02}_{}", index + 1, description.key),
+                super::catalog::CatalogGroupSummary {
+                    group: description.group,
+                    object_count: counts[index]
+                        .ok_or_else(|| oracle_error("Oracle group count row is missing"))?,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, DatabaseError>>()?;
+    oracle_group_page_from_summaries(request, groups)
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_group_page_from_summaries(
+    request: &CatalogRequest,
+    mut groups: Vec<(String, super::catalog::CatalogGroupSummary)>,
+) -> Result<CatalogPage, DatabaseError> {
+    if let Some(cursor) = request.key.cursor.as_ref() {
+        let (sort_key, tie_breaker) = cursor
+            .keyset_parts()
+            .map_err(|error| oracle_error(error.to_string()))?;
+        if sort_key != tie_breaker {
+            return Err(oracle_error(
+                "Oracle group cursor sort key and tie breaker differ",
+            ));
+        }
+        groups.retain(|(key, _)| key.as_str() > sort_key);
+    }
+    let next_cursor = finalize_keyset_page(
+        &mut groups,
+        request.page_size,
+        |(key, _)| key.clone(),
+        |(key, _)| key.clone(),
+    )
+    .map_err(|error| oracle_error(error.to_string()))?;
+    let groups = groups.into_iter().map(|(_, summary)| summary).collect();
+    CatalogPage::groups(request, groups, CatalogCount::Exact(3), next_cursor)
         .map_err(|error| oracle_error(error.to_string()))
+}
+
+#[cfg(feature = "driver-oracle")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OracleObjectGroup {
+    group: ObjectGroup,
+    key: &'static str,
+    dictionary: &'static str,
+    owner_column: &'static str,
+    name_column: &'static str,
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_groups() -> [OracleObjectGroup; 3] {
+    [
+        oracle_object_group(ObjectGroup::Tables).expect("Tables has an Oracle mapping"),
+        oracle_object_group(ObjectGroup::Views).expect("Views has an Oracle mapping"),
+        oracle_object_group(ObjectGroup::Sequences).expect("Sequences has an Oracle mapping"),
+    ]
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_group(group: ObjectGroup) -> Option<OracleObjectGroup> {
+    Some(match group {
+        ObjectGroup::Tables => OracleObjectGroup {
+            group,
+            key: "tables",
+            dictionary: "all_tables",
+            owner_column: "owner",
+            name_column: "table_name",
+        },
+        ObjectGroup::Views => OracleObjectGroup {
+            group,
+            key: "views",
+            dictionary: "all_views",
+            owner_column: "owner",
+            name_column: "view_name",
+        },
+        ObjectGroup::Sequences => OracleObjectGroup {
+            group,
+            key: "sequences",
+            dictionary: "all_sequences",
+            owner_column: "sequence_owner",
+            name_column: "sequence_name",
+        },
+        _ => return None,
+    })
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_cursor(request: &CatalogRequest) -> Result<Option<(&str, &str)>, DatabaseError> {
+    oracle_object_cursor_parts(request.key.cursor.as_ref())
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_cursor_parts(
+    cursor: Option<&CatalogCursor>,
+) -> Result<Option<(&str, &str)>, DatabaseError> {
+    cursor
+        .map(CatalogCursor::keyset_parts)
+        .transpose()
+        .map_err(|error| oracle_error(error.to_string()))?
+        .map(|(sort_key, tie_breaker)| {
+            if sort_key != tie_breaker {
+                Err(oracle_error(
+                    "Oracle object cursor sort key and tie breaker differ",
+                ))
+            } else {
+                Ok((sort_key, tie_breaker))
+            }
+        })
+        .transpose()
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_object_page(
+    connection: &oracle::Connection,
+    request: &CatalogRequest,
+    configured_database: &str,
+) -> Result<CatalogPage, DatabaseError> {
+    let CatalogTarget::Objects { schema, group } = &request.key.target else {
+        return Err(oracle_error("invalid Oracle objects request"));
+    };
+    let Some(description) = oracle_object_group(*group) else {
+        return Err(oracle_error("unsupported Oracle object group"));
+    };
+    let owner = schema
+        .native_path
+        .last()
+        .ok_or_else(|| oracle_error("invalid Oracle schema identity"))?;
+    let cursor = oracle_object_cursor(request)?;
+    let limit = request.page_size.saturating_add(1);
+    let cursor_predicate = cursor.map_or(String::new(), |_| {
+        format!(
+            " AND NLSSORT({name}, 'NLS_SORT=BINARY') > NLSSORT(:3, 'NLS_SORT=BINARY')",
+            name = description.name_column
+        )
+    });
+    let sql = format!(
+        "WITH object_count AS (\
+             SELECT COUNT(*) AS total_count FROM {dictionary} WHERE {owner_column} = :1\
+         ), page_rows AS (\
+             SELECT {name_column} AS object_name FROM {dictionary}\
+             WHERE {owner_column} = :2{cursor_predicate}\
+             ORDER BY NLSSORT({name_column}, 'NLS_SORT=BINARY')\
+             FETCH FIRST {limit} ROWS ONLY\
+         )\
+         SELECT c.total_count, p.object_name FROM object_count c\
+         LEFT JOIN page_rows p ON 1 = 1\
+         ORDER BY NLSSORT(p.object_name, 'NLS_SORT=BINARY')",
+        dictionary = description.dictionary,
+        owner_column = description.owner_column,
+        name_column = description.name_column,
+        cursor_predicate = cursor_predicate,
+    );
+    let rows = match cursor {
+        Some((_, cursor_name)) => connection.query(&sql, &[owner, owner, &cursor_name]),
+        None => connection.query(&sql, &[owner, owner]),
+    }
+    .map_err(oracle_error)?;
+    let mut total_count = None;
+    let mut names = Vec::new();
+    for row in rows {
+        let row = row.map_err(oracle_error)?;
+        let count: i64 = row.get(0).map_err(oracle_error)?;
+        let count = u64::try_from(count).map_err(oracle_error)?;
+        if total_count
+            .replace(count)
+            .is_some_and(|previous| previous != count)
+        {
+            return Err(oracle_error("Oracle object count changed within page"));
+        }
+        let name: Option<String> = row.get(1).map_err(oracle_error)?;
+        if let Some(name) = name {
+            names.push(name);
+        }
+    }
+    let total_count =
+        total_count.ok_or_else(|| oracle_error("Oracle object count row is missing"))?;
+    let next_cursor = finalize_oracle_object_names(&mut names, request.page_size)?;
+    let entries = names
+        .into_iter()
+        .map(|name| oracle_catalog_object_entry(request, configured_database, name))
+        .collect::<Result<Vec<_>, _>>()?;
+    CatalogPage::new(
+        request,
+        entries,
+        CatalogCount::Exact(total_count),
+        next_cursor,
+    )
+    .map_err(|error| oracle_error(error.to_string()))
+}
+
+#[cfg(feature = "driver-oracle")]
+fn finalize_oracle_object_names(
+    names: &mut Vec<String>,
+    page_size: usize,
+) -> Result<Option<CatalogCursor>, DatabaseError> {
+    finalize_keyset_page(names, page_size, |name| name.clone(), |name| name.clone())
+        .map_err(|error| oracle_error(error.to_string()))
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_catalog_object_entry(
+    request: &CatalogRequest,
+    configured_database: &str,
+    name: String,
+) -> Result<CatalogEntry, DatabaseError> {
+    let CatalogTarget::Objects { schema, group } = &request.key.target else {
+        return Err(oracle_error("invalid Oracle objects request"));
+    };
+    let kind = match group {
+        ObjectGroup::Tables => CatalogKind::Table,
+        ObjectGroup::Views => CatalogKind::View,
+        ObjectGroup::Sequences => CatalogKind::Sequence,
+        _ => return Err(oracle_error("unsupported Oracle object group")),
+    };
+    let qualified_name = QualifiedName {
+        database: Some(configured_database.to_owned()),
+        schema: schema.native_path.last().cloned(),
+        object: name,
+    };
+    let id = CatalogId::new(
+        request.key.connection.profile_id,
+        kind,
+        [
+            configured_database.to_owned(),
+            schema.native_path.last().cloned().unwrap_or_default(),
+            qualified_name.object.clone(),
+        ],
+    );
+    if kind == CatalogKind::Sequence {
+        CatalogEntry::object(
+            id,
+            schema.clone(),
+            qualified_name,
+            "sequence",
+            OptionalMetadata::Unsupported,
+            false,
+        )
+    } else {
+        CatalogEntry::relation(
+            id,
+            schema.clone(),
+            qualified_name,
+            "relation",
+            OptionalMetadata::Unsupported,
+            true,
+        )
+    }
+    .map_err(|error| oracle_error(error.to_string()))
 }
 
 #[cfg(feature = "driver-oracle")]
@@ -637,12 +922,6 @@ fn oracle_catalog_entries(
         }
         CatalogTarget::RelationChildren { .. } => None,
     };
-    let schema = match &request.key.target {
-        CatalogTarget::Groups { schema } | CatalogTarget::Objects { schema, .. } => {
-            schema.native_path.last().cloned()
-        }
-        _ => None,
-    };
     let limit = request.page_size.saturating_add(1);
     let rows = match &request.key.target {
         CatalogTarget::Databases => connection
@@ -657,41 +936,8 @@ fn oracle_catalog_entries(
                 &[],
             )
             .map_err(oracle_error)?,
-        CatalogTarget::Objects { group, .. } => {
-            let Some((view, name_column, owner_column)) = oracle_object_columns(*group) else {
-                return Ok(Vec::new());
-            };
-            let owner_filter = schema.as_deref().unwrap_or_default().to_owned();
-            let cursor_name = request
-                .key
-                .cursor
-                .as_ref()
-                .map(|cursor| {
-                    let (sort_key, tie_breaker) = cursor
-                        .keyset_parts()
-                        .map_err(|error| oracle_error(error.to_string()))?;
-                    if sort_key != tie_breaker {
-                        return Err(oracle_error("Oracle object cursor components differ"));
-                    }
-                    Ok(sort_key.to_owned())
-                })
-                .transpose()?;
-            let sql = oracle_object_sql(
-                view,
-                name_column,
-                owner_column,
-                limit,
-                cursor_name.is_some(),
-            );
-            let bindings = match cursor_name.as_ref() {
-                Some(cursor_name) => {
-                    vec![&owner_filter as &dyn oracle::sql_type::ToSql, cursor_name]
-                }
-                None => vec![&owner_filter as &dyn oracle::sql_type::ToSql],
-            };
-            connection
-                .query(&sql, &bindings)
-                .map_err(oracle_error)?
+        CatalogTarget::Objects { .. } => {
+            return Err(oracle_error("Oracle objects must use the object page loader"));
         }
         CatalogTarget::Groups { .. } => return Ok(Vec::new()),
         CatalogTarget::RelationChildren { relation } => {
@@ -917,130 +1163,13 @@ fn oracle_catalog_entries(
                 OptionalMetadata::Unsupported,
                 true,
             ),
-            CatalogTarget::Objects { schema, group } => {
-                let kind = match group {
-                    ObjectGroup::Tables => super::catalog::CatalogKind::Table,
-                    ObjectGroup::Views => super::catalog::CatalogKind::View,
-                    ObjectGroup::Sequences => super::catalog::CatalogKind::Sequence,
-                    _ => continue,
-                };
-                let qualified_name = QualifiedName {
-                    database: Some(configured_database.to_owned()),
-                    schema: schema.native_path.last().cloned(),
-                    object: name,
-                };
-                if kind == CatalogKind::Sequence {
-                    CatalogEntry::object(
-                        CatalogId::new(
-                            request.key.connection.profile_id,
-                            kind,
-                            [
-                                configured_database.to_owned(),
-                                schema.native_path.last().cloned().unwrap_or_default(),
-                                qualified_name.object.clone(),
-                            ],
-                        ),
-                        schema.clone(),
-                        qualified_name,
-                        "sequence",
-                        OptionalMetadata::Unsupported,
-                        false,
-                    )
-                } else {
-                    CatalogEntry::relation(
-                        CatalogId::new(
-                            request.key.connection.profile_id,
-                            kind,
-                            [
-                                configured_database.to_owned(),
-                                schema.native_path.last().cloned().unwrap_or_default(),
-                                qualified_name.object.clone(),
-                            ],
-                        ),
-                        schema.clone(),
-                        qualified_name,
-                        "relation",
-                        OptionalMetadata::Unsupported,
-                        true,
-                    )
-                }
-            }
+            CatalogTarget::Objects { .. } => unreachable!("objects use the object page loader"),
             _ => continue,
         }
         .map_err(|error| oracle_error(error.to_string()))?;
         entries.push(entry);
     }
     Ok(entries)
-}
-
-#[cfg(feature = "driver-oracle")]
-fn oracle_object_columns(group: ObjectGroup) -> Option<(&'static str, &'static str, &'static str)> {
-    match group {
-        ObjectGroup::Tables => Some(("all_tables", "table_name", "owner")),
-        ObjectGroup::Views => Some(("all_views", "view_name", "owner")),
-        ObjectGroup::Sequences => Some(("all_sequences", "sequence_name", "sequence_owner")),
-        _ => None,
-    }
-}
-
-#[cfg(feature = "driver-oracle")]
-fn oracle_object_sql(
-    view: &str,
-    name_column: &str,
-    owner_column: &str,
-    limit: usize,
-    has_cursor: bool,
-) -> String {
-    let cursor_filter = if has_cursor {
-        format!(" AND NLSSORT({name_column}, 'NLS_SORT=BINARY') > NLSSORT(:2, 'NLS_SORT=BINARY')")
-    } else {
-        String::new()
-    };
-    format!(
-        "SELECT {name_column} FROM {view} WHERE {owner_column} = :1{cursor_filter} ORDER BY NLSSORT({name_column}, 'NLS_SORT=BINARY') FETCH FIRST {limit} ROWS ONLY"
-    )
-}
-
-#[cfg(all(test, feature = "driver-oracle"))]
-mod tests {
-    use super::{oracle_object_columns, oracle_object_sql};
-    use crate::db::catalog::{ObjectGroup, finalize_keyset_page};
-
-    #[test]
-    fn oracle_object_columns_match_dictionary_view_contract() {
-        assert_eq!(
-            oracle_object_columns(ObjectGroup::Tables),
-            Some(("all_tables", "table_name", "owner"))
-        );
-        assert_eq!(
-            oracle_object_columns(ObjectGroup::Views),
-            Some(("all_views", "view_name", "owner"))
-        );
-        assert_eq!(
-            oracle_object_columns(ObjectGroup::Sequences),
-            Some(("all_sequences", "sequence_name", "sequence_owner"))
-        );
-    }
-
-    #[test]
-    fn oracle_object_sql_filters_cursor_before_fetch() {
-        let sql = oracle_object_sql("all_sequences", "sequence_name", "sequence_owner", 11, true);
-        assert!(sql.contains("sequence_owner = :1"));
-        assert!(sql.contains("NLSSORT(sequence_name, 'NLS_SORT=BINARY') > NLSSORT(:2"));
-        assert!(sql.contains("ORDER BY NLSSORT(sequence_name, 'NLS_SORT=BINARY')"));
-        assert!(sql.contains("FETCH FIRST 11 ROWS ONLY"));
-        assert!(sql.find(":2").unwrap() < sql.find("FETCH FIRST").unwrap());
-    }
-
-    #[test]
-    fn oracle_object_page_uses_the_name_for_both_cursor_parts() {
-        let mut names = vec!["A.B".to_owned(), "C".to_owned(), "D".to_owned()];
-        let cursor = finalize_keyset_page(&mut names, 2, |name| name.clone(), |name| name.clone())
-            .unwrap()
-            .unwrap();
-        assert_eq!(names, ["A.B", "C"]);
-        assert_eq!(cursor.keyset_parts().unwrap(), ("C", "C"));
-    }
 }
 
 #[cfg(not(feature = "driver-oracle"))]
@@ -1161,5 +1290,123 @@ fn oracle_task_error(message: String) -> DatabaseError {
         code: Some("oracle_task_failed".into()),
         message: sanitize_terminal_text(&message),
         diagnostic: None,
+    }
+}
+
+#[cfg(all(test, feature = "driver-oracle"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oracle_object_groups_use_dictionary_specific_metadata() {
+        let groups = oracle_object_groups();
+        assert_eq!(groups[0].key, "tables");
+        assert_eq!(groups[0].dictionary, "all_tables");
+        assert_eq!(groups[0].owner_column, "owner");
+        assert_eq!(groups[0].name_column, "table_name");
+        assert_eq!(groups[1].name_column, "view_name");
+        assert_eq!(groups[2].dictionary, "all_sequences");
+        assert_eq!(groups[2].owner_column, "sequence_owner");
+        assert_eq!(groups[2].name_column, "sequence_name");
+    }
+
+    #[test]
+    fn oracle_object_cursor_requires_matching_name_parts() {
+        let valid = CatalogCursor::from_keyset("A.B", "A.B").unwrap();
+        assert_eq!(
+            oracle_object_cursor_parts(Some(&valid)).unwrap(),
+            Some(("A.B", "A.B"))
+        );
+
+        let invalid = CatalogCursor::from_keyset("A.B", "A.B2").unwrap();
+        assert!(oracle_object_cursor_parts(Some(&invalid)).is_err());
+        assert!(oracle_object_cursor_parts(Some(&CatalogCursor::new("bad"))).is_err());
+    }
+
+    #[test]
+    fn oracle_group_pages_use_stable_keyset_pagination_and_exact_total() {
+        let profile_id = uuid::Uuid::nil();
+        let schema = CatalogId::new(profile_id, CatalogKind::Schema, ["service", "APP"]);
+        let mut request = CatalogRequest {
+            key: crate::db::catalog::CatalogRequestKey {
+                connection: crate::identity::ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                catalog_epoch: 1,
+                request_id: 1,
+                target: CatalogTarget::Groups {
+                    schema: schema.clone(),
+                },
+                cursor: None,
+            },
+            scope: crate::profile::CatalogScope::for_profile(
+                DatabaseKind::Oracle,
+                "service",
+                Some("APP"),
+            ),
+            page_size: 1,
+        };
+        let summaries: Vec<(String, crate::db::catalog::CatalogGroupSummary)> =
+            oracle_object_groups()
+                .into_iter()
+                .enumerate()
+                .map(|(index, description)| {
+                    (
+                        format!("{:02}_{}", index + 1, description.key),
+                        crate::db::catalog::CatalogGroupSummary {
+                            group: description.group,
+                            object_count: CatalogCount::Exact((index as u64) * 2),
+                        },
+                    )
+                })
+                .collect();
+
+        let first = oracle_group_page_from_summaries(&request, summaries.clone()).unwrap();
+        assert_eq!(first.total_count, CatalogCount::Exact(3));
+        assert_eq!(
+            first.group_summaries[0].object_count,
+            CatalogCount::Exact(0)
+        );
+        assert_eq!(
+            first.next_cursor.as_ref().unwrap().keyset_parts().unwrap(),
+            ("01_tables", "01_tables")
+        );
+        first.validate_for(&request).unwrap();
+
+        request.key.cursor = first.next_cursor;
+        let second = oracle_group_page_from_summaries(&request, summaries.clone()).unwrap();
+        assert_eq!(second.group_summaries[0].group, ObjectGroup::Views);
+        second.validate_for(&request).unwrap();
+
+        request.key.cursor = second.next_cursor;
+        let third = oracle_group_page_from_summaries(&request, summaries).unwrap();
+        assert_eq!(third.group_summaries[0].group, ObjectGroup::Sequences);
+        assert!(third.next_cursor.is_none());
+        third.validate_for(&request).unwrap();
+    }
+
+    #[test]
+    fn oracle_object_name_pages_preserve_page_size_plus_one_boundaries() {
+        for (count, page_size, has_next) in [
+            (0, 3, false),
+            (2, 3, false),
+            (3, 3, false),
+            (4, 3, true),
+            (7, 3, true),
+        ] {
+            let mut names = (0..count).map(|i| format!("OBJECT_{i}")).collect();
+            let next = finalize_oracle_object_names(&mut names, page_size).unwrap();
+            assert_eq!(names.len(), count.min(page_size));
+            assert_eq!(next.is_some(), has_next);
+            if has_next {
+                let cursor = next.unwrap();
+                let expected = format!("OBJECT_{}", page_size - 1);
+                assert_eq!(
+                    cursor.keyset_parts().unwrap(),
+                    (expected.as_str(), expected.as_str())
+                );
+            }
+        }
     }
 }

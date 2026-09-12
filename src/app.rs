@@ -19,8 +19,8 @@ use crate::{
     db::{
         ErrorCategory,
         catalog::{
-            CatalogMetadata, CatalogPage, CatalogRequest, CatalogRequestKey, CatalogTarget,
-            MAX_CATALOG_PAGE_SIZE,
+            CatalogCount, CatalogMetadata, CatalogPage, CatalogRequest, CatalogRequestKey,
+            CatalogTarget, MAX_CATALOG_PAGE_SIZE,
         },
         query::ColumnMeta,
         value::CellValue,
@@ -14109,6 +14109,24 @@ impl App {
         };
 
         let state = next_explorer.profiles.get_mut(&profile_id).unwrap();
+        if let CatalogTarget::Objects { schema, group } = &request.key.target {
+            if let Some(current) = state.catalog.group_state(schema, *group).cloned() {
+                let count = match (current.count, page.total_count) {
+                    (CatalogCount::Exact(_), CatalogCount::AtLeast(_))
+                    | (_, CatalogCount::Unknown) => current.count,
+                    (CatalogCount::AtLeast(previous), CatalogCount::AtLeast(next)) => {
+                        CatalogCount::AtLeast(previous.max(next))
+                    }
+                    (_, next) => next,
+                };
+                if count != current.count {
+                    state
+                        .catalog
+                        .set_group_state(schema, *group, CatalogGroupState { count, ..current })
+                        .expect("validated object target must have a valid group state owner");
+                }
+            }
+        }
         if !removed.is_empty() {
             let references_removed = |candidate: &ExplorerOwnerId| {
                 candidate != &owner

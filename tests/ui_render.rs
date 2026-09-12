@@ -3805,7 +3805,7 @@ fn explorer_find_keeps_group_counts_and_column_metadata_visible() {
         ExplorerNodeId::Catalog(database_id.clone()),
         ExplorerNodeId::Catalog(schema.id.clone()),
         ExplorerNodeId::Group {
-            parent: schema.id,
+            parent: schema.id.clone(),
             group: ObjectGroup::Tables,
         },
         ExplorerNodeId::Catalog(CatalogId::new(profile.id, CatalogKind::Table, ["users"])),
@@ -3818,6 +3818,67 @@ fn explorer_find_keeps_group_counts_and_column_metadata_visible() {
     assert!(output.contains("Tables  2"), "{output}");
     assert!(output.contains("users"), "{output}");
     assert!(output.contains("id  bigint"), "{output}");
+
+    let table_group = ExplorerNodeId::Group {
+        parent: schema.id.clone(),
+        group: ObjectGroup::Tables,
+    };
+    let group_line = |output: &str| {
+        output
+            .lines()
+            .find(|line| line.contains("Tables"))
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("Tables group row not rendered:\n{output}"))
+    };
+    let set_count_and_render = |app: &mut App, count: CatalogCount, expanded: bool| {
+        let profile_state = app
+            .explorer
+            .normalized
+            .profiles
+            .get_mut(&profile.id)
+            .unwrap();
+        profile_state
+            .catalog
+            .set_group_state(
+                &schema.id,
+                ObjectGroup::Tables,
+                CatalogGroupState {
+                    count,
+                    completeness: CatalogCompleteness::Complete,
+                },
+            )
+            .unwrap();
+        if expanded {
+            app.explorer.normalized.expanded.insert(table_group.clone());
+        } else {
+            app.explorer.normalized.expanded.remove(&table_group);
+        }
+        app.explorer.normalized.selected = Some(table_group.clone());
+        app.explorer.rebuild_projection(profile.id);
+        render(app, 120, 36)
+    };
+
+    for (count, expected) in [
+        (CatalogCount::Exact(128), "Tables  128"),
+        (CatalogCount::Exact(0), "Tables  0"),
+        (CatalogCount::AtLeast(128), "Tables  128+"),
+    ] {
+        let expanded = set_count_and_render(&mut app, count, true);
+        assert!(group_line(&expanded).contains(expected), "{expanded}");
+
+        let collapsed = set_count_and_render(&mut app, count, false);
+        assert!(group_line(&collapsed).contains(expected), "{collapsed}");
+    }
+
+    let unknown = set_count_and_render(&mut app, CatalogCount::Unknown, true);
+    let unknown_line = group_line(&unknown);
+    assert!(unknown_line.contains("Tables"), "{unknown}");
+    assert!(
+        !unknown_line
+            .chars()
+            .any(|character| character.is_ascii_digit()),
+        "{unknown}"
+    );
 }
 
 #[test]
