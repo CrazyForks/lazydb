@@ -68,15 +68,25 @@ over those snapshots. Confirmation dispatches the immutable SQL snapshot rather
 than rereading mutable editor text.
 
 Each SQL console owns an `ExecutionTarget` containing profile UUID, database, and
-schema. `Space d` derives stable, sorted candidates from the active profile's
-normalized catalog and `CatalogScope`. App keeps a target change pending until a
-generation-matched connection succeeds, then updates and persists the console;
-failure preserves both the old console target and old active pool. Activating a
-console or running SQL on a console whose target is not the current active target
-requests that console target through the same generation-checked connection
-switch path instead of reporting a network disconnect. The current runtime still
-owns one active pool; per-target pool reuse and independent concurrent console
-connections remain a later architectural phase.
+schema. The target is independent from Explorer focus and may refer to an offline
+profile. New consoles resolve their target from the focused Explorer node, the
+recent-target list, and then stable profile order; if no profile exists they remain
+unbound. The target selector can explicitly rebind a console across profiles
+without connecting, while preserving its SQL document and editor history.
+
+Runtime connections are keyed by the complete target plus `ConnectionIdentity`.
+Different profiles and database/schema targets can connect and execute concurrently;
+duplicate attempts for the same target are single-flight. Query, relation,
+dashboard, completion, diagnostic, and transaction results carry their originating
+tab/target identity and stale results are discarded without requiring that target to
+remain focused. A disconnected target leaves its Console document available.
+
+SQL execution captures an immutable Console/request snapshot. If the target is
+offline, the first execution establishes the connection and resumes that exact
+request once; changing tabs or editing the document does not redirect it. Workspace
+format v5 stores global Console documents, tab order, target bindings, active tab,
+and recent targets. Console labels render the document name with an `@connection`
+suffix, while the persisted document name remains unchanged.
 
 ## Profile and Credential Boundary
 

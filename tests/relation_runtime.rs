@@ -372,7 +372,14 @@ fn relation_event_cannot_mutate_a_cached_inactive_workspace() {
         })),
     });
 
-    assert!(app.tabs.iter().all(|tab| tab.id() != tab_id));
+    assert!(app.tabs.iter().any(|tab| {
+        matches!(
+            tab,
+            WorkspaceTab::Relation(tab)
+                if tab.id == tab_id
+                    && matches!(tab.data, RelationLoad::Loading { .. })
+        )
+    }));
     assert!(app.workspace_snapshot().profiles.iter().any(|profile| {
         profile.profile_id == first_id
             && profile.tabs.iter().any(|tab| {

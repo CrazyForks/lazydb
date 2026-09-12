@@ -1955,7 +1955,56 @@ fn render_tabs(
         .iter()
         .enumerate()
         .map(|(index, tab)| {
-            let title = sanitize_terminal_text(tab.title())
+            let title = if let Some(console) = tab.as_console() {
+                let connection_name = console.execution_target.as_ref().map_or_else(
+                    || "未绑定".to_owned(),
+                    |target| {
+                        app.profiles
+                            .iter()
+                            .find(|profile| profile.id == target.profile_id)
+                            .map_or_else(
+                                || "失效目标".to_owned(),
+                                |profile| {
+                                    if target.is_valid(profile) {
+                                        profile.name.clone()
+                                    } else {
+                                        format!("失效:{}", profile.name)
+                                    }
+                                },
+                            )
+                    },
+                );
+                format!("{} @{connection_name}", tab.title())
+            } else {
+                let connection_name = match tab {
+                    WorkspaceTab::Relation(relation) => app
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == relation.descriptor.key.profile_id)
+                        .map(|profile| profile.name.clone())
+                        .unwrap_or_else(|| "失效目标".to_owned()),
+                    WorkspaceTab::Dashboard(dashboard) => dashboard
+                        .connection
+                        .or_else(|| {
+                            dashboard.profile_id.map(|profile_id| {
+                                crate::identity::ConnectionIdentity {
+                                    profile_id,
+                                    generation: 0,
+                                }
+                            })
+                        })
+                        .and_then(|connection| {
+                            app.profiles
+                                .iter()
+                                .find(|profile| profile.id == connection.profile_id)
+                        })
+                        .map(|profile| profile.name.clone())
+                        .unwrap_or_else(|| "未绑定".to_owned()),
+                    WorkspaceTab::Sql(_) => unreachable!(),
+                };
+                format!("{} @{connection_name}", tab.title())
+            };
+            let title = sanitize_terminal_text(&title)
                 .chars()
                 .take(48)
                 .collect::<String>();
@@ -1983,15 +2032,12 @@ fn render_tabs(
                     .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),
             };
             let label = format!(" {icon} {title} ");
-            let can_close = !app.is_default_console(tab.id());
-            let marker = format!(
-                "{} ",
-                if can_close {
-                    icons.close()
-                } else {
-                    icons.pin()
-                }
-            );
+            let can_close = index != 0 || tab.as_console().is_some();
+            let marker = if can_close {
+                format!("{} ", icons.close())
+            } else {
+                String::new()
+            };
             let label_width = label.cell_width();
             let marker_width = marker.cell_width();
             let width = label_width + marker_width;
@@ -2035,7 +2081,11 @@ fn render_tabs(
         let active = tab.index == app.active_tab;
         let style = if active { active_style } else { inactive_style };
         let marker_width = tab.marker.cell_width();
-        let max_label_width = tabs_area.width.saturating_sub(marker_width);
+        let remaining_width = tabs_area.right().saturating_sub(x);
+        let max_label_width = tab
+            .width
+            .saturating_sub(marker_width)
+            .min(remaining_width.saturating_sub(marker_width));
         let label = truncate_to_cell_width(&tab.label, max_label_width);
         let label_width = label.cell_width();
         spans.push(Span::styled(label, style));
@@ -2047,7 +2097,9 @@ fn render_tabs(
                 area: Rect::new(
                     x,
                     tabs_area.y,
-                    label_width.min(tabs_area.right().saturating_sub(x)),
+                    label_width
+                        .max(1)
+                        .min(tabs_area.right().saturating_sub(x).max(1)),
                     1,
                 ),
                 target: HitTarget::Tab(tab.index),
@@ -4499,6 +4551,7 @@ fn render_overlay(
         Overlay::TargetSelector {
             candidates,
             selected,
+            console_id,
         } => {
             const MAX_VISIBLE_ROWS: usize = 16;
             let visible_count = candidates.len().min(MAX_VISIBLE_ROWS);
@@ -4506,7 +4559,10 @@ fn render_overlay(
             let popup = centered(area, 68, height);
             frame.render_widget(Clear, popup);
             let current = app
-                .active_console_opt()
+                .tabs
+                .iter()
+                .find(|tab| console_id.is_none_or(|id| tab.id() == id))
+                .and_then(WorkspaceTab::as_console)
                 .and_then(|tab| tab.execution_target.as_ref());
             let start = selected
                 .saturating_sub(visible_count.saturating_sub(1))
@@ -4528,8 +4584,14 @@ fn render_overlay(
                         } else {
                             ""
                         };
+                        let profile_label = app
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == target.profile_id)
+                            .map(|profile| format!("{}: ", sanitize_terminal_text(&profile.name)))
+                            .unwrap_or_default();
                         let label = format!(
-                            "{marker} {}{}{}",
+                            "{marker} {profile_label}{}{}{}",
                             sanitize_terminal_text(&target.database),
                             target
                                 .schema
@@ -5703,25 +5765,58 @@ fn render_console_manager(
                     theme.muted,
                 )));
             } else {
-                let status_width = 6usize;
+                let status_width = 40usize.min(usize::from(inner.width).saturating_sub(8));
                 let name_width = usize::from(inner.width).saturating_sub(4 + status_width);
                 lines.extend(records.iter().map(|record| {
                     let selected = list.selected_id == Some(record.id);
-                    let is_default = app.is_default_console(record.id);
-                    let default_label = if is_default { " [DEFAULT]" } else { "" };
-                    let default_label_width = usize::from(default_label.cell_width());
-                    let name_budget = name_width.saturating_sub(default_label_width);
-                    let name = truncate_to_cells(&record.name, name_budget);
-                    let status = if record.open { "OPEN" } else { "CLOSED" };
+                    let target = record.execution_target.as_ref();
+                    let profile = target.and_then(|target| {
+                        app.profiles
+                            .iter()
+                            .find(|profile| profile.id == target.profile_id)
+                    });
+                    let connection =
+                        profile.map_or("失效目标", |profile| profile.name.as_str());
+                    let target_valid = target
+                        .zip(profile)
+                        .is_some_and(|(target, profile)| target.is_valid(profile));
+                    let connected = target.is_some_and(|target| {
+                        target_valid
+                            && app.connection.status
+                                == crate::model::workspace::ConnectionStatus::Connected
+                            && app.connection.profile_id == Some(target.profile_id)
+                            && app.connection.target.as_ref() == Some(target)
+                    });
+                    let connection_status = if target.is_none() {
+                        "未绑定"
+                    } else if !target_valid {
+                        "失效"
+                    } else if connected {
+                        "已连接"
+                    } else {
+                        "未连接"
+                    };
+                    let location = target.map_or_else(String::new, |target| {
+                        format!(
+                            " {}/{}",
+                            target.database,
+                            target.schema.as_deref().unwrap_or("-")
+                        )
+                    });
+                    let detail = format!(
+                        "{} | {connection_status} | {connection}{location}",
+                        if record.open { "OPEN" } else { "CLOSED" }
+                    );
+                    let name = truncate_to_cells(&record.name, name_width);
+                    let detail = truncate_to_cells(&detail, status_width);
+                    let detail_padding =
+                        status_width.saturating_sub(usize::from(detail.cell_width()));
                     let background = if selected {
                         theme.selection
                     } else {
                         theme.surface
                     };
                     let prefix = if selected { "> " } else { "  " };
-                    let padding = status_width
-                        + name_width
-                            .saturating_sub(usize::from(name.cell_width()) + default_label_width);
                     Line::from(vec![
                         Span::styled(
                             format!("{prefix}{name}"),
@@ -5732,20 +5827,10 @@ fn render_console_manager(
                             }),
                         ),
                         Span::styled(
-                            default_label,
-                            theme.base().fg(theme.accent).bg(background).add_modifier(
-                                if selected {
-                                    Modifier::BOLD
-                                } else {
-                                    Modifier::empty()
-                                },
-                            ),
-                        ),
-                        Span::styled(
-                            format!("{:>padding$}", status),
+                            format!("{}{detail}", " ".repeat(detail_padding)),
                             theme
                                 .base()
-                                .fg(if record.open {
+                                .fg(if record.open && connected {
                                     theme.success
                                 } else {
                                     theme.muted

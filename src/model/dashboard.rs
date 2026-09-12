@@ -3,6 +3,8 @@ use std::{collections::BTreeMap, time::Duration};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::identity::ConnectionIdentity;
+
 pub const DEFAULT_HISTORY: Duration = Duration::from_secs(10 * 60);
 pub const MAX_HISTORY_SAMPLES: usize = 3_600;
 
@@ -333,6 +335,8 @@ pub fn process_result_set(rows: &[ProcessRow], needle: &str) -> crate::db::query
 #[derive(Clone, Debug, PartialEq)]
 pub struct DashboardTab {
     pub id: Uuid,
+    pub profile_id: Option<Uuid>,
+    pub connection: Option<ConnectionIdentity>,
     pub generation: u64,
     pub page: DashboardPage,
     pub refresh_enabled: bool,
@@ -360,6 +364,8 @@ impl DashboardTab {
     pub fn new() -> Self {
         Self {
             id: Uuid::new_v4(),
+            profile_id: None,
+            connection: None,
             generation: 0,
             page: DashboardPage::Overview,
             refresh_enabled: true,

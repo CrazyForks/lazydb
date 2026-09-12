@@ -5,7 +5,7 @@ use lazydb::{
         relation::RelationTab,
         relation_edit::{EditableRowState, RelationEditSession},
         tab::WorkspaceTab,
-        transaction::TransactionExitChoice,
+        transaction::{TransactionExitChoice, TransactionMode, TransactionState},
         workspace::Overlay,
     },
 };
@@ -120,6 +120,29 @@ fn repeated_quit_does_not_replace_the_active_review() {
     assert!(matches!(
         app.overlay,
         Some(Overlay::RelationTransactionConfirm { tab_id, .. }) if tab_id == relation_id
+    ));
+}
+
+#[test]
+fn quit_aggregates_transactions_from_all_console_tabs() {
+    let mut app = App::new(Vec::new());
+    app.active_console_mut().transaction_mode = TransactionMode::Manual;
+    app.active_console_mut().transaction_state = TransactionState::OutcomeUnknown;
+    app.update(Action::NewConsole);
+    app.active_console_mut().transaction_mode = TransactionMode::Manual;
+    app.active_console_mut().transaction_state = TransactionState::OutcomeUnknown;
+
+    assert!(app.update(Action::Quit).is_empty());
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::TransactionExitConfirm { .. })
+    ));
+    app.update(Action::ConfirmTransactionExitChoice(
+        TransactionExitChoice::Abandon,
+    ));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::TransactionExitConfirm { .. })
     ));
 }
 

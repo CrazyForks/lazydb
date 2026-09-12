@@ -37,6 +37,54 @@ fn workspace_tabs_expose_common_identity() {
 }
 
 #[test]
+fn console_tab_title_remains_the_persisted_name() {
+    let console = ConsoleTab::new("analysis");
+    let tab = WorkspaceTab::Sql(console);
+
+    assert_eq!(tab.title(), "analysis");
+}
+
+#[test]
+fn global_console_manager_search_uses_profile_target_and_pure_name_order() {
+    let profile = import_connection_url(":memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.sql_editors = vec![
+        lazydb::model::tab::ConsoleRecord {
+            id: Uuid::from_u128(2),
+            name: "zeta".into(),
+            execution_target: Some(lazydb::model::execution_target::ExecutionTarget {
+                profile_id: profile.id,
+                database: "analytics_db".into(),
+                schema: Some("reporting".into()),
+            }),
+            transaction_mode: TransactionMode::Auto,
+            open: true,
+        },
+        lazydb::model::tab::ConsoleRecord {
+            id: Uuid::from_u128(1),
+            name: "alpha".into(),
+            execution_target: None,
+            transaction_mode: TransactionMode::Auto,
+            open: false,
+        },
+    ];
+
+    assert_eq!(
+        app.visible_console_ids(""),
+        [Uuid::from_u128(2), Uuid::from_u128(1)]
+    );
+    for query in ["warehouse", "analytics_db", "REPORTING"] {
+        assert_eq!(
+            app.visible_console_ids(query),
+            [Uuid::from_u128(2)],
+            "{query}"
+        );
+    }
+}
+
+#[test]
 fn opening_dashboard_is_idempotent_and_focuses_results() {
     let mut app = App::new(Vec::new());
     app.update(Action::OpenDashboard);
@@ -225,14 +273,12 @@ fn activating_relation_normalizes_editor_focus() {
 }
 
 #[test]
-fn closing_final_sql_console_creates_a_replacement_editor() {
+fn closing_final_sql_console_leaves_workspace_empty() {
     let mut app = App::new(Vec::new());
-    app.update(Action::NewConsole);
     let commands = app.update(Action::CloseActiveTab);
 
-    assert_eq!(app.tabs.len(), 1);
-    assert!(app.tabs.iter().any(|tab| tab.kind() == TabKind::Sql));
-    assert_eq!(app.active_console().name, "console");
+    assert!(app.tabs.is_empty());
+    assert!(app.active_console_opt().is_none());
     assert!(
         commands
             .iter()
@@ -241,26 +287,20 @@ fn closing_final_sql_console_creates_a_replacement_editor() {
 }
 
 #[test]
-fn default_console_cannot_be_closed_or_deleted() {
+fn final_console_can_be_closed_and_deleted() {
     let mut app = App::new(Vec::new());
     let id = app.active_console().id;
 
-    let close_commands = app.update(Action::CloseActiveTab);
-    assert!(close_commands.is_empty());
-    assert!(app.tabs.iter().any(|tab| tab.id() == id));
-    assert!(
-        app.sql_editors
-            .iter()
-            .any(|record| record.id == id && record.open)
-    );
-    assert!(app.overlay.is_none());
-
     app.update(Action::RequestDeleteActiveConsole);
-    assert!(app.overlay.is_none());
-    let commands = app.update(Action::CloseTab(id));
-    assert!(commands.is_empty());
-    assert!(app.sql_editors.iter().any(|record| record.id == id));
-    assert!(app.active_console_opt().is_some());
+    app.update(Action::ToggleDeleteConsoleFocus);
+    let commands = app.update(Action::ConfirmDeleteConsole);
+    assert!(!app.sql_editors.iter().any(|record| record.id == id));
+    assert!(app.tabs.is_empty());
+    assert!(
+        commands.iter().any(
+            |command| matches!(command, Command::DeleteSqlFile(console_id) if *console_id == id)
+        )
+    );
 }
 
 #[test]
@@ -296,22 +336,25 @@ fn non_default_console_can_still_be_closed_and_deleted() {
 }
 
 #[test]
-fn closing_other_tabs_always_keeps_the_default_console() {
+fn closing_other_tabs_keeps_only_the_active_console() {
     let mut app = App::new(Vec::new());
-    let default_id = app.active_console().id;
+    let _default_id = app.active_console().id;
     app.update(Action::NewConsole);
     let second_id = app.active_console().id;
 
     let commands = app.update(Action::CloseOtherTabs);
 
-    assert!(commands.is_empty());
-    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
-    assert!(app.tabs.iter().any(|tab| tab.id() == second_id));
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+    );
+    assert!(app.tabs.iter().all(|tab| tab.id() == second_id));
     assert_eq!(app.active_console().id, second_id);
 }
 
 #[test]
-fn closing_other_tabs_from_the_default_removes_only_non_default_tabs() {
+fn closing_other_tabs_from_a_console_removes_the_other_tabs() {
     let mut app = App::new(Vec::new());
     let default_id = app.active_console().id;
     app.update(Action::NewConsole);
@@ -417,13 +460,14 @@ fn workspace_snapshot_restores_open_and_closed_consoles_with_sql_and_names() {
 }
 
 #[test]
-fn workspace_restore_reopens_a_closed_default_with_its_original_identity() {
+fn workspace_restore_reopens_a_persisted_console_with_its_original_identity() {
     let profile = import_connection_url(":memory:", Some("saved"))
         .unwrap()
         .profile;
     let default_id = Uuid::from_u128(101);
     let other_id = Uuid::from_u128(102);
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile.id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id: profile.id,
@@ -455,13 +499,13 @@ fn workspace_restore_reopens_a_closed_default_with_its_original_identity() {
             (other_id, "select other;".into()),
         ],
         active_console: other_id,
+        tabs: Vec::new(),
         consoles: Vec::new(),
     };
     let mut app = App::new(vec![profile.clone()]);
     app.connection.profile_id = Some(profile.id);
     app.restore_workspace(snapshot, Some(profile.id));
 
-    assert!(app.is_default_console(default_id));
     assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
     assert!(
         app.sql_editors
@@ -517,9 +561,11 @@ fn workspace_restore_keeps_hidden_editors_hidden() {
     let default_id = Uuid::new_v4();
     let id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: None,
         profiles: Vec::new(),
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: vec![
             PersistedConsole {
                 id: default_id,
@@ -551,7 +597,7 @@ fn workspace_restore_keeps_hidden_editors_hidden() {
             .iter()
             .any(|record| record.id == id && !record.open)
     );
-    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
+    assert!(app.tabs.is_empty());
     assert!(app.tabs.iter().all(|tab| tab.id() != id));
 }
 
@@ -605,7 +651,76 @@ fn initial_and_new_consoles_use_the_active_profile_target() {
 }
 
 #[test]
-fn new_console_inherits_the_connected_target_instead_of_profile_default() {
+fn explicit_console_target_binding_updates_console_without_connecting() {
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url(":memory:", Some("second"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![first.clone(), second.clone()]);
+    app.connection.profile_id = Some(first.id);
+    app.update(Action::NewConsole);
+    let console_id = app.active_console().id;
+    app.update(Action::ReplaceEditor("select 1".into()));
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&second);
+
+    app.update(Action::OpenConsoleTargetSelector { console_id });
+    let selected = match app.overlay.as_ref().unwrap() {
+        lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates
+            .iter()
+            .position(|candidate| candidate == &target)
+            .unwrap(),
+        overlay => panic!("unexpected overlay: {overlay:?}"),
+    };
+    let commands = app.update(Action::SelectTargetSelector(selected));
+
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::Connect { .. }))
+    );
+    assert_eq!(app.active_console().execution_target, Some(target.clone()));
+    assert_eq!(
+        app.sql_editors
+            .iter()
+            .find(|record| record.id == console_id)
+            .unwrap()
+            .execution_target,
+        Some(target)
+    );
+    assert_eq!(app.active_editor_text().unwrap(), "select 1");
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn explicit_console_target_binding_respects_active_transaction() {
+    let profile = import_connection_url(":memory:", Some("saved"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.connection.profile_id = Some(profile.id);
+    app.update(Action::NewConsole);
+    let console_id = app.active_console().id;
+    app.active_console_mut().transaction_state =
+        lazydb::model::transaction::TransactionState::Active;
+    app.update(Action::OpenConsoleTargetSelector { console_id });
+    let commands = app.update(Action::ConfirmTargetSelector);
+    assert!(commands.is_empty());
+    assert!(
+        app.notifications
+            .history()
+            .any(|notification| notification.body.contains("active transaction"))
+    );
+}
+
+#[test]
+fn new_console_uses_the_profile_default_instead_of_connected_target() {
     let mut profile = import_connection_url(":memory:", Some("active"))
         .unwrap()
         .profile;
@@ -621,9 +736,16 @@ fn new_console_inherits_the_connected_target_instead_of_profile_default() {
     app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
     app.update(Action::NewConsole);
 
-    assert_eq!(
+    assert_ne!(
         app.active_console().execution_target.as_ref(),
         Some(&connected_target)
+    );
+    assert_eq!(
+        app.active_console()
+            .execution_target
+            .as_ref()
+            .and_then(|target| target.schema.as_deref()),
+        Some("main")
     );
 }
 
@@ -636,9 +758,11 @@ fn workspace_restore_preserves_valid_targets_and_defaults_missing_targets() {
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile.id),
         profiles: Vec::new(),
         active_console: second,
+        tabs: Vec::new(),
         consoles: vec![
             PersistedConsole {
                 id: first,
@@ -689,12 +813,14 @@ fn workspace_restore_caches_profiles_without_exposing_a_workspace() {
     let first_id = Uuid::new_v4();
     let second_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(second.id),
         profiles: vec![
             profile_workspace(first.id, first_id, None),
             profile_workspace(second.id, second_id, Some(second_id)),
         ],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![
             (first_id, "select first".into()),
@@ -727,6 +853,7 @@ fn workspace_restore_ignores_invalid_or_deleted_targets_and_uses_first_profile()
     let invalid_id = Uuid::new_v4();
     let deleted_profile = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: None,
         profiles: vec![profile_workspace(
             deleted_profile,
@@ -734,6 +861,7 @@ fn workspace_restore_ignores_invalid_or_deleted_targets_and_uses_first_profile()
             Some(invalid_id),
         )],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![(invalid_id, "select 1".into())],
     };
@@ -755,9 +883,11 @@ fn workspace_restore_assigns_targetless_consoles_to_startup_then_first_profile()
         .profile;
     let id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: None,
         profiles: vec![profile_workspace(Uuid::nil(), id, Some(id))],
         active_console: id,
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![(id, "select 1".into())],
     };
@@ -785,6 +915,7 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
     let relation_id = Uuid::new_v4();
     let other_console_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(first.id),
         profiles: vec![
             PersistedProfileWorkspace {
@@ -817,6 +948,7 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
             profile_workspace(second.id, other_console_id, Some(other_console_id)),
         ],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![
             (console_id, "select first".into()),
@@ -851,6 +983,7 @@ fn restored_relation_tab_is_not_loaded_before_connection_installation() {
         .profile;
     let relation_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile.id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id: profile.id,
@@ -876,6 +1009,7 @@ fn restored_relation_tab_is_not_loaded_before_connection_installation() {
             )],
         }],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: Vec::new(),
     };
@@ -919,6 +1053,7 @@ fn restored_relation_waits_for_catalog_before_loading() {
         })
     };
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile_id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id,
@@ -927,6 +1062,7 @@ fn restored_relation_waits_for_catalog_before_loading() {
             tabs: vec![relation(first_id, "first"), relation(second_id, "second")],
         }],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: Vec::new(),
     };
@@ -1184,6 +1320,7 @@ fn restored_relation_at_tables_request(
         [":memory:", "main", "target"],
     );
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(profile_id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id,
@@ -1205,6 +1342,7 @@ fn restored_relation_at_tables_request(
             )],
         }],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: Vec::new(),
     };
@@ -1318,19 +1456,47 @@ fn catalog_relation(id: CatalogId, schema: CatalogId, name: &str) -> CatalogEntr
 }
 
 #[test]
-fn console_lifecycle_requires_an_active_profile_workspace() {
+fn console_lifecycle_can_run_offline_with_a_profile_workspace() {
     let profile = import_connection_url(":memory:", Some("saved"))
         .unwrap()
         .profile;
     let mut app = App::new(vec![profile]);
 
-    app.update(Action::NewConsole);
-    app.update(Action::OpenSqlEditorList);
-    app.update(Action::ActivateSqlEditor(Uuid::new_v4()));
+    let commands = app.update(Action::NewConsole);
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    assert!(app.active_workspace_profile.is_some());
+    assert_eq!(app.sql_editors.len(), 1);
+    let id = app.active_console().id;
     app.update(Action::CloseActiveTab);
 
     assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
+    assert!(
+        app.sql_editors
+            .iter()
+            .any(|record| record.id == id && !record.open)
+    );
+
+    let commands = app.update(Action::NewConsole);
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    let new_id = app.active_console().id;
+    app.update(Action::RequestDeleteActiveConsole);
+    app.update(Action::ToggleDeleteConsoleFocus);
+    let commands = app.update(Action::ConfirmDeleteConsole);
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    assert!(!app.sql_editors.iter().any(|record| record.id == new_id));
+    assert!(app.tabs.is_empty());
 }
 
 #[test]
@@ -1343,6 +1509,7 @@ fn restored_console_target_cannot_cross_profile_boundaries() {
         .profile;
     let console_id = Uuid::new_v4();
     let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
         active_profile: Some(first.id),
         profiles: vec![PersistedProfileWorkspace {
             profile_id: first.id,
@@ -1360,6 +1527,7 @@ fn restored_console_target_cannot_cross_profile_boundaries() {
             tabs: vec![PersistedTab::Console { console_id }],
         }],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![(console_id, "select 1".into())],
     };
@@ -1398,8 +1566,10 @@ fn console_numbering_is_collision_free_within_each_workspace() {
             }],
         }],
         active_console: Uuid::nil(),
+        tabs: Vec::new(),
         consoles: Vec::new(),
         sql: vec![(first_id, String::new())],
+        recent_targets: Vec::new(),
     };
     let mut app = App::new(vec![profile.clone()]);
     app.connection.profile_id = Some(profile.id);

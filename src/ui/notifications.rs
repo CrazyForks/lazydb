@@ -691,7 +691,6 @@ mod tests {
 
         let mut app = App::new(Vec::new());
         app.update(Action::OpenSqlEditorList);
-        let overlay = app.overlay.clone();
         app.update(Action::SqlEditorListDeleteRequest);
         let mut ui = UiState::new();
         let mut terminal =
@@ -706,7 +705,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(text.contains("Default console cannot be deleted"));
+        assert!(!text.contains("Default console cannot be deleted"));
         assert!(matches!(app.overlay, Some(Overlay::SqlEditorList(_))));
         for region in &ui.hit_regions {
             if !matches!(
@@ -733,7 +732,7 @@ mod tests {
                 _ => assert_eq!(action, None),
             }
         }
-        assert_eq!(app.overlay, overlay);
+        assert!(matches!(app.overlay, Some(Overlay::SqlEditorList(_))));
         assert!(app.notifications.live().is_empty());
     }
 

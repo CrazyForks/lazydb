@@ -2994,20 +2994,21 @@ fn relation_help_executes_space_tc_transaction_control() {
     let mut app = App::new(Vec::new());
     let mut relation = lazydb::model::relation::RelationTab::new("users");
     relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.edit = Some(lazydb::model::relation_edit::RelationEditSession::from_rows(Vec::new()));
     app.tabs
         .push(lazydb::model::tab::WorkspaceTab::Relation(relation));
     app.active_tab = app.tabs.len() - 1;
     app.focus = Focus::Results;
 
     app.update(Action::ShowHelp);
-    app.update(Action::HelpPaste("commit or roll back transaction".into()));
+    app.update(Action::HelpPaste("review and commit changes".into()));
     assert_eq!(
         app.help_selected_id(),
-        Some(lazydb::help::HelpShortcutId::TransactionControl)
+        Some(lazydb::help::HelpShortcutId::RelationCommit)
     );
 
     app.update(Action::ExecuteHelpShortcut(
-        lazydb::help::HelpShortcutId::TransactionControl,
+        lazydb::help::HelpShortcutId::RelationCommit,
     ));
     assert!(matches!(
         app.overlay,
@@ -3044,12 +3045,42 @@ fn editor_leader_opens_connection_target_selector() {
         Some(lazydb::model::workspace::Overlay::TargetSelector {
             ref candidates,
             selected: 0,
+            ..
         }) if candidates.len() == 1 && candidates[0].profile_id == profile_id
     ));
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
         Some(Action::CancelTargetSelector)
     );
+}
+
+#[test]
+fn global_leader_opens_console_manager_and_current_console_target_selector() {
+    let profile = profile("target");
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.update(Action::NewConsole);
+    app.focus = Focus::Results;
+    let console_id = app.active_console().id;
+    let mut keymap = Keymap::default();
+
+    keymap.map(key(KeyCode::Char(' ')), &app);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('s')), &app),
+        Some(Action::OpenSqlEditorList)
+    );
+
+    keymap.map(key(KeyCode::Char(' ')), &app);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('B')), &app),
+        Some(Action::OpenConsoleTargetSelector { console_id })
+    );
+    app.update(Action::OpenConsoleTargetSelector { console_id });
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::TargetSelector { ref candidates, .. })
+            if candidates.iter().any(|target| target.profile_id == profile_id)
+    ));
 }
 
 #[test]

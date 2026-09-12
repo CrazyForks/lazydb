@@ -22,7 +22,7 @@ use lazydb::{
         relation_edit::RelationEditSession,
         tab::WorkspaceTab,
         transaction::{TransactionMode, TransactionState},
-        workspace::{ConnectionIdentity, ConnectionStatus, Overlay, QueryStatus},
+        workspace::{ConnectionIdentity, ConnectionStatus, QueryStatus},
     },
     persistence::{
         profiles::ProfileStore,
@@ -219,7 +219,9 @@ async fn drain_catalog(
         };
         assert!(matches!(
             action,
-            Action::CatalogPageLoaded(_) | Action::CatalogPageFailed { .. }
+            Action::CatalogPageLoaded(_)
+                | Action::CatalogPageFailed { .. }
+                | Action::DisconnectCompleted { .. }
         ));
         dispatch(app, runtime, action);
     }
@@ -342,7 +344,7 @@ fn failed_switch_keeps_visible_workspace_and_editor_text_unchanged() {
 }
 
 #[test]
-fn successful_switch_caches_and_restores_profile_workspace_once() {
+fn successful_switch_keeps_profile_workspaces_available_together() {
     let first = memory_profile("first");
     let second = memory_profile("second");
     let first_id = first.id;
@@ -373,8 +375,8 @@ fn successful_switch_caches_and_restores_profile_workspace_once() {
         mutation_capabilities: Default::default(),
     });
     assert_eq!(app.active_workspace_profile, Some(second_id));
-    assert_eq!(app.tabs.len(), 1);
-    assert_eq!(app.sql_editors.len(), 1);
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.sql_editors.len(), 2);
     assert_ne!(app.active_console().id, first_tab);
     assert_eq!(
         app.active_console()
@@ -403,7 +405,7 @@ fn successful_switch_caches_and_restores_profile_workspace_once() {
     assert_eq!(app.active_workspace_profile, Some(first_id));
     assert_eq!(app.active_console().id, first_tab);
     assert_eq!(app.active_editor_text().unwrap(), "SELECT first");
-    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.tabs.len(), 2);
 }
 
 #[test]
@@ -472,6 +474,7 @@ fn target_selector_switches_only_after_matching_connection_success() {
     let lazydb::model::workspace::Overlay::TargetSelector {
         candidates,
         selected,
+        ..
     } = app.overlay.as_ref().unwrap()
     else {
         panic!("target selector did not open");
@@ -633,6 +636,95 @@ fn console_target_reconnect_updates_the_active_target_before_sql_runs() {
         app.update(Action::RunActiveSql).as_slice(),
         [Command::RunQueryPage { target, .. }] if target == &console_target
     ));
+}
+
+#[test]
+fn query_page_result_returns_to_console_after_switching_to_another_profile() {
+    let first = memory_profile("query-first");
+    let second = memory_profile("query-second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let first_target = ExecutionTarget::from_profile(&first);
+    let second_target = ExecutionTarget::from_profile(&second);
+    let mut app = App::new(vec![first, second]);
+
+    app.update(Action::ConnectionSucceeded {
+        profile_id: first_id,
+        generation: 1,
+        server: server("first"),
+        mutation_capabilities: Default::default(),
+    });
+    app.active_console_mut().execution_target = Some(first_target.clone());
+    app.active_console_mut().execution_connection = Some(ConnectionIdentity {
+        profile_id: first_id,
+        generation: 1,
+    });
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+    let query = app.update(Action::RunActiveSql);
+    let (tab_id, generation, connection) = match query.as_slice() {
+        [
+            Command::RunQueryPage {
+                tab_id,
+                generation,
+                connection,
+                target,
+                ..
+            },
+        ] => {
+            assert_eq!(target, &first_target);
+            (*tab_id, *generation, *connection)
+        }
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+
+    app.update(Action::NewConsole);
+    app.tabs[1]
+        .as_console_mut()
+        .expect("second console")
+        .execution_target = Some(second_target.clone());
+    app.connection.pending_profile_id = Some(second_id);
+    app.connection.pending_generation = Some(2);
+    app.connection.pending_target = Some(second_target.clone());
+    app.update(Action::ConnectionSucceeded {
+        profile_id: second_id,
+        generation: 2,
+        server: server("second"),
+        mutation_capabilities: Default::default(),
+    });
+    app.active_tab = 1;
+    assert_eq!(app.connection.profile_id, Some(second_id));
+
+    let outcome = lazydb::db::query::QueryOutcome {
+        result_sets: vec![lazydb::db::query::ResultSet::default()],
+        stats: lazydb::db::query::QueryStats::new(
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            0,
+        ),
+    };
+    app.update(Action::QueryPageFinished {
+        tab_id,
+        generation,
+        connection,
+        outcome,
+        pagination: lazydb::model::pagination::ResultPagination::from_page(
+            lazydb::model::pagination::PageRequest::first(
+                lazydb::model::pagination::PageSize::default(),
+            ),
+            0,
+        ),
+    });
+
+    let first_tab = app
+        .tabs
+        .iter()
+        .find(|tab| tab.id() == tab_id)
+        .and_then(WorkspaceTab::as_console)
+        .expect("first console");
+    assert_eq!(first_tab.query_status, QueryStatus::Idle);
+    assert!(first_tab.outcome.is_some());
+    assert_eq!(app.active_console().id, app.tabs[1].id());
+    assert!(app.active_console().outcome.is_none());
 }
 
 #[test]
@@ -874,14 +966,128 @@ fn all_manual_console_transactions_are_deferred_and_cancel_keeps_connection() {
         tab.transaction_state = TransactionState::Active;
     }
 
-    assert!(app.update(Action::RequestConnect(second_id)).is_empty());
-    assert!(matches!(
-        app.overlay,
-        Some(Overlay::TransactionExitConfirm { .. })
-    ));
-    app.update(Action::CancelTransactionExit);
-    assert_eq!(app.connection.profile_id, Some(first_id));
+    let commands = app.update(Action::RequestConnect(second_id));
+    assert!(matches!(commands.as_slice(), [Command::Connect { .. }]));
+    assert_eq!(app.connection.pending_profile_id, Some(second_id));
+}
+
+#[test]
+fn disconnecting_one_profile_does_not_review_another_profiles_transaction() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+    let generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id: second_id,
+        generation,
+        server: server("second"),
+        mutation_capabilities: Default::default(),
+    });
+
+    let first_console = app.active_console().id;
+    let first_connection = ConnectionIdentity {
+        profile_id: first_id,
+        generation: 7,
+    };
+    let first_tab = app
+        .tabs
+        .iter_mut()
+        .find(|tab| tab.id() == first_console)
+        .and_then(WorkspaceTab::as_console_mut)
+        .unwrap();
+    first_tab.execution_connection = Some(first_connection);
+    first_tab.execution_target = Some(ExecutionTarget {
+        profile_id: first_id,
+        database: "first".into(),
+        schema: None,
+    });
+    first_tab.transaction_mode = TransactionMode::Manual;
+    first_tab.transaction_state = TransactionState::Active;
+
+    let commands = app.update(Action::RequestProfileDisconnect {
+        profile_id: second_id,
+    });
+
+    assert!(
+        matches!(commands.as_slice(), [Command::Disconnect { connection }] if *connection == ConnectionIdentity {
+            profile_id: second_id,
+            generation,
+        })
+    );
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn invalidating_one_connection_preserves_other_console_transaction() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+    app.tabs
+        .push(WorkspaceTab::Sql(lazydb::model::tab::ConsoleTab::new(
+            "first",
+        )));
+    let first_console = app.tabs.last().unwrap().id();
+    app.tabs
+        .push(WorkspaceTab::Sql(lazydb::model::tab::ConsoleTab::new(
+            "second",
+        )));
+    let second_console = app.tabs.last().unwrap().id();
+    let first_connection = ConnectionIdentity {
+        profile_id: first_id,
+        generation: 1,
+    };
+    let second_connection = ConnectionIdentity {
+        profile_id: second_id,
+        generation: 2,
+    };
+    for (id, connection) in [
+        (first_console, first_connection),
+        (second_console, second_connection),
+    ] {
+        let tab = app
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id() == id)
+            .and_then(WorkspaceTab::as_console_mut)
+            .unwrap();
+        tab.execution_connection = Some(connection);
+        tab.transaction_mode = TransactionMode::Manual;
+        tab.transaction_state = TransactionState::Active;
+    }
+    app.connection.profile_id = Some(second_id);
+    app.connection.generation = second_connection.generation;
+    app.connection.status = ConnectionStatus::Connected;
+
+    app.update(Action::ConnectionInvalidated {
+        connection: second_connection,
+        message: "closed".into(),
+    });
+
+    assert_eq!(
+        app.tabs
+            .iter()
+            .find(|tab| tab.id() == first_console)
+            .and_then(WorkspaceTab::as_console)
+            .unwrap()
+            .transaction_state,
+        TransactionState::Active
+    );
+    assert_eq!(
+        app.tabs
+            .iter()
+            .find(|tab| tab.id() == second_console)
+            .and_then(WorkspaceTab::as_console)
+            .unwrap()
+            .transaction_state,
+        TransactionState::OutcomeUnknown
+    );
 }
 
 #[test]
@@ -1199,9 +1405,9 @@ fn active_disconnect_caches_and_hides_workspace_until_reconnect() {
         },
     });
 
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
-    assert_eq!(app.active_editor_text().unwrap(), "");
+    assert!(!app.tabs.is_empty());
+    assert!(!app.sql_editors.is_empty());
+    assert_eq!(app.active_editor_text().unwrap(), "SELECT cached");
     assert!(commands.iter().any(|command| matches!(
         command,
         Command::PersistWorkspace { snapshot, .. }
@@ -1248,9 +1454,9 @@ fn active_invalidation_caches_and_hides_workspace_but_stale_invalidation_is_igno
         },
         message: "connection lost".into(),
     });
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
-    assert_eq!(app.active_editor_text().unwrap(), "");
+    assert!(!app.tabs.is_empty());
+    assert!(!app.sql_editors.is_empty());
+    assert_eq!(app.active_editor_text().unwrap(), "SELECT invalidated");
     assert_eq!(app.connection.error.as_deref(), Some("connection lost"));
 
     app.update(Action::ConnectionInvalidated {
@@ -1261,7 +1467,7 @@ fn active_invalidation_caches_and_hides_workspace_but_stale_invalidation_is_igno
         message: "stale".into(),
     });
     assert_eq!(app.connection.error.as_deref(), Some("connection lost"));
-    assert!(app.tabs.is_empty());
+    assert!(!app.tabs.is_empty());
 }
 
 #[tokio::test]
@@ -1323,7 +1529,7 @@ async fn successful_switch_installs_the_new_database_and_rejects_stale_commands(
     });
     assert!(matches!(
         next_action(&mut receiver).await,
-        Action::QueryFailed { .. }
+        Action::QueryFinished { connection, .. } if connection == first_identity
     ));
     let relation_request = RelationRequest {
         tab_id: Uuid::new_v4(),
@@ -1361,7 +1567,7 @@ async fn successful_switch_installs_the_new_database_and_rejects_stale_commands(
     runtime.dispatch(Command::LoadCatalogPage(catalog_request(first_identity)));
     assert!(matches!(
         next_action(&mut receiver).await,
-        Action::CatalogPageFailed { key, .. } if key.connection == first_identity
+        Action::CatalogPageLoaded(page) if page.key.connection == first_identity
     ));
     runtime.shutdown().await;
 }
