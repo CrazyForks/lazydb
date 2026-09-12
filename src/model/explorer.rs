@@ -808,6 +808,7 @@ pub struct ExplorerProfileState {
     pub load_errors: HashMap<ExplorerOwnerId, String>,
     pub last_error: Option<String>,
     pub expand_after_connect: bool,
+    pub unavailable_reason: Option<String>,
 }
 
 impl ExplorerProfileState {
@@ -837,6 +838,7 @@ impl ExplorerProfileState {
             load_errors: HashMap::new(),
             last_error: None,
             expand_after_connect: false,
+            unavailable_reason: None,
         }
     }
 
@@ -1200,6 +1202,32 @@ impl ExplorerTreeState {
         self.profiles.insert(profile_id, state);
         self.profile_order.push(profile_id);
         self.expanded.insert(ExplorerNodeId::Profile(profile_id));
+        if matches!(self.selected, None | Some(ExplorerNodeId::EmptyProfiles)) {
+            self.selected = Some(ExplorerNodeId::Profile(profile_id));
+        }
+    }
+
+    pub fn add_unavailable_profile(
+        &mut self,
+        profile_id: Uuid,
+        display_name: String,
+        kind: String,
+        reason: String,
+        placement: ProfilePlacement,
+    ) {
+        let mut state = ExplorerProfileState::new(
+            profile_id,
+            display_name,
+            DatabaseKind::Sqlite,
+            kind,
+            ProfileProvenance::Saved,
+            placement,
+        );
+        state.unavailable_reason = Some(reason);
+        state.status = ExplorerConnectionStatus::Failed;
+        state.group_id = None;
+        self.profiles.insert(profile_id, state);
+        self.profile_order.push(profile_id);
         if matches!(self.selected, None | Some(ExplorerNodeId::EmptyProfiles)) {
             self.selected = Some(ExplorerNodeId::Profile(profile_id));
         }

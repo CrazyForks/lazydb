@@ -2334,7 +2334,12 @@ fn explorer_list_item(
     };
     let label = sanitize_terminal_text(&visible.label);
     let selected = app.explorer.selected_id() == Some(&visible.id);
-    let label_style = if selected {
+    let label_style = if visible.unavailable_reason.is_some() && !selected {
+        Style::new()
+            .fg(theme.muted)
+            .bg(theme.surface)
+            .add_modifier(Modifier::DIM)
+    } else if selected {
         Style::new()
             .fg(theme.accent)
             .bg(theme.selection)
@@ -2353,14 +2358,32 @@ fn explorer_list_item(
     };
     let base = format!("{}{} ", "  ".repeat(visible.depth), marker);
     let mut spans = vec![Span::styled(base, label_style)];
+    let secondary_style = Style::new().fg(theme.muted).bg(if selected {
+        theme.selection
+    } else {
+        theme.surface
+    });
     if let Some(kind) = visible.profile_kind {
         spans.push(Span::styled(
-            format!("{} ", icons.database(kind)),
-            Style::new().fg(theme.action).bg(if selected {
-                theme.selection
-            } else {
-                theme.surface
-            }),
+            format!(
+                "{} ",
+                if visible.unavailable_reason.is_some() {
+                    "?"
+                } else {
+                    icons.database(kind)
+                }
+            ),
+            Style::new()
+                .fg(if visible.unavailable_reason.is_some() {
+                    theme.muted
+                } else {
+                    theme.action
+                })
+                .bg(if selected {
+                    theme.selection
+                } else {
+                    theme.surface
+                }),
         ));
     } else if !is_others {
         spans.push(Span::styled(
@@ -2376,6 +2399,12 @@ fn explorer_list_item(
                 }),
         ));
     }
+    if let Some(reason) = visible.unavailable_reason.as_deref() {
+        spans.push(Span::styled(
+            format!("  UNSUPPORTED: {}", sanitize_terminal_text(reason)),
+            secondary_style,
+        ));
+    }
     if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
         spans.extend(match_spans(
             label,
@@ -2386,11 +2415,6 @@ fn explorer_list_item(
     } else {
         spans.push(Span::styled(label, label_style));
     }
-    let secondary_style = Style::new().fg(theme.muted).bg(if selected {
-        theme.selection
-    } else {
-        theme.surface
-    });
     let is_connection_group = matches!(
         visible.id,
         crate::model::explorer::ExplorerNodeId::ConnectionGroup { .. }

@@ -15,6 +15,7 @@ pub mod migration;
 pub mod model;
 pub mod persistence;
 pub mod profile;
+pub mod profile_compatibility;
 pub mod project;
 pub mod runtime;
 pub mod security;

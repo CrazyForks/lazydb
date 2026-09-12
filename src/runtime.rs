@@ -4481,6 +4481,16 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
             .map(|profile| (profile.id, profile.group_id))
             .collect(),
     );
+    app.add_unavailable_profiles(&startup.unavailable);
+    if !startup.unavailable.is_empty() {
+        app.notify_warning(
+            "Profile",
+            format!(
+                "{} connection profile(s) are not supported by this version",
+                startup.unavailable.len()
+            ),
+        );
+    }
     if let Some(workspace) = workspace {
         app.restore_workspace(workspace, startup.selected);
     }
@@ -5050,6 +5060,7 @@ fn sync_ddl_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
 
 pub struct StartupProfiles {
     pub collection: ProfileCollection,
+    pub unavailable: Vec<crate::profile_compatibility::UnavailableProfile>,
     pub profiles: Vec<ConnectionProfile>,
     pub persisted: HashSet<Uuid>,
     pub session_secrets: HashMap<Uuid, SecretString>,
@@ -5065,7 +5076,10 @@ pub fn load_startup_profiles(cli: &Cli) -> Result<StartupProfiles> {
         AppPaths::discover()?.profiles_file()
     };
     let store = ProfileStore::new(profile_path);
-    let mut collection = store.load().context("failed to load connection profiles")?;
+    let report = store
+        .load_report()
+        .context("failed to load connection profiles")?;
+    let mut collection = report.collection;
     let mut profiles = collection.profiles.clone();
     let persisted = profiles.iter().map(|profile| profile.id).collect();
     let mut session_secrets = HashMap::new();
@@ -5117,6 +5131,7 @@ pub fn load_startup_profiles(cli: &Cli) -> Result<StartupProfiles> {
 
     Ok(StartupProfiles {
         collection,
+        unavailable: report.unavailable,
         profiles,
         persisted,
         session_secrets,

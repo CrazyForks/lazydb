@@ -13,6 +13,9 @@ use crate::profile::{
     CatalogScope, ConnectionGroup, ConnectionProfile, ConnectionUrlFormat, CredentialPolicy,
     DatabaseKind, Environment, ProfileAccess, ProfileCollection, SslMode,
 };
+use crate::profile_compatibility::{
+    ProfileLoadReport, ProfileUnavailableReason, UnavailableProfile,
+};
 
 const PROFILE_FILE_VERSION: u16 = 6;
 
@@ -47,6 +50,8 @@ pub enum PersistenceError {
     DuplicateProjectRoot(PathBuf),
     #[error("profile path has no parent directory")]
     MissingParent,
+    #[error("profile document is invalid: {0}")]
+    InvalidStructure(String),
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -188,21 +193,21 @@ impl ProfileStore {
     }
 
     pub fn load(&self) -> Result<ProfileCollection, PersistenceError> {
+        Ok(self.load_report()?.collection)
+    }
+
+    pub fn load_report(&self) -> Result<ProfileLoadReport, PersistenceError> {
         let contents = match fs::read_to_string(&self.path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ProfileCollection::default());
+                return Ok(ProfileLoadReport::default());
             }
             Err(error) => return Err(error.into()),
         };
         let header: ProfileFileHeader = toml::from_str(&contents)?;
         let collection = match header.version {
             PROFILE_FILE_VERSION => {
-                let file = toml::from_str::<ProfileFile>(&contents)?;
-                ProfileCollection {
-                    groups: file.groups,
-                    profiles: file.profiles,
-                }
+                return self.load_current_report(&contents);
             }
             2 => ProfileCollection {
                 groups: Vec::new(),
@@ -242,7 +247,80 @@ impl ProfileStore {
             profiles,
         };
         validate_collection(&collection)?;
-        Ok(collection)
+        Ok(ProfileLoadReport {
+            collection,
+            unavailable: Vec::new(),
+        })
+    }
+
+    fn load_current_report(&self, contents: &str) -> Result<ProfileLoadReport, PersistenceError> {
+        let document = toml::from_str::<toml::Value>(contents)?;
+        let document = document.as_table().ok_or_else(|| {
+            PersistenceError::InvalidStructure("profile document must be a table".to_owned())
+        })?;
+        let groups = document
+            .get("groups")
+            .cloned()
+            .map(toml::Value::try_into)
+            .transpose()?;
+        let groups = groups.unwrap_or_default();
+        let profiles = document
+            .get("profiles")
+            .and_then(toml::Value::as_array)
+            .ok_or_else(|| {
+                PersistenceError::InvalidStructure("profiles must be an array".to_owned())
+            })?;
+
+        let mut supported = Vec::new();
+        let mut unavailable = Vec::new();
+        for (index, value) in profiles.iter().enumerate() {
+            match value.clone().try_into::<ConnectionProfile>() {
+                Ok(profile) => supported.push(profile),
+                Err(error) => {
+                    let table = value.as_table();
+                    let id = table
+                        .and_then(|table| table.get("id"))
+                        .and_then(toml::Value::as_str)
+                        .and_then(|id| id.parse().ok());
+                    let name = table
+                        .and_then(|table| table.get("name"))
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("Unavailable connection {}", index + 1));
+                    let kind = table
+                        .and_then(|table| table.get("kind"))
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned);
+                    let reason = if kind.as_deref().is_some_and(|kind| {
+                        !matches!(
+                            kind,
+                            "postgres" | "mysql" | "mariadb" | "oracle" | "sqlserver" | "sqlite"
+                        )
+                    }) {
+                        ProfileUnavailableReason::UnsupportedKind
+                    } else if error.to_string().contains("unknown field") {
+                        ProfileUnavailableReason::UnsupportedConfiguration
+                    } else {
+                        ProfileUnavailableReason::InvalidConfiguration
+                    };
+                    unavailable.push(UnavailableProfile {
+                        id,
+                        name,
+                        kind,
+                        reason,
+                    });
+                }
+            }
+        }
+        let collection = ProfileCollection {
+            groups,
+            profiles: supported,
+        };
+        validate_collection(&collection)?;
+        Ok(ProfileLoadReport {
+            collection,
+            unavailable,
+        })
     }
 
     pub fn save<T>(&self, input: T) -> Result<(), PersistenceError>
@@ -261,11 +339,14 @@ impl ProfileStore {
         fs::create_dir_all(parent)?;
         set_private_dir_permissions(parent)?;
 
-        let contents = toml::to_string_pretty(&ProfileFile {
+        let mut contents = toml::to_string_pretty(&ProfileFile {
             version: PROFILE_FILE_VERSION,
             groups: collection.groups.clone(),
             profiles,
         })?;
+        if let Ok(existing) = fs::read_to_string(&self.path) {
+            contents = preserve_unavailable_profiles(&existing, &contents)?;
+        }
         let file_name = self
             .path
             .file_name()
@@ -289,6 +370,44 @@ impl ProfileStore {
         }
         result
     }
+}
+
+fn preserve_unavailable_profiles(
+    existing: &str,
+    generated: &str,
+) -> Result<String, PersistenceError> {
+    let existing_document = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| PersistenceError::InvalidStructure(error.to_string()))?;
+    let Some(existing_profiles) = existing_document["profiles"].as_array_of_tables() else {
+        return Ok(generated.to_owned());
+    };
+    let mut unavailable = Vec::new();
+    for table in existing_profiles.iter() {
+        let table_value = toml::from_str::<toml::Value>(&table.to_string());
+        let known_profile = table_value
+            .ok()
+            .and_then(|value| value.try_into::<ConnectionProfile>().ok())
+            .is_some();
+        if !known_profile {
+            unavailable.push(table.clone());
+        }
+    }
+    if unavailable.is_empty() {
+        return Ok(generated.to_owned());
+    }
+    let mut document = generated
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| PersistenceError::InvalidStructure(error.to_string()))?;
+    let profiles = document["profiles"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            PersistenceError::InvalidStructure("profiles must be an array".to_owned())
+        })?;
+    for table in unavailable {
+        profiles.push(table);
+    }
+    Ok(document.to_string())
 }
 
 fn normalize_v3_profile(mut profile: ConnectionProfile) -> ConnectionProfile {

@@ -1744,6 +1744,48 @@ impl App {
         }
     }
 
+    pub fn add_unavailable_profiles(
+        &mut self,
+        unavailable: &[crate::profile_compatibility::UnavailableProfile],
+    ) {
+        let mut next = 1u128;
+        for profile in unavailable {
+            let id = profile
+                .id
+                .filter(|id| !self.profiles.iter().any(|known| known.id == *id))
+                .unwrap_or_else(|| {
+                    loop {
+                        let candidate = Uuid::from_u128(next);
+                        next += 1;
+                        if !self.profiles.iter().any(|known| known.id == candidate)
+                            && !self.explorer.normalized.profiles.contains_key(&candidate)
+                        {
+                            break candidate;
+                        }
+                    }
+                });
+            let kind = profile.kind.clone().unwrap_or_else(|| "unknown".to_owned());
+            let reason = match profile.reason {
+                crate::profile_compatibility::ProfileUnavailableReason::UnsupportedKind => {
+                    format!("{kind} is not supported by this version")
+                }
+                crate::profile_compatibility::ProfileUnavailableReason::UnsupportedConfiguration => {
+                    "configuration is not supported by this version".to_owned()
+                }
+                crate::profile_compatibility::ProfileUnavailableReason::InvalidConfiguration => {
+                    "configuration is invalid".to_owned()
+                }
+            };
+            self.explorer.normalized.add_unavailable_profile(
+                id,
+                profile.name.clone(),
+                kind,
+                reason,
+                crate::model::explorer::ProfilePlacement::Global,
+            );
+        }
+    }
+
     fn restore_profile_workspace(
         &self,
         profile: &PersistedProfileWorkspace,
@@ -10561,6 +10603,17 @@ impl App {
     }
 
     pub fn resolve_explorer_mutation_intent(&self, edit: bool) -> Option<ExplorerMutationIntent> {
+        if let Some(ExplorerNodeId::Profile(profile_id)) =
+            self.explorer.normalized.selected.as_ref()
+            && self
+                .explorer
+                .normalized
+                .profiles
+                .get(profile_id)
+                .is_some_and(|profile| profile.unavailable_reason.is_some())
+        {
+            return None;
+        }
         crate::model::explorer::resolve_mutation_intent(
             self.explorer.normalized.selected.as_ref(),
             edit,
@@ -11999,6 +12052,19 @@ impl App {
     }
 
     fn request_connection(&mut self, profile_id: Uuid) -> Vec<Command> {
+        if self
+            .explorer
+            .normalized
+            .profiles
+            .get(&profile_id)
+            .is_some_and(|profile| profile.unavailable_reason.is_some())
+        {
+            self.notify_warning(
+                "Connection",
+                "This connection is not supported by the current version",
+            );
+            return Vec::new();
+        }
         if !self.profiles.iter().any(|profile| profile.id == profile_id) {
             return Vec::new();
         }

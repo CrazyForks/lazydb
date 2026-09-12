@@ -87,6 +87,28 @@ fn empty_store_has_no_implicit_profile_and_opens_a_new_form() {
 }
 
 #[test]
+fn unsupported_profile_does_not_block_supported_profiles_from_starting() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("connections.toml");
+    let supported = import_connection_url("sqlite::memory:", Some("supported"))
+        .unwrap()
+        .profile;
+    ProfileStore::new(path.clone())
+        .save(vec![supported])
+        .unwrap();
+    let original = std::fs::read_to_string(&path).unwrap();
+    let unsupported = format!(
+        "{original}\n[[profiles]]\nid = \"00000000-0000-0000-0000-000000000099\"\nname = \"future\"\nkind = \"future-db\"\n"
+    );
+    std::fs::write(&path, unsupported).unwrap();
+
+    let startup = load_startup_profiles(&cli(&path, &[])).unwrap();
+
+    assert_eq!(startup.profiles.len(), 1);
+    assert_eq!(startup.profiles[0].name, "supported");
+}
+
+#[test]
 fn profile_root_empty_startup_selects_actionable_row_without_opening_overlay() {
     let mut app = App::new(Vec::new());
 

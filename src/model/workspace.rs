@@ -368,6 +368,7 @@ pub struct VisibleCatalogNode {
     pub connection_status: Option<ExplorerConnectionStatus>,
     pub endpoint: Option<String>,
     pub expandable: bool,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -983,6 +984,7 @@ impl ExplorerState {
                     connection_status,
                     endpoint,
                     expandable,
+                    unavailable_reason,
                 ) = match &row.id {
                     ExplorerNodeId::Catalog(id) => profile
                         .and_then(|profile| profile.catalog.get(id))
@@ -999,6 +1001,7 @@ impl ExplorerState {
                                     None,
                                     None,
                                     false,
+                                    None,
                                 )
                             },
                             |entry| {
@@ -1013,6 +1016,7 @@ impl ExplorerState {
                                     None,
                                     None,
                                     entry.expandable,
+                                    None,
                                 )
                             },
                         ),
@@ -1031,6 +1035,7 @@ impl ExplorerState {
                             None,
                             None,
                             true,
+                            None,
                         )
                     }
                     ExplorerNodeId::ConnectionGroup { group_id, region } => (
@@ -1070,6 +1075,7 @@ impl ExplorerState {
                         None,
                         None,
                         true,
+                        None,
                     ),
                     ExplorerNodeId::Status { owner, kind } => (
                         status_label(*kind).to_owned(),
@@ -1082,6 +1088,7 @@ impl ExplorerState {
                         None,
                         None,
                         false,
+                        None,
                     ),
                     ExplorerNodeId::LoadMore { .. } => (
                         "Load more...".to_owned(),
@@ -1094,6 +1101,7 @@ impl ExplorerState {
                         None,
                         None,
                         false,
+                        None,
                     ),
                     ExplorerNodeId::Empty { .. } => (
                         "No objects".to_owned(),
@@ -1106,6 +1114,7 @@ impl ExplorerState {
                         None,
                         None,
                         false,
+                        None,
                     ),
                     ExplorerNodeId::Profile(_profile_id) => profile.map_or_else(
                         || {
@@ -1120,6 +1129,7 @@ impl ExplorerState {
                                 None,
                                 None,
                                 false,
+                                None,
                             )
                         },
                         |profile| {
@@ -1133,7 +1143,8 @@ impl ExplorerState {
                                 Some(profile.placement),
                                 Some(profile.status),
                                 Some(profile.endpoint.clone()),
-                                true,
+                                profile.unavailable_reason.is_none(),
+                                profile.unavailable_reason.clone(),
                             )
                         },
                     ),
@@ -1148,6 +1159,7 @@ impl ExplorerState {
                         None,
                         None,
                         false,
+                        None,
                     ),
                     ExplorerNodeId::Others => (
                         "others".to_owned(),
@@ -1182,6 +1194,7 @@ impl ExplorerState {
                         None,
                         None,
                         true,
+                        None,
                     ),
                 };
                 VisibleCatalogNode {
@@ -1196,6 +1209,7 @@ impl ExplorerState {
                     connection_status,
                     endpoint,
                     expandable,
+                    unavailable_reason,
                     placement,
                 }
             })
@@ -1303,6 +1317,15 @@ impl ExplorerState {
                 | ExplorerNodeId::Catalog(_)
                 | ExplorerNodeId::Group { .. }
         ) {
+            return false;
+        }
+        if let ExplorerNodeId::Profile(profile_id) = id
+            && self
+                .normalized
+                .profiles
+                .get(&profile_id)
+                .is_some_and(|profile| profile.unavailable_reason.is_some())
+        {
             return false;
         }
         if !self.normalized.expanded.remove(&id) {
