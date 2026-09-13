@@ -2366,6 +2366,7 @@ fn preview(
             crate::profile::DatabaseKind::Oracle => SqlDialect::Generic,
             crate::profile::DatabaseKind::Sqlite => SqlDialect::Sqlite,
             crate::profile::DatabaseKind::SqlServer => SqlDialect::SqlServer,
+            crate::profile::DatabaseKind::Redis => SqlDialect::Generic,
         })
         .unwrap_or(SqlDialect::Generic);
     lines.push(Line::raw(""));

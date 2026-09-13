@@ -34,6 +34,17 @@ fn workspace_tabs_expose_common_identity() {
     let dashboard = WorkspaceTab::Dashboard(lazydb::model::dashboard::DashboardTab::new());
     assert_eq!(dashboard.title(), "Dashboard");
     assert_eq!(dashboard.kind(), TabKind::Dashboard);
+
+    let redis = WorkspaceTab::RedisBrowser(lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(3),
+        lazydb::db::redis::types::RedisTarget {
+            profile_id: Uuid::from_u128(4),
+            database: 2,
+        },
+    ));
+    assert_eq!(redis.id(), Uuid::from_u128(3));
+    assert_eq!(redis.title(), "Redis");
+    assert_eq!(redis.kind(), TabKind::RedisBrowser);
 }
 
 #[test]

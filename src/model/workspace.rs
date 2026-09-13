@@ -1150,6 +1150,25 @@ impl ExplorerState {
                             )
                         },
                     ),
+                    ExplorerNodeId::RedisDatabase { database, .. } => (
+                        format!("DB {database}"),
+                        profile.and_then(|profile| {
+                            profile
+                                .redis_databases
+                                .iter()
+                                .find(|item| item.database == *database)
+                                .and_then(|item| item.keys.map(|keys| keys.to_string()))
+                        }),
+                        None,
+                        None,
+                        Some(DatabaseKind::Redis),
+                        None,
+                        None,
+                        profile.map(|profile| profile.status),
+                        None,
+                        false,
+                        None,
+                    ),
                     ExplorerNodeId::EmptyProfiles => (
                         "No profiles".to_owned(),
                         None,

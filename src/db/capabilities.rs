@@ -1,5 +1,18 @@
 use crate::profile::DatabaseKind;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InteractionModel {
+    Relational,
+    KeyValue,
+}
+
+pub const fn interaction_model(kind: DatabaseKind) -> InteractionModel {
+    match kind {
+        DatabaseKind::Redis => InteractionModel::KeyValue,
+        _ => InteractionModel::Relational,
+    }
+}
+
 /// Static capabilities describe what an adapter can expose before connecting.
 /// Permission errors and server-version gates remain runtime results.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +74,14 @@ impl DatabaseCapabilities {
                 relation_edit: false,
                 monitoring: false,
                 manual_transactions: true,
+                cancellation: false,
+            },
+            DatabaseKind::Redis => Self {
+                catalog: false,
+                relation_ddl: false,
+                relation_edit: false,
+                monitoring: false,
+                manual_transactions: false,
                 cancellation: false,
             },
         }

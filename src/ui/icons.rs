@@ -210,6 +210,7 @@ impl IconSet {
                 DatabaseKind::Oracle => md::MD_DATABASE,
                 DatabaseKind::SqlServer => md::MD_DATABASE,
                 DatabaseKind::Sqlite => dev::DEV_SQLITE,
+                DatabaseKind::Redis => md::MD_DATABASE,
             },
             IconMode::Unicode => match kind {
                 DatabaseKind::Postgres => "PG",
@@ -218,6 +219,7 @@ impl IconSet {
                 DatabaseKind::Oracle => "OR",
                 DatabaseKind::SqlServer => "MS",
                 DatabaseKind::Sqlite => "SQ",
+                DatabaseKind::Redis => "RD",
             },
             IconMode::Ascii => match kind {
                 DatabaseKind::Postgres => "PG",
@@ -226,7 +228,19 @@ impl IconSet {
                 DatabaseKind::Oracle => "OR",
                 DatabaseKind::SqlServer => "MS",
                 DatabaseKind::Sqlite => "SQ",
+                DatabaseKind::Redis => "RD",
             },
+        }
+    }
+
+    pub const fn database_color(self, kind: DatabaseKind) -> ratatui::style::Color {
+        match kind {
+            DatabaseKind::Postgres => ratatui::style::Color::Rgb(87, 169, 220),
+            DatabaseKind::MySql | DatabaseKind::MariaDb => ratatui::style::Color::Rgb(242, 145, 17),
+            DatabaseKind::Oracle => ratatui::style::Color::Rgb(220, 70, 70),
+            DatabaseKind::SqlServer => ratatui::style::Color::Rgb(204, 41, 48),
+            DatabaseKind::Sqlite => ratatui::style::Color::Rgb(68, 184, 214),
+            DatabaseKind::Redis => ratatui::style::Color::Rgb(220, 45, 45),
         }
     }
 

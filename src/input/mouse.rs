@@ -500,6 +500,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         target,
                         HitTarget::ProfileField(_)
                             | HitTarget::ProfileDriver(_)
+                            | HitTarget::ProfileCategory(_)
                             | HitTarget::ProfileToggle(_)
                             | HitTarget::ProfileScopeRow(_)
                             | HitTarget::ProfileButton(_)
@@ -610,6 +611,24 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     }
                 }
                 HitTarget::ExplorerToggle(id) => Some(Action::ExplorerToggleNode(id)),
+                HitTarget::RedisKeyNode { tab_id, node } => {
+                    if ui.track_redis_click(tab_id, &node, Instant::now())
+                        && matches!(node, crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_))
+                    {
+                        Some(Action::RedisToggleNode { tab_id, node })
+                    } else {
+                        Some(Action::SelectRedisNode {
+                            tab_id,
+                            node: Some(node),
+                        })
+                    }
+                }
+                HitTarget::RedisKeyToggle { tab_id, node } => {
+                    Some(Action::RedisToggleNode { tab_id, node })
+                }
+                HitTarget::RedisFindInput(_) => Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                )),
                 HitTarget::ResultCell { row, column } => Some(Action::GridSelect { row, column }),
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::Omni => None,
@@ -772,6 +791,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::HeaderDatabase => Some(Action::OpenDatabaseSelector),
                 HitTarget::ProfileField(field) => Some(Action::ProfileFocusField(field)),
                 HitTarget::ProfileDriver(kind) => Some(Action::ProfileSelectDriver(kind)),
+                HitTarget::ProfileCategory(category) => {
+                    Some(Action::ProfileSelectCategory(category))
+                }
                 HitTarget::ProfileToggle(field) => Some(Action::ProfileToggleField(field)),
                 HitTarget::ProfileScopeRow(id) => Some(Action::ProfileToggleScopeRow(id)),
                 HitTarget::ProfileButton(button) => Some(profile_button_action(button)),
@@ -1031,6 +1053,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::Focus(focus) => Some(*focus),
         HitTarget::ExplorerRow(_) => Some(Focus::Explorer),
         HitTarget::ExplorerToggle(_) => Some(Focus::Explorer),
+        HitTarget::RedisKeyNode { .. } => Some(Focus::Results),
+        HitTarget::RedisKeyToggle { .. } => Some(Focus::Results),
+        HitTarget::RedisFindInput(_) => Some(Focus::Results),
         HitTarget::ResultCell { .. }
         | HitTarget::ToggleResultView
         | HitTarget::ResultView(_)
@@ -1067,6 +1092,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::HeaderDatabase
         | HitTarget::ProfileField(_)
         | HitTarget::ProfileDriver(_)
+        | HitTarget::ProfileCategory(_)
         | HitTarget::ProfileToggle(_)
         | HitTarget::ProfileScopeRow(_)
         | HitTarget::ProfileButton(_)

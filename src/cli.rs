@@ -342,7 +342,7 @@ pub struct Capabilities<'a> {
     pub version: &'a str,
     pub cli_api: u16,
     pub features: [&'a str; 7],
-    pub drivers: [&'a str; 6],
+    pub drivers: &'a [&'a str; 7],
 }
 
 #[derive(Debug, Serialize)]
@@ -391,7 +391,7 @@ pub fn capabilities() -> Capabilities<'static> {
             "theme-file-v1",
             "lsp-v1",
         ],
-        drivers: crate::db::descriptor::DRIVER_NAMES,
+        drivers: &crate::db::descriptor::DRIVER_NAMES,
     }
 }
 
@@ -620,7 +620,8 @@ mod tests {
                 "mariadb",
                 "oracle",
                 "sqlserver",
-                "sqlite"
+                "sqlite",
+                "redis"
             ])
         );
         assert_eq!(

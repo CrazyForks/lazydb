@@ -19,6 +19,7 @@ pub mod persistence;
 pub mod profile;
 pub mod profile_compatibility;
 pub mod project;
+pub mod redis_command;
 pub mod runtime;
 pub mod security;
 pub mod sql;

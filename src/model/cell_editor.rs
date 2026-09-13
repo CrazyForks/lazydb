@@ -1322,6 +1322,7 @@ pub(crate) fn classify_column_type(
         | DatabaseKind::MariaDb
         | DatabaseKind::Oracle
         | DatabaseKind::Sqlite => None,
+        DatabaseKind::Redis => None,
     }?;
 
     Some(ColumnEditorDescription { kind })

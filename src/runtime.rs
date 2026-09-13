@@ -486,6 +486,17 @@ impl Runtime {
                 self.connect(profile_id, generation, target);
             }
             Command::LoadCatalogPage(request) => self.load_catalog_page(request),
+            Command::DiscoverRedisDatabases {
+                profile_id,
+                generation,
+            } => self.discover_redis_databases(profile_id, generation),
+            Command::ScanRedisKeys(request) => self.scan_redis_keys(request),
+            Command::LoadRedisPreview {
+                tab_id,
+                generation,
+                preview_generation,
+                key,
+            } => self.load_redis_preview(tab_id, generation, preview_generation, key),
             Command::ResolveCatalogRelation {
                 connection,
                 catalog_epoch,
@@ -960,10 +971,15 @@ impl Runtime {
                 Ok(database) => match database.probe().await {
                     Ok(server) => {
                         let capabilities = database.catalog_capabilities();
-                        let discovery = database
-                            .discover_catalog_scope()
-                            .await
-                            .map_err(|error| sanitize_terminal_text(&error.to_string()));
+                        let discovery = if profile.kind == crate::profile::DatabaseKind::Redis {
+                            Err("Redis database discovery is available from the Explorer"
+                                .to_owned())
+                        } else {
+                            database
+                                .discover_catalog_scope()
+                                .await
+                                .map_err(|error| sanitize_terminal_text(&error.to_string()))
+                        };
                         database.close().await;
                         let _ = sender.send(Action::ProfileTestSucceeded {
                             request_id,
@@ -985,6 +1001,175 @@ impl Runtime {
                     let _ = sender.send(Action::ProfileTestFailed {
                         request_id,
                         message: sanitize_terminal_text(&error.to_string()),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn discover_redis_databases(&mut self, profile_id: Uuid, generation: u64) {
+        let registry = Arc::clone(&self.registry);
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let profile = registry.lock().await.profiles.get(&profile_id).cloned();
+            let Some(profile) = profile else {
+                return;
+            };
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(key, _)| {
+                        key.identity.profile_id == profile_id
+                            && key.identity.generation == generation
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let Some(database) = database else {
+                let _ = sender.send(Action::RedisDatabasesFailed {
+                    profile_id,
+                    generation,
+                    message: "Redis connection is not active".to_owned(),
+                });
+                return;
+            };
+            let result = match &database {
+                DatabaseConnection::Redis(adapter) => {
+                    let current = profile
+                        .database
+                        .as_deref()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(0);
+                    adapter.discover_databases(current, &[current]).await
+                }
+                _ => Err(DatabaseError::configuration(
+                    "Redis database discovery requires a Redis connection",
+                )),
+            };
+            match result {
+                Ok(discovery) => {
+                    let _ = sender.send(Action::RedisDatabasesLoaded {
+                        profile_id,
+                        generation,
+                        discovery,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisDatabasesFailed {
+                        profile_id,
+                        generation,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn scan_redis_keys(&mut self, request: crate::db::redis::types::KeyScanRequest) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(key, _)| {
+                        key.identity == request.identity.connection
+                            && key.target.schema.is_none()
+                            && key.target.database == request.identity.target.database.to_string()
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let Some(database) = database else {
+                let _ = sender.send(Action::RedisKeysFailed {
+                    identity: request.identity,
+                    message: "Redis connection is not active".into(),
+                });
+                return;
+            };
+            let cursor = match request.position {
+                crate::db::redis::types::ScanPosition::Start => 0,
+                crate::db::redis::types::ScanPosition::Continue(cursor) => cursor,
+                crate::db::redis::types::ScanPosition::Complete => return,
+            };
+            let result = match database {
+                DatabaseConnection::Redis(adapter) => {
+                    adapter
+                        .scan_keys(cursor, &request.pattern, request.count_hint)
+                        .await
+                }
+                _ => Err(DatabaseError::configuration(
+                    "Redis key scanning requires a Redis connection",
+                )),
+            };
+            match result {
+                Ok((cursor, keys)) => {
+                    let _ = sender.send(Action::RedisKeysLoaded(
+                        crate::db::redis::types::KeyScanBatch {
+                            identity: request.identity,
+                            keys,
+                            next: crate::db::redis::types::ScanPosition::next(cursor),
+                        },
+                    ));
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisKeysFailed {
+                        identity: request.identity,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn load_redis_preview(
+        &mut self,
+        tab_id: Uuid,
+        generation: u64,
+        preview_generation: u64,
+        key: crate::db::redis::types::RedisKeyId,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(active_key, _)| {
+                        active_key.identity.profile_id == key.target.profile_id
+                            && active_key.target.database == key.target.database.to_string()
+                            && active_key.target.schema.is_none()
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let result = match database {
+                Some(DatabaseConnection::Redis(adapter)) => adapter.preview_key(&key).await,
+                Some(_) => Err(DatabaseError::configuration(
+                    "Redis preview requires a Redis connection",
+                )),
+                None => Err(DatabaseError::configuration(
+                    "Redis connection is not active",
+                )),
+            };
+            match result {
+                Ok(content) => {
+                    let _ = sender.send(Action::RedisPreviewLoaded {
+                        tab_id,
+                        generation,
+                        preview_generation,
+                        key,
+                        content,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisPreviewFailed {
+                        tab_id,
+                        generation,
+                        preview_generation,
+                        key,
+                        message: error.to_string(),
                     });
                 }
             }
@@ -3761,7 +3946,8 @@ impl Runtime {
                 | DatabaseConnection::MySql(_)
                 | DatabaseConnection::MariaDb(_)
                 | DatabaseConnection::Oracle(_)
-                | DatabaseConnection::SqlServer(_) => false,
+                | DatabaseConnection::SqlServer(_)
+                | DatabaseConnection::Redis(_) => false,
             };
             let worker = match database
                 .start_transaction_worker_with_forced_close(worker_forced_close)
@@ -5045,6 +5231,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         sync_grid_viewport(&mut app, &mut runtime, &ui_state);
         sync_record_view_fields(&mut app, &mut runtime, &ui_state);
         sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+        sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
         sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
 
         while !app.should_quit {
@@ -5228,6 +5415,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 sync_grid_viewport(&mut app, &mut runtime, &ui_state);
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
                 sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+                sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
                 sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
                 }
         }
@@ -5524,6 +5712,17 @@ fn sync_explorer_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState)
     };
     if app.explorer.normalized.viewport_height != rows {
         apply_action(app, runtime, Action::ExplorerViewportChanged(rows));
+    }
+}
+
+fn sync_redis_keys_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    let Some((tab_id, rows)) = state.redis_keys_viewport_rows else {
+        return;
+    };
+    if app.tabs.iter().find(|tab| tab.id() == tab_id).is_some_and(|tab| {
+        matches!(tab, crate::model::tab::WorkspaceTab::RedisBrowser(tab) if tab.viewport_rows != rows)
+    }) {
+        apply_action(app, runtime, Action::RedisKeysViewportChanged { tab_id, rows });
     }
 }
 

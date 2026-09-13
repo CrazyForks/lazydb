@@ -28,6 +28,37 @@ fn control(code: KeyCode) -> KeyEvent {
 }
 
 #[test]
+fn redis_keys_routes_before_generic_results_navigation_and_supports_find() {
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(
+            Uuid::from_u128(10),
+            lazydb::db::redis::types::RedisTarget {
+                profile_id: Uuid::from_u128(11),
+                database: 0,
+            },
+        ),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+    let action = keymap.map(key(KeyCode::Char('/')), &app).unwrap();
+    assert_eq!(action, Action::RedisFindOpen);
+    app.update(action);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::RedisFindInsert('j'))
+    );
+    app.update(Action::RedisFindConfirm);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::RedisMoveSelection(1))
+    );
+    let action = keymap.map(key(KeyCode::Enter), &app).unwrap();
+    assert_eq!(action, Action::RedisPrimarySelection);
+}
+
+#[test]
 fn profile_group_delete_navigation_and_enter_follow_selected_button() {
     use lazydb::model::profile_group::ProfileGroupOverlay;
 

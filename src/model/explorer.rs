@@ -78,6 +78,10 @@ pub enum ExplorerNodeId {
     EmptyProfiles,
     Others,
     Profile(Uuid),
+    RedisDatabase {
+        profile_id: Uuid,
+        database: u32,
+    },
     ConnectionGroup {
         group_id: Uuid,
         region: ProfileRegion,
@@ -134,7 +138,7 @@ pub fn resolve_mutation_intent(
                 group: *group,
             },
         )),
-        ExplorerNodeId::ConnectionGroup { .. } => None,
+        ExplorerNodeId::ConnectionGroup { .. } | ExplorerNodeId::RedisDatabase { .. } => None,
         ExplorerNodeId::EmptyProfiles
         | ExplorerNodeId::Others
         | ExplorerNodeId::Status { .. }
@@ -154,6 +158,7 @@ impl ExplorerNodeId {
             | Self::LoadMore { parent: owner, .. }
             | Self::Empty { owner } => Some(owner.profile_id()),
             Self::EmptyProfiles | Self::Others | Self::ConnectionGroup { .. } => None,
+            Self::RedisDatabase { profile_id, .. } => Some(*profile_id),
         }
     }
 }
@@ -809,6 +814,9 @@ pub struct ExplorerProfileState {
     pub last_error: Option<String>,
     pub expand_after_connect: bool,
     pub unavailable_reason: Option<String>,
+    pub redis_databases: Vec<crate::db::redis::discovery::RedisDatabaseInfo>,
+    pub redis_databases_partial: bool,
+    pub redis_databases_error: Option<String>,
 }
 
 impl ExplorerProfileState {
@@ -839,6 +847,9 @@ impl ExplorerProfileState {
             last_error: None,
             expand_after_connect: false,
             unavailable_reason: None,
+            redis_databases: Vec::new(),
+            redis_databases_partial: false,
+            redis_databases_error: None,
         }
     }
 
@@ -853,6 +864,19 @@ impl ExplorerProfileState {
         let next = self.catalog_epoch.checked_add(1)?;
         self.catalog_epoch = next;
         Some(next)
+    }
+
+    pub fn set_redis_databases(
+        &mut self,
+        discovery: crate::db::redis::discovery::RedisDatabaseDiscovery,
+    ) {
+        self.redis_databases = discovery.databases;
+        self.redis_databases_partial = matches!(
+            discovery.completeness,
+            crate::db::redis::discovery::RedisDiscoveryCompleteness::Partial
+        );
+        self.redis_databases_error =
+            (!discovery.warnings.is_empty()).then(|| discovery.warnings.join("; "));
     }
 
     pub fn invalidate_catalog_target(&mut self, target: &CatalogTarget) {
@@ -1044,7 +1068,8 @@ impl ExplorerTreeState {
             | ExplorerNodeId::Status { .. }
             | ExplorerNodeId::LoadMore { .. }
             | ExplorerNodeId::Empty { .. }
-            | ExplorerNodeId::ConnectionGroup { .. } => None,
+            | ExplorerNodeId::ConnectionGroup { .. }
+            | ExplorerNodeId::RedisDatabase { .. } => None,
         }
     }
 
@@ -1431,6 +1456,27 @@ impl ExplorerTreeState {
             return;
         }
         let child_depth = depth + 1;
+        if profile.kind == DatabaseKind::Redis {
+            for database in &profile.redis_databases {
+                projection.push(
+                    ExplorerNodeId::RedisDatabase {
+                        profile_id,
+                        database: database.database,
+                    },
+                    child_depth,
+                );
+            }
+            if profile.redis_databases.is_empty() && profile.redis_databases_error.is_some() {
+                projection.push(
+                    ExplorerNodeId::Status {
+                        owner: ExplorerOwnerId::Profile(profile_id),
+                        kind: StatusRowKind::Retry,
+                    },
+                    child_depth,
+                );
+            }
+            return;
+        }
         let roots = profile.catalog.roots();
         for root in roots {
             projection.append_catalog(profile, root, child_depth);
@@ -1488,7 +1534,8 @@ impl ExplorerTreeState {
             ExplorerNodeId::EmptyProfiles
             | ExplorerNodeId::Status { .. }
             | ExplorerNodeId::LoadMore { .. }
-            | ExplorerNodeId::Empty { .. } => false,
+            | ExplorerNodeId::Empty { .. }
+            | ExplorerNodeId::RedisDatabase { .. } => false,
         };
         expandable && self.expanded.insert(selected)
     }
@@ -1879,6 +1926,9 @@ impl ExplorerTreeState {
                 Some(ExplorerNodeId::Catalog(parent.clone()))
             }
             ExplorerNodeId::Group { parent, .. } => Some(ExplorerNodeId::Catalog(parent.clone())),
+            ExplorerNodeId::RedisDatabase { profile_id, .. } => {
+                Some(ExplorerNodeId::Profile(*profile_id))
+            }
             ExplorerNodeId::ConnectionGroup { region, .. } => Some(match region {
                 ProfileRegion::Primary => ExplorerNodeId::EmptyProfiles,
                 ProfileRegion::Others => ExplorerNodeId::Others,
@@ -1926,6 +1976,16 @@ impl ExplorerTreeState {
                 .profiles
                 .get(&parent.profile_id())
                 .is_some_and(|profile| profile.catalog.group_state(parent, *group).is_some()),
+            ExplorerNodeId::RedisDatabase {
+                profile_id,
+                database,
+            } => self.profiles.get(profile_id).is_some_and(|profile| {
+                profile.kind == DatabaseKind::Redis
+                    && profile
+                        .redis_databases
+                        .iter()
+                        .any(|item| item.database == *database)
+            }),
             ExplorerNodeId::ConnectionGroup { group_id, region } => {
                 self.groups.iter().any(|group| {
                     group.id == *group_id && self.group_exists_in_region(*group_id, *region)
@@ -2011,7 +2071,8 @@ impl ExplorerTreeState {
             },
             ExplorerNodeId::EmptyProfiles
             | ExplorerNodeId::Others
-            | ExplorerNodeId::ConnectionGroup { .. } => {}
+            | ExplorerNodeId::ConnectionGroup { .. }
+            | ExplorerNodeId::RedisDatabase { .. } => {}
             ExplorerNodeId::Profile(profile_id) => {
                 if let Some(profile) = self.profiles.get(profile_id)
                     && let Some(group_id) = profile.group_id

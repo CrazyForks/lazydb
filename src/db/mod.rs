@@ -12,6 +12,7 @@ pub mod oracle;
 pub mod oracle_client;
 pub mod postgres;
 pub mod query;
+pub mod redis;
 pub mod sqlite;
 pub mod transaction;
 pub mod value;
@@ -39,6 +40,7 @@ use self::{
     oracle::OracleAdapter,
     postgres::PostgresAdapter,
     query::{QueryBudget, QueryOutcome},
+    redis::RedisAdapter,
     sqlite::SqliteAdapter,
 };
 
@@ -270,6 +272,7 @@ pub enum DatabaseConnection {
     Oracle(OracleAdapter),
     Sqlite(SqliteAdapter),
     SqlServer(MsSqlAdapter),
+    Redis(RedisAdapter),
 }
 
 impl DatabaseConnection {
@@ -291,6 +294,12 @@ impl DatabaseConnection {
                 message: "SQLite does not expose server monitoring metrics".into(),
                 diagnostic: None,
             }),
+            Self::Redis(_) => Err(DatabaseError {
+                category: ErrorCategory::Unsupported,
+                code: Some("redis_monitoring_unsupported".into()),
+                message: "Redis monitoring is not implemented yet".into(),
+                diagnostic: None,
+            }),
         }
     }
 
@@ -302,6 +311,7 @@ impl DatabaseConnection {
             Self::Oracle(_) => Ok(monitor::MonitorMetadata::default()),
             Self::SqlServer(adapter) => adapter.load_monitor_metadata().await,
             Self::Sqlite(_) => Ok(monitor::MonitorMetadata::default()),
+            Self::Redis(_) => Ok(monitor::MonitorMetadata::default()),
         }
     }
 
@@ -321,6 +331,12 @@ impl DatabaseConnection {
                 category: ErrorCategory::Unsupported,
                 code: Some("process_list_unsupported".into()),
                 message: "SQLite does not expose a server process list".into(),
+                diagnostic: None,
+            }),
+            Self::Redis(_) => Err(DatabaseError {
+                category: ErrorCategory::Unsupported,
+                code: Some("redis_process_list_unsupported".into()),
+                message: "Redis process list is not implemented yet".into(),
                 diagnostic: None,
             }),
         }
@@ -367,6 +383,9 @@ impl DatabaseConnection {
                     forced_close,
                 ),
             ),
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support SQL transactions",
+            )),
         }
     }
 
@@ -391,6 +410,9 @@ impl DatabaseConnection {
             DatabaseKind::SqlServer => MsSqlAdapter::connect(profile, password)
                 .await
                 .map(Self::SqlServer),
+            DatabaseKind::Redis => RedisAdapter::connect(profile, password)
+                .await
+                .map(Self::Redis),
         }
     }
 
@@ -413,6 +435,7 @@ impl DatabaseConnection {
             Self::Oracle(_) => DatabaseKind::Oracle,
             Self::Sqlite(_) => DatabaseKind::Sqlite,
             Self::SqlServer(_) => DatabaseKind::SqlServer,
+            Self::Redis(_) => DatabaseKind::Redis,
         }
     }
 
@@ -444,6 +467,12 @@ impl DatabaseConnection {
             },
             Self::Sqlite(_) => SqliteAdapter::catalog_capabilities(),
             Self::SqlServer(_) => MsSqlAdapter::catalog_capabilities(),
+            Self::Redis(_) => CatalogCapabilities {
+                namespace_model: catalog::NamespaceModel::DatabaseAndSchema,
+                top_level_groups: Vec::new(),
+                column_metadata: catalog::ColumnMetadataCapabilities::default(),
+                supports_lazy_children: false,
+            },
         }
     }
 
@@ -455,6 +484,7 @@ impl DatabaseConnection {
             Self::Oracle(_) => CatalogMutationCapabilities::default(),
             Self::Sqlite(_) => SqliteAdapter::catalog_mutation_capabilities(),
             Self::SqlServer(_) => MsSqlAdapter::catalog_mutation_capabilities(),
+            Self::Redis(_) => CatalogMutationCapabilities::default(),
         }
     }
 
@@ -473,6 +503,10 @@ impl DatabaseConnection {
             }),
             Self::Sqlite(_) => SqliteAdapter::plan_catalog_drop(request, entry),
             Self::SqlServer(_) => MsSqlAdapter::plan_catalog_drop(request, entry),
+            Self::Redis(_) => Err(catalog_drop::CatalogDropError::Unsupported {
+                kind: entry.kind,
+                reason: "Redis does not have SQL catalog objects".to_owned(),
+            }),
         }
     }
 
@@ -496,6 +530,11 @@ impl DatabaseConnection {
                     object_type: request.object_type,
                 },
             ),
+            Self::Redis(_) => Err(
+                catalog_mutation::CatalogMutationError::UnsupportedOperation {
+                    object_type: request.object_type,
+                },
+            ),
         }
     }
 
@@ -511,6 +550,9 @@ impl DatabaseConnection {
             Self::Oracle(_) => Err(DatabaseError::configuration(
                 "catalog mutation is not supported for Oracle",
             )),
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "catalog mutation is not supported for Redis",
+            )),
         }
     }
 
@@ -522,6 +564,24 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.probe().await,
             Self::Sqlite(adapter) => adapter.probe().await,
             Self::SqlServer(adapter) => adapter.probe().await,
+            Self::Redis(adapter) => adapter.probe().await,
+        }
+    }
+
+    pub async fn discover_redis_databases(
+        &self,
+        current_database: u32,
+        explicit_databases: &[u32],
+    ) -> Result<redis::discovery::RedisDatabaseDiscovery, DatabaseError> {
+        match self {
+            Self::Redis(adapter) => {
+                adapter
+                    .discover_databases(current_database, explicit_databases)
+                    .await
+            }
+            _ => Err(DatabaseError::configuration(
+                "Redis database discovery requires a Redis connection",
+            )),
         }
     }
 
@@ -533,6 +593,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.discover_catalog_scope().await,
             Self::Sqlite(adapter) => adapter.discover_catalog_scope().await,
             Self::SqlServer(adapter) => adapter.discover_catalog_scope().await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis uses keyspace discovery instead of SQL catalog discovery",
+            )),
         }
     }
 
@@ -546,6 +609,7 @@ impl DatabaseConnection {
             | Self::Oracle(_)
             | Self::Sqlite(_)
             | Self::SqlServer(_) => Ok(None),
+            Self::Redis(_) => Ok(None),
         }
     }
 
@@ -560,6 +624,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.load_catalog_page(request).await,
             Self::Sqlite(adapter) => adapter.load_catalog_page(request).await,
             Self::SqlServer(adapter) => adapter.load_catalog_page(request).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support SQL catalog pages",
+            )),
         }
     }
 
@@ -574,6 +641,7 @@ impl DatabaseConnection {
             | Self::Oracle(_)
             | Self::Sqlite(_)
             | Self::SqlServer(_) => Ok(None),
+            Self::Redis(_) => Ok(None),
         }
     }
 
@@ -593,6 +661,7 @@ impl DatabaseConnection {
             | Self::Oracle(_)
             | Self::Sqlite(_)
             | Self::SqlServer(_) => Ok(None),
+            Self::Redis(_) => Ok(None),
         }
     }
 
@@ -609,6 +678,9 @@ impl DatabaseConnection {
             | Self::SqlServer(_) => Err(DatabaseError::configuration(
                 "catalog object definition loading is not supported for this database",
             )),
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support SQL catalog object definitions",
+            )),
         }
     }
 
@@ -623,6 +695,7 @@ impl DatabaseConnection {
             | Self::Oracle(_)
             | Self::Sqlite(_)
             | Self::SqlServer(_) => Ok(None),
+            Self::Redis(_) => Ok(None),
         }
     }
 
@@ -639,6 +712,9 @@ impl DatabaseConnection {
             )),
             Self::Sqlite(adapter) => adapter.search_catalog(request).await,
             Self::SqlServer(adapter) => adapter.search_catalog(request).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support SQL catalog search",
+            )),
         }
     }
 
@@ -658,6 +734,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
             Self::Sqlite(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
             Self::SqlServer(adapter) => adapter.execute_pool_with_budget(sql, budget).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis commands do not use SQL execution",
+            )),
         }
     }
 
@@ -674,6 +753,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::Sqlite(adapter) => adapter.preview_relation(relation, options, page).await,
             Self::SqlServer(adapter) => adapter.preview_relation(relation, options, page).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support relation previews",
+            )),
         }
     }
 
@@ -711,6 +793,9 @@ impl DatabaseConnection {
                     .preview_relation_with_scope(relation, scope, options, page)
                     .await
             }
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support relation previews",
+            )),
         }
     }
 
@@ -722,6 +807,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.relation_ddl(relation).await,
             Self::Sqlite(adapter) => adapter.relation_ddl(relation).await,
             Self::SqlServer(adapter) => adapter.relation_ddl(relation).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support relation DDL",
+            )),
         }
     }
 
@@ -737,6 +825,9 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::Sqlite(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
             Self::SqlServer(adapter) => adapter.relation_ddl_with_scope(relation, scope).await,
+            Self::Redis(_) => Err(DatabaseError::configuration(
+                "Redis does not support relation DDL",
+            )),
         }
     }
 
@@ -753,6 +844,7 @@ impl DatabaseConnection {
             Self::Oracle(_) => Ok(None),
             Self::Sqlite(adapter) => adapter.object_ddl(kind, schema, name).await,
             Self::SqlServer(adapter) => adapter.object_ddl(kind, schema, name).await,
+            Self::Redis(_) => Ok(None),
         }
     }
 
@@ -764,6 +856,7 @@ impl DatabaseConnection {
             Self::Oracle(_) => format!("\"{}\"", value.replace('"', "\"\"")),
             Self::Sqlite(adapter) => adapter.quote_identifier(value),
             Self::SqlServer(adapter) => adapter.quote_identifier(value),
+            Self::Redis(_) => value.to_owned(),
         }
     }
 
@@ -775,6 +868,7 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.close().await,
             Self::Sqlite(adapter) => adapter.close().await,
             Self::SqlServer(adapter) => adapter.close().await,
+            Self::Redis(adapter) => adapter.close().await,
         }
     }
 }

@@ -7144,6 +7144,7 @@ fn stored_password_is_described_without_rendering_a_secret() {
 fn server_and_sqlite_forms_only_show_relevant_fields() {
     let mut mysql = App::new(Vec::new());
     mysql.update(Action::OpenProfileManager);
+    mysql.update(Action::ProfileFocusField(ProfileField::Kind));
     mysql.update(Action::ProfileCycle(1));
     let mysql_output = render(&mysql, 120, 36);
     assert!(mysql_output.contains("MySQL"));
@@ -7153,6 +7154,7 @@ fn server_and_sqlite_forms_only_show_relevant_fields() {
 
     let mut sql_server = App::new(Vec::new());
     sql_server.update(Action::OpenProfileManager);
+    sql_server.update(Action::ProfileFocusField(ProfileField::Kind));
     sql_server.update(Action::ProfileCycle(4));
     let sql_server_output = render(&sql_server, 120, 36);
     assert!(sql_server_output.contains("SQL Server"));
@@ -7162,6 +7164,7 @@ fn server_and_sqlite_forms_only_show_relevant_fields() {
 
     let mut sqlite_file = App::new(Vec::new());
     sqlite_file.update(Action::OpenProfileManager);
+    sqlite_file.update(Action::ProfileFocusField(ProfileField::Kind));
     sqlite_file.update(Action::ProfileCycle(5));
     let sqlite_file_output = render(&sqlite_file, 120, 36);
     assert!(sqlite_file_output.contains("SQLite"));
@@ -7283,11 +7286,27 @@ fn driver_options_use_database_icons_in_each_icon_mode() {
         DatabaseKind::MariaDb,
         DatabaseKind::SqlServer,
         DatabaseKind::Sqlite,
+        DatabaseKind::Redis,
     ];
 
     for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {
-        let (output, _) = render_with_icons(&app, 120, 36, IconSet::new(mode));
         for kind in kinds {
+            app.update(Action::ProfileSelectDriver(kind));
+            let (output, state) = render_with_icons(&app, 100, 36, IconSet::new(mode));
+            assert!(
+                state
+                    .hit_regions
+                    .iter()
+                    .any(|region| region.target == HitTarget::ProfileDriver(kind))
+            );
+            for region in &state.hit_regions {
+                if let HitTarget::ProfileDriver(visible) = region.target {
+                    assert_eq!(
+                        lazydb::db::descriptor::descriptor(visible).category,
+                        lazydb::db::descriptor::descriptor(kind).category
+                    );
+                }
+            }
             let display_name = match kind {
                 DatabaseKind::Postgres => "PostgreSQL",
                 DatabaseKind::MySql => "MySQL",
@@ -7295,6 +7314,7 @@ fn driver_options_use_database_icons_in_each_icon_mode() {
                 DatabaseKind::Oracle => "Oracle",
                 DatabaseKind::SqlServer => "SQL Server",
                 DatabaseKind::Sqlite => "SQLite",
+                DatabaseKind::Redis => "Redis",
             };
             let label = format!("{} {display_name}", IconSet::new(mode).database(kind));
             assert!(
@@ -7373,6 +7393,147 @@ fn profile_manager_renders_confirmation_busy_errors_and_warnings() {
     let warning_output = render(&invalid, 100, 30);
     assert!(warning_output.contains("Native password store is unavailable"));
     assert!(warning_output.contains("session-only"));
+}
+
+#[test]
+fn profile_category_controls_filter_drivers_and_keep_full_names_visible() {
+    use lazydb::db::descriptor::DatabaseCategory;
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    for width in [56, 80, 100, 160] {
+        app.update(Action::ProfileSelectCategory(
+            DatabaseCategory::NonRelational,
+        ));
+        let (output, state) = render_with_icons(&app, width, 36, IconSet::new(IconMode::Ascii));
+        assert!(output.contains("Non-relational"));
+        assert!(output.contains("Redis"));
+        assert!(state.hit_regions.iter().any(
+            |region| region.target == HitTarget::ProfileCategory(DatabaseCategory::Relational)
+        ));
+        assert!(
+            !state
+                .hit_regions
+                .iter()
+                .any(|region| region.target == HitTarget::ProfileDriver(DatabaseKind::Postgres))
+        );
+        app.update(Action::ProfileSelectCategory(DatabaseCategory::Relational));
+        for kind in [
+            DatabaseKind::Postgres,
+            DatabaseKind::SqlServer,
+            DatabaseKind::Sqlite,
+        ] {
+            app.update(Action::ProfileSelectDriver(kind));
+            let (output, _) = render_with_icons(&app, width, 36, IconSet::new(IconMode::Ascii));
+            assert!(
+                output.contains(lazydb::db::descriptor::descriptor(kind).display_name),
+                "{width}: {output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn explorer_redis_icon_uses_the_driver_brand_color() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let profile = import_connection_url("redis://localhost/0", Some("cache"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile]);
+    let profile_id = app.profiles[0].id;
+    app.explorer.normalized.add_profile_with_metadata(
+        profile_id,
+        "cache".into(),
+        DatabaseKind::Redis,
+        "localhost:6379".into(),
+        lazydb::model::explorer::ProfileProvenance::Saved,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut state = UiState::new();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut state))
+        .unwrap();
+    let redis_color = IconSet::default().database_color(DatabaseKind::Redis);
+    let found = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .any(|cell| cell.fg == redis_color);
+    assert!(found);
+}
+
+#[test]
+fn redis_browser_keys_and_preview_panels_show_local_focus() {
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(
+            uuid::Uuid::from_u128(81),
+            lazydb::db::redis::types::RedisTarget {
+                profile_id: uuid::Uuid::from_u128(82),
+                database: 0,
+            },
+        ),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    let (keys_focused, _) = render_with_state(&app, 120, 32);
+    let pattern = "Keys";
+    assert!(keys_focused.contains(pattern));
+    let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] else {
+        unreachable!()
+    };
+    tab.focus = lazydb::model::redis_browser::RedisBrowserFocus::Preview;
+    let (preview_focused, _) = render_with_state(&app, 120, 32);
+    assert!(preview_focused.contains("Select a key to preview"));
+}
+
+#[test]
+fn redis_browser_explains_not_loaded_loading_empty_and_failure_states() {
+    use lazydb::model::keyspace::KeyspaceStatus;
+    let mut profile = import_connection_url("redis://localhost/0", Some("cache"))
+        .unwrap()
+        .profile;
+    profile.id = uuid::Uuid::from_u128(92);
+    let mut app = App::new(vec![profile]);
+    app.connection.profile_id = Some(uuid::Uuid::from_u128(92));
+    app.connection.generation = 1;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    app.active_workspace_profile = Some(uuid::Uuid::from_u128(92));
+    app.explorer.normalized.add_profile_with_metadata(
+        uuid::Uuid::from_u128(92),
+        "cache".into(),
+        DatabaseKind::Redis,
+        "localhost:6379".into(),
+        lazydb::model::explorer::ProfileProvenance::Saved,
+    );
+    app.explorer.active_profile = Some(uuid::Uuid::from_u128(92));
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        uuid::Uuid::from_u128(91),
+        lazydb::db::redis::types::RedisTarget {
+            profile_id: uuid::Uuid::from_u128(92),
+            database: 0,
+        },
+    );
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab.clone()));
+    app.active_tab = app.tabs.len() - 1;
+    app.connection.target = Some(lazydb::model::execution_target::ExecutionTarget {
+        profile_id: uuid::Uuid::from_u128(92),
+        database: "0".into(),
+        schema: None,
+    });
+    let initial = render(&app, 100, 28);
+    assert!(initial.contains("Not loaded"), "{initial}");
+    tab.keyspace.status = KeyspaceStatus::Loading;
+    app.tabs[app.active_tab] = WorkspaceTab::RedisBrowser(tab.clone());
+    assert!(render(&app, 100, 28).contains("Loading keys"));
+    tab.keyspace.status = KeyspaceStatus::CompleteEmpty;
+    app.tabs[app.active_tab] = WorkspaceTab::RedisBrowser(tab.clone());
+    assert!(render(&app, 100, 28).contains("No matching keys"));
+    tab.keyspace.status = KeyspaceStatus::Failed("NOPERM".into());
+    app.tabs[app.active_tab] = WorkspaceTab::RedisBrowser(tab);
+    let output = render(&app, 100, 28);
+    assert!(output.contains("NOPERM"));
+    assert!(output.contains("Retry"));
 }
 
 #[test]

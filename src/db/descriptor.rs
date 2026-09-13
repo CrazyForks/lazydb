@@ -1,35 +1,71 @@
 use crate::profile::DatabaseKind;
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DatabaseCategory {
+    Relational,
+    NonRelational,
+}
+
+impl DatabaseCategory {
+    pub const ALL: [Self; 2] = [Self::Relational, Self::NonRelational];
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Relational => "Relational",
+            Self::NonRelational => "Non-relational",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DatabaseDescriptor {
     pub kind: DatabaseKind,
     pub name: &'static str,
+    pub display_name: &'static str,
+    pub category: DatabaseCategory,
 }
 
-pub const DRIVERS: [DatabaseDescriptor; 6] = [
+pub const DRIVERS: [DatabaseDescriptor; 7] = [
     DatabaseDescriptor {
         kind: DatabaseKind::Postgres,
         name: "postgres",
+        display_name: "PostgreSQL",
+        category: DatabaseCategory::Relational,
     },
     DatabaseDescriptor {
         kind: DatabaseKind::MySql,
         name: "mysql",
+        display_name: "MySQL",
+        category: DatabaseCategory::Relational,
     },
     DatabaseDescriptor {
         kind: DatabaseKind::MariaDb,
         name: "mariadb",
+        display_name: "MariaDB",
+        category: DatabaseCategory::Relational,
     },
     DatabaseDescriptor {
         kind: DatabaseKind::Oracle,
         name: "oracle",
+        display_name: "Oracle",
+        category: DatabaseCategory::Relational,
     },
     DatabaseDescriptor {
         kind: DatabaseKind::SqlServer,
         name: "sqlserver",
+        display_name: "SQL Server",
+        category: DatabaseCategory::Relational,
     },
     DatabaseDescriptor {
         kind: DatabaseKind::Sqlite,
         name: "sqlite",
+        display_name: "SQLite",
+        category: DatabaseCategory::Relational,
+    },
+    DatabaseDescriptor {
+        kind: DatabaseKind::Redis,
+        name: "redis",
+        display_name: "Redis",
+        category: DatabaseCategory::NonRelational,
     },
 ];
 
@@ -40,10 +76,24 @@ pub const DRIVER_NAMES: [&str; DRIVERS.len()] = [
     DRIVERS[3].name,
     DRIVERS[4].name,
     DRIVERS[5].name,
+    DRIVERS[6].name,
 ];
 
-pub const DRIVER_LIST: &str = "postgres,mysql,mariadb,oracle,sqlserver,sqlite";
+pub const DRIVER_LIST: &str = "postgres,mysql,mariadb,oracle,sqlserver,sqlite,redis";
 
 pub fn kinds() -> impl Iterator<Item = DatabaseKind> {
     DRIVERS.iter().map(|descriptor| descriptor.kind)
+}
+
+pub fn descriptor(kind: DatabaseKind) -> &'static DatabaseDescriptor {
+    DRIVERS
+        .iter()
+        .find(|driver| driver.kind == kind)
+        .expect("registered database kind")
+}
+
+pub fn drivers_in(category: DatabaseCategory) -> impl Iterator<Item = &'static DatabaseDescriptor> {
+    DRIVERS
+        .iter()
+        .filter(move |driver| driver.category == category)
 }
