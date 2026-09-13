@@ -88,6 +88,13 @@ pub enum PersistedTab {
         #[serde(default = "default_dashboard_refresh")]
         refresh_enabled: bool,
     },
+    RedisBrowser {
+        tab_id: Uuid,
+        profile_id: Uuid,
+        database: u32,
+        #[serde(default)]
+        pattern: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -373,6 +380,23 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                         ));
                     }
                 }
+                PersistedTab::RedisBrowser {
+                    tab_id, profile_id, ..
+                } => {
+                    if *profile_id != profile.profile_id {
+                        return Err(WorkspaceError::Invalid(
+                            "Redis browser belongs to another profile".into(),
+                        ));
+                    }
+                    if !relation_ids.insert(*tab_id) {
+                        return Err(WorkspaceError::Invalid("duplicate tab ID".into()));
+                    }
+                    if console_ids.contains(tab_id) {
+                        return Err(WorkspaceError::Invalid(
+                            "Redis browser duplicates a console ID".into(),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -437,5 +461,6 @@ fn tab_id(tab: &PersistedTab) -> Uuid {
         PersistedTab::Console { console_id } => *console_id,
         PersistedTab::Relation(relation) => relation.id,
         PersistedTab::Dashboard { dashboard_id, .. } => *dashboard_id,
+        PersistedTab::RedisBrowser { tab_id, .. } => *tab_id,
     }
 }

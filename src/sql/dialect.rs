@@ -10,6 +10,13 @@ pub enum SqlDialect {
 }
 
 impl SqlDialect {
+    pub const fn try_for_database_kind(kind: crate::profile::DatabaseKind) -> Option<Self> {
+        match kind {
+            crate::profile::DatabaseKind::Redis => None,
+            _ => Some(Self::for_database_kind(kind)),
+        }
+    }
+
     pub const fn for_database_kind(kind: crate::profile::DatabaseKind) -> Self {
         match kind {
             crate::profile::DatabaseKind::Postgres => Self::Postgres,
@@ -18,6 +25,7 @@ impl SqlDialect {
             crate::profile::DatabaseKind::SqlServer => Self::SqlServer,
             crate::profile::DatabaseKind::Sqlite => Self::Sqlite,
             crate::profile::DatabaseKind::Oracle => Self::Oracle,
+            crate::profile::DatabaseKind::Redis => Self::Generic,
         }
     }
 }

@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 
+use crate::db::descriptor::{DatabaseCategory, descriptor, drivers_in};
 use secrecy::{ExposeSecret, SecretString, zeroize::Zeroizing};
 use uuid::Uuid;
 
@@ -334,6 +335,7 @@ pub enum ProfileManagerPage {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ProfileField {
+    DatabaseCategory,
     Kind,
     UrlFormat,
     Url,
@@ -395,14 +397,16 @@ pub enum CatalogScopeMode {
     Explicit,
 }
 
-pub const DRIVER_ORDER: [DatabaseKind; 6] = [
-    crate::db::descriptor::DRIVERS[0].kind,
-    crate::db::descriptor::DRIVERS[1].kind,
-    crate::db::descriptor::DRIVERS[2].kind,
-    crate::db::descriptor::DRIVERS[3].kind,
-    crate::db::descriptor::DRIVERS[4].kind,
-    crate::db::descriptor::DRIVERS[5].kind,
-];
+pub const DRIVER_ORDER: [DatabaseKind; crate::db::descriptor::DRIVERS.len()] = {
+    let drivers = crate::db::descriptor::DRIVERS;
+    let mut order = [DatabaseKind::Postgres; crate::db::descriptor::DRIVERS.len()];
+    let mut index = 0;
+    while index < drivers.len() {
+        order[index] = drivers[index].kind;
+        index += 1;
+    }
+    order
+};
 
 #[derive(Clone)]
 pub enum CredentialUpdate {
@@ -595,6 +599,8 @@ pub struct ProfileDraft {
     profile_id: Uuid,
     pub access: ProfileAccess,
     pub kind: DatabaseKind,
+    recent_drivers: [Option<DatabaseKind>; 2],
+    automatic_port: Option<String>,
     pub url_format: ConnectionUrlFormat,
     url: SecretTextInput,
     url_selection: Option<(usize, usize)>,
@@ -642,6 +648,22 @@ pub enum ScopeSelectionState {
 }
 
 impl ProfileDraft {
+    pub fn category(&self) -> DatabaseCategory {
+        descriptor(self.kind).category
+    }
+
+    pub fn select_category(&mut self, category: DatabaseCategory) {
+        if self.category() == category {
+            return;
+        }
+        let index = |category| usize::from(category == DatabaseCategory::NonRelational);
+        self.recent_drivers[index(self.category())] = Some(self.kind);
+        let kind = self.recent_drivers[index(category)]
+            .filter(|kind| descriptor(*kind).category == category)
+            .unwrap_or_else(|| drivers_in(category).next().expect("nonempty category").kind);
+        self.set_kind(kind);
+    }
+
     pub fn new(kind: DatabaseKind) -> Self {
         let (host, port, schema, ssl_mode) = match kind {
             DatabaseKind::Postgres => ("localhost", "5432", "public", SslMode::Prefer),
@@ -651,6 +673,7 @@ impl ProfileDraft {
             DatabaseKind::Oracle => ("localhost", "1521", "", SslMode::Prefer),
             DatabaseKind::SqlServer => ("localhost", "1433", "dbo", SslMode::Prefer),
             DatabaseKind::Sqlite => ("", "", "main", SslMode::Disable),
+            DatabaseKind::Redis => ("localhost", "6379", "", SslMode::Disable),
         };
 
         let mut draft = Self {
@@ -658,6 +681,8 @@ impl ProfileDraft {
             access: ProfileAccess::Global,
             kind,
             url_format: ConnectionUrlFormat::default_for(kind),
+            recent_drivers: [None, None],
+            automatic_port: Some(port.to_owned()),
             url: SecretTextInput::default(),
             url_selection: None,
             url_pending: false,
@@ -685,6 +710,9 @@ impl ProfileDraft {
             credential_revision: 0,
             system_credential_availability: SecretStoreAvailability::Unavailable,
         };
+        if kind == DatabaseKind::Redis {
+            draft.database.set("0");
+        }
         draft.refresh_url();
         draft
     }
@@ -713,6 +741,8 @@ impl ProfileDraft {
             profile_id: profile.id,
             access: profile.access.clone(),
             kind: profile.kind,
+            recent_drivers: [None, None],
+            automatic_port: None,
             url_format: if profile.url_format.is_compatible(profile.kind) {
                 profile.url_format
             } else {
@@ -882,7 +912,10 @@ impl ProfileDraft {
             ProfileValidationError::new(ProfileField::Url, message)
         })?;
 
+        self.recent_drivers[usize::from(self.category() == DatabaseCategory::NonRelational)] =
+            Some(self.kind);
         self.kind = parsed.kind;
+        self.automatic_port = None;
         self.url_format = parsed.format;
         self.host.set(parsed.host.unwrap_or_default());
         self.port
@@ -1047,6 +1080,9 @@ impl ProfileDraft {
     }
 
     fn connection_field_changed(&mut self, field: ProfileField) {
+        if field == ProfileField::Port {
+            self.automatic_port = None;
+        }
         if field == ProfileField::Password {
             self.credential_changed();
         } else if matches!(
@@ -1135,6 +1171,7 @@ impl ProfileDraft {
             (DatabaseKind::Sqlite, true) => &SQLITE_MEMORY_FIELDS,
             (DatabaseKind::MariaDb, _) => &MYSQL_FIELDS,
             (DatabaseKind::Oracle, _) => &ORACLE_FIELDS,
+            (DatabaseKind::Redis, _) => &REDIS_FIELDS,
         }
     }
 
@@ -1268,6 +1305,39 @@ impl ProfileDraft {
                     SslMode::Disable,
                 )
             }
+            DatabaseKind::Redis => {
+                let database = required(
+                    &self.database,
+                    ProfileField::Database,
+                    "Redis database is required",
+                )?
+                .parse::<u32>()
+                .map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Database,
+                        "Redis database must be a non-negative integer",
+                    )
+                })?;
+                let port = self.port.value().trim().parse::<u16>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    )
+                })?;
+                (
+                    Some(required(
+                        &self.host,
+                        ProfileField::Host,
+                        "host is required",
+                    )?),
+                    Some(port),
+                    optional(&self.user),
+                    Some(database.to_string()),
+                    None,
+                    None,
+                    self.ssl_mode,
+                )
+            }
         };
 
         let credential = self.credential_update();
@@ -1363,6 +1433,7 @@ impl ProfileDraft {
                 },
                 Some("main".to_owned()),
             ),
+            DatabaseKind::Redis => (self.database.value(), None),
         };
         self.catalog_scope =
             CatalogScope::for_profile(self.kind, database, default_schema.as_deref());
@@ -1448,12 +1519,18 @@ impl ProfileDraft {
 
         self.invalidate_catalog_discovery();
         let previous = self.kind;
+        self.recent_drivers[usize::from(self.category() == DatabaseCategory::NonRelational)] =
+            Some(previous);
+        let cross_category = self.category() != descriptor(kind).category;
+        let port_is_automatic = self.automatic_port.as_deref() == Some(self.port.value());
         if let Some(target_port) = default_port(kind)
-            && (self.port.value().trim().is_empty()
-                || default_port(previous)
-                    .is_some_and(|port| self.port.value().trim() == port.to_string()))
+            && (self.port.value().trim().is_empty() || port_is_automatic)
         {
             self.port.set(target_port.to_string());
+            self.automatic_port = Some(target_port.to_string());
+        }
+        if cross_category {
+            self.catalog_scope_mode = CatalogScopeMode::Derived;
         }
         self.kind = kind;
         self.url_format = ConnectionUrlFormat::default_for(kind);
@@ -1495,6 +1572,17 @@ impl ProfileDraft {
                 }
             }
             DatabaseKind::Sqlite => self.ssl_mode = SslMode::Disable,
+            DatabaseKind::Redis => {
+                if self.host.value().trim().is_empty() {
+                    self.host.set("localhost");
+                }
+                if self.database.value().trim().parse::<u32>().is_err() {
+                    self.database.set("0");
+                }
+                if self.ssl_mode == SslMode::Prefer {
+                    self.ssl_mode = SslMode::Disable;
+                }
+            }
             DatabaseKind::Oracle => {
                 if self.host.value().trim().is_empty() {
                     self.host.set("localhost");
@@ -1577,6 +1665,35 @@ impl ProfileDraft {
                     matches!(self.kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
                         .then(|| optional(&self.schema))
                         .flatten(),
+                    None,
+                )
+            }
+            DatabaseKind::Redis => {
+                let host = required(&self.host, ProfileField::Host, "host is required")?;
+                let port = self.port.value().trim().parse::<u16>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    )
+                })?;
+                if port == 0 {
+                    return Err(ProfileValidationError::new(
+                        ProfileField::Port,
+                        "port must be an integer from 1 to 65535",
+                    ));
+                }
+                let database = self.database.value().trim().parse::<u32>().map_err(|_| {
+                    ProfileValidationError::new(
+                        ProfileField::Database,
+                        "Redis database must be a non-negative integer",
+                    )
+                })?;
+                (
+                    Some(host),
+                    Some(port),
+                    optional(&self.user),
+                    Some(database.to_string()),
+                    None,
                     None,
                 )
             }
@@ -1729,7 +1846,7 @@ impl ProfileManagerState {
             draft: None,
             delete_profile_id: None,
             delete_focus: ProfileDeleteFocus::Cancel,
-            selected_field: ProfileField::Kind,
+            selected_field: ProfileField::DatabaseCategory,
             operation: None,
             message: None,
             request_generation: 0,
@@ -1746,7 +1863,7 @@ impl ProfileManagerState {
     pub fn start_new(&mut self, kind: DatabaseKind) {
         self.page = ProfileManagerPage::Form;
         self.draft = Some(ProfileDraft::new(kind));
-        self.selected_field = ProfileField::Kind;
+        self.selected_field = ProfileField::DatabaseCategory;
         self.operation = None;
         self.message = None;
         self.scope_warning = None;
@@ -1756,7 +1873,7 @@ impl ProfileManagerState {
     pub fn start_edit(&mut self, profile: &ConnectionProfile, has_stored_credential: bool) {
         self.page = ProfileManagerPage::Form;
         self.draft = Some(ProfileDraft::edit(profile, has_stored_credential));
-        self.selected_field = ProfileField::Kind;
+        self.selected_field = ProfileField::DatabaseCategory;
         self.operation = None;
         self.message = None;
         self.scope_warning = None;
@@ -2211,13 +2328,24 @@ impl ProfileManagerState {
     }
 
     pub fn cycle(&mut self, delta: i8) {
+        if self.operation.is_some() {
+            return;
+        }
         let field = self.selected_field;
         let password_choices = self.password_storage_choices();
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
         match field {
-            ProfileField::Kind => draft.set_kind(cycle_value(draft.kind, &DRIVER_ORDER, delta)),
+            ProfileField::DatabaseCategory => {
+                draft.select_category(cycle_value(draft.category(), &DatabaseCategory::ALL, delta))
+            }
+            ProfileField::Kind => {
+                let kinds = drivers_in(draft.category())
+                    .map(|driver| driver.kind)
+                    .collect::<Vec<_>>();
+                draft.set_kind(cycle_value(draft.kind, &kinds, delta));
+            }
             ProfileField::UrlFormat => {
                 draft.url_format = cycle_value(
                     draft.url_format,
@@ -2263,6 +2391,9 @@ impl ProfileManagerState {
     }
 
     pub fn select_driver(&mut self, kind: DatabaseKind) {
+        if self.operation.is_some() {
+            return;
+        }
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
@@ -2339,6 +2470,7 @@ fn default_port(kind: DatabaseKind) -> Option<u16> {
         DatabaseKind::Oracle => Some(1521),
         DatabaseKind::SqlServer => Some(1433),
         DatabaseKind::Sqlite => None,
+        DatabaseKind::Redis => Some(6379),
     }
 }
 
@@ -2689,7 +2821,8 @@ fn redact_url_query_passwords(value: &str) -> String {
     crate::security::redact_url_query_credentials(value)
 }
 
-const POSTGRES_FIELDS: [ProfileField; 18] = [
+const POSTGRES_FIELDS: [ProfileField; 19] = [
+    ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
     ProfileField::Host,
@@ -2710,7 +2843,8 @@ const POSTGRES_FIELDS: [ProfileField; 18] = [
     ProfileField::Cancel,
 ];
 
-const ORACLE_FIELDS: [ProfileField; 17] = [
+const ORACLE_FIELDS: [ProfileField; 18] = [
+    ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
     ProfileField::Host,
@@ -2730,7 +2864,8 @@ const ORACLE_FIELDS: [ProfileField; 17] = [
     ProfileField::Cancel,
 ];
 
-const MYSQL_FIELDS: [ProfileField; 17] = [
+const MYSQL_FIELDS: [ProfileField; 18] = [
+    ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
     ProfileField::Host,
@@ -2750,7 +2885,8 @@ const MYSQL_FIELDS: [ProfileField; 17] = [
     ProfileField::Cancel,
 ];
 
-const SQLITE_FILE_FIELDS: [ProfileField; 11] = [
+const SQLITE_FILE_FIELDS: [ProfileField; 12] = [
+    ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
     ProfileField::SqliteMemory,
@@ -2764,11 +2900,32 @@ const SQLITE_FILE_FIELDS: [ProfileField; 11] = [
     ProfileField::Cancel,
 ];
 
-const SQLITE_MEMORY_FIELDS: [ProfileField; 10] = [
+const SQLITE_MEMORY_FIELDS: [ProfileField; 11] = [
+    ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
     ProfileField::SqliteMemory,
     ProfileField::VisibleObjects,
+    ProfileField::ReadOnly,
+    ProfileField::Url,
+    ProfileField::Test,
+    ProfileField::Save,
+    ProfileField::SaveAndConnect,
+    ProfileField::Cancel,
+];
+
+const REDIS_FIELDS: [ProfileField; 17] = [
+    ProfileField::DatabaseCategory,
+    ProfileField::Kind,
+    ProfileField::Name,
+    ProfileField::Host,
+    ProfileField::Port,
+    ProfileField::Database,
+    ProfileField::User,
+    ProfileField::Password,
+    ProfileField::PasswordStorage,
+    ProfileField::SslMode,
+    ProfileField::Environment,
     ProfileField::ReadOnly,
     ProfileField::Url,
     ProfileField::Test,

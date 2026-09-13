@@ -267,6 +267,7 @@ pub struct App {
     pending_executions: HashMap<Uuid, PendingExecution>,
     next_pending_execution_id: u64,
     pending_workspace_database_switch: Option<(Uuid, u64)>,
+    pending_redis_browser_target: Option<(crate::db::redis::types::RedisTarget, u64)>,
     connect_started_at: Option<Instant>,
     transaction_op_started_at: Option<(Uuid, Instant)>,
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
@@ -730,6 +731,7 @@ impl App {
             pending_executions: HashMap::new(),
             next_pending_execution_id: 0,
             pending_workspace_database_switch: None,
+            pending_redis_browser_target: None,
             connect_started_at: None,
             transaction_op_started_at: None,
             sql_editor_list: Default::default(),
@@ -1004,6 +1006,7 @@ impl App {
                 WorkspaceTab::Sql(_) => None,
                 WorkspaceTab::Dashboard(_) => None,
                 WorkspaceTab::History(_) => None,
+                WorkspaceTab::RedisBrowser(_) => None,
             })
             .collect::<Vec<_>>();
         for (id, text) in relation_sessions {
@@ -1415,6 +1418,7 @@ impl App {
             Some(WorkspaceTab::Relation(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Dashboard(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::History(_)) => 0,
+            Some(WorkspaceTab::RedisBrowser(_)) => 0,
             None => 0,
         }
     }
@@ -1586,6 +1590,7 @@ impl App {
                 DatabaseKind::Oracle => SqlDialect::Generic,
                 DatabaseKind::Sqlite => SqlDialect::Sqlite,
                 DatabaseKind::SqlServer => SqlDialect::SqlServer,
+                DatabaseKind::Redis => SqlDialect::Generic,
             })
             .unwrap_or_else(|| self.sql_dialect());
         self.editor.render_snapshot_with_dialect_and_statement(
@@ -1776,6 +1781,12 @@ impl App {
                     refresh_enabled: tab.refresh_enabled,
                 },
                 WorkspaceTab::History(_) => unreachable!(),
+                WorkspaceTab::RedisBrowser(tab) => PersistedTab::RedisBrowser {
+                    tab_id: tab.id,
+                    profile_id,
+                    database: tab.target.database,
+                    pattern: tab.keyspace.pattern.clone(),
+                },
             })
             .collect();
         PersistedProfileWorkspace {
@@ -2033,6 +2044,27 @@ impl App {
                     tab.refresh_enabled = *refresh_enabled;
                     tabs.push(WorkspaceTab::Dashboard(tab));
                 }
+                PersistedTab::RedisBrowser {
+                    tab_id,
+                    profile_id,
+                    database,
+                    pattern,
+                } if *profile_id == profile.profile_id
+                    && selected.is_some_and(|item| item.kind == DatabaseKind::Redis) =>
+                {
+                    let mut tab = crate::model::redis_browser::RedisBrowserTab::new(
+                        *tab_id,
+                        crate::db::redis::types::RedisTarget {
+                            profile_id: *profile_id,
+                            database: *database,
+                        },
+                    );
+                    if !pattern.is_empty() {
+                        tab.keyspace.pattern = pattern.clone();
+                    }
+                    tabs.push(WorkspaceTab::RedisBrowser(tab));
+                }
+                PersistedTab::RedisBrowser { .. } => {}
             }
         }
         let text = records
@@ -5271,6 +5303,9 @@ impl App {
                     self.clear_active_data_query_focus();
                     self.active_tab = index;
                     self.normalize_focus();
+                    if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(index) {
+                        return self.open_redis_browser(tab.target.profile_id, tab.target.database);
+                    }
                     let mut commands = self.prepare_active_console_target();
                     if commands.is_empty() {
                         commands.extend(self.load_active_relation(false));
@@ -5281,6 +5316,28 @@ impl App {
             }
             Action::FocusNext => {
                 self.clear_active_data_query_focus();
+                if self.focus == Focus::Explorer
+                    && let Some(WorkspaceTab::RedisBrowser(tab)) =
+                        self.tabs.get_mut(self.active_tab)
+                {
+                    self.focus = Focus::Results;
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Keys;
+                    return Vec::new();
+                }
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && self.focus == Focus::Results
+                {
+                    tab.focus = match tab.focus {
+                        crate::model::redis_browser::RedisBrowserFocus::Keys => {
+                            crate::model::redis_browser::RedisBrowserFocus::Preview
+                        }
+                        crate::model::redis_browser::RedisBrowserFocus::Preview => {
+                            self.focus = Focus::Explorer;
+                            crate::model::redis_browser::RedisBrowserFocus::Preview
+                        }
+                    };
+                    return Vec::new();
+                }
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -5294,6 +5351,28 @@ impl App {
             }
             Action::FocusPrevious => {
                 self.clear_active_data_query_focus();
+                if self.focus == Focus::Explorer
+                    && let Some(WorkspaceTab::RedisBrowser(tab)) =
+                        self.tabs.get_mut(self.active_tab)
+                {
+                    self.focus = Focus::Results;
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                    return Vec::new();
+                }
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && self.focus == Focus::Results
+                {
+                    tab.focus = match tab.focus {
+                        crate::model::redis_browser::RedisBrowserFocus::Preview => {
+                            crate::model::redis_browser::RedisBrowserFocus::Keys
+                        }
+                        crate::model::redis_browser::RedisBrowserFocus::Keys => {
+                            self.focus = Focus::Explorer;
+                            crate::model::redis_browser::RedisBrowserFocus::Keys
+                        }
+                    };
+                    return Vec::new();
+                }
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -8355,6 +8434,15 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::ProfileSelectCategory(category) => {
+                if let Some(manager) = self.editable_profile_manager_mut() {
+                    if let Some(draft) = manager.draft.as_mut() {
+                        draft.select_category(category);
+                    }
+                    manager.selected_field = ProfileField::DatabaseCategory;
+                }
+                Vec::new()
+            }
             Action::ProfileToggle => {
                 if let Some(manager) = self.editable_profile_manager_mut() {
                     manager.toggle();
@@ -10369,14 +10457,15 @@ impl App {
                 let Some(target) = target else {
                     return Vec::new();
                 };
-                let Some(profile) = self
+                let Some((profile_kind, profile)) = self
                     .profiles
                     .iter()
                     .find(|profile| profile.id == profile_id)
+                    .map(|profile| (profile.kind, profile.clone()))
                 else {
                     return Vec::new();
                 };
-                if !target.is_valid(profile) {
+                if !target.is_valid(&profile) {
                     return Vec::new();
                 }
                 let editor_target_switch = self.pending_editor_target_switch.filter(
@@ -10475,6 +10564,19 @@ impl App {
                         Some(crate::model::explorer::ExplorerNodeId::Profile(profile_id));
                     self.pending_workspace_database_switch = None;
                 }
+                let pending_redis_target = self
+                    .pending_redis_browser_target
+                    .as_ref()
+                    .filter(|(_, expected_generation)| *expected_generation == generation)
+                    .and_then(|(target, _)| {
+                        self.tabs
+                            .iter()
+                            .any(|tab| matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == *target))
+                            .then(|| target.clone())
+                    });
+                if pending_redis_target.is_some() {
+                    self.pending_redis_browser_target = None;
+                }
                 let interrupted_catalog_targets = if editor_target_switch.is_some() {
                     self.explorer
                         .normalized
@@ -10558,7 +10660,9 @@ impl App {
                     manager.operation = None;
                     manager.set_message(ProfileMessageLevel::Success, "Connected");
                 }
-                let commands_for_catalog = if editor_target_switch.is_none() {
+                let commands_for_catalog = if profile_kind == DatabaseKind::Redis {
+                    Vec::new()
+                } else if editor_target_switch.is_none() {
                     self.start_catalog_request(
                         CatalogTarget::Databases,
                         None,
@@ -10572,6 +10676,13 @@ impl App {
                         })
                         .collect()
                 };
+                let mut commands_for_redis = Vec::new();
+                if profile_kind == DatabaseKind::Redis && editor_target_switch.is_none() {
+                    commands_for_redis.push(Command::DiscoverRedisDatabases {
+                        profile_id,
+                        generation,
+                    });
+                }
                 if expand_after_connect {
                     self.explorer
                         .normalized
@@ -10579,6 +10690,11 @@ impl App {
                         .insert(crate::model::explorer::ExplorerNodeId::Profile(profile_id));
                 }
                 let mut commands = std::mem::take(&mut workspace_commands);
+                if let Some(redis_target) = pending_redis_target {
+                    commands.extend(
+                        self.open_redis_browser(redis_target.profile_id, redis_target.database),
+                    );
+                }
                 commands.extend(commands_for_catalog);
                 if self.pending_navigation.as_ref().is_some_and(|navigation| {
                     navigation.profile_id == profile_id && navigation.generation == generation
@@ -10610,6 +10726,7 @@ impl App {
                         }
                     }
                 }
+                commands.extend(commands_for_redis);
                 if should_activate_workspace {
                     commands.extend(self.dashboard_metadata_commands(ConnectionIdentity {
                         profile_id,
@@ -10705,6 +10822,13 @@ impl App {
                     .accept_failure(failed_identity, message.clone())
                 {
                     return Vec::new();
+                }
+                if self
+                    .pending_redis_browser_target
+                    .as_ref()
+                    .is_some_and(|(_, expected)| *expected == generation)
+                {
+                    self.pending_redis_browser_target = None;
                 }
                 let is_editor_target_switch = self.pending_editor_target_switch.is_some_and(
                     |(_, pending_profile_id, pending_generation)| {
@@ -12074,6 +12198,211 @@ impl App {
                 self.focus = Focus::Explorer;
                 Vec::new()
             }
+            Action::RedisDatabasesLoaded {
+                profile_id,
+                generation,
+                discovery,
+            } => {
+                if self.connection.profile_id != Some(profile_id)
+                    || self.connection.generation != generation
+                {
+                    return Vec::new();
+                }
+                if let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id) {
+                    profile.set_redis_databases(discovery);
+                    profile.status = ExplorerConnectionStatus::Online;
+                }
+                Vec::new()
+            }
+            Action::RedisDatabasesFailed {
+                profile_id,
+                generation,
+                message,
+            } => {
+                if self.connection.profile_id == Some(profile_id)
+                    && self.connection.generation == generation
+                    && let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id)
+                {
+                    profile.redis_databases_error = Some(message);
+                }
+                Vec::new()
+            }
+            Action::RedisKeysLoaded(batch) => {
+                let tab_id = batch.identity.owner_id;
+                let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                else {
+                    return Vec::new();
+                };
+                if tab.keyspace.apply_batch(batch) {
+                    tab.rebuild_tree();
+                }
+                Vec::new()
+            }
+            Action::RedisKeysFailed { identity, message } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id() == identity.owner_id)
+                {
+                    tab.keyspace.fail(&identity, message);
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewLoaded {
+                tab_id,
+                generation,
+                preview_generation,
+                key,
+                content,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && generation == tab.keyspace.generation
+                    && preview_generation == tab.preview_generation
+                    && matches!(&tab.preview, crate::model::redis_browser::RedisPreviewState::Loading { key: loading } if loading == &key)
+                {
+                    tab.preview =
+                        crate::model::redis_browser::RedisPreviewState::Ready { key, content };
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewFailed {
+                tab_id,
+                generation,
+                preview_generation,
+                key,
+                message,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && generation == tab.keyspace.generation
+                    && preview_generation == tab.preview_generation
+                    && matches!(&tab.preview, crate::model::redis_browser::RedisPreviewState::Loading { key: loading } if loading == &key)
+                {
+                    tab.preview =
+                        crate::model::redis_browser::RedisPreviewState::Failed { key, message };
+                }
+                Vec::new()
+            }
+            Action::OpenRedisDatabase {
+                profile_id,
+                database,
+            } => self.open_redis_browser(profile_id, database),
+            Action::SelectRedisNode { tab_id, node } => self.select_redis_key(tab_id, node),
+            Action::RedisToggleNode { tab_id, node } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                {
+                    tab.toggle_prefix(&node);
+                }
+                Vec::new()
+            }
+            Action::RedisMoveSelection(delta) => self.move_redis_selection(delta),
+            Action::RedisExpandSelection => self.expand_redis_selection(),
+            Action::RedisCollapseSelection => self.collapse_redis_selection(),
+            Action::RedisPrimarySelection => self.primary_redis_selection(),
+            Action::RedisFocusPane(focus) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.focus = focus;
+                }
+                Vec::new()
+            }
+            Action::RedisKeysViewportChanged { tab_id, rows } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                {
+                    tab.viewport_rows = rows;
+                    tab.tree.ensure_selected_visible(&mut tab.scroll, rows);
+                }
+                Vec::new()
+            }
+            Action::RedisKeysScroll(delta) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    let max = tab
+                        .tree
+                        .visible_ids()
+                        .len()
+                        .saturating_sub(tab.viewport_rows);
+                    tab.scroll = (tab.scroll as isize + delta).clamp(0, max as isize) as usize;
+                    let ids = tab.tree.visible_ids();
+                    if let Some(selected) = tab.tree.selected.as_ref()
+                        && let Some(index) = ids.iter().position(|id| id == selected)
+                    {
+                        if index < tab.scroll {
+                            tab.tree.select(ids.get(tab.scroll).cloned());
+                        } else if tab.viewport_rows > 0
+                            && index >= tab.scroll.saturating_add(tab.viewport_rows)
+                        {
+                            tab.tree
+                                .select(ids.get(tab.scroll + tab.viewport_rows - 1).cloned());
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            Action::RedisRetryScan => self.retry_redis_scan(),
+            Action::RedisFindOpen => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Keys;
+                    tab.open_find();
+                }
+                Vec::new()
+            }
+            Action::RedisFindInsert(character) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.find.as_mut().filter(|find| {
+                        find.phase == crate::model::redis_browser::RedisFindPhase::Editing
+                    })
+                {
+                    find.query.insert(character);
+                    tab.update_find();
+                }
+                Vec::new()
+            }
+            Action::RedisFindBackspace => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.find.as_mut().filter(|find| {
+                        find.phase == crate::model::redis_browser::RedisFindPhase::Editing
+                    })
+                {
+                    find.query.backspace();
+                    tab.update_find();
+                }
+                Vec::new()
+            }
+            Action::RedisFindDelete => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.find.as_mut().filter(|find| {
+                        find.phase == crate::model::redis_browser::RedisFindPhase::Editing
+                    })
+                {
+                    find.query.delete();
+                    tab.update_find();
+                }
+                Vec::new()
+            }
+            Action::RedisFindConfirm => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.confirm_find();
+                    if let Some(key) = tab.tree.selected_key().map(<[u8]>::to_vec) {
+                        let tab_id = tab.id;
+                        return self.select_redis_key(
+                            tab_id,
+                            Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(key)),
+                        );
+                    }
+                }
+                Vec::new()
+            }
+            Action::RedisFindCancel => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.close_find(true);
+                }
+                Vec::new()
+            }
+            Action::RedisFindNext => self.move_redis_find(1),
+            Action::RedisFindPrevious => self.move_redis_find(-1),
             Action::ExplorerToggleNode(id) => {
                 let expandable = self
                     .explorer
@@ -12509,6 +12838,7 @@ impl App {
                 DatabaseKind::SqlServer => {
                     crate::db::mssql::MsSqlAdapter::catalog_mutation_capabilities()
                 }
+                DatabaseKind::Redis => return None,
             };
             let options = capabilities.create_options(&anchor, None).ok()?;
             return (!options.is_empty()).then_some(CatalogCreateSelection {
@@ -14170,6 +14500,7 @@ impl App {
                     DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Sqlite => {
                         entry.qualified_name.schema.clone()
                     }
+                    DatabaseKind::Redis => None,
                 };
                 let candidate = ExecutionTarget {
                     profile_id: profile.id,
@@ -14283,6 +14614,7 @@ impl App {
                     DatabaseKind::MySql | DatabaseKind::MariaDb => Some(database.clone()),
                     DatabaseKind::Sqlite => Some("main".to_owned()),
                     DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => None,
+                    DatabaseKind::Redis => None,
                 },
                 database,
             })
@@ -14980,6 +15312,7 @@ impl App {
             DatabaseKind::Oracle => SqlDialect::Oracle,
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::SqlServer => SqlDialect::SqlServer,
+            DatabaseKind::Redis => SqlDialect::Generic,
         }
     }
 
@@ -14990,6 +15323,7 @@ impl App {
             Some(DatabaseKind::Oracle) => SqlDialect::Oracle,
             Some(DatabaseKind::Sqlite) => SqlDialect::Sqlite,
             Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
+            Some(DatabaseKind::Redis) => SqlDialect::Generic,
             None => SqlDialect::Generic,
         }
     }
@@ -17195,6 +17529,7 @@ impl App {
             ExplorerNodeId::EmptyProfiles => None,
             ExplorerNodeId::Others => None,
             ExplorerNodeId::ConnectionGroup { .. } => None,
+            ExplorerNodeId::RedisDatabase { .. } => None,
         }
     }
 
@@ -17292,6 +17627,277 @@ impl App {
                 self.explorer.toggle_selected();
                 Vec::new()
             }
+            ExplorerNodeId::RedisDatabase {
+                profile_id,
+                database,
+            } => self.open_redis_browser(*profile_id, *database),
+        }
+    }
+
+    fn open_redis_browser(&mut self, profile_id: Uuid, database: u32) -> Vec<Command> {
+        let target = crate::db::redis::types::RedisTarget {
+            profile_id,
+            database,
+        };
+        let index = if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == target))
+        {
+            index
+        } else {
+            self.tabs.push(WorkspaceTab::RedisBrowser(
+                crate::model::redis_browser::RedisBrowserTab::new(Uuid::new_v4(), target.clone()),
+            ));
+            self.tabs.len() - 1
+        };
+        self.active_tab = index;
+        self.focus = Focus::Results;
+        let active_target = self.connection.target.as_ref();
+        if self.connection.profile_id != Some(profile_id)
+            || active_target.is_none_or(|active| {
+                active.database != database.to_string() || active.schema.is_some()
+            })
+        {
+            let commands = self.request_connection_target(ExecutionTarget {
+                profile_id,
+                database: database.to_string(),
+                schema: None,
+            });
+            if let Some(generation) = commands.iter().find_map(|command| match command {
+                Command::Connect { generation, .. } => Some(*generation),
+                _ => None,
+            }) {
+                self.pending_redis_browser_target = Some((target, generation));
+            }
+            return commands;
+        }
+        if self
+            .pending_redis_browser_target
+            .as_ref()
+            .is_some_and(|(pending, _)| *pending == target)
+        {
+            self.pending_redis_browser_target = None;
+        }
+        self.ensure_redis_browser_loaded(index, true)
+    }
+
+    fn ensure_redis_browser_loaded(&mut self, index: usize, explicit_open: bool) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(index) else {
+            return Vec::new();
+        };
+        let target = tab.target.clone();
+        let needs_scan = match tab.keyspace.status {
+            crate::model::keyspace::KeyspaceStatus::NotLoaded => true,
+            crate::model::keyspace::KeyspaceStatus::Idle => {
+                tab.keyspace.position == crate::db::redis::types::ScanPosition::Start
+            }
+            crate::model::keyspace::KeyspaceStatus::Failed(_) => explicit_open,
+            crate::model::keyspace::KeyspaceStatus::Stale => true,
+            crate::model::keyspace::KeyspaceStatus::Loading
+            | crate::model::keyspace::KeyspaceStatus::Partial
+            | crate::model::keyspace::KeyspaceStatus::Complete
+            | crate::model::keyspace::KeyspaceStatus::CompleteEmpty
+            | crate::model::keyspace::KeyspaceStatus::Paused { .. } => false,
+        };
+        if !needs_scan {
+            return Vec::new();
+        }
+        let connection = self.connection.active_identity();
+        let Some(connection) = connection else {
+            let commands = self.request_connection_target(ExecutionTarget {
+                profile_id: target.profile_id,
+                database: target.database.to_string(),
+                schema: None,
+            });
+            if let Some(generation) = commands.iter().find_map(|command| match command {
+                Command::Connect { generation, .. } => Some(*generation),
+                _ => None,
+            }) {
+                self.pending_redis_browser_target = Some((target, generation));
+            }
+            return commands;
+        };
+        if connection.profile_id != target.profile_id
+            || self.connection.target.as_ref().is_none_or(|current| {
+                current.database != target.database.to_string() || current.schema.is_some()
+            })
+        {
+            let commands = self.request_connection_target(ExecutionTarget {
+                profile_id: target.profile_id,
+                database: target.database.to_string(),
+                schema: None,
+            });
+            if let Some(generation) = commands.iter().find_map(|command| match command {
+                Command::Connect { generation, .. } => Some(*generation),
+                _ => None,
+            }) {
+                self.pending_redis_browser_target = Some((target, generation));
+            }
+            return commands;
+        }
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) else {
+            return Vec::new();
+        };
+        let Some(identity) = tab.keyspace.start_scan(connection) else {
+            return Vec::new();
+        };
+        vec![Command::ScanRedisKeys(
+            crate::db::redis::types::KeyScanRequest {
+                identity,
+                position: tab.keyspace.position.clone(),
+                pattern: tab.keyspace.pattern.clone(),
+                count_hint: crate::model::keyspace::DEFAULT_SCAN_COUNT,
+            },
+        )]
+    }
+
+    pub fn select_redis_key(
+        &mut self,
+        tab_id: Uuid,
+        node: Option<crate::model::redis_key_tree::KeyTreeNodeId>,
+    ) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) =
+            self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+        else {
+            return Vec::new();
+        };
+        tab.select(node);
+        let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
+            return Vec::new();
+        };
+        vec![Command::LoadRedisPreview {
+            tab_id,
+            generation: tab.keyspace.generation,
+            preview_generation: tab.preview_generation,
+            key: key.clone(),
+        }]
+    }
+
+    fn move_redis_selection(&mut self, delta: isize) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
+            return Vec::new();
+        }
+        let Some(node) = tab.tree.move_selection(delta) else {
+            return Vec::new();
+        };
+        tab.tree
+            .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
+        let tab_id = tab.id;
+        self.select_redis_key(tab_id, Some(node))
+    }
+
+    fn retry_redis_scan(&mut self) -> Vec<Command> {
+        let index = self.active_tab;
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) {
+            match tab.keyspace.status {
+                crate::model::keyspace::KeyspaceStatus::Partial => {
+                    tab.keyspace.position = match tab.keyspace.position {
+                        crate::db::redis::types::ScanPosition::Continue(cursor) => {
+                            crate::db::redis::types::ScanPosition::Continue(cursor)
+                        }
+                        _ => return Vec::new(),
+                    };
+                    let Some(connection) = self.connection.active_identity() else {
+                        return Vec::new();
+                    };
+                    let Some(identity) = tab.keyspace.start_scan(connection) else {
+                        return Vec::new();
+                    };
+                    return vec![Command::ScanRedisKeys(
+                        crate::db::redis::types::KeyScanRequest {
+                            identity,
+                            position: tab.keyspace.position.clone(),
+                            pattern: tab.keyspace.pattern.clone(),
+                            count_hint: crate::model::keyspace::DEFAULT_SCAN_COUNT,
+                        },
+                    )];
+                }
+                crate::model::keyspace::KeyspaceStatus::Failed(_)
+                | crate::model::keyspace::KeyspaceStatus::Stale => {
+                    tab.keyspace.refresh();
+                }
+                _ => return Vec::new(),
+            }
+        }
+        self.ensure_redis_browser_loaded(index, true)
+    }
+
+    fn move_redis_find(&mut self, delta: isize) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        tab.move_find(delta);
+        if let Some(key) = tab.tree.selected_key().map(<[u8]>::to_vec) {
+            let tab_id = tab.id;
+            self.select_redis_key(
+                tab_id,
+                Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(key)),
+            )
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn expand_redis_selection(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
+            return Vec::new();
+        }
+        let Some(selected) = tab.tree.selected.clone() else {
+            return Vec::new();
+        };
+        if tab.toggle_prefix(&selected) {
+            if let Some(child) = tab.tree.first_child(&selected) {
+                tab.tree.select(Some(child));
+            }
+            Vec::new()
+        } else {
+            let tab_id = tab.id;
+            self.select_redis_key(tab_id, Some(selected))
+        }
+    }
+
+    fn collapse_redis_selection(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
+            return Vec::new();
+        }
+        if let Some(selected) = tab.tree.selected.clone() {
+            if tab.tree.expanded.remove(&selected) {
+                return Vec::new();
+            }
+            if let Some(parent) = tab.tree.parent_of(&selected) {
+                tab.tree.select(Some(parent));
+                tab.select(tab.tree.selected.clone());
+                return Vec::new();
+            }
+        }
+        Vec::new()
+    }
+
+    fn primary_redis_selection(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
+            return Vec::new();
+        }
+        let Some(selected) = tab.tree.selected.clone() else {
+            return Vec::new();
+        };
+        let tab_id = tab.id;
+        if tab.toggle_prefix(&selected) {
+            Vec::new()
+        } else {
+            self.select_redis_key(tab_id, Some(selected))
         }
     }
 
@@ -17315,6 +17921,22 @@ impl App {
                 }
                 return self.request_connection(profile_id);
             }
+        }
+        if let ExplorerNodeId::Status {
+            owner: ExplorerOwnerId::Profile(profile_id),
+            kind: crate::model::explorer::StatusRowKind::Retry,
+        } = selected
+            && self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+                .is_some_and(|profile| profile.kind == DatabaseKind::Redis)
+        {
+            let generation = self.connection.generation;
+            return vec![Command::DiscoverRedisDatabases {
+                profile_id,
+                generation,
+            }];
         }
         let expanded = self.explorer.normalized.expanded.contains(&selected);
         if expanded || !self.explorer.normalized.expand() {
@@ -19970,6 +20592,12 @@ fn add_explorer_profile(
                 .port
                 .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"))
         }
+        DatabaseKind::Redis => {
+            let host = profile.host.as_deref().unwrap_or_default();
+            profile
+                .port
+                .map_or_else(|| host.to_owned(), |port| format!("{host}:{port}"))
+        }
     };
     explorer.normalized.add_profile_with_placement(
         profile.id,
@@ -22307,6 +22935,7 @@ mod tests {
             WorkspaceTab::Sql(_) => unreachable!(),
             WorkspaceTab::Dashboard(_) => unreachable!(),
             WorkspaceTab::History(_) => unreachable!(),
+            WorkspaceTab::RedisBrowser(_) => unreachable!(),
         };
         let scope = app.profiles[0].catalog_scope.clone();
         let request = RelationRequest {

@@ -200,6 +200,7 @@ impl ExecutionTarget {
             DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle => {
                 profile.default_schema.clone()
             }
+            DatabaseKind::Redis => None,
         };
         Self {
             profile_id: profile.id,
@@ -232,6 +233,7 @@ impl ExecutionTarget {
                 .schema
                 .as_deref()
                 .is_none_or(|schema| profile.catalog_scope.allows_schema(&self.database, schema)),
+            DatabaseKind::Redis => self.schema.is_none(),
         }
     }
 
@@ -250,6 +252,10 @@ impl ExecutionTarget {
                 configured.default_schema = Some(self.database.clone());
             }
             DatabaseKind::Sqlite => {}
+            DatabaseKind::Redis => {
+                configured.database = Some(self.database.clone());
+                configured.default_schema = None;
+            }
         }
         Some(configured)
     }

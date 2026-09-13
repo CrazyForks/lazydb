@@ -1200,6 +1200,97 @@ impl Keymap {
             return None;
         }
 
+        if app.focus == Focus::Results
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
+            )
+        {
+            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+                && let Some(find) = tab.find.as_ref()
+            {
+                if find.phase == crate::model::redis_browser::RedisFindPhase::Editing {
+                    match event.code {
+                        KeyCode::Esc => return Some(Action::RedisFindCancel),
+                        KeyCode::Enter => return Some(Action::RedisFindConfirm),
+                        KeyCode::Backspace => return Some(Action::RedisFindBackspace),
+                        KeyCode::Delete => return Some(Action::RedisFindDelete),
+                        KeyCode::Char(character) if event.modifiers.is_empty() => {
+                            return Some(Action::RedisFindInsert(character));
+                        }
+                        _ => return None,
+                    }
+                }
+                if find.phase == crate::model::redis_browser::RedisFindPhase::Confirmed {
+                    match event.code {
+                        KeyCode::Esc => return Some(Action::RedisFindCancel),
+                        KeyCode::Char('n') => return Some(Action::RedisFindNext),
+                        KeyCode::Char('N') => return Some(Action::RedisFindPrevious),
+                        _ => {}
+                    }
+                }
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('/') {
+                return Some(Action::RedisFindOpen);
+            }
+            if matches!(app.tabs.get(app.active_tab), Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys)
+                && event.modifiers.is_empty()
+                && event.code == KeyCode::Char('r')
+            {
+                return Some(Action::RedisRetryScan);
+            }
+            if event.code == KeyCode::Char('h') || event.code == KeyCode::Left {
+                return Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                ));
+            }
+            if event.code == KeyCode::Char('l') || event.code == KeyCode::Right {
+                return Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Preview,
+                ));
+            }
+            if event.code == KeyCode::PageDown {
+                return Some(Action::RedisKeysScroll(10));
+            }
+            if event.code == KeyCode::PageUp {
+                return Some(Action::RedisKeysScroll(-10));
+            }
+            if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
+                return Some(match action {
+                    Action::GridMove { rows, columns: 0 } if rows != 0 => {
+                        Action::RedisMoveSelection(rows)
+                    }
+                    Action::ExplorerFindOpen => Action::RedisFindOpen,
+                    other => other,
+                });
+            }
+            let focus = match app.tabs.get(app.active_tab) {
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) => tab.focus,
+                _ => return None,
+            };
+            return match (focus, event.code) {
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                    KeyCode::Char('j') | KeyCode::Down,
+                ) => Some(Action::RedisMoveSelection(1)),
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                    KeyCode::Char('k') | KeyCode::Up,
+                ) => Some(Action::RedisMoveSelection(-1)),
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Right) => {
+                    Some(Action::RedisExpandSelection)
+                }
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Left) => {
+                    Some(Action::RedisCollapseSelection)
+                }
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Enter) => {
+                    Some(Action::RedisPrimarySelection)
+                }
+                _ => None,
+            };
+        }
+
         if app.focus == Focus::Explorer
             && app.explorer.search.is_none()
             && event.modifiers.is_empty()
@@ -1560,6 +1651,51 @@ impl Keymap {
                 return Some(action);
             }
             return map_relation(event.code, app);
+        }
+        if app.focus == Focus::Results
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
+            )
+        {
+            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+                && let Some(find) = tab.find.as_ref()
+            {
+                if find.phase == crate::model::redis_browser::RedisFindPhase::Editing {
+                    match event.code {
+                        KeyCode::Esc => return Some(Action::RedisFindCancel),
+                        KeyCode::Enter => return Some(Action::RedisFindConfirm),
+                        KeyCode::Backspace => return Some(Action::RedisFindBackspace),
+                        KeyCode::Delete => return Some(Action::RedisFindDelete),
+                        KeyCode::Char(character) if event.modifiers.is_empty() => {
+                            return Some(Action::RedisFindInsert(character));
+                        }
+                        _ => return None,
+                    }
+                }
+                if find.phase == crate::model::redis_browser::RedisFindPhase::Confirmed {
+                    match event.code {
+                        KeyCode::Esc => return Some(Action::RedisFindCancel),
+                        KeyCode::Char('n') => return Some(Action::RedisFindNext),
+                        KeyCode::Char('N') => return Some(Action::RedisFindPrevious),
+                        _ => {}
+                    }
+                }
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('/') {
+                return Some(Action::RedisFindOpen);
+            }
+            if event.code == KeyCode::Char('h') || event.code == KeyCode::Left {
+                return Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                ));
+            }
+            if event.code == KeyCode::Char('l') || event.code == KeyCode::Right {
+                return Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Preview,
+                ));
+            }
         }
         if let Some(crate::model::tab::WorkspaceTab::Sql(tab)) = app.tabs.get(app.active_tab)
             && app.focus == Focus::Results
@@ -2901,7 +3037,7 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
             _ => None,
         };
     }
-    if field == ProfileField::Kind {
+    if matches!(field, ProfileField::Kind | ProfileField::DatabaseCategory) {
         return match code {
             KeyCode::Left | KeyCode::Char('h') => Some(Action::ProfileCycle(-1)),
             KeyCode::Right | KeyCode::Char('l') => Some(Action::ProfileCycle(1)),
@@ -3318,6 +3454,7 @@ fn active_data_query_has_focus(app: &App) -> bool {
         Some(crate::model::tab::WorkspaceTab::Sql(tab)) => tab.query.focus.is_some(),
         Some(crate::model::tab::WorkspaceTab::Dashboard(_)) => false,
         Some(crate::model::tab::WorkspaceTab::History(_)) => false,
+        Some(crate::model::tab::WorkspaceTab::RedisBrowser(_)) => false,
         None => false,
     }
 }

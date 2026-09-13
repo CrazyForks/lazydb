@@ -15,6 +15,19 @@ four kinds of settings:
 Unknown TOML fields are rejected. This helps catch spelling mistakes instead of
 silently accepting a setting that LazyDB does not use.
 
+## Connection driver categories
+
+New and edited connection forms show **Category** above **Driver**. Choose
+**Relational** for PostgreSQL, MySQL, MariaDB, Oracle, SQL Server or SQLite;
+choose **Non-relational** for Redis. Left/Right changes the focused category or
+cycles drivers within that category. Categories and drivers also support mouse
+selection. Narrow forms keep full driver names in a selection-following window.
+
+The form remembers the last driver in each category for the current draft only.
+Category is derived from the selected driver and is not saved as another profile
+field. Switching drivers updates automatic ports, including switches through
+SQLite; explicitly entered ports and ports loaded from saved profiles are kept.
+
 Application settings use the following precedence, from highest to lowest:
 
 1. Explicit command-line options

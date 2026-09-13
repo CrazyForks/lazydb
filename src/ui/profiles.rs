@@ -13,7 +13,7 @@ use crate::{
     app::App,
     model::{
         profile_manager::{
-            DRIVER_ORDER, ProfileDraft, ProfileField, ProfileManagerPage, ProfileManagerState,
+            ProfileDraft, ProfileField, ProfileManagerPage, ProfileManagerState,
             ProfileMessageLevel, ProfileOperation,
         },
         text_input::TextInput,
@@ -145,7 +145,7 @@ fn render_form(
                     theme,
                     icons,
                 );
-                if !busy && field != ProfileField::Kind {
+                if !busy && !matches!(field, ProfileField::Kind | ProfileField::DatabaseCategory) {
                     state.hit_regions.push(HitRegion {
                         area: row,
                         target: if is_toggle_field(field) {
@@ -531,6 +531,34 @@ fn render_field(
         render_driver_options(frame, value_area, draft.kind, busy, state, theme, icons);
         return;
     }
+    if field == ProfileField::DatabaseCategory {
+        let mut x = value_area.x;
+        for category in crate::db::descriptor::DatabaseCategory::ALL {
+            let label = category.label();
+            let width = label.cell_width();
+            if x + width > value_area.right() {
+                break;
+            }
+            let option_area = Rect::new(x, value_area.y, width, 1);
+            let style = if category == draft.category() {
+                Style::new()
+                    .fg(theme.background)
+                    .bg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(theme.text).bg(theme.surface)
+            };
+            frame.render_widget(Paragraph::new(label).style(style), option_area);
+            if !busy {
+                state.hit_regions.push(HitRegion {
+                    area: option_area,
+                    target: HitTarget::ProfileCategory(category),
+                });
+            }
+            x += width + 2;
+        }
+        return;
+    }
     if let Some(input) = text_input(draft, field) {
         state.profile_input_targets.push((
             field,
@@ -637,13 +665,59 @@ fn render_driver_options(
     theme: Theme,
     icons: IconSet,
 ) {
+    let drivers =
+        crate::db::descriptor::drivers_in(crate::db::descriptor::descriptor(selected).category)
+            .map(|driver| driver.kind)
+            .collect::<Vec<_>>();
+    let selected_index = drivers
+        .iter()
+        .position(|kind| *kind == selected)
+        .unwrap_or(0);
+    let width_of = |kind| icons.database(kind).cell_width() + kind_name(kind).cell_width() + 2;
+    let mut start = 0;
+    while start < selected_index
+        && drivers[start..=selected_index]
+            .iter()
+            .map(|kind| u32::from(width_of(*kind)))
+            .sum::<u32>()
+            > u32::from(area.width.saturating_sub(4))
+    {
+        start += 1;
+    }
     let mut x = area.x;
-    for kind in DRIVER_ORDER {
+    if start > 0 {
+        frame.render_widget(
+            Paragraph::new("‹ ").style(Style::new().fg(theme.muted)),
+            Rect::new(x, area.y, 2, 1),
+        );
+        if !busy {
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(x, area.y, 2, 1),
+                target: HitTarget::ProfileDriver(drivers[selected_index.saturating_sub(1)]),
+            });
+        }
+        x += 2;
+    }
+    for (index, kind) in drivers.iter().copied().enumerate().skip(start) {
         let icon = icons.database(kind);
         let name = kind_name(kind);
         let label = format!("{icon} {name}");
         let width = label.cell_width();
-        if width > area.right().saturating_sub(x) {
+        if width + u16::from(index + 1 < drivers.len()) * 2 > area.right().saturating_sub(x) {
+            if area.right().saturating_sub(x) >= 1 {
+                frame.render_widget(
+                    Paragraph::new("›").style(Style::new().fg(theme.muted)),
+                    Rect::new(x, area.y, 1, 1),
+                );
+                if !busy {
+                    state.hit_regions.push(HitRegion {
+                        area: Rect::new(x, area.y, 1, 1),
+                        target: HitTarget::ProfileDriver(
+                            drivers[(selected_index + 1).min(drivers.len() - 1)],
+                        ),
+                    });
+                }
+            }
             break;
         }
         let option_area = Rect::new(x, area.y, width, 1);
@@ -661,7 +735,7 @@ fn render_driver_options(
         let icon_color = if busy {
             theme.muted
         } else {
-            driver_icon_color(kind)
+            icons.database_color(kind)
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -678,17 +752,6 @@ fn render_driver_options(
             });
         }
         x = x.saturating_add(width).saturating_add(1);
-    }
-}
-
-fn driver_icon_color(kind: DatabaseKind) -> ratatui::style::Color {
-    match kind {
-        DatabaseKind::Postgres => ratatui::style::Color::Rgb(87, 169, 220),
-        DatabaseKind::MySql => ratatui::style::Color::Rgb(242, 145, 17),
-        DatabaseKind::MariaDb => ratatui::style::Color::Rgb(242, 145, 17),
-        DatabaseKind::Oracle => ratatui::style::Color::Rgb(220, 70, 70),
-        DatabaseKind::SqlServer => ratatui::style::Color::Rgb(204, 41, 48),
-        DatabaseKind::Sqlite => ratatui::style::Color::Rgb(68, 184, 214),
     }
 }
 
@@ -997,7 +1060,8 @@ enum FormRow {
 
 fn field_section(field: ProfileField) -> Option<FormSection> {
     match field {
-        ProfileField::Kind
+        ProfileField::DatabaseCategory
+        | ProfileField::Kind
         | ProfileField::Name
         | ProfileField::Host
         | ProfileField::Port
@@ -1071,6 +1135,7 @@ fn text_input(draft: &ProfileDraft, field: ProfileField) -> Option<&TextInput> {
 fn field_value(draft: &ProfileDraft, field: ProfileField) -> String {
     match field {
         ProfileField::Kind => kind_name(draft.kind).to_owned(),
+        ProfileField::DatabaseCategory => draft.category().label().to_owned(),
         ProfileField::UrlFormat => String::new(),
         ProfileField::Url => safe_line(&draft.url_display()),
         ProfileField::Name => safe_line(draft.name.value()),
@@ -1117,12 +1182,14 @@ fn url_help(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Oracle => "Accepts jdbc:oracle:thin:@host:port/service",
         DatabaseKind::SqlServer => "Accepts sqlserver://, mssql://, and jdbc:sqlserver://",
         DatabaseKind::Sqlite => "Accepts sqlite://, file:, and jdbc:sqlite:",
+        DatabaseKind::Redis => "Accepts redis:// and rediss://",
     }
 }
 
 fn field_label(field: ProfileField, kind: DatabaseKind) -> &'static str {
     match field {
         ProfileField::Kind => "Driver",
+        ProfileField::DatabaseCategory => "Category",
         ProfileField::UrlFormat => "URL format",
         ProfileField::Url => "URL",
         ProfileField::Name => "Name",
@@ -1183,14 +1250,7 @@ fn password_storage_name(storage: PasswordStorageChoice) -> &'static str {
 }
 
 fn kind_name(kind: DatabaseKind) -> &'static str {
-    match kind {
-        DatabaseKind::Postgres => "PostgreSQL",
-        DatabaseKind::MySql => "MySQL",
-        DatabaseKind::MariaDb => "MariaDB",
-        DatabaseKind::Oracle => "Oracle",
-        DatabaseKind::SqlServer => "SQL Server",
-        DatabaseKind::Sqlite => "SQLite",
-    }
+    crate::db::descriptor::descriptor(kind).display_name
 }
 
 fn ssl_name(mode: SslMode) -> &'static str {

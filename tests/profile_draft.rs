@@ -866,6 +866,7 @@ fn oracle_url_preview_tracks_missing_fields_without_becoming_real_url() {
 fn driver_cycle_includes_sql_server_before_sqlite() {
     let mut state = ProfileManagerState::new(false);
     state.start_new(DatabaseKind::Postgres);
+    state.selected_field = ProfileField::Kind;
 
     state.cycle(1);
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::MySql);
@@ -877,6 +878,8 @@ fn driver_cycle_includes_sql_server_before_sqlite() {
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::SqlServer);
     state.cycle(1);
     assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::Sqlite);
+    state.cycle(1);
+    assert_eq!(state.draft.as_ref().unwrap().kind, DatabaseKind::Postgres);
 }
 
 #[test]
@@ -885,6 +888,7 @@ fn visible_fields_follow_the_selected_driver_and_sqlite_mode() {
     assert_eq!(
         postgres.visible_fields(),
         &[
+            ProfileField::DatabaseCategory,
             ProfileField::Kind,
             ProfileField::Name,
             ProfileField::Host,
@@ -918,6 +922,13 @@ fn visible_fields_follow_the_selected_driver_and_sqlite_mode() {
     sqlite.sqlite_memory = true;
     assert!(!sqlite.visible_fields().contains(&ProfileField::SqlitePath));
     assert!(!sqlite.visible_fields().contains(&ProfileField::Password));
+
+    let redis = ProfileDraft::new(DatabaseKind::Redis);
+    assert_eq!(redis.host.value(), "localhost");
+    assert_eq!(redis.port.value(), "6379");
+    assert_eq!(redis.database.value(), "0");
+    assert!(!redis.visible_fields().contains(&ProfileField::Schema));
+    assert!(!redis.visible_fields().contains(&ProfileField::SqlitePath));
 }
 
 #[test]
@@ -945,7 +956,7 @@ fn manager_state_initializes_new_and_edit_forms() {
 
     state.start_new(DatabaseKind::MySql);
     assert_eq!(state.page, ProfileManagerPage::Form);
-    assert_eq!(state.selected_field, ProfileField::Kind);
+    assert_eq!(state.selected_field, ProfileField::DatabaseCategory);
     assert_eq!(state.draft.as_ref().unwrap().port.value(), "3306");
 
     let profile = saved_postgres_profile();

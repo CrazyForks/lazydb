@@ -15,6 +15,7 @@ use super::data_query::DataQueryOptions;
 use super::data_query::DataQueryState;
 use super::history_tab::HistoryTab;
 use super::pagination::{PageRequest, PageSize, ResultPagination};
+use super::redis_browser::RedisBrowserTab;
 use super::relation::RelationTab;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +24,7 @@ pub enum TabKind {
     Relation,
     Dashboard,
     History,
+    RedisBrowser,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -82,6 +84,7 @@ pub enum WorkspaceTab {
     Relation(RelationTab),
     Dashboard(DashboardTab),
     History(HistoryTab),
+    RedisBrowser(RedisBrowserTab),
 }
 
 impl WorkspaceTab {
@@ -91,6 +94,7 @@ impl WorkspaceTab {
             Self::Relation(tab) => tab.id,
             Self::Dashboard(tab) => tab.id,
             Self::History(tab) => tab.id,
+            Self::RedisBrowser(tab) => tab.id,
         }
     }
 
@@ -100,6 +104,7 @@ impl WorkspaceTab {
             Self::Relation(tab) => tab.title(),
             Self::Dashboard(_) => "Dashboard",
             Self::History(_) => HistoryTab::TITLE,
+            Self::RedisBrowser(_) => "Redis",
         }
     }
 
@@ -109,6 +114,7 @@ impl WorkspaceTab {
             Self::Relation(_) => TabKind::Relation,
             Self::Dashboard(_) => TabKind::Dashboard,
             Self::History(_) => TabKind::History,
+            Self::RedisBrowser(_) => TabKind::RedisBrowser,
         }
     }
 
@@ -118,6 +124,7 @@ impl WorkspaceTab {
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
             Self::History(_) => None,
+            Self::RedisBrowser(_) => None,
         }
     }
 
@@ -127,6 +134,7 @@ impl WorkspaceTab {
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
             Self::History(_) => None,
+            Self::RedisBrowser(_) => None,
         }
     }
 }

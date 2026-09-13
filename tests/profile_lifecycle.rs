@@ -91,6 +91,9 @@ async fn drain_catalog(
 }
 
 fn set_sqlite_draft(app: &mut App, name: &str, path: &std::path::Path) {
+    app.update(Action::ProfileFocusField(
+        lazydb::model::profile_manager::ProfileField::Kind,
+    ));
     let sqlite_index = DRIVER_ORDER
         .iter()
         .position(|kind| *kind == DatabaseKind::Sqlite)

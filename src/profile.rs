@@ -18,6 +18,7 @@ pub enum DatabaseKind {
     Oracle,
     SqlServer,
     Sqlite,
+    Redis,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -37,6 +38,8 @@ pub enum ConnectionUrlFormat {
     Sqlite,
     FileUri,
     JdbcSqlite,
+    Redis,
+    RedisTls,
 }
 
 impl ConnectionUrlFormat {
@@ -48,6 +51,7 @@ impl ConnectionUrlFormat {
             DatabaseKind::Oracle => Self::JdbcOracle,
             DatabaseKind::SqlServer => Self::SqlServer,
             DatabaseKind::Sqlite => Self::Sqlite,
+            DatabaseKind::Redis => Self::Redis,
         }
     }
 
@@ -68,6 +72,7 @@ impl ConnectionUrlFormat {
                     Self::Sqlite | Self::FileUri | Self::JdbcSqlite,
                     DatabaseKind::Sqlite
                 )
+                | (Self::Redis | Self::RedisTls, DatabaseKind::Redis)
         )
     }
 
@@ -79,6 +84,7 @@ impl ConnectionUrlFormat {
             DatabaseKind::Oracle => &[Self::JdbcOracle],
             DatabaseKind::SqlServer => &[Self::SqlServer, Self::MsSql, Self::JdbcSqlServer],
             DatabaseKind::Sqlite => &[Self::Sqlite, Self::FileUri, Self::JdbcSqlite],
+            DatabaseKind::Redis => &[Self::Redis, Self::RedisTls],
         }
     }
 }
@@ -121,6 +127,11 @@ pub enum CatalogScopeValidationError {
 
 impl CatalogScope {
     pub fn for_profile(kind: DatabaseKind, database: &str, default_schema: Option<&str>) -> Self {
+        if kind == DatabaseKind::Redis {
+            return Self {
+                databases: CatalogSelection::All,
+            };
+        }
         let schemas = match (kind, default_schema) {
             (DatabaseKind::MySql, _) | (_, None) => CatalogSelection::All,
             (_, Some(schema)) => CatalogSelection::Selected(vec![schema.to_owned()]),
@@ -525,6 +536,8 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedConnectionUrl, ProfileE
         ("mariadb", false) => (DatabaseKind::MariaDb, ConnectionUrlFormat::MariaDb),
         ("sqlserver", false) => (DatabaseKind::SqlServer, ConnectionUrlFormat::SqlServer),
         ("mssql", false) => (DatabaseKind::SqlServer, ConnectionUrlFormat::MsSql),
+        ("redis", false) => (DatabaseKind::Redis, ConnectionUrlFormat::Redis),
+        ("rediss", false) => (DatabaseKind::Redis, ConnectionUrlFormat::RedisTls),
         (scheme, _) => return Err(ProfileError::UnsupportedScheme(scheme.to_owned())),
     };
     parse_server_url(url, kind, format)
@@ -626,13 +639,29 @@ fn parse_server_url(
 ) -> Result<ParsedConnectionUrl, ProfileError> {
     let host = url.host_str().ok_or(ProfileError::MissingHost)?.to_owned();
     let database = decode(url.path().trim_start_matches('/'));
-    let database = (!database.is_empty()).then_some(database);
+    let database = if kind == DatabaseKind::Redis {
+        let database = if database.is_empty() { "0" } else { &database };
+        let number = database
+            .parse::<u32>()
+            .map_err(|_| ProfileError::InvalidQueryParameter("database".into()))?;
+        Some(number.to_string())
+    } else {
+        (!database.is_empty()).then_some(database)
+    };
     let user = (!url.username().is_empty()).then(|| decode(url.username()));
     let password = url
         .password()
         .map(|value| SecretString::from(decode(value)));
     let mut default_schema = None;
-    let mut ssl_mode = SslMode::Prefer;
+    let mut ssl_mode = if kind == DatabaseKind::Redis {
+        if format == ConnectionUrlFormat::RedisTls {
+            SslMode::Require
+        } else {
+            SslMode::Disable
+        }
+    } else {
+        SslMode::Prefer
+    };
     let mut read_only = false;
     let mut seen_schema = false;
     let mut seen_ssl = false;
@@ -693,6 +722,7 @@ fn parse_server_url(
         DatabaseKind::Oracle => 1521,
         DatabaseKind::SqlServer => 1433,
         DatabaseKind::Sqlite => unreachable!("server URL cannot be SQLite"),
+        DatabaseKind::Redis => 6379,
     };
     Ok(ParsedConnectionUrl {
         kind,
@@ -976,6 +1006,8 @@ pub fn format_connection_url(
         ConnectionUrlFormat::MariaDb => "mariadb",
         ConnectionUrlFormat::SqlServer | ConnectionUrlFormat::JdbcSqlServer => "sqlserver",
         ConnectionUrlFormat::MsSql => "mssql",
+        ConnectionUrlFormat::Redis => "redis",
+        ConnectionUrlFormat::RedisTls => "rediss",
         _ => return Err(ProfileError::IncompatibleFormat),
     };
     let host = profile.host.as_deref().ok_or(ProfileError::MissingHost)?;
@@ -1032,6 +1064,8 @@ pub fn format_connection_url(
         query.push(format!("sslmode={}", ssl_mode_value(profile.ssl_mode)));
     } else if matches!(profile.kind, DatabaseKind::MySql | DatabaseKind::MariaDb) {
         query.push(format!("sslMode={}", ssl_mode_value(profile.ssl_mode)));
+    } else if profile.kind == DatabaseKind::Redis {
+        // The redis/rediss scheme is the TLS source of truth.
     } else {
         if let Some(schema) = profile
             .default_schema

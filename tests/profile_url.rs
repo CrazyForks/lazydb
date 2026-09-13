@@ -91,6 +91,53 @@ fn parses_all_server_formats_and_connection_settings() {
 }
 
 #[test]
+fn parses_and_formats_redis_urls_without_leaking_passwords() {
+    let parsed =
+        parse_connection_url("rediss://acl%20user:p%40ss@redis.example:6380/0002?readOnly=true")
+            .unwrap();
+    assert_eq!(parsed.kind, DatabaseKind::Redis);
+    assert_eq!(parsed.format, ConnectionUrlFormat::RedisTls);
+    assert_eq!(parsed.host.as_deref(), Some("redis.example"));
+    assert_eq!(parsed.port, Some(6380));
+    assert_eq!(parsed.user.as_deref(), Some("acl user"));
+    assert_eq!(parsed.password.unwrap().expose_secret(), "p@ss");
+    assert_eq!(parsed.database.as_deref(), Some("2"));
+    assert_eq!(parsed.ssl_mode, SslMode::Require);
+    assert!(parsed.read_only);
+
+    let imported = import_connection_url(
+        "redis://user:secret@localhost/0?readOnly=true",
+        Some("cache"),
+    )
+    .unwrap();
+    let formatted = format_connection_url(&imported.profile, ConnectionUrlFormat::Redis).unwrap();
+    assert_eq!(formatted, "redis://user@localhost:6379/0?readOnly=true");
+    assert!(!formatted.contains("secret"));
+}
+
+#[test]
+fn redis_urls_default_to_database_zero_and_port_6379() {
+    let parsed = parse_connection_url("redis://localhost").unwrap();
+    assert_eq!(parsed.port, Some(6379));
+    assert_eq!(parsed.database.as_deref(), Some("0"));
+    assert_eq!(parsed.ssl_mode, SslMode::Disable);
+}
+
+#[test]
+fn redis_urls_reject_invalid_database_numbers_and_unknown_options() {
+    for url in ["redis://localhost/-1", "redis://localhost/not-a-db"] {
+        assert!(matches!(
+            parse_connection_url(url),
+            Err(ProfileError::InvalidQueryParameter(_))
+        ));
+    }
+    assert!(matches!(
+        parse_connection_url("redis://localhost/0?sslmode=require"),
+        Err(ProfileError::UnknownQueryParameter(_))
+    ));
+}
+
+#[test]
 fn parses_sql_server_uri_settings_and_tls_modes() {
     let parsed = parse_connection_url(
         "sqlserver://sa:s%40cret@localhost:1444/app?schema=dbo&encrypt=true&trustServerCertificate=false&readOnly=true",

@@ -13,6 +13,7 @@ pub mod pagination;
 pub mod profiles;
 pub mod query_bar;
 pub mod record_view;
+pub mod redis_browser;
 pub mod relation;
 pub(crate) mod scrollbar;
 mod shortcut_hints;
@@ -22,6 +23,7 @@ pub mod text_detail;
 pub mod text_selection;
 pub mod theme;
 
+use crate::profile::DatabaseKind;
 use ratatui::{
     Frame,
     buffer::CellWidth,
@@ -101,6 +103,15 @@ pub enum HitTarget {
     TabScrollRight(usize),
     CloseTab(Uuid),
     ExplorerRow(crate::model::explorer::ExplorerNodeId),
+    RedisKeyNode {
+        tab_id: Uuid,
+        node: crate::model::redis_key_tree::KeyTreeNodeId,
+    },
+    RedisKeyToggle {
+        tab_id: Uuid,
+        node: crate::model::redis_key_tree::KeyTreeNodeId,
+    },
+    RedisFindInput(Uuid),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,
@@ -168,6 +179,7 @@ pub enum HitTarget {
     HeaderDatabase,
     ProfileField(ProfileField),
     ProfileDriver(crate::profile::DatabaseKind),
+    ProfileCategory(crate::db::descriptor::DatabaseCategory),
     ProfileToggle(ProfileField),
     ProfileScopeRow(String),
     ProfileButton(ProfileButton),
@@ -283,11 +295,14 @@ pub struct UiState {
     pub grid_horizontal_scroll: Option<GridHorizontalScrollTargets>,
     pub record_view_fields: Option<(Uuid, usize)>,
     pub explorer_viewport_rows: Option<usize>,
+    pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
     pub ddl_viewport: Option<DdlViewportMetrics>,
     pub cursor: Option<CursorSpec>,
     pub terminal_selection_mode: bool,
     pub pane_layout: PaneLayoutMetrics,
     pub click_tracker: RefCell<Option<(crate::model::explorer::ExplorerNodeId, Instant)>>,
+    pub redis_click_tracker:
+        RefCell<Option<(Uuid, crate::model::redis_key_tree::KeyTreeNodeId, Instant)>>,
     pub relation_resize: RefCell<Option<(usize, u16, u16)>>,
     pub grid_scrollbar_drag: RefCell<Option<GridScrollbarDrag>>,
     pub editor_scrollbar_drag: RefCell<Option<EditorScrollbarDrag>>,
@@ -383,6 +398,26 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn track_redis_click(
+        &self,
+        tab_id: Uuid,
+        node: &crate::model::redis_key_tree::KeyTreeNodeId,
+        now: Instant,
+    ) -> bool {
+        let mut tracker = self.redis_click_tracker.borrow_mut();
+        let double = tracker.as_ref().is_some_and(|(last_tab, last_node, at)| {
+            *last_tab == tab_id
+                && last_node == node
+                && now.duration_since(*at) <= Duration::from_millis(400)
+        });
+        *tracker = if double {
+            None
+        } else {
+            Some((tab_id, node.clone(), now))
+        };
+        double
+    }
+
     pub fn new() -> Self {
         Self::with_motion(MotionMode::Full)
     }
@@ -397,11 +432,13 @@ impl UiState {
             grid_horizontal_scroll: None,
             record_view_fields: None,
             explorer_viewport_rows: None,
+            redis_keys_viewport_rows: None,
             ddl_viewport: None,
             cursor: None,
             terminal_selection_mode: false,
             pane_layout: PaneLayoutMetrics::default(),
             click_tracker: RefCell::new(None),
+            redis_click_tracker: RefCell::new(None),
             relation_resize: RefCell::new(None),
             grid_scrollbar_drag: RefCell::new(None),
             editor_scrollbar_drag: RefCell::new(None),
@@ -780,15 +817,20 @@ pub fn render_with_state_using_icons_sequence_and_theme(
         Some(WorkspaceTab::Dashboard(_))
     );
     let is_history = matches!(app.tabs.get(app.active_tab), Some(WorkspaceTab::History(_)));
+    let is_redis_browser = matches!(
+        app.tabs.get(app.active_tab),
+        Some(WorkspaceTab::RedisBrowser(_))
+    );
     let layout = AppLayout::calculate(
         area,
         app.focus,
-        is_relation || is_dashboard || is_history,
+        is_relation || is_dashboard || is_history || is_redis_browser,
         app.pane_sizes,
         app.pane_maximized,
     );
     let editor_rendered = !is_relation
         && !is_dashboard
+        && !is_redis_browser
         && DisconnectedWorkspace::for_app(app).is_none()
         && layout.editor.is_some();
     let pane_drag_invalid = app.overlay.is_some()
@@ -813,6 +855,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.grid_horizontal_scroll = None;
     state.record_view_fields = None;
     state.explorer_viewport_rows = None;
+    state.redis_keys_viewport_rows = None;
     state.ddl_viewport = None;
     state.cursor = None;
     state.text_selection_targets.clear();
@@ -840,7 +883,19 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     if let Some(area) = layout.tabs {
         render_tabs(frame, area, app, theme, state, icons);
     }
-    if is_dashboard {
+    if is_redis_browser {
+        if let Some(area) = layout.explorer {
+            state.hit_regions.push(HitRegion {
+                area,
+                target: HitTarget::Focus(Focus::Explorer),
+            });
+            render_explorer(frame, area, app, theme, state, icons);
+        }
+        if let Some(area) = layout.relation {
+            redis_browser::render(frame, area, app, state);
+        }
+        render_footer(frame, layout.footer, app, theme, sequence, state);
+    } else if is_dashboard {
         if let Some(area) = layout.explorer {
             state.hit_regions.push(HitRegion {
                 area,
@@ -1258,6 +1313,7 @@ fn animation_observation(app: &App) -> animation::AnimationObservation {
         }
         WorkspaceTab::Dashboard(_) => {}
         WorkspaceTab::History(_) => {}
+        WorkspaceTab::RedisBrowser(_) => {}
     }
     observation
 }
@@ -2049,6 +2105,7 @@ fn render_tabs(
                         .unwrap_or_else(|| "未绑定".to_owned()),
                     WorkspaceTab::Sql(_) => unreachable!(),
                     WorkspaceTab::History(_) => "全部连接".to_owned(),
+                    WorkspaceTab::RedisBrowser(_) => "Redis".to_owned(),
                 };
                 format!("{} @{connection_name}", tab.title())
             };
@@ -2079,6 +2136,7 @@ fn render_tabs(
                     })
                     .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),
                 WorkspaceTab::History(_) => icons.catalog(CatalogKind::Table),
+                WorkspaceTab::RedisBrowser(_) => icons.database(DatabaseKind::Redis),
             };
             let label = format!(" {icon} {title} ");
             let can_close = index != 0 || tab.as_console().is_some();
@@ -2478,7 +2536,7 @@ fn explorer_list_item(
                 .fg(if visible.unavailable_reason.is_some() {
                     theme.muted
                 } else {
-                    theme.action
+                    icons.database_color(kind)
                 })
                 .bg(if selected {
                     theme.selection
@@ -2758,7 +2816,7 @@ fn render_explorer_search(
             if let Some(kind) = row.profile_kind {
                 spans.push(Span::styled(
                     format!("{} ", icons.database(kind)),
-                    Style::new().fg(theme.action).bg(background),
+                    Style::new().fg(icons.database_color(kind)).bg(background),
                 ));
             } else {
                 spans.push(Span::styled(
