@@ -146,3 +146,19 @@ fn protobuf_parser_preserves_repeated_fields_and_validates_lengths() {
         DecodeStatus::NeedsMoreData
     );
 }
+
+#[test]
+fn detection_prefers_validated_json_and_uses_hex_for_unknown_binary() {
+    assert_eq!(
+        lazydb::value_preview::detect::default_format(br#"{"ok":true}"#, false),
+        PreviewFormat::JSON
+    );
+    assert_eq!(
+        lazydb::value_preview::detect::default_format(&[0, 159, 255], false),
+        PreviewFormat::HEX
+    );
+    assert_eq!(
+        lazydb::value_preview::detect::default_format(b"hello", false),
+        PreviewFormat::RAW
+    );
+}

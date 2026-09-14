@@ -5,6 +5,7 @@
 //! way a value happens to be rendered in the TUI.
 
 pub mod decode;
+pub mod detect;
 pub mod java;
 pub mod php;
 pub mod pickle;

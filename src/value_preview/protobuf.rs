@@ -19,7 +19,7 @@ fn parse_fields(data: &[u8]) -> Result<Map<String, Value>, DecodeError> {
         offset = next;
         let number = tag >> 3;
         let wire = tag & 7;
-        if number == 0 || wire == 4 || wire > 5 {
+        if number == 0 || wire == 3 || wire == 4 || wire > 5 {
             return Err(
                 DecodeError::new(DecodeStatus::Invalid, "invalid protobuf field tag").at(offset),
             );
