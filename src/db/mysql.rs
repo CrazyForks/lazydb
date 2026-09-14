@@ -805,7 +805,7 @@ impl MySqlAdapter {
             ));
         }
         let rows = sqlx::query(
-            "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
+            "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment, extra FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
         )
         .bind(schema)
         .bind(name)
@@ -815,13 +815,16 @@ impl MySqlAdapter {
         let mut columns = Vec::new();
         for row in rows {
             let default = row.try_get::<Option<String>, _>(4).map_err(decode_error)?;
+            let extra: String = row.try_get(8).map_err(decode_error)?;
             columns.push(ColumnDefinition {
                 name: row.try_get(1).map_err(decode_error)?,
                 ordinal_position: row.try_get(0).map_err(decode_error)?,
                 native_type: row.try_get(2).map_err(decode_error)?,
                 nullable: row.try_get::<String, _>(3).map_err(decode_error)? == "YES",
                 default_expression: OptionalMetadata::Supported(default),
-                identity: OptionalMetadata::Unsupported,
+                identity: OptionalMetadata::Supported(Some(
+                    extra.to_ascii_uppercase().contains("AUTO_INCREMENT"),
+                )),
                 generated_expression: OptionalMetadata::Supported(
                     row.try_get(5).map_err(decode_error)?,
                 ),
@@ -834,6 +837,7 @@ impl MySqlAdapter {
                 "MySQL table has no visible columns",
             ));
         }
+        let baseline_fingerprint = format!("mysql:table:{database}:{schema}:{name}:{columns:?}");
         Ok(CatalogObjectDefinition::Table(TableDefinition {
             database: database.clone(),
             schema: schema.clone(),
@@ -843,7 +847,7 @@ impl MySqlAdapter {
             columns: columns.clone(),
             indexes: Vec::new(),
             constraints: Vec::new(),
-            baseline_fingerprint: format!("mysql:table:{database}:{schema}:{name}:{columns:?}"),
+            baseline_fingerprint,
         }))
     }
 

@@ -97,6 +97,13 @@ fn mysql_mutation_capabilities_expose_safe_table_and_view_creation() {
 }
 
 #[test]
+fn mysql_definition_queries_include_auto_increment_metadata() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("column_comment, extra FROM information_schema.columns"));
+    assert!(source.contains("AUTO_INCREMENT"));
+}
+
+#[test]
 fn quotes_mysql_identifiers_and_uses_information_schema() {
     assert_eq!(mysql::quote_identifier("odd`name"), "`odd``name`");
     assert!(mysql::CATALOG_TABLES_SQL.contains("information_schema.tables"));
