@@ -124,30 +124,31 @@ pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
 }
 
 pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
+    let raw = page_text(page);
     match view {
-        ValueView::Raw | ValueView::Table => Ok(page_text(page)),
-        ValueView::Hex => Ok(page_bytes(page)
+        ValueView::Raw | ValueView::Table => Ok(raw),
+        ValueView::Hex => Ok(page_bytes(page, &raw)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()),
         ValueView::Json => {
-            let bytes = page_bytes(page);
+            let bytes = page_bytes(page, &raw);
             let value: serde_json::Value = serde_json::from_slice(bytes)
                 .map_err(|error| format!("JSON parse error: {error}"))?;
             serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
         }
         ValueView::Yaml => {
-            let value: serde_yaml::Value = serde_yaml::from_slice(page_bytes(page))
+            let value: serde_yaml::Value = serde_yaml::from_slice(page_bytes(page, &raw))
                 .map_err(|error| format!("YAML parse error: {error}"))?;
             serde_yaml::to_string(&value).map_err(|error| error.to_string())
         }
     }
 }
 
-fn page_bytes(page: &RedisValuePage) -> &[u8] {
+fn page_bytes<'a>(page: &'a RedisValuePage, raw: &'a str) -> &'a [u8] {
     match &page.value {
         RedisPageValue::String(value) => value,
-        _ => &[],
+        _ => raw.as_bytes(),
     }
 }
 

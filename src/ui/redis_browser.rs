@@ -212,30 +212,6 @@ pub fn render(
     ) {
         crate::ui::scrollbar::render_vertical(frame, keys_scroll_track, geometry, theme);
     }
-    let preview_lines = match &tab.value_page {
-        RedisValuePageState::Ready(page) => crate::ui::redis_value::page_lines(page),
-        RedisValuePageState::Loading { key } => {
-            vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
-        }
-        RedisValuePageState::Failed { key, message } => vec![
-            Line::from(display_bytes(&key.key)),
-            Line::from(message.as_str()),
-        ],
-        RedisValuePageState::Empty => match &tab.preview {
-            RedisPreviewState::Empty => vec![Line::from("Select a key to preview")],
-            RedisPreviewState::Loading { key } => {
-                vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
-            }
-            RedisPreviewState::Ready { key, content } => vec![
-                Line::from(display_bytes(&key.key)),
-                Line::from(content.as_str()),
-            ],
-            RedisPreviewState::Failed { key, message } => vec![
-                Line::from(display_bytes(&key.key)),
-                Line::from(message.as_str()),
-            ],
-        },
-    };
     let preview_session = tab.preview_editor_id;
     let (value_area, header_area) = if preview_area.height >= 3 {
         let chunks = Layout::default()
@@ -306,10 +282,11 @@ pub fn render(
     if tab.format.view() == crate::value_preview::ValueView::Table
         && let RedisValuePageState::Ready(page) = &tab.value_page
     {
+        let table = crate::value_preview::table::from_page(&page.value);
         render_table_preview(
             frame,
             value_area,
-            page,
+            &table,
             tab.preview_scroll,
             tab.id,
             ui,
@@ -318,10 +295,7 @@ pub fn render(
         ui.redis_preview_viewport_rows = Some((
             tab.id,
             value_area.height.saturating_sub(1) as usize,
-            crate::value_preview::table::from_page(&page.value)
-                .rows
-                .len()
-                + 1,
+            table.rows.len() + 1,
         ));
         return;
     }
@@ -365,6 +339,30 @@ pub fn render(
             None,
         );
     } else {
+        let preview_lines = match &tab.value_page {
+            RedisValuePageState::Ready(page) => crate::ui::redis_value::page_lines(page),
+            RedisValuePageState::Loading { key } => {
+                vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
+            }
+            RedisValuePageState::Failed { key, message } => vec![
+                Line::from(display_bytes(&key.key)),
+                Line::from(message.as_str()),
+            ],
+            RedisValuePageState::Empty => match &tab.preview {
+                RedisPreviewState::Empty => vec![Line::from("Select a key to preview")],
+                RedisPreviewState::Loading { key } => {
+                    vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
+                }
+                RedisPreviewState::Ready { key, content } => vec![
+                    Line::from(display_bytes(&key.key)),
+                    Line::from(content.as_str()),
+                ],
+                RedisPreviewState::Failed { key, message } => vec![
+                    Line::from(display_bytes(&key.key)),
+                    Line::from(message.as_str()),
+                ],
+            },
+        };
         let preview_content_rows = preview_lines.len();
         frame.render_widget(
             Paragraph::new(preview_lines)
@@ -380,13 +378,12 @@ pub fn render(
 fn render_table_preview(
     frame: &mut Frame<'_>,
     area: Rect,
-    page: &crate::db::redis::read::RedisValuePage,
+    table: &crate::value_preview::table::RedisTable,
     offset: usize,
     tab_id: uuid::Uuid,
     ui: &mut crate::ui::UiState,
     theme: Theme,
 ) {
-    let table = crate::value_preview::table::from_page(&page.value);
     let widths = table
         .columns
         .iter()
@@ -433,7 +430,7 @@ fn render_table_preview(
     }
     let widget = Table::new(rows, widths)
         .header(
-            Row::new(table.columns).style(
+            Row::new(table.columns.clone()).style(
                 Style::new()
                     .fg(theme.grid_header_text)
                     .add_modifier(Modifier::BOLD),
