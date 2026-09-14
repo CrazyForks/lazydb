@@ -210,7 +210,7 @@ impl IconSet {
                 DatabaseKind::Oracle => md::MD_DATABASE,
                 DatabaseKind::SqlServer => md::MD_DATABASE,
                 DatabaseKind::Sqlite => dev::DEV_SQLITE,
-                DatabaseKind::Redis => md::MD_DATABASE,
+                DatabaseKind::Redis => dev::DEV_REDIS,
             },
             IconMode::Unicode => match kind {
                 DatabaseKind::Postgres => "PG",
@@ -238,7 +238,7 @@ impl IconSet {
             DatabaseKind::Postgres => ratatui::style::Color::Rgb(87, 169, 220),
             DatabaseKind::MySql | DatabaseKind::MariaDb => ratatui::style::Color::Rgb(242, 145, 17),
             DatabaseKind::Oracle => ratatui::style::Color::Rgb(220, 70, 70),
-            DatabaseKind::SqlServer => ratatui::style::Color::Rgb(204, 41, 48),
+            DatabaseKind::SqlServer => ratatui::style::Color::Rgb(13, 127, 228),
             DatabaseKind::Sqlite => ratatui::style::Color::Rgb(68, 184, 214),
             DatabaseKind::Redis => ratatui::style::Color::Rgb(220, 45, 45),
         }
@@ -523,6 +523,11 @@ mod tests {
         assert_eq!(icons.database(DatabaseKind::Postgres), dev::DEV_POSTGRESQL);
         assert_eq!(icons.database(DatabaseKind::MySql), dev::DEV_MYSQL);
         assert_eq!(icons.database(DatabaseKind::Sqlite), dev::DEV_SQLITE);
+        assert_eq!(icons.database(DatabaseKind::Redis), dev::DEV_REDIS);
+        assert_eq!(
+            icons.database_color(DatabaseKind::SqlServer),
+            ratatui::style::Color::Rgb(13, 127, 228)
+        );
         assert_eq!(icons.catalog(CatalogKind::Database), md::MD_DATABASE);
         assert_eq!(icons.catalog(CatalogKind::Schema), md::MD_DATABASE_OUTLINE);
         assert_eq!(icons.catalog(CatalogKind::Table), md::MD_TABLE);

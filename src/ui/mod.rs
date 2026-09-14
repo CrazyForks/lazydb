@@ -1972,10 +1972,30 @@ struct TabViewport {
 struct RenderedTab {
     index: usize,
     id: Uuid,
-    label: String,
+    icon: String,
+    icon_color: Option<Color>,
+    title: String,
     marker: String,
     can_close: bool,
     width: u16,
+}
+
+fn tab_database_kind(app: &App, tab: &WorkspaceTab) -> Option<DatabaseKind> {
+    let profile_id = match tab {
+        WorkspaceTab::Sql(tab) => tab.execution_target.as_ref()?.profile_id,
+        WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id,
+        WorkspaceTab::Dashboard(tab) => tab
+            .connection
+            .map(|connection| connection.profile_id)
+            .or(tab.profile_id)?,
+        WorkspaceTab::History(_) => return None,
+        WorkspaceTab::RedisBrowser(_) => return Some(DatabaseKind::Redis),
+    };
+
+    app.profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .map(|profile| profile.kind)
 }
 
 const TAB_OVERFLOW_CONTROLS_WIDTH: u16 = 2;
@@ -2116,29 +2136,12 @@ fn render_tabs(
                 .collect::<String>();
             let icon = match tab {
                 WorkspaceTab::Relation(tab) => icons.catalog(tab.descriptor.kind),
-                WorkspaceTab::Dashboard(_) => {
-                    icons.database(crate::profile::DatabaseKind::Postgres)
-                }
-                WorkspaceTab::Sql(tab) => tab
-                    .execution_target
-                    .as_ref()
-                    .and_then(|target| {
-                        app.profiles
-                            .iter()
-                            .find(|profile| profile.id == target.profile_id)
-                    })
-                    .or_else(|| app.active_profile())
-                    .map(|profile| icons.database(profile.kind))
-                    .or_else(|| {
-                        app.connection
-                            .server
-                            .as_ref()
-                            .map(|server| icons.database(server.kind))
-                    })
-                    .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),
                 WorkspaceTab::History(_) => icons.catalog(CatalogKind::Table),
-                WorkspaceTab::RedisBrowser(_) => icons.database(DatabaseKind::Redis),
+                _ => tab_database_kind(app, tab)
+                    .map(|kind| icons.database(kind))
+                    .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),
             };
+            let icon_color = tab_database_kind(app, tab).map(|kind| icons.database_color(kind));
             let label = format!(" {icon} {title} ");
             let can_close = index != 0 || tab.as_console().is_some();
             let marker = if can_close {
@@ -2152,7 +2155,9 @@ fn render_tabs(
             RenderedTab {
                 index,
                 id: tab.id(),
-                label,
+                icon: icon.to_owned(),
+                icon_color,
+                title,
                 marker,
                 can_close,
                 width,
@@ -2194,9 +2199,44 @@ fn render_tabs(
             .width
             .saturating_sub(marker_width)
             .min(remaining_width.saturating_sub(marker_width));
-        let label = truncate_to_cell_width(&tab.label, max_label_width);
-        let label_width = label.cell_width();
-        spans.push(Span::styled(label, style));
+        let prefix = format!(" {} ", tab.icon);
+        let full_label_width = prefix
+            .cell_width()
+            .saturating_add(tab.title.cell_width())
+            .saturating_add(1);
+        let (prefix, title, suffix) = if full_label_width <= max_label_width {
+            (prefix, tab.title.clone(), " ".to_owned())
+        } else if prefix.cell_width() < max_label_width {
+            let title_width = max_label_width
+                .saturating_sub(prefix.cell_width())
+                .saturating_sub(1)
+                .max(1);
+            (
+                prefix,
+                truncate_to_cell_width(&tab.title, title_width),
+                String::new(),
+            )
+        } else {
+            (
+                String::new(),
+                truncate_to_cell_width(&format!("{} {} ", tab.icon, tab.title), max_label_width),
+                String::new(),
+            )
+        };
+        let label_width = prefix
+            .cell_width()
+            .saturating_add(title.cell_width())
+            .saturating_add(suffix.cell_width());
+        if !prefix.is_empty() {
+            let icon_style = tab.icon_color.map_or(style, |color| style.fg(color));
+            spans.push(Span::styled(prefix, icon_style));
+        }
+        if !title.is_empty() {
+            spans.push(Span::styled(title, style));
+        }
+        if !suffix.is_empty() {
+            spans.push(Span::styled(suffix, style));
+        }
         if !tab.marker.is_empty() {
             spans.push(Span::styled(tab.marker.clone(), style));
         }

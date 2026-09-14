@@ -1846,7 +1846,7 @@ impl ProfileManagerState {
             draft: None,
             delete_profile_id: None,
             delete_focus: ProfileDeleteFocus::Cancel,
-            selected_field: ProfileField::DatabaseCategory,
+            selected_field: ProfileField::Kind,
             operation: None,
             message: None,
             request_generation: 0,
@@ -1863,7 +1863,7 @@ impl ProfileManagerState {
     pub fn start_new(&mut self, kind: DatabaseKind) {
         self.page = ProfileManagerPage::Form;
         self.draft = Some(ProfileDraft::new(kind));
-        self.selected_field = ProfileField::DatabaseCategory;
+        self.selected_field = ProfileField::Kind;
         self.operation = None;
         self.message = None;
         self.scope_warning = None;
