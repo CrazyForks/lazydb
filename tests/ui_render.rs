@@ -7287,6 +7287,7 @@ fn driver_options_use_database_icons_in_each_icon_mode() {
         DatabaseKind::SqlServer,
         DatabaseKind::Sqlite,
         DatabaseKind::Redis,
+        DatabaseKind::Oracle,
     ];
 
     for mode in [IconMode::NerdFont, IconMode::Unicode, IconMode::Ascii] {

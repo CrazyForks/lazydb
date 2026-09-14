@@ -953,14 +953,16 @@ fn manager_state_initializes_new_and_edit_forms() {
     let mut state = ProfileManagerState::new(true);
     assert_eq!(state.page, ProfileManagerPage::Form);
     assert!(state.opened_automatically);
+    assert_eq!(state.selected_field, ProfileField::Kind);
 
     state.start_new(DatabaseKind::MySql);
     assert_eq!(state.page, ProfileManagerPage::Form);
-    assert_eq!(state.selected_field, ProfileField::DatabaseCategory);
+    assert_eq!(state.selected_field, ProfileField::Kind);
     assert_eq!(state.draft.as_ref().unwrap().port.value(), "3306");
 
     let profile = saved_postgres_profile();
     state.start_edit(&profile, false);
+    assert_eq!(state.selected_field, ProfileField::DatabaseCategory);
     assert_eq!(state.draft.as_ref().unwrap().profile_id(), profile.id);
     assert_eq!(
         state.visible_fields(),
