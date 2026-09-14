@@ -107,8 +107,60 @@ fn deleting_selected_key_creates_targeted_del_command() {
             )));
     }
     let commands = app.update(Action::RedisDeleteKey);
+    assert!(commands.is_empty());
+    assert!(matches!(
+        app.overlay,
+        Some(lazydb::model::workspace::Overlay::RedisDeleteConfirm { .. })
+    ));
+    app.update(Action::RedisDeleteToggleFocus);
+    let commands = app.update(Action::RedisDeleteConfirm);
     assert!(matches!(
         commands.as_slice(),
         [Command::DeleteRedisKey { key, .. }] if key.key == b"user:1"
+    ));
+}
+
+#[test]
+fn confirming_prepared_prefix_deletes_the_frozen_key_list() {
+    let profile_id = Uuid::from_u128(20);
+    let mut app = App::new(Vec::new());
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 1;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    app.connection.target = Some(lazydb::model::execution_target::ExecutionTarget {
+        profile_id,
+        database: "0".into(),
+        schema: None,
+    });
+    let tab_id = Uuid::from_u128(21);
+    app.tabs
+        .push(lazydb::model::tab::WorkspaceTab::RedisBrowser(
+            lazydb::model::redis_browser::RedisBrowserTab::new(
+                tab_id,
+                RedisTarget {
+                    profile_id,
+                    database: 0,
+                },
+            ),
+        ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = lazydb::model::workspace::Focus::Results;
+    app.overlay = Some(lazydb::model::workspace::Overlay::RedisDeleteConfirm {
+        tab_id,
+        target: lazydb::model::workspace::RedisDeleteTarget::Prefix {
+            target: RedisTarget {
+                profile_id,
+                database: 0,
+            },
+            prefix: b"user:".to_vec(),
+        },
+        count: 2,
+        keys: Some(vec![b"user:1".to_vec(), b"user:2".to_vec()]),
+        focus: lazydb::model::workspace::DeleteConsoleFocus::Delete,
+    });
+    let commands = app.update(Action::RedisDeleteConfirm);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::DeleteRedisKeys { keys, .. }] if keys == &vec![b"user:1".to_vec(), b"user:2".to_vec()]
     ));
 }

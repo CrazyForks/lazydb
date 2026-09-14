@@ -902,6 +902,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::ClearTransactionCancel => Some(Action::CancelClearTransactionOutcome),
                 HitTarget::DeleteConsoleConfirm => Some(Action::ActivateDeleteConsole),
                 HitTarget::DeleteConsoleCancel => Some(Action::CancelDeleteConsole),
+                HitTarget::RedisDeleteConfirm => Some(Action::RedisDeleteConfirm),
+                HitTarget::RedisDeleteCancel => Some(Action::RedisDeleteCancel),
                 HitTarget::SqlEditorListDeleteConfirm => Some(Action::SqlEditorListDeleteActivate),
                 HitTarget::CatalogDropCancel => Some(Action::CatalogDropCancel),
                 HitTarget::CatalogDropConfirm => Some(Action::ActivateCatalogDrop),
@@ -1207,6 +1209,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::TransactionMenuCancel => None,
         HitTarget::TransactionExitChoice(_) | HitTarget::TransactionExitCancel => None,
         HitTarget::DeleteConsoleConfirm
+        | HitTarget::RedisDeleteConfirm
+        | HitTarget::RedisDeleteCancel
         | HitTarget::DeleteConsoleCancel
         | HitTarget::SqlEditorListDeleteConfirm
         | HitTarget::CatalogDropCancel

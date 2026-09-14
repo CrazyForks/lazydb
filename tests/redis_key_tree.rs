@@ -48,6 +48,9 @@ fn incremental_insert_preserves_state_and_matches_full_rebuild() {
         key(b"user:1002"),
         key(b"cache:1"),
     ]);
+    rebuilt
+        .expanded
+        .insert(KeyTreeNodeId::Prefix(b"user:".to_vec()));
     assert_eq!(incremental.visible_rows(), rebuilt.visible_rows());
     assert_eq!(
         incremental.selected,
@@ -71,4 +74,31 @@ fn collapsed_prefix_hides_its_own_key_and_descendants() {
 
     tree.expanded.insert(prefix.clone());
     assert_eq!(tree.visible_ids(), vec![prefix, first_key, second_key]);
+}
+
+#[test]
+fn key_before_descendant_is_promoted_to_a_folder_in_incremental_and_full_builds() {
+    let mut incremental = KeyTreeState::default();
+    incremental.rebuild(&[key(b"user")]);
+    incremental.insert_keys(&[key(b"user:1")]);
+
+    let mut full = KeyTreeState::default();
+    full.rebuild(&[key(b"user"), key(b"user:1")]);
+
+    let prefix = KeyTreeNodeId::Prefix(b"user:".to_vec());
+    let own_key = KeyTreeNodeId::Key(b"user".to_vec());
+    assert!(incremental.contains(&prefix));
+    assert_eq!(incremental.parent_of(&own_key), Some(prefix.clone()));
+    assert_eq!(incremental.visible_ids(), vec![prefix.clone()]);
+    incremental.expanded.insert(prefix.clone());
+    assert_eq!(
+        incremental.visible_ids(),
+        vec![
+            prefix.clone(),
+            own_key.clone(),
+            KeyTreeNodeId::Key(b"user:1".to_vec())
+        ]
+    );
+    full.expanded.insert(prefix.clone());
+    assert_eq!(incremental.visible_rows(), full.visible_rows());
 }

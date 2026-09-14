@@ -12598,7 +12598,75 @@ impl App {
             Action::RedisCollapseSelection => self.collapse_redis_selection(),
             Action::RedisPrimarySelection => self.primary_redis_selection(),
             Action::RedisCopyKey => self.copy_redis_key(),
-            Action::RedisDeleteKey => self.delete_redis_key(),
+            Action::RedisDeleteKey => self.open_redis_delete_confirm(),
+            Action::RedisDeleteConfirm => self.confirm_redis_delete(),
+            Action::RedisDeleteCancel => {
+                self.overlay = None;
+                Vec::new()
+            }
+            Action::RedisDeletePrepared {
+                tab_id,
+                target,
+                keys,
+            } => {
+                if let Some(crate::model::workspace::Overlay::RedisDeletePreparing { .. }) =
+                    self.overlay
+                {
+                    let count = keys.len();
+                    self.overlay = Some(crate::model::workspace::Overlay::RedisDeleteConfirm {
+                        tab_id,
+                        target,
+                        count,
+                        keys: Some(keys),
+                        focus: crate::model::workspace::DeleteConsoleFocus::Cancel,
+                    });
+                    self.notify_info("Redis delete", format!("Found {count} matching keys"));
+                }
+                Vec::new()
+            }
+            Action::RedisDeleteBatchCompleted {
+                tab_id,
+                target: _,
+                keys,
+                deleted,
+                missing,
+                failed,
+            } => {
+                if let Some(message) = failed {
+                    self.notify_error("Redis delete", message);
+                } else {
+                    self.notify_success(
+                        "Redis delete",
+                        format!("Deleted {deleted} keys ({missing} already missing)"),
+                    );
+                }
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                {
+                    for key in keys {
+                        let _ = tab.keyspace.remove_key(&key);
+                    }
+                    tab.rebuild_tree();
+                    tab.insert_tree_keys();
+                }
+                Vec::new()
+            }
+            Action::RedisDeleteToggleFocus => {
+                if let Some(crate::model::workspace::Overlay::RedisDeleteConfirm {
+                    focus, ..
+                }) = self.overlay.as_mut()
+                {
+                    *focus = match focus {
+                        crate::model::workspace::DeleteConsoleFocus::Cancel => {
+                            crate::model::workspace::DeleteConsoleFocus::Delete
+                        }
+                        crate::model::workspace::DeleteConsoleFocus::Delete => {
+                            crate::model::workspace::DeleteConsoleFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
+            }
             Action::RedisFocusPane(focus) => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.focus = focus;
@@ -18254,7 +18322,7 @@ impl App {
         })]
     }
 
-    fn delete_redis_key(&mut self) -> Vec<Command> {
+    fn open_redis_delete_confirm(&mut self) -> Vec<Command> {
         let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
@@ -18265,21 +18333,86 @@ impl App {
         {
             return Vec::new();
         }
-        let Some(key) = tab.tree.selected_key().map(|key| key.to_vec()) else {
-            self.notify_warning("Redis delete", "Select a key, not a folder");
+        let Some(selected) = tab.tree.selected.clone() else {
+            return Vec::new();
+        };
+        let target = match selected {
+            crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => {
+                crate::model::workspace::RedisDeleteTarget::Key(
+                    crate::db::redis::types::RedisKeyId {
+                        target: tab.target.clone(),
+                        key,
+                    },
+                )
+            }
+            crate::model::redis_key_tree::KeyTreeNodeId::Prefix(prefix) => {
+                crate::model::workspace::RedisDeleteTarget::Prefix {
+                    target: tab.target.clone(),
+                    prefix,
+                }
+            }
+        };
+        if matches!(
+            target,
+            crate::model::workspace::RedisDeleteTarget::Prefix { .. }
+        ) {
+            let tab_id = tab.id;
+            self.overlay = Some(crate::model::workspace::Overlay::RedisDeletePreparing {
+                tab_id,
+                target: target.clone(),
+            });
+            if let (
+                Some(connection),
+                crate::model::workspace::RedisDeleteTarget::Prefix { target, prefix },
+            ) = (self.connection.active_identity(), target)
+            {
+                return vec![Command::DeleteRedisPrefix {
+                    tab_id,
+                    connection,
+                    target,
+                    prefix,
+                }];
+            }
+            return Vec::new();
+        }
+        self.overlay = Some(crate::model::workspace::Overlay::RedisDeleteConfirm {
+            tab_id: tab.id,
+            target,
+            count: 1,
+            keys: None,
+            focus: crate::model::workspace::DeleteConsoleFocus::Cancel,
+        });
+        Vec::new()
+    }
+
+    fn confirm_redis_delete(&mut self) -> Vec<Command> {
+        let Some(crate::model::workspace::Overlay::RedisDeleteConfirm {
+            tab_id,
+            target,
+            keys,
+            focus: crate::model::workspace::DeleteConsoleFocus::Delete,
+            ..
+        }) = self.overlay.take()
+        else {
             return Vec::new();
         };
         let Some(connection) = self.connection.active_identity() else {
             self.notify_error("Redis delete", "Redis connection is not active");
             return Vec::new();
         };
-        let tab_id = tab.id;
         vec![Command::DeleteRedisKey {
             tab_id,
             connection,
-            key: crate::db::redis::types::RedisKeyId {
-                target: tab.target.clone(),
-                key,
+            key: match target {
+                crate::model::workspace::RedisDeleteTarget::Key(key) => key,
+                crate::model::workspace::RedisDeleteTarget::Prefix { target, .. } => {
+                    return vec![Command::DeleteRedisKeys {
+                        tab_id,
+                        connection,
+                        target,
+                        keys: keys.unwrap_or_default(),
+                    }];
+                }
             },
         }]
     }

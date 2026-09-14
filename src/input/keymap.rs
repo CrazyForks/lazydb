@@ -879,6 +879,34 @@ impl Keymap {
                 _ => None,
             };
         }
+        if let Some(Overlay::RedisDeleteConfirm { focus, .. }) = app.overlay.as_ref() {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Enter => Some(match focus {
+                    crate::model::workspace::DeleteConsoleFocus::Cancel => {
+                        Action::RedisDeleteCancel
+                    }
+                    crate::model::workspace::DeleteConsoleFocus::Delete => {
+                        Action::RedisDeleteConfirm
+                    }
+                }),
+                KeyCode::Esc => Some(Action::RedisDeleteCancel),
+                KeyCode::Tab
+                | KeyCode::Right
+                | KeyCode::Down
+                | KeyCode::BackTab
+                | KeyCode::Left
+                | KeyCode::Up => Some(Action::RedisDeleteToggleFocus),
+                _ => None,
+            };
+        }
+        if matches!(app.overlay, Some(Overlay::RedisDeletePreparing { .. })) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Esc => Some(Action::RedisDeleteCancel),
+                _ => None,
+            };
+        }
         if app.overlay.is_some() {
             self.pending = None;
             return match event.code {
@@ -1328,6 +1356,19 @@ impl Keymap {
                         Action::RedisKeysScroll(-10)
                     },
                 );
+            }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+            ) && event.modifiers.is_empty()
+            {
+                match event.code {
+                    KeyCode::Char('o') => return Some(Action::RedisPrimarySelection),
+                    KeyCode::Char('y') => return Some(Action::RedisCopyKey),
+                    KeyCode::Char('d') => return Some(Action::RedisDeleteKey),
+                    _ => {}
+                }
             }
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(match action {

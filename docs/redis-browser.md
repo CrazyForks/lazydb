@@ -44,6 +44,13 @@ snapshot. In Preview, `j`/`k` scroll the loaded value and PageUp/PageDown page
 the focused pane. Keys folders use the same group icons, colors, and selection
 behavior as Explorer; leaf keys use a key icon.
 
+Deleting a folder first scans the database independently, deduplicates matching
+raw-byte keys, and shows the discovered count before confirmation. Confirmation
+deletes only that frozen list; keys created later are not included in the same
+operation. Large deletes run in bounded batches and report deleted and already
+missing keys separately. A cancelled operation does not roll back batches that
+already completed.
+
 Keys and Preview maintain independent vertical scroll positions. Scrollbars
 appear only when the loaded content overflows the pane; scrolling a Preview
 does not change the selected key or issue a new Redis request.
