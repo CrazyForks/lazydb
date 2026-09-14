@@ -3749,7 +3749,15 @@ fn decode_cell(row: &MySqlRow, index: usize) -> CellValue {
             .map(CellValue::Date),
         "TIME" => row
             .try_get_unchecked::<NaiveTime, _>(index)
-            .map(CellValue::Time),
+            .map(CellValue::Time)
+            .or_else(|_| {
+                // MariaDB TIME is a duration, not only a wall-clock time:
+                // it may be negative or exceed 24 hours. chrono::NaiveTime
+                // cannot represent those values, so preserve the server's
+                // textual form instead of failing or wrapping it.
+                row.try_get_unchecked::<String, _>(index)
+                    .map(CellValue::Text)
+            }),
         "DATETIME" | "TIMESTAMP" => row
             .try_get_unchecked::<NaiveDateTime, _>(index)
             .map(CellValue::DateTime),
