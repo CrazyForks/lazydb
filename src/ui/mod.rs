@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod query_bar;
 pub mod record_view;
 pub mod redis_browser;
+pub mod redis_value;
 pub mod relation;
 pub(crate) mod scrollbar;
 mod shortcut_hints;
