@@ -154,10 +154,7 @@ impl Keymap {
                     KeyCode::Esc => Some(Action::SqlHistorySearchCancel),
                     KeyCode::Enter => Some(Action::SqlHistorySearchConfirm),
                     KeyCode::Backspace => Some(Action::SqlHistorySearchBackspace),
-                    KeyCode::Char(character) if event.modifiers.is_empty() => {
-                        Some(Action::SqlHistorySearchInsert(character))
-                    }
-                    _ => None,
+                    _ => map_single_line_text_input_edit(event).map(Action::SqlHistorySearchEdit),
                 };
             }
             return match event.code {
@@ -172,7 +169,7 @@ impl Keymap {
                 KeyCode::Char('j') | KeyCode::Down => Some(Action::SqlHistoryMove(1)),
                 KeyCode::Char('k') | KeyCode::Up => Some(Action::SqlHistoryMove(-1)),
                 KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
-                KeyCode::Char(character) if event.modifiers.is_empty() => {
+                KeyCode::Char(character) if (event.modifiers & !KeyModifiers::SHIFT).is_empty() => {
                     Some(Action::SqlHistorySearchInsert(character))
                 }
                 _ => None,
@@ -2643,6 +2640,15 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
             .then(|| Action::ProfilePaste(ProfileInput::from(value)))
             .into_iter()
             .collect();
+    }
+    if app.overlay.as_ref().is_some_and(|overlay| {
+        matches!(
+            overlay,
+            Overlay::SqlHistory(view)
+                if view.mode == crate::model::sql_history_view::SqlHistoryMode::Search
+        )
+    }) {
+        return vec![Action::SqlHistorySearchPaste(value)];
     }
     if app.overlay == Some(Overlay::CatalogEditor) {
         let editor = app.catalog_editor.as_ref();

@@ -13,7 +13,7 @@ use crate::{
         editor::EditorViewport,
         sql_history_view::{SqlHistoryMode, SqlHistoryState},
     },
-    ui::{HitRegion, HitTarget, sql_preview, theme::Theme},
+    ui::{HitRegion, HitTarget, render_text_input, sql_preview, theme::Theme},
 };
 
 pub(crate) fn render(
@@ -54,7 +54,7 @@ pub(crate) fn render(
         Constraint::Length(footer_height),
     ])
     .split(inner);
-    render_header(frame, content[0], view, theme);
+    render_header(frame, content[0], view, theme, state);
     render_content(frame, content[1], app, view, theme, state);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -72,30 +72,55 @@ pub(crate) fn render(
     );
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, view: &SqlHistoryState, theme: Theme) {
-    let query = if view.search.value().is_empty() {
-        "Search: all SQL"
-    } else {
-        view.search.value()
-    };
+fn render_header(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: &SqlHistoryState,
+    theme: Theme,
+    state: &mut super::UiState,
+) {
     let status = view
         .status_filter
         .map_or("all", |value| format_status(value));
     let transaction = view
         .transaction_filter
         .map_or("all", |value| format_transaction(value));
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
+    let header = Layout::horizontal([
+        Constraint::Min(12),
+        Constraint::Length((status.len() + transaction.len() + 24).min(area.width as usize) as u16),
+    ])
+    .split(area);
+    let search_area = header[0];
+    let filters_area = header[1];
+    if view.mode == SqlHistoryMode::Search {
+        render_text_input(
+            frame,
+            search_area,
+            " Search: ",
+            &view.search,
+            Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+            state,
+        );
+    } else {
+        let query = if view.search.value().is_empty() {
+            "Search: all SQL".to_owned()
+        } else {
+            format!("Search: {}", view.search.value())
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
                 format!(" {query} "),
                 Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  status: {status}  transaction: {transaction}"),
-                Style::new().fg(theme.muted),
-            ),
-        ])),
-        area,
+            )),
+            search_area,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("status: {status}  transaction: {transaction}"),
+            Style::new().fg(theme.muted),
+        )),
+        filters_area,
     );
 }
 
@@ -137,7 +162,7 @@ fn render_list(
         }
         let selected = view.selected_execution == Some(item.execution_id);
         let preview_height = (inner.bottom().saturating_sub(y)).min(3);
-        let lines = sql_preview::lines(
+        let lines = sql_preview::lines_without_line_numbers(
             &item.sql,
             app.sql_history_dialect(item.profile_id),
             inner.width.saturating_sub(2) as usize,
@@ -245,11 +270,13 @@ fn render_detail(
         Paragraph::new(info).style(Style::new().fg(theme.text)),
         sections[0],
     );
-    if view.mode == SqlHistoryMode::Sql {
+    if view.selected_item().is_some() {
         let code_area = sections[1];
         let viewport = EditorViewport {
-            width: code_area.width.saturating_sub(2) as usize,
-            height: code_area.height as usize,
+            // The read-only renderer reserves a five-cell gutter for the
+            // common case (up to four-digit line numbers plus a separator).
+            width: code_area.width.saturating_sub(2).saturating_sub(5) as usize,
+            height: code_area.height.saturating_sub(1) as usize,
         };
         if let Ok(snapshot) = app.sql_history_editor_snapshot(viewport) {
             super::read_only_sql::ReadOnlySqlEditor {
@@ -259,7 +286,8 @@ fn render_detail(
                     .borders(Borders::TOP)
                     .border_style(Style::new().fg(theme.border))
                     .title(" SQL "),
-                focused: true,
+                focused: view.mode == SqlHistoryMode::Sql,
+                show_line_numbers: true,
             }
             .render(frame, code_area, theme, state);
         }

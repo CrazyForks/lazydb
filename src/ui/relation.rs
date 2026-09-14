@@ -1129,6 +1129,7 @@ fn render_ddl_editor(
         snapshot,
         block,
         focused: app.focus == Focus::Results && app.overlay.is_none(),
+        show_line_numbers: true,
     }
     .render(frame, area, theme, state);
 }
