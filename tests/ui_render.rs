@@ -622,7 +622,8 @@ fn role_editor_renders_secret_as_status_only() {
     });
     app.overlay = Some(Overlay::CatalogEditor);
     let output = render(&app, 100, 30);
-    assert!(output.contains("Password: <set>"));
+    assert!(output.contains("Password"));
+    assert!(output.contains("Set"));
     assert!(!output.contains("render-secret"));
 }
 

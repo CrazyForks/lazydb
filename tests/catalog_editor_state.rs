@@ -7,7 +7,7 @@ use lazydb::{
     identity::ConnectionIdentity,
     model::catalog_editor::{
         CatalogDraft, CatalogEditorOperation, CatalogEditorPage, CatalogEditorState,
-        CatalogMutationOption, CatalogMutationPlan, DatabaseDraft, DraftRowState,
+        CatalogFormFocus, CatalogMutationOption, CatalogMutationPlan, DatabaseDraft, DraftRowState,
         MaterializedViewDraft, SchemaDraft, TableActionField, TableColumnField, TableDraft,
         TableEditorFocus, TableGeneralField,
     },
@@ -83,6 +83,88 @@ fn catalog_input_accessors_follow_explicit_targets() {
             .unwrap()
             .value(),
         "changed"
+    );
+}
+
+#[test]
+fn database_form_uses_named_focus_and_edits_name_then_owner() {
+    let mut draft = DatabaseDraft::new("");
+    let mut catalog = CatalogDraft::Database(draft.clone());
+
+    assert_eq!(draft.focus, CatalogFormFocus::Name);
+    draft.move_field(1);
+    assert_eq!(draft.focus, CatalogFormFocus::Owner);
+    if let CatalogDraft::Database(draft) = &mut catalog {
+        draft.move_field(1);
+    }
+
+    catalog.insert('d');
+    let CatalogDraft::Database(draft) = catalog else {
+        panic!("expected database draft");
+    };
+    assert_eq!(draft.name.value(), "");
+    assert_eq!(draft.owner.value(), "d");
+}
+
+#[test]
+fn role_form_toggle_changes_only_the_focused_permission() {
+    let mut role = lazydb::model::catalog_editor::RoleDraft::new(false);
+    role.focus = CatalogFormFocus::Login;
+    role.toggle_focused();
+
+    assert!(role.login);
+    assert!(!role.superuser);
+    assert!(!role.createdb);
+}
+
+#[test]
+fn role_password_editing_keeps_value_redacted_and_syncs_secret_state() {
+    let mut role = lazydb::model::catalog_editor::RoleDraft::new(true);
+    role.focus = CatalogFormFocus::Password;
+    role.insert('s');
+    role.paste("ecret");
+
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secret");
+    assert_eq!(format!("{role:?}").contains("secret"), false);
+
+    role.backspace();
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secre");
+    role.delete();
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secre");
+}
+
+#[test]
+fn catalog_form_target_maps_database_name_and_role_memberships() {
+    let mut database = CatalogDraft::Database(DatabaseDraft::new(""));
+    database
+        .input_for_target_mut(&CatalogEditorCursorTarget::FormField(
+            CatalogFormFocus::Name,
+        ))
+        .expect("database name target")
+        .set("analytics");
+    assert_eq!(
+        database
+            .input_for_target(&CatalogEditorCursorTarget::FormField(
+                CatalogFormFocus::Name
+            ))
+            .unwrap()
+            .value(),
+        "analytics"
+    );
+
+    let mut role = CatalogDraft::Role(lazydb::model::catalog_editor::RoleDraft::new(true));
+    role.input_for_target_mut(&CatalogEditorCursorTarget::FormField(
+        CatalogFormFocus::Memberships,
+    ))
+    .expect("role memberships target")
+    .set("reporting");
+    assert_eq!(
+        role.input_for_target(&CatalogEditorCursorTarget::FormField(
+            CatalogFormFocus::Memberships,
+        ))
+        .unwrap()
+        .value(),
+        "reporting"
     );
 }
 
