@@ -3490,6 +3490,8 @@ impl App {
                     | Action::ExecuteSemanticCommand { .. }
                     | Action::NewConsole
                     | Action::NewConsoleNamed(_)
+                    | Action::RedisCopyKey
+                    | Action::RedisDeleteKey
             )
             && !((self.is_active_relation_tab()
                 || matches!(
@@ -12487,6 +12489,29 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::RedisKeyDeleted { tab_id, key } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                {
+                    if tab.keyspace.remove_key(&key.key) {
+                        let fallback = tab.tree.visible_ids().into_iter().find(|id| {
+                            !matches!(id, crate::model::redis_key_tree::KeyTreeNodeId::Key(bytes) if bytes == &key.key)
+                        });
+                        tab.rebuild_tree();
+                        tab.find = None;
+                        tab.select(fallback);
+                    }
+                }
+                Vec::new()
+            }
+            Action::RedisKeyDeleteFailed {
+                tab_id: _,
+                key: _,
+                message,
+            } => {
+                self.notify_error("Redis delete", message);
+                Vec::new()
+            }
             Action::RedisPreviewLoaded {
                 tab_id,
                 generation,
@@ -12572,6 +12597,8 @@ impl App {
             Action::RedisExpandSelection => self.expand_redis_selection(),
             Action::RedisCollapseSelection => self.collapse_redis_selection(),
             Action::RedisPrimarySelection => self.primary_redis_selection(),
+            Action::RedisCopyKey => self.copy_redis_key(),
+            Action::RedisDeleteKey => self.delete_redis_key(),
             Action::RedisFocusPane(focus) => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.focus = focus;
@@ -12595,7 +12622,7 @@ impl App {
                         .len()
                         .saturating_sub(tab.viewport_rows);
                     tab.scroll = (tab.scroll as isize + delta).clamp(0, max as isize) as usize;
-                    let ids = tab.tree.visible_ids();
+                    let ids = tab.visible_ids();
                     if let Some(selected) = tab.tree.selected.as_ref()
                         && let Some(index) = ids.iter().position(|id| id == selected)
                     {
@@ -12682,6 +12709,8 @@ impl App {
             Action::RedisFindConfirm => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.confirm_find();
+                    tab.tree
+                        .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
                     if let Some(key) = tab.tree.selected_key().map(<[u8]>::to_vec) {
                         let tab_id = tab.id;
                         return self.select_redis_key(
@@ -18202,6 +18231,59 @@ impl App {
         }]
     }
 
+    fn copy_redis_key(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
+            return Vec::new();
+        }
+        let Some(key) = tab.tree.selected_key() else {
+            self.notify_warning("Redis key", "Select a key, not a folder");
+            return Vec::new();
+        };
+        let (text, escaped) = crate::model::redis_key_text::clipboard_text(key);
+        vec![Command::WriteClipboard(ClipboardPayload {
+            description: if escaped {
+                "Redis key (escaped)".into()
+            } else {
+                "Redis key".into()
+            },
+            text,
+            sensitive: false,
+        })]
+    }
+
+    fn delete_redis_key(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys
+            || tab.find.as_ref().is_some_and(|find| {
+                find.phase == crate::model::redis_browser::RedisFindPhase::Editing
+            })
+        {
+            return Vec::new();
+        }
+        let Some(key) = tab.tree.selected_key().map(|key| key.to_vec()) else {
+            self.notify_warning("Redis delete", "Select a key, not a folder");
+            return Vec::new();
+        };
+        let Some(connection) = self.connection.active_identity() else {
+            self.notify_error("Redis delete", "Redis connection is not active");
+            return Vec::new();
+        };
+        let tab_id = tab.id;
+        vec![Command::DeleteRedisKey {
+            tab_id,
+            connection,
+            key: crate::db::redis::types::RedisKeyId {
+                target: tab.target.clone(),
+                key,
+            },
+        }]
+    }
+
     fn move_redis_selection(&mut self, delta: isize) -> Vec<Command> {
         let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
             return Vec::new();
@@ -18209,9 +18291,19 @@ impl App {
         if tab.focus != crate::model::redis_browser::RedisBrowserFocus::Keys {
             return Vec::new();
         }
-        let Some(node) = tab.tree.move_selection(delta) else {
+        let ids = tab.visible_ids();
+        if ids.is_empty() {
             return Vec::new();
-        };
+        }
+        let current = tab
+            .tree
+            .selected
+            .as_ref()
+            .and_then(|selected| ids.iter().position(|id| id == selected))
+            .map(|index| index as isize + delta)
+            .unwrap_or_else(|| if delta < 0 { ids.len() as isize - 1 } else { 0 });
+        let node = ids[current.clamp(0, ids.len() as isize - 1) as usize].clone();
+        tab.tree.select(Some(node.clone()));
         tab.tree
             .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
         let tab_id = tab.id;
@@ -18280,6 +18372,8 @@ impl App {
         let Some(selected) = tab.tree.selected.clone() else {
             return Vec::new();
         };
+        let mut selected_child = None;
+        let mut selected_existing = None;
         if matches!(
             selected,
             crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_)
@@ -18290,11 +18384,18 @@ impl App {
             }
             if let Some(child) = tab.tree.first_child(&selected) {
                 tab.tree.select(Some(child));
+                selected_child = tab.tree.selected.clone();
             }
-            Vec::new()
         } else {
-            let tab_id = tab.id;
-            self.select_redis_key(tab_id, Some(selected))
+            selected_existing = Some(selected);
+        }
+        let tab_id = tab.id;
+        tab.tree
+            .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
+        if let Some(node) = selected_child.or(selected_existing) {
+            self.select_redis_key(tab_id, Some(node))
+        } else {
+            Vec::new()
         }
     }
 
@@ -18307,12 +18408,17 @@ impl App {
         }
         if let Some(selected) = tab.tree.selected.clone() {
             if tab.tree.expanded.remove(&selected) {
+                tab.tree
+                    .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
                 return Vec::new();
             }
             if let Some(parent) = tab.tree.parent_of(&selected) {
                 tab.tree.select(Some(parent));
-                tab.select(tab.tree.selected.clone());
-                return Vec::new();
+                tab.tree
+                    .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
+                let tab_id = tab.id;
+                let node = tab.tree.selected.clone();
+                return self.select_redis_key(tab_id, node);
             }
         }
         Vec::new()

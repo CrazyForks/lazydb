@@ -126,6 +126,15 @@ impl RedisAdapter {
             .map_err(|error| redis_error(error, ErrorCategory::Network))
     }
 
+    pub async fn delete_key(&self, key: &[u8]) -> Result<u64, DatabaseError> {
+        let mut connection = self.connection.clone();
+        redis::cmd("DEL")
+            .arg(key)
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| redis_error(error, ErrorCategory::Network))
+    }
+
     pub async fn probe(&self) -> Result<ServerInfo, DatabaseError> {
         let mut connection = self.connection.clone();
         let version = redis::cmd("INFO")

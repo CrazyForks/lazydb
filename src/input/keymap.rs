@@ -1303,16 +1303,6 @@ impl Keymap {
             {
                 return Some(Action::RedisRetryScan);
             }
-            if event.code == KeyCode::Char('h') {
-                return Some(Action::RedisFocusPane(
-                    crate::model::redis_browser::RedisBrowserFocus::Keys,
-                ));
-            }
-            if event.code == KeyCode::Char('l') {
-                return Some(Action::RedisFocusPane(
-                    crate::model::redis_browser::RedisBrowserFocus::Preview,
-                ));
-            }
             if event.code == KeyCode::PageDown {
                 return Some(
                     if matches!(
@@ -1344,6 +1334,30 @@ impl Keymap {
                     Action::GridMove { rows, columns: 0 } if rows != 0 => {
                         Action::RedisMoveSelection(rows)
                     }
+                    Action::GridMove {
+                        rows: 0,
+                        columns: -1,
+                    } if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus
+                                == crate::model::redis_browser::RedisBrowserFocus::Keys
+                    ) =>
+                    {
+                        Action::RedisCollapseSelection
+                    }
+                    Action::GridMove {
+                        rows: 0,
+                        columns: 1,
+                    } if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus
+                                == crate::model::redis_browser::RedisBrowserFocus::Keys
+                    ) =>
+                    {
+                        Action::RedisExpandSelection
+                    }
                     Action::ExplorerFindOpen => Action::RedisFindOpen,
                     other => other,
                 });
@@ -1369,14 +1383,22 @@ impl Keymap {
                     crate::model::redis_browser::RedisBrowserFocus::Preview,
                     KeyCode::Char('k') | KeyCode::Up,
                 ) => Some(Action::RedisPreviewScroll(-1)),
-                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Right) => {
-                    Some(Action::RedisExpandSelection)
-                }
-                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Left) => {
-                    Some(Action::RedisCollapseSelection)
-                }
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                    KeyCode::Right | KeyCode::Char('l'),
+                ) => Some(Action::RedisExpandSelection),
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Keys,
+                    KeyCode::Left | KeyCode::Char('h'),
+                ) => Some(Action::RedisCollapseSelection),
                 (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Enter) => {
                     Some(Action::RedisPrimarySelection)
+                }
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('y')) => {
+                    Some(Action::RedisCopyKey)
+                }
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('d')) => {
+                    Some(Action::RedisDeleteKey)
                 }
                 (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('o')) => {
                     Some(Action::RedisPrimarySelection)

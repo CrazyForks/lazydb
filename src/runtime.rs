@@ -492,6 +492,11 @@ impl Runtime {
                 generation,
             } => self.discover_redis_databases(profile_id, generation),
             Command::ScanRedisKeys(request) => self.scan_redis_keys(request),
+            Command::DeleteRedisKey {
+                tab_id,
+                connection: request_connection,
+                key,
+            } => self.delete_redis_key(tab_id, request_connection, key),
             Command::LoadRedisPreview {
                 tab_id,
                 generation,
@@ -1132,6 +1137,48 @@ impl Runtime {
                 Err(error) => {
                     let _ = sender.send(Action::RedisKeysFailed {
                         identity: request.identity,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn delete_redis_key(
+        &mut self,
+        tab_id: uuid::Uuid,
+        request_connection: crate::identity::ConnectionIdentity,
+        key: crate::db::redis::types::RedisKeyId,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(identity, active)| {
+                        identity.identity == request_connection
+                            && identity.target.database == key.target.database.to_string()
+                            && identity.target.schema.is_none()
+                            && matches!(active.database, DatabaseConnection::Redis(_))
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let result = match database {
+                Some(DatabaseConnection::Redis(adapter)) => adapter.delete_key(&key.key).await,
+                _ => Err(DatabaseError::configuration(
+                    "Redis connection is not active",
+                )),
+            };
+            match result {
+                Ok(_) => {
+                    let _ = sender.send(Action::RedisKeyDeleted { tab_id, key });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisKeyDeleteFailed {
+                        tab_id,
+                        key,
                         message: error.to_string(),
                     });
                 }

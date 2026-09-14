@@ -55,3 +55,20 @@ fn incremental_insert_preserves_state_and_matches_full_rebuild() {
     );
     assert!(incremental.contains(&KeyTreeNodeId::Key(b"cache:1".to_vec())));
 }
+
+#[test]
+fn collapsed_prefix_hides_its_own_key_and_descendants() {
+    let mut tree = KeyTreeState::default();
+    tree.rebuild(&[key(b"user:1"), key(b"user:2")]);
+
+    let prefix = KeyTreeNodeId::Prefix(b"user:".to_vec());
+    let first_key = KeyTreeNodeId::Key(b"user:1".to_vec());
+    let second_key = KeyTreeNodeId::Key(b"user:2".to_vec());
+
+    assert_eq!(tree.visible_ids(), vec![prefix.clone()]);
+    assert_eq!(tree.parent_of(&first_key), Some(prefix.clone()));
+    assert_eq!(tree.first_child(&prefix), Some(first_key.clone()));
+
+    tree.expanded.insert(prefix.clone());
+    assert_eq!(tree.visible_ids(), vec![prefix, first_key, second_key]);
+}

@@ -5,7 +5,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use std::collections::HashMap;
 
 use crate::model::redis_browser::RedisValuePageState;
 use crate::{
@@ -62,29 +61,10 @@ pub fn render(
         })),
         columns[1],
     );
-    let rows = tab.tree.visible_rows();
+    let rows = tab.visible_rows();
     let (rows, selected_id, query, phase, matches) = if let Some(find) = tab.find.as_ref() {
-        let matching = find
-            .matches
-            .iter()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-        let rows_by_id = rows
-            .into_iter()
-            .map(|row| (row.id.clone(), row))
-            .collect::<HashMap<_, _>>();
         (
-            find.rows
-                .iter()
-                .filter_map(|(id, label)| {
-                    rows_by_id.get(id).cloned().map(|mut row| {
-                        if matching.contains(id) {
-                            row.label = label.as_bytes().to_vec();
-                        }
-                        row
-                    })
-                })
-                .collect::<Vec<_>>(),
+            find.filtered_rows.to_vec(),
             tab.tree.selected.clone(),
             Some(find.query.value().to_owned()),
             Some(find.phase),
@@ -350,6 +330,10 @@ fn render_row(
     } else {
         Style::new().bg(background).fg(theme.text)
     };
+    let icon_style =
+        Style::new()
+            .bg(background)
+            .fg(if selected { theme.accent } else { theme.text });
     ui.hit_regions.push(crate::ui::HitRegion {
         area: Rect::new(
             area.x + 2,
@@ -374,11 +358,11 @@ fn render_row(
     let icon = if row.expandable {
         icons.group(ObjectGroup::Tables, row.expanded)
     } else {
-        "·"
+        icons.redis_key()
     };
     Line::from(vec![
         Span::styled(format!("{}{} ", "  ".repeat(row.depth), marker), style),
-        Span::styled(format!("{} ", icon), style),
+        Span::styled(format!("{} ", icon), icon_style),
         Span::styled(label, style),
         Span::styled(
             " ".repeat(area.width.saturating_sub(1) as usize),
@@ -388,6 +372,5 @@ fn render_row(
 }
 
 fn display_bytes(value: &[u8]) -> String {
-    String::from_utf8(value.to_vec())
-        .unwrap_or_else(|_| value.iter().map(|byte| format!("\\x{byte:02x}")).collect())
+    crate::model::redis_key_text::display_bytes(value)
 }

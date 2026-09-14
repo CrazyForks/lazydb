@@ -353,7 +353,7 @@ fn redis_browser_find_is_tab_local_and_edits_without_reading_a_key() {
         .expanded
         .insert(KeyTreeNodeId::Prefix(b"user:".to_vec()));
     tab.open_find();
-    assert_eq!(tab.find.as_ref().unwrap().rows.len(), 3);
+    assert_eq!(tab.find.as_ref().unwrap().rows.len(), 4);
     tab.find.as_mut().unwrap().query.insert('u');
     tab.update_find();
     assert!(

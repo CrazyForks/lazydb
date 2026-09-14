@@ -349,6 +349,14 @@ impl IconSet {
         }
     }
 
+    pub const fn redis_key(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_KEY,
+            IconMode::Unicode => "⚿",
+            IconMode::Ascii => "K",
+        }
+    }
+
     pub(crate) const fn catalog_object(self, object_type: CatalogObjectType) -> &'static str {
         match object_type {
             CatalogObjectType::Catalog(kind) => self.catalog(kind),

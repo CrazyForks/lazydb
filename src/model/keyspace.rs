@@ -47,6 +47,7 @@ pub struct KeyspaceState {
     pending_next: Option<ScanPosition>,
     store: MemoryKeyStore,
     staged_store: MemoryKeyStore,
+    deleted_in_generation: HashSet<Vec<u8>>,
 }
 
 impl KeyspaceState {
@@ -72,6 +73,7 @@ impl KeyspaceState {
             pending_next: None,
             store: MemoryKeyStore::new(target.clone()),
             staged_store: MemoryKeyStore::new(target.clone()),
+            deleted_in_generation: HashSet::new(),
         }
     }
 
@@ -106,6 +108,7 @@ impl KeyspaceState {
         self.in_flight = false;
         let mut incoming = self.pending_keys.drain(..).collect::<Vec<_>>();
         incoming.extend(batch.keys);
+        incoming.retain(|key| !self.deleted_in_generation.contains(key));
         self.pending_next = None;
         let mut pending = Vec::new();
         let mut index = 0;
@@ -206,6 +209,27 @@ impl KeyspaceState {
         self.store.bytes()
     }
 
+    pub fn remove_key(&mut self, key: &[u8]) -> bool {
+        self.deleted_in_generation.insert(key.to_vec());
+        let Some(index) = self.keys.iter().position(|item| item.key == key) else {
+            self.staged_keys.retain(|item| item.key != key);
+            self.staged_set.remove(key);
+            self.staged_store.remove(key);
+            self.pending_keys.retain(|item| item.as_slice() != key);
+            return false;
+        };
+        self.keys.remove(index);
+        self.key_set.remove(key);
+        self.key_bytes = self.key_bytes.saturating_sub(key.len());
+        self.store.remove(key);
+        self.staged_keys.retain(|item| item.key != key);
+        self.staged_set.remove(key);
+        self.staged_bytes = self.staged_bytes.saturating_sub(key.len());
+        self.staged_store.remove(key);
+        self.pending_keys.retain(|item| item.as_slice() != key);
+        true
+    }
+
     pub fn fail(&mut self, identity: &RedisRequestIdentity, message: impl Into<String>) -> bool {
         if self.identity().as_ref() != Some(identity) || !self.in_flight {
             return false;
@@ -222,6 +246,7 @@ impl KeyspaceState {
             return;
         };
         self.generation = generation;
+        self.deleted_in_generation.clear();
         self.request_id = 0;
         self.position = ScanPosition::Start;
         self.refreshing_snapshot = !self.keys.is_empty()

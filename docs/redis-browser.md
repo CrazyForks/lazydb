@@ -34,10 +34,15 @@ Redis tabs are labeled `Redis @connection-name`; the name belongs to the tab's
 connection profile rather than to the currently active connection.
 
 Use `j`/`k` to move through Keys, `o` or `Enter` to expand/collapse a folder,
-and `Left`/`Right` to collapse or enter a folder. `h` and `l` switch between
-the Keys and Preview panes. In Preview, `j`/`k` scroll the loaded value and
-PageUp/PageDown page the focused pane. Keys folders use the same group icons
-and selection colors as Explorer.
+and `h`/`Left` to collapse or move to the parent, or `l`/`Right` to expand or
+enter the first child. In Keys, `d` deletes the selected complete key and `y`
+copies its complete name; folders cannot be deleted or copied. `/` filters all
+keys already loaded for this database, including keys inside collapsed folders;
+Enter confirms the filter and Esc restores the previous selection. The filter
+does not start a new SCAN and is explicitly limited to the loaded client-side
+snapshot. In Preview, `j`/`k` scroll the loaded value and PageUp/PageDown page
+the focused pane. Keys folders use the same group icons, colors, and selection
+behavior as Explorer; leaf keys use a key icon.
 
 Keys and Preview maintain independent vertical scroll positions. Scrollbars
 appear only when the loaded content overflows the pane; scrolling a Preview
