@@ -171,6 +171,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                     },
                     None => ShortcutContext::CatalogEditorBusy,
                 },
+                Overlay::RedisObjectEditor(_) => ShortcutContext::Message,
                 Overlay::SqlEditorList(list) => match list.mode {
                     SqlEditorListMode::Browse => ShortcutContext::ConsoleManager,
                     SqlEditorListMode::Search => ShortcutContext::ConsoleManagerSearch,
@@ -2814,7 +2815,7 @@ fn catalog_editor_capabilities(app: &App) -> (bool, bool, bool) {
             },
             _ => return (profile_edit_available, create, false),
         };
-        let capabilities = crate::db::postgres::PostgresAdapter::catalog_mutation_capabilities();
+        let capabilities = &app.connection.mutation_capabilities;
         matches!(selected, ExplorerNodeId::Catalog(_))
             && capabilities.can_edit(&anchor, entry).unwrap_or(false)
     };

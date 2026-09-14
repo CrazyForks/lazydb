@@ -1032,6 +1032,8 @@ fn help_edit_shortcut_uses_direct_selection_resolution() {
     let profile_id = profile.id;
     let mut app = App::new(vec![profile]);
     app.focus = lazydb::model::workspace::Focus::Explorer;
+    app.connection.mutation_capabilities =
+        lazydb::db::postgres::PostgresAdapter::catalog_mutation_capabilities();
 
     let id = catalog_id(profile_id);
     let entry = lazydb::db::catalog::CatalogEntry::relation(

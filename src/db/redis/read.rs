@@ -172,6 +172,10 @@ impl RedisAdapter {
                 "Redis key target database mismatch",
             ));
         }
+        let cache_key = self.metadata_cache_key(&key.key);
+        if let Some(metadata) = self.metadata_cache_get(&cache_key) {
+            return Ok(metadata);
+        }
         let mut connection = self.connection_clone();
         let value_type: String = redis::cmd("TYPE")
             .arg(&key.key)
@@ -227,13 +231,15 @@ impl RedisAdapter {
             }
             RedisType::Module | RedisType::Missing | RedisType::Unknown => None,
         };
-        Ok(RedisKeyMetadata {
+        let metadata = RedisKeyMetadata {
             key: key.clone(),
             value_type,
             ttl: parse_ttl(ttl),
             memory_usage_bytes,
             value_size,
-        })
+        };
+        self.metadata_cache_insert(cache_key, metadata.clone());
+        Ok(metadata)
     }
 
     pub async fn read_value_page(
@@ -349,6 +355,10 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = metadata
+                    .value_size
+                    .is_some_and(|size| *end >= size.saturating_sub(1))
+                    || values.len() < end.saturating_sub(*start).saturating_add(1) as usize;
                 (
                     RedisPageValue::List(
                         values
@@ -357,10 +367,7 @@ impl RedisAdapter {
                             .map(|(index, value)| (*start + index as u64, value))
                             .collect(),
                     ),
-                    if metadata
-                        .value_size
-                        .is_some_and(|size| *end >= size.saturating_sub(1))
-                    {
+                    if complete {
                         RedisPagePosition::Complete
                     } else {
                         RedisPagePosition::ListOffset(end.saturating_add(1))
@@ -376,6 +383,11 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = metadata
+                    .value_size
+                    .is_some_and(|size| *end >= size.saturating_sub(1))
+                    || values.len().saturating_add(1) / 2
+                        < end.saturating_sub(*start).saturating_add(1) as usize;
                 let pairs = values
                     .chunks(2)
                     .filter_map(|pair| {
@@ -386,10 +398,7 @@ impl RedisAdapter {
                     .collect();
                 (
                     RedisPageValue::SortedSet(pairs),
-                    if metadata
-                        .value_size
-                        .is_some_and(|size| *end >= size.saturating_sub(1))
-                    {
+                    if complete {
                         RedisPagePosition::Complete
                     } else {
                         RedisPagePosition::SortedSetOffset(end.saturating_add(1))

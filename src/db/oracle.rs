@@ -18,6 +18,13 @@ use super::catalog::{
     CatalogEntry, CatalogId, CatalogKind, CatalogPage, CatalogRequest, CatalogTarget,
     DdlProvenance, OptionalMetadata, QualifiedName, RelationDdl,
 };
+use super::catalog_mutation::{
+    CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
+    CatalogMutationExecutionMode, CatalogMutationMode, CatalogMutationOption, CatalogMutationPlan,
+    CatalogMutationRequest, CatalogMutationTarget, CatalogObjectDefinition,
+    CatalogObjectDefinitionRequest, CatalogObjectType, CatalogSelectionHint, ColumnDefinition,
+    SequenceBound, SequenceDefinition, TableDefinition, ViewDefinition, ViewOption,
+};
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
 #[cfg(feature = "driver-oracle")]
@@ -29,6 +36,10 @@ use crate::db::RelationPreview;
 use crate::profile::{ConnectionProfile, DatabaseKind};
 #[cfg(feature = "driver-oracle")]
 use crate::security::sanitize_terminal_text;
+use crate::{
+    model::catalog_editor::{CatalogDraft, DraftRowState},
+    model::execution_target::ExecutionTarget,
+};
 use futures_util::future::BoxFuture;
 
 #[derive(Clone)]
@@ -49,6 +60,487 @@ impl std::fmt::Debug for OracleAdapter {
 }
 
 impl OracleAdapter {
+    pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
+        let create = [CatalogKind::Table, CatalogKind::View, CatalogKind::Sequence]
+            .into_iter()
+            .map(|kind| CatalogMutationOption {
+                object_type: CatalogObjectType::Catalog(kind),
+                availability: CatalogMutationAvailability::Available,
+            })
+            .collect();
+        CatalogMutationCapabilities {
+            create,
+            edit: [CatalogKind::Table, CatalogKind::View, CatalogKind::Sequence]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
+            profile_create: Vec::new(),
+            ..CatalogMutationCapabilities::default()
+        }
+    }
+
+    pub fn plan_catalog_mutation(
+        request: CatalogMutationRequest,
+        draft: CatalogDraft,
+        baseline: Option<CatalogObjectDefinition>,
+    ) -> Result<CatalogMutationPlan, super::catalog_mutation::CatalogMutationError> {
+        if request.mode == CatalogMutationMode::Edit {
+            return Self::plan_edit(request, draft, baseline);
+        }
+        if request.mode != CatalogMutationMode::Create {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::UnsupportedOperation {
+                    object_type: request.object_type,
+                },
+            );
+        }
+        if baseline.is_some() {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                    reason: "Oracle create plans cannot include a baseline".into(),
+                },
+            );
+        }
+        let super::catalog_mutation::CatalogMutationAnchor::Group { schema, group } =
+            &request.anchor
+        else {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle relation creation requires a schema group anchor",
+                },
+            );
+        };
+        let schema_anchor = schema.clone();
+        let group_kind = *group;
+        let database = schema.native_path.first().cloned().unwrap_or_default();
+        let schema_name = schema.native_path.get(1).cloned().unwrap_or_default();
+        if database.is_empty() || schema_name.is_empty() {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle schema anchor is incomplete",
+                },
+            );
+        }
+        let (kind, name, statements) = match (group, draft) {
+            (ObjectGroup::Tables, CatalogDraft::Table(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                let columns = draft
+                    .columns
+                    .iter()
+                    .filter(|column| !matches!(column.state, DraftRowState::Removed { .. }))
+                    .map(|column| {
+                        let mut sql = format!(
+                            "{} {}",
+                            quote_identifier(column.name.value().trim()),
+                            column.native_type.value().trim()
+                        );
+                        if !column.nullable {
+                            sql.push_str(" NOT NULL");
+                        }
+                        if !column.default_expression.value().trim().is_empty() {
+                            sql.push_str(" DEFAULT ");
+                            sql.push_str(column.default_expression.value().trim());
+                        }
+                        Ok(sql)
+                    })
+                    .collect::<Result<Vec<_>, super::catalog_mutation::CatalogMutationError>>()?;
+                (
+                    CatalogKind::Table,
+                    name.clone(),
+                    vec![format!(
+                        "CREATE TABLE {}.{} ({})",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&name),
+                        columns.join(", ")
+                    )],
+                )
+            }
+            (ObjectGroup::Views, CatalogDraft::View(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                (
+                    CatalogKind::View,
+                    name.clone(),
+                    vec![format!(
+                        "CREATE VIEW {}.{} AS {}",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&name),
+                        draft.query.value().trim()
+                    )],
+                )
+            }
+            (ObjectGroup::Sequences, CatalogDraft::Sequence(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                let mut sql = format!(
+                    "CREATE SEQUENCE {}.{} INCREMENT BY {} START WITH {} CACHE {}",
+                    quote_identifier(&schema_name),
+                    quote_identifier(&name),
+                    draft.increment.value().trim(),
+                    draft.start_value.value().trim(),
+                    draft.cache.value().trim()
+                );
+                if draft.cycle {
+                    sql.push_str(" CYCLE");
+                }
+                (CatalogKind::Sequence, name, vec![sql])
+            }
+            (_, draft) => {
+                return Err(
+                    super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                        reason: format!(
+                            "Oracle draft does not match the selected object group: {draft:?}"
+                        ),
+                    },
+                );
+            }
+        };
+        let object = CatalogId::new(
+            request.connection.profile_id,
+            kind,
+            [database.clone(), schema_name.clone(), name.clone()],
+        );
+        let target = CatalogMutationTarget::database_target(ExecutionTarget {
+            profile_id: request.connection.profile_id,
+            database,
+            schema: Some(schema_name),
+        })?;
+        CatalogMutationPlan::new(
+            request,
+            CatalogObjectType::Catalog(kind),
+            CatalogMutationExecutionMode::Autocommit,
+            target,
+            vec![CatalogTarget::Objects {
+                schema: schema_anchor,
+                group: group_kind,
+            }],
+            CatalogSelectionHint::Object(object),
+            None,
+            Vec::new(),
+            statements,
+        )
+    }
+
+    fn plan_edit(
+        request: CatalogMutationRequest,
+        draft: CatalogDraft,
+        baseline: Option<CatalogObjectDefinition>,
+    ) -> Result<CatalogMutationPlan, super::catalog_mutation::CatalogMutationError> {
+        let CatalogMutationAnchor::Catalog(object) = &request.anchor else {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle edit requires a catalog object anchor",
+                },
+            );
+        };
+        let Some(baseline) = baseline else {
+            return Err(super::catalog_mutation::CatalogMutationError::StaleState);
+        };
+        let database = object.native_path.first().cloned().unwrap_or_default();
+        let schema = object.native_path.get(1).cloned().unwrap_or_default();
+        let old_name = object.native_path.get(2).cloned().unwrap_or_default();
+        let (kind, new_name, statements) = match (baseline, draft) {
+            (CatalogObjectDefinition::Table(_), CatalogDraft::Table(draft)) => {
+                let new_name = draft.name.value().trim().to_owned();
+                if new_name.is_empty() {
+                    return Err(
+                        super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                            reason: "Oracle table name is required".into(),
+                        },
+                    );
+                }
+                let statements = (new_name != old_name).then(|| {
+                    format!(
+                        "ALTER TABLE {}.{} RENAME TO {}",
+                        quote_identifier(&schema),
+                        quote_identifier(&old_name),
+                        quote_identifier(&new_name)
+                    )
+                });
+                (
+                    CatalogKind::Table,
+                    new_name,
+                    statements.into_iter().collect(),
+                )
+            }
+            (CatalogObjectDefinition::View(_), CatalogDraft::View(draft)) => {
+                draft.validate()?;
+                let new_name = draft.name.value().trim().to_owned();
+                let sql = format!(
+                    "CREATE OR REPLACE VIEW {}.{} AS {}",
+                    quote_identifier(&schema),
+                    quote_identifier(&new_name),
+                    draft.query.value().trim()
+                );
+                (CatalogKind::View, new_name, vec![sql])
+            }
+            (CatalogObjectDefinition::Sequence(_), CatalogDraft::Sequence(draft)) => {
+                draft.validate()?;
+                let new_name = draft.name.value().trim().to_owned();
+                let sql = format!(
+                    "ALTER SEQUENCE {}.{} INCREMENT BY {} CACHE {} {}",
+                    quote_identifier(&schema),
+                    quote_identifier(&old_name),
+                    draft.increment.value().trim(),
+                    draft.cache.value().trim(),
+                    if draft.cycle { "CYCLE" } else { "NOCYCLE" }
+                );
+                (CatalogKind::Sequence, new_name, vec![sql])
+            }
+            (_, draft) => {
+                return Err(
+                    super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                        reason: format!(
+                            "Oracle edit draft does not match the selected object: {draft:?}"
+                        ),
+                    },
+                );
+            }
+        };
+        if statements.is_empty() {
+            return Err(super::catalog_mutation::CatalogMutationError::NoChanges);
+        }
+        let old_object = object.clone();
+        let new_object = CatalogId::new(
+            request.connection.profile_id,
+            kind,
+            [database.clone(), schema.clone(), new_name],
+        );
+        CatalogMutationPlan::new(
+            request,
+            CatalogObjectType::Catalog(kind),
+            CatalogMutationExecutionMode::Autocommit,
+            CatalogMutationTarget::database_target(ExecutionTarget {
+                profile_id: old_object.profile_id(),
+                database: database.clone(),
+                schema: Some(schema.clone()),
+            })?,
+            vec![CatalogTarget::Objects {
+                schema: CatalogId::new(
+                    old_object.profile_id(),
+                    CatalogKind::Schema,
+                    [database, schema],
+                ),
+                group: match kind {
+                    CatalogKind::Table => ObjectGroup::Tables,
+                    CatalogKind::View => ObjectGroup::Views,
+                    CatalogKind::Sequence => ObjectGroup::Sequences,
+                    _ => ObjectGroup::Tables,
+                },
+            }],
+            CatalogSelectionHint::Object(new_object),
+            None,
+            Vec::new(),
+            statements,
+        )
+        .map(|plan| {
+            plan.with_impact(super::catalog_mutation::CatalogMutationImpact {
+                old_object_id: old_object,
+                owning_relation_id: None,
+                namespace: super::catalog_mutation::CatalogMutationNamespace {
+                    database: None,
+                    schema: None,
+                },
+                native_identity_changed: true,
+            })
+        })
+    }
+
+    pub async fn execute_catalog_mutation(
+        &self,
+        plan: &CatalogMutationPlan,
+    ) -> Result<QueryOutcome, DatabaseError> {
+        plan.validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let mut outcome = None;
+        for statement in plan.statements() {
+            outcome = Some(
+                self.execute_pool_with_budget(statement, QueryBudget::UNBOUNDED)
+                    .await?,
+            );
+        }
+        outcome
+            .ok_or_else(|| DatabaseError::configuration("Oracle mutation plan has no statements"))
+    }
+
+    pub async fn load_catalog_object_definition(
+        &self,
+        request: &CatalogObjectDefinitionRequest,
+    ) -> Result<CatalogObjectDefinition, DatabaseError> {
+        request
+            .validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        if request.connection.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "Oracle catalog definition profile mismatch",
+            ));
+        }
+        #[cfg(not(feature = "driver-oracle"))]
+        {
+            let _ = request;
+            Err(oracle_disabled())
+        }
+        #[cfg(feature = "driver-oracle")]
+        {
+            let object = request.object.clone();
+            let connection = Arc::clone(&self.connection);
+            let database = self.database.clone();
+            tokio::task::spawn_blocking(move || {
+                let [object_database, schema, name] = object.native_path.as_slice() else {
+                    return Err(oracle_error("invalid Oracle catalog definition identity"));
+                };
+                if object_database != &database {
+                    return Err(oracle_error("Oracle object belongs to another service"));
+                }
+                let connection = connection
+                    .lock()
+                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                if object.kind == CatalogKind::View {
+                    let row = connection
+                        .query_row(
+                            "SELECT text FROM all_views WHERE owner = :1 AND view_name = :2",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let query: String = row.get(0).map_err(oracle_error)?;
+                    let column_rows = connection
+                        .query(
+                            "SELECT column_name FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let mut output_columns = Vec::new();
+                    for row in column_rows {
+                        output_columns.push(row.map_err(oracle_error)?.get(0).map_err(oracle_error)?);
+                    }
+                    let baseline_fingerprint = format!(
+                        "oracle:view:{object_database}:{schema}:{name}:{query}:{output_columns:?}"
+                    );
+                    return Ok(CatalogObjectDefinition::View(ViewDefinition {
+                        database: object_database.clone(),
+                        schema: schema.clone(),
+                        name: name.clone(),
+                        owner: schema.clone(),
+                        comment: OptionalMetadata::Unsupported,
+                        query,
+                        output_columns,
+                        security_barrier: ViewOption::unavailable(
+                            "Oracle does not expose PostgreSQL security_barrier",
+                        ),
+                        security_invoker: ViewOption::unavailable(
+                            "Oracle does not expose PostgreSQL security_invoker",
+                        ),
+                        check_option: ViewOption::unavailable(
+                            "Oracle view check option mapping is not implemented",
+                        ),
+                        baseline_fingerprint,
+                    }));
+                }
+                if object.kind == CatalogKind::Sequence {
+                    let row = connection
+                        .query_row(
+                            "SELECT increment_by, min_value, max_value, last_number, cache_size, cycle_flag FROM all_sequences WHERE sequence_owner = :1 AND sequence_name = :2",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let increment: i64 = row.get(0).map_err(oracle_error)?;
+                    let min_value: Option<i64> = row.get(1).map_err(oracle_error)?;
+                    let max_value: Option<i64> = row.get(2).map_err(oracle_error)?;
+                    let start_value: i64 = row.get(3).map_err(oracle_error)?;
+                    let cache: i64 = row.get(4).map_err(oracle_error)?;
+                    let cycle: String = row.get(5).map_err(oracle_error)?;
+                    let baseline_fingerprint = format!(
+                        "oracle:sequence:{object_database}:{schema}:{name}:{increment}:{min_value:?}:{max_value:?}:{start_value}:{cache}:{cycle}"
+                    );
+                    return Ok(CatalogObjectDefinition::Sequence(SequenceDefinition {
+                        database: object_database.clone(),
+                        schema: schema.clone(),
+                        name: name.clone(),
+                        owner: schema.clone(),
+                        comment: OptionalMetadata::Unsupported,
+                        data_type: "NUMBER".to_owned(),
+                        increment: increment.to_string(),
+                        min_value: min_value.map_or(SequenceBound::Unset, |value| {
+                            SequenceBound::Value(value.to_string())
+                        }),
+                        max_value: max_value.map_or(SequenceBound::Unset, |value| {
+                            SequenceBound::Value(value.to_string())
+                        }),
+                        start_value: start_value.to_string(),
+                        cache: cache.to_string(),
+                        cycle: cycle == "Y",
+                        owned_by: None,
+                        baseline_fingerprint,
+                    }));
+                }
+                if object.kind != CatalogKind::Table {
+                    return Err(oracle_error(format!(
+                        "Oracle definition loading for {:?} is not implemented",
+                        object.kind
+                    )));
+                }
+                let rows = connection
+                    .query(
+                        "SELECT column_name, data_type, data_precision, data_scale, nullable, data_default, column_id FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+                        &[schema, name],
+                    )
+                    .map_err(|error| oracle_error_with_query(error, "all_tab_columns"))?;
+                let mut columns = Vec::new();
+                for row in rows {
+                    let row = row.map_err(oracle_error)?;
+                    let column_name: String = row.get(0).map_err(oracle_error)?;
+                    let native_type: String = row.get(1).map_err(oracle_error)?;
+                    let precision: Option<i64> = row.get(2).map_err(oracle_error)?;
+                    let scale: Option<i64> = row.get(3).map_err(oracle_error)?;
+                    let nullable: String = row.get(4).map_err(oracle_error)?;
+                    let default_expression: Option<String> = row.get(5).map_err(oracle_error)?;
+                    let ordinal: i64 = row.get(6).map_err(oracle_error)?;
+                    let native_type = match (precision, scale) {
+                        (Some(precision), Some(scale)) => {
+                            format!("{native_type}({precision},{scale})")
+                        }
+                        (Some(precision), None) => format!("{native_type}({precision})"),
+                        _ => native_type,
+                    };
+                    columns.push(ColumnDefinition {
+                        name: column_name,
+                        ordinal_position: u32::try_from(ordinal).map_err(oracle_error)?,
+                        native_type,
+                        nullable: nullable == "Y",
+                        default_expression: OptionalMetadata::Supported(default_expression),
+                        identity: OptionalMetadata::Unsupported,
+                        generated_expression: OptionalMetadata::Unsupported,
+                        collation: OptionalMetadata::Unsupported,
+                        comment: OptionalMetadata::Unsupported,
+                    });
+                }
+                if columns.is_empty() {
+                    return Err(oracle_error("Oracle table has no visible columns"));
+                }
+                let baseline_fingerprint = format!(
+                    "oracle:table:{object_database}:{schema}:{name}:{columns:?}"
+                );
+                Ok(CatalogObjectDefinition::Table(TableDefinition {
+                    database: object_database.clone(),
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    owner: schema.clone(),
+                    comment: OptionalMetadata::Unsupported,
+                    columns,
+                    indexes: Vec::new(),
+                    constraints: Vec::new(),
+                    baseline_fingerprint,
+                }))
+            })
+            .await
+            .map_err(|error| oracle_task_error(error.to_string()))?
+        }
+    }
+
     pub async fn connect(
         profile: &ConnectionProfile,
         password: Option<&SecretString>,

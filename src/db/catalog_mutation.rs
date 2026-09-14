@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     db::catalog::{
-        CatalogEntry, CatalogId, CatalogKind, CatalogTarget, ObjectGroup, OptionalMetadata,
+        CatalogEntry, CatalogId, CatalogKind, CatalogTarget, NamespaceModel, ObjectGroup,
+        OptionalMetadata,
     },
     identity::ConnectionIdentity,
     model::execution_target::ExecutionTarget,
@@ -191,6 +192,15 @@ impl CatalogMutationCapabilities {
         anchor: &CatalogMutationAnchor,
         entry: Option<&CatalogEntry>,
     ) -> Result<Vec<CatalogObjectType>, CatalogMutationError> {
+        self.create_options_for_namespace(anchor, entry, NamespaceModel::DatabaseAndSchema)
+    }
+
+    pub fn create_options_for_namespace(
+        &self,
+        anchor: &CatalogMutationAnchor,
+        entry: Option<&CatalogEntry>,
+        namespace_model: NamespaceModel,
+    ) -> Result<Vec<CatalogObjectType>, CatalogMutationError> {
         match anchor {
             CatalogMutationAnchor::Profile { .. } => Ok(self
                 .profile_create
@@ -202,6 +212,14 @@ impl CatalogMutationCapabilities {
                     validate_entry(anchor, entry)?;
                 }
                 let object_types = match id.kind {
+                    CatalogKind::Database
+                        if namespace_model == NamespaceModel::DatabaseIsSchema =>
+                    {
+                        vec![
+                            CatalogObjectType::Catalog(CatalogKind::Table),
+                            CatalogObjectType::Catalog(CatalogKind::View),
+                        ]
+                    }
                     CatalogKind::Database => vec![CatalogObjectType::Catalog(CatalogKind::Schema)],
                     CatalogKind::Schema => vec![
                         CatalogObjectType::Catalog(CatalogKind::Table),
@@ -661,6 +679,128 @@ pub enum CatalogMutationExecutionMode {
     Autocommit,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationCompletion {
+    Succeeded,
+    Failed,
+    PartiallyApplied,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationProgress {
+    pub completed_steps: Vec<usize>,
+    pub failed_step: Option<usize>,
+    pub completion: MutationCompletion,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogRebuildPlan {
+    pub steps: Vec<CatalogRebuildStep>,
+    pub preserves_data: bool,
+    pub preserves_indexes: bool,
+    pub preserves_triggers: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogRebuildStep {
+    CreateReplacement,
+    CopyRows {
+        column_mapping: Vec<(String, String)>,
+    },
+    DropOriginal,
+    RenameReplacement,
+    RestoreIndexes,
+    RestoreTriggers,
+    Validate,
+}
+
+impl CatalogRebuildPlan {
+    pub fn validate(&self) -> Result<(), CatalogMutationError> {
+        if self.steps.is_empty() {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan must contain steps".into(),
+            });
+        }
+        let create = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::CreateReplacement));
+        let copy = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::CopyRows { .. }));
+        let drop = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::DropOriginal));
+        let rename = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::RenameReplacement));
+        if create >= copy || copy >= drop || drop >= rename {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild steps must create, copy, drop, and rename in order".into(),
+            });
+        }
+        if self.preserves_indexes
+            && !self
+                .steps
+                .iter()
+                .any(|step| matches!(step, CatalogRebuildStep::RestoreIndexes))
+        {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan claims to preserve indexes without restoring them".into(),
+            });
+        }
+        if self.preserves_triggers
+            && !self
+                .steps
+                .iter()
+                .any(|step| matches!(step, CatalogRebuildStep::RestoreTriggers))
+        {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan claims to preserve triggers without restoring them".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+impl MutationProgress {
+    pub fn succeeded(step_count: usize) -> Self {
+        Self {
+            completed_steps: (0..step_count).collect(),
+            failed_step: None,
+            completion: MutationCompletion::Succeeded,
+        }
+    }
+
+    pub fn failed(failed_step: usize, completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: Some(failed_step),
+            completion: MutationCompletion::Failed,
+        }
+    }
+
+    pub fn partially_applied(failed_step: usize, completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: Some(failed_step),
+            completion: MutationCompletion::PartiallyApplied,
+        }
+    }
+
+    pub fn outcome_unknown(completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: None,
+            completion: MutationCompletion::OutcomeUnknown,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogSelectionHint {
     Object(CatalogId),
@@ -750,6 +890,7 @@ pub struct CatalogMutationPlan {
     pub warnings: Vec<String>,
     pub destructive: bool,
     pub impact: CatalogMutationImpact,
+    pub rebuild: Option<CatalogRebuildPlan>,
     pub execution_target: CatalogMutationTarget,
     statements: Vec<String>,
     #[allow(dead_code)]
@@ -794,6 +935,7 @@ impl CatalogMutationPlan {
                 },
                 native_identity_changed: false,
             },
+            rebuild: None,
             statements,
             execution_secret: None,
         };
@@ -802,6 +944,9 @@ impl CatalogMutationPlan {
     }
 
     pub fn validate(&self) -> Result<(), CatalogMutationError> {
+        if let Some(rebuild) = &self.rebuild {
+            rebuild.validate()?;
+        }
         if self.statements.is_empty()
             || self
                 .statements
@@ -874,6 +1019,11 @@ impl CatalogMutationPlan {
         self
     }
 
+    pub fn with_rebuild_plan(mut self, rebuild: CatalogRebuildPlan) -> Self {
+        self.rebuild = Some(rebuild);
+        self
+    }
+
     pub fn with_destructive(mut self, destructive: bool) -> Self {
         self.destructive = destructive;
         self
@@ -888,6 +1038,10 @@ impl CatalogMutationPlan {
 
     pub fn statements(&self) -> &[String] {
         &self.statements
+    }
+
+    pub const fn step_count(&self) -> usize {
+        self.statements.len()
     }
 
     pub fn sql(&self) -> String {

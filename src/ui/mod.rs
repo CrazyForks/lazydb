@@ -16,6 +16,7 @@ pub(crate) mod read_only_sql;
 pub mod record_view;
 pub mod redis_browser;
 pub(crate) mod redis_dashboard;
+pub mod redis_object_editor;
 pub mod redis_value;
 pub mod relation;
 pub(crate) mod scrollbar;
@@ -1256,6 +1257,7 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::SqlHistory(_) => animation::OverlayKey::TextDetail,
         Overlay::ProfileManager => animation::OverlayKey::ProfileManager,
         Overlay::CatalogEditor => animation::OverlayKey::CatalogEditor,
+        Overlay::RedisObjectEditor(_) => animation::OverlayKey::CatalogEditor,
         Overlay::ProfileAccess { .. } => animation::OverlayKey::ProfileAccess,
         Overlay::ProfileGroup(_) => animation::OverlayKey::ProfileGroup,
         Overlay::ExplorerAdd(_) => animation::OverlayKey::ExplorerAdd,
@@ -4438,6 +4440,9 @@ fn render_overlay(
             profiles::render_profile_manager(frame, area, app, state, theme, icons)
         }
         Overlay::CatalogEditor => catalog_editor::render(frame, area, app, state, theme, icons),
+        Overlay::RedisObjectEditor(editor) => {
+            redis_object_editor::render(frame, area, editor, app, state, theme)
+        }
         Overlay::ProfileAccess {
             profile_id,
             selected,

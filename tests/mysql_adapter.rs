@@ -77,11 +77,23 @@ fn mysql_catalog_capabilities_are_truthful_before_lazy_pages() {
 }
 
 #[test]
-fn mysql_mutation_capabilities_are_empty() {
-    assert_eq!(
-        MySqlAdapter::catalog_mutation_capabilities(),
-        lazydb::db::catalog_mutation::CatalogMutationCapabilities::default()
+fn mysql_mutation_capabilities_expose_safe_table_and_view_creation() {
+    let capabilities = MySqlAdapter::catalog_mutation_capabilities();
+    assert!(
+        capabilities
+            .create_availability(lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
+                lazydb::db::catalog::CatalogKind::Table,
+            ))
+            .is_some()
     );
+    assert!(
+        capabilities
+            .create_availability(lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
+                lazydb::db::catalog::CatalogKind::View,
+            ))
+            .is_some()
+    );
+    assert_eq!(capabilities.edit.len(), 2);
 }
 
 #[test]

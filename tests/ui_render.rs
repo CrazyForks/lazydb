@@ -519,7 +519,7 @@ fn explorer_add_overlay_renders_all_connection_actions() {
     assert!(output.contains("j/k"), "{output}");
     assert!(output.contains("Enter"), "{output}");
     assert!(output.contains("Esc"), "{output}");
-    assert!(output.contains("PostgreSQL only"), "{output}");
+    assert!(output.contains("Connect this connection first"), "{output}");
 }
 
 #[test]

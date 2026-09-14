@@ -140,11 +140,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 30
+      redis:
+        image: redis:7.4
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       LAZYDB_TEST_POSTGRES_URL: postgresql://postgres:lazydb_test@127.0.0.1:5432/lazydb_test
       LAZYDB_TEST_MYSQL_URL: mysql://root:lazydb_test@127.0.0.1:3306/lazydb_test
       LAZYDB_TEST_MARIADB_URL: mariadb://root:lazydb_test@127.0.0.1:3307/lazydb_test
       LAZYDB_TEST_SQLSERVER_URL: sqlserver://sa:LazydbC1!SqlServer2022@127.0.0.1:1433/tempdb?encrypt=false
+      LAZYDB_TEST_REDIS_URL: redis://127.0.0.1:6379/0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -160,3 +170,5 @@ jobs:
         run: timeout 10m cargo test --locked --test sqlserver_adapter -- --nocapture --test-threads=1
       - name: SQL Server transaction tests
         run: timeout 10m cargo test --locked --test sqlserver_transactions -- --nocapture --test-threads=1
+      - name: Redis mutation tests
+        run: timeout 10m cargo test --locked --test redis_mutation -- --ignored --nocapture --test-threads=1

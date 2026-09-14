@@ -1,5 +1,6 @@
 pub mod capabilities;
 pub mod catalog;
+pub mod catalog_change_set;
 pub mod catalog_drop;
 pub mod catalog_mutation;
 pub(crate) mod ddl;
@@ -476,7 +477,7 @@ impl DatabaseConnection {
             Self::Postgres(adapter) => adapter.mutation_capabilities(),
             Self::MySql(_) => MySqlAdapter::catalog_mutation_capabilities(),
             Self::MariaDb(_) => MySqlAdapter::catalog_mutation_capabilities(),
-            Self::Oracle(_) => CatalogMutationCapabilities::default(),
+            Self::Oracle(_) => OracleAdapter::catalog_mutation_capabilities(),
             Self::Sqlite(_) => SqliteAdapter::catalog_mutation_capabilities(),
             Self::SqlServer(_) => MsSqlAdapter::catalog_mutation_capabilities(),
             Self::Redis(_) => CatalogMutationCapabilities::default(),
@@ -515,16 +516,17 @@ impl DatabaseConnection {
             Self::Postgres(adapter) => {
                 adapter.plan_catalog_mutation_for_adapter(request, draft, baseline)
             }
-            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
+            Self::MySql(_) | Self::MariaDb(_) => {
+                MySqlAdapter::plan_catalog_mutation(request, draft, baseline)
+            }
+            Self::Sqlite(_) => SqliteAdapter::plan_catalog_mutation(request, draft, baseline),
+            Self::SqlServer(_) => MsSqlAdapter::plan_catalog_mutation(request, draft, baseline),
+            /*
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
                 },
-            ),
-            Self::Oracle(_) => Err(
-                catalog_mutation::CatalogMutationError::UnsupportedOperation {
-                    object_type: request.object_type,
-                },
-            ),
+            ),*/
+            Self::Oracle(_) => OracleAdapter::plan_catalog_mutation(request, draft, baseline),
             Self::Redis(_) => Err(
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
@@ -539,14 +541,70 @@ impl DatabaseConnection {
     ) -> Result<QueryOutcome, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.execute_catalog_mutation(plan).await,
-            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
-                DatabaseError::configuration("catalog mutation is not supported for this database"),
-            ),
-            Self::Oracle(_) => Err(DatabaseError::configuration(
-                "catalog mutation is not supported for Oracle",
-            )),
+            Self::MySql(adapter) | Self::MariaDb(adapter) => {
+                adapter.execute_catalog_mutation(plan).await
+            }
+            Self::Sqlite(adapter) => adapter.execute_catalog_mutation(plan).await,
+            Self::SqlServer(adapter) => adapter.execute_catalog_mutation(plan).await,
+            Self::Oracle(adapter) => adapter.execute_catalog_mutation(plan).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "catalog mutation is not supported for Redis",
+            )),
+        }
+    }
+
+    pub fn plan_redis_mutation(
+        &self,
+        request: crate::db::redis::mutation::RedisMutationRequest,
+        draft: crate::db::redis::mutation::RedisValueDraft,
+        ttl_millis: Option<u64>,
+        baseline: Option<crate::db::redis::mutation::RedisKeyBaseline>,
+    ) -> Result<
+        crate::db::redis::mutation::RedisMutationPlan,
+        crate::db::redis::mutation::RedisMutationError,
+    > {
+        match self {
+            Self::Redis(_) => {
+                crate::db::redis::RedisAdapter::plan_mutation(request, draft, ttl_millis, baseline)
+            }
+            _ => Err(
+                crate::db::redis::mutation::RedisMutationError::InvalidRequest {
+                    reason: "Redis mutation requires a Redis connection".into(),
+                },
+            ),
+        }
+    }
+
+    pub fn plan_redis_operation(
+        &self,
+        request: crate::db::redis::mutation::RedisMutationRequest,
+        operation: crate::db::redis::mutation::RedisMutationOperation,
+        ttl: crate::db::redis::mutation::RedisTtlMutation,
+        baseline: Option<crate::db::redis::mutation::RedisKeyBaseline>,
+    ) -> Result<
+        crate::db::redis::mutation::RedisMutationPlan,
+        crate::db::redis::mutation::RedisMutationError,
+    > {
+        match self {
+            Self::Redis(_) => {
+                crate::db::redis::RedisAdapter::plan_operation(request, operation, ttl, baseline)
+            }
+            _ => Err(
+                crate::db::redis::mutation::RedisMutationError::InvalidRequest {
+                    reason: "Redis mutation requires a Redis connection".into(),
+                },
+            ),
+        }
+    }
+
+    pub async fn execute_redis_mutation(
+        &self,
+        plan: &crate::db::redis::mutation::RedisMutationPlan,
+    ) -> Result<crate::db::redis::mutation::RedisMutationResult, DatabaseError> {
+        match self {
+            Self::Redis(adapter) => adapter.execute_mutation(plan).await,
+            _ => Err(DatabaseError::configuration(
+                "Redis mutation requires a Redis connection",
             )),
         }
     }
@@ -666,13 +724,12 @@ impl DatabaseConnection {
     ) -> Result<CatalogObjectDefinition, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.load_catalog_object_definition(request).await,
-            Self::MySql(_)
-            | Self::MariaDb(_)
-            | Self::Oracle(_)
-            | Self::Sqlite(_)
-            | Self::SqlServer(_) => Err(DatabaseError::configuration(
-                "catalog object definition loading is not supported for this database",
-            )),
+            Self::MySql(adapter) | Self::MariaDb(adapter) => {
+                adapter.load_catalog_object_definition(request).await
+            }
+            Self::Sqlite(adapter) => adapter.load_catalog_object_definition(request).await,
+            Self::SqlServer(adapter) => adapter.load_catalog_object_definition(request).await,
+            Self::Oracle(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "Redis does not support SQL catalog object definitions",
             )),

@@ -121,6 +121,9 @@ impl Keymap {
         {
             return (event.code == KeyCode::Esc).then_some(Action::CatalogEditorCancel);
         }
+        if let Some(Overlay::RedisObjectEditor(editor)) = app.overlay.as_ref() {
+            return map_redis_object_editor(event, editor);
+        }
         if matches!(app.overlay, Some(Overlay::Update(_))) {
             self.pending = None;
             return match event.code {
@@ -1322,6 +1325,34 @@ impl Keymap {
             if event.modifiers.is_empty() && event.code == KeyCode::Char('/') {
                 return Some(Action::RedisFindOpen);
             }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('a') {
+                let can_create = matches!(
+                    app.tabs.get(app.active_tab),
+                    Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                        if tab.tree.selected.is_none()
+                            || matches!(
+                                tab.tree.selected,
+                                Some(crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_))
+                                    | Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(_))
+                            )
+                );
+                if can_create {
+                    return Some(Action::OpenRedisObjectCreate);
+                }
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('e') {
+                let can_edit = matches!(
+                    app.tabs.get(app.active_tab),
+                    Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                        if matches!(
+                            tab.tree.selected,
+                            Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(_))
+                        )
+                );
+                if can_edit {
+                    return Some(Action::OpenRedisObjectEdit);
+                }
+            }
             if matches!(app.tabs.get(app.active_tab), Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys)
                 && event.modifiers.is_empty()
                 && event.code == KeyCode::Char('r')
@@ -2237,6 +2268,75 @@ fn map_catalog_editor(event: KeyEvent, app: &App) -> Option<Action> {
     }
 }
 
+fn map_redis_object_editor(
+    event: KeyEvent,
+    editor: &crate::model::redis_object_editor::RedisObjectEditorState,
+) -> Option<Action> {
+    if editor.busy {
+        return (event.code == KeyCode::Esc).then_some(Action::RedisObjectEditorCancel);
+    }
+    if is_text_redo(event) {
+        return Some(Action::RedisObjectEditorRedo);
+    }
+    if is_text_undo(event) {
+        return Some(Action::RedisObjectEditorUndo);
+    }
+    use crate::model::redis_object_editor::RedisObjectEditorFocus;
+    let text_focus = matches!(
+        editor.focus,
+        RedisObjectEditorFocus::Value | RedisObjectEditorFocus::Ttl
+    ) || (editor.mode == crate::db::redis::mutation::RedisMutationMode::Create
+        && editor.focus == RedisObjectEditorFocus::Key);
+    match event.code {
+        KeyCode::Esc => Some(Action::RedisObjectEditorCancel),
+        KeyCode::Tab | KeyCode::Down => Some(Action::RedisObjectEditorFocusNext),
+        KeyCode::BackTab | KeyCode::Up => Some(Action::RedisObjectEditorFocusPrevious),
+        KeyCode::Enter => Some(Action::RedisObjectEditorApply),
+        KeyCode::Left
+            if editor.focus == RedisObjectEditorFocus::Type
+                || editor.focus == RedisObjectEditorFocus::Ttl =>
+        {
+            Some(if editor.focus == RedisObjectEditorFocus::Type {
+                Action::RedisObjectEditorCycleType(-1)
+            } else {
+                Action::RedisObjectEditorCycleTtl(-1)
+            })
+        }
+        KeyCode::Right
+            if editor.focus == RedisObjectEditorFocus::Type
+                || editor.focus == RedisObjectEditorFocus::Ttl =>
+        {
+            Some(if editor.focus == RedisObjectEditorFocus::Type {
+                Action::RedisObjectEditorCycleType(1)
+            } else {
+                Action::RedisObjectEditorCycleTtl(1)
+            })
+        }
+        KeyCode::Char(' ') if editor.focus == RedisObjectEditorFocus::Type => {
+            Some(Action::RedisObjectEditorCycleType(1))
+        }
+        KeyCode::Char(' ') if editor.focus == RedisObjectEditorFocus::Ttl => {
+            Some(Action::RedisObjectEditorCycleTtl(1))
+        }
+        KeyCode::Char(character) if event.modifiers.is_empty() && text_focus => {
+            Some(Action::RedisObjectEditorInsert(character))
+        }
+        KeyCode::Backspace if text_focus => Some(Action::RedisObjectEditorBackspace),
+        KeyCode::Delete if text_focus => Some(Action::RedisObjectEditorDelete),
+        KeyCode::Left if text_focus => Some(Action::RedisObjectEditorMoveLeft),
+        KeyCode::Right if text_focus => Some(Action::RedisObjectEditorMoveRight),
+        KeyCode::Home if text_focus => Some(Action::RedisObjectEditorMoveHome),
+        KeyCode::End if text_focus => Some(Action::RedisObjectEditorMoveEnd),
+        KeyCode::Char('w') if event.modifiers == KeyModifiers::CONTROL && text_focus => {
+            Some(Action::RedisObjectEditorDeletePreviousWord)
+        }
+        KeyCode::Char('u') if event.modifiers == KeyModifiers::CONTROL && text_focus => {
+            Some(Action::RedisObjectEditorDeleteToStart)
+        }
+        _ => None,
+    }
+}
+
 fn map_catalog_editor_form(
     event: KeyEvent,
     editor: &crate::model::catalog_editor::CatalogEditorState,
@@ -2734,6 +2834,21 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
         } else {
             return Vec::new();
         }
+    }
+    if let Some(Overlay::RedisObjectEditor(editor)) = app.overlay.as_ref() {
+        if !editor.busy
+            && matches!(
+                editor.focus,
+                crate::model::redis_object_editor::RedisObjectEditorFocus::Value
+                    | crate::model::redis_object_editor::RedisObjectEditorFocus::Ttl
+            )
+            || (!editor.busy
+                && editor.mode == crate::db::redis::mutation::RedisMutationMode::Create
+                && editor.focus == crate::model::redis_object_editor::RedisObjectEditorFocus::Key)
+        {
+            return vec![Action::RedisObjectEditorPaste(value)];
+        }
+        return Vec::new();
     }
     if app.overlay.is_some() {
         return Vec::new();
@@ -3334,6 +3449,16 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
         KeyCode::Char('f') => return Some(Action::ExplorerSearchOpen),
         KeyCode::Char('n') => return Some(Action::ProfileStartNew),
         KeyCode::Char('a') => {
+            if let Some(ExplorerNodeId::RedisDatabase {
+                profile_id,
+                database,
+            }) = app.explorer.normalized.selected.as_ref()
+            {
+                return Some(Action::OpenRedisObjectCreateAt {
+                    profile_id: *profile_id,
+                    database: *database,
+                });
+            }
             if matches!(
                 app.explorer.normalized.selected,
                 Some(ExplorerNodeId::Profile(_))

@@ -269,6 +269,7 @@ pub struct App {
     next_pending_execution_id: u64,
     pending_workspace_database_switch: Option<(Uuid, u64)>,
     pending_redis_browser_target: Option<(crate::db::redis::types::RedisTarget, u64)>,
+    pending_redis_object_create: Option<(crate::db::redis::types::RedisTarget, u64)>,
     pending_dashboard_target: Option<PendingDashboardTarget>,
     connect_started_at: Option<Instant>,
     transaction_op_started_at: Option<(Uuid, Instant)>,
@@ -822,6 +823,7 @@ impl App {
             next_pending_execution_id: 0,
             pending_workspace_database_switch: None,
             pending_redis_browser_target: None,
+            pending_redis_object_create: None,
             pending_dashboard_target: None,
             connect_started_at: None,
             transaction_op_started_at: None,
@@ -6747,22 +6749,6 @@ impl App {
                         self.notify_warning("Catalog", "This catalog object cannot be edited");
                         return Vec::new();
                     };
-                    if !matches!(
-                        object.kind,
-                        crate::db::catalog::CatalogKind::Database
-                            | crate::db::catalog::CatalogKind::Schema
-                            | crate::db::catalog::CatalogKind::Table
-                            | crate::db::catalog::CatalogKind::Column
-                            | crate::db::catalog::CatalogKind::PrimaryKey
-                            | crate::db::catalog::CatalogKind::UniqueConstraint
-                            | crate::db::catalog::CatalogKind::ForeignKey
-                            | crate::db::catalog::CatalogKind::CheckConstraint
-                            | crate::db::catalog::CatalogKind::View
-                            | crate::db::catalog::CatalogKind::Sequence
-                    ) {
-                        self.notify_warning("Catalog", "This catalog object cannot be edited yet");
-                        return Vec::new();
-                    }
                     let Some(connection) = self.database_command_identity() else {
                         self.notify_warning(
                             "Catalog",
@@ -6774,10 +6760,10 @@ impl App {
                         self.notify_warning("Catalog", "The active connection profile is missing");
                         return Vec::new();
                     };
-                    if profile.kind != DatabaseKind::Postgres || profile.read_only {
+                    if profile.read_only {
                         self.notify_warning(
                             "Catalog",
-                            "Schema editing requires a writable PostgreSQL profile",
+                            "Catalog editing requires a writable profile",
                         );
                         return Vec::new();
                     }
@@ -6796,6 +6782,18 @@ impl App {
                     };
                     if entry.id != *object || entry.kind != object.kind {
                         self.notify_warning("Catalog", "The selected catalog entry is invalid");
+                        return Vec::new();
+                    }
+                    if !self
+                        .connection
+                        .mutation_capabilities
+                        .can_edit(&anchor, Some(entry))
+                        .unwrap_or(false)
+                    {
+                        self.notify_warning(
+                            "Catalog",
+                            "This catalog object is not editable by the active adapter",
+                        );
                         return Vec::new();
                     }
                     let Some(database) = object.native_path.first() else {
@@ -10897,11 +10895,24 @@ impl App {
                             .any(|tab| matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == *target))
                             .then(|| target.clone())
                     });
+                let pending_redis_create_target = self
+                    .pending_redis_object_create
+                    .as_ref()
+                    .filter(|(_, expected_generation)| *expected_generation == generation)
+                    .and_then(|(target, _)| {
+                        self.tabs
+                            .iter()
+                            .any(|tab| matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == *target))
+                            .then(|| target.clone())
+                    });
                 let pending_dashboard_target = self.pending_dashboard_target.filter(|target| {
                     target.profile_id == profile_id && target.generation == generation
                 });
                 if pending_redis_target.is_some() {
                     self.pending_redis_browser_target = None;
+                }
+                if pending_redis_create_target.is_some() {
+                    self.pending_redis_object_create = None;
                 }
                 if pending_dashboard_target.is_some() {
                     let commands = self.update(Action::OpenDashboard);
@@ -11021,10 +11032,19 @@ impl App {
                         .insert(crate::model::explorer::ExplorerNodeId::Profile(profile_id));
                 }
                 let mut commands = std::mem::take(&mut workspace_commands);
+                let opened_pending_redis_browser = pending_redis_target.is_some();
                 if let Some(redis_target) = pending_redis_target {
                     commands.extend(
                         self.open_redis_browser(redis_target.profile_id, redis_target.database),
                     );
+                }
+                if let Some(redis_target) = pending_redis_create_target {
+                    if !opened_pending_redis_browser {
+                        commands.extend(
+                            self.open_redis_browser(redis_target.profile_id, redis_target.database),
+                        );
+                    }
+                    commands.extend(self.open_redis_object_create());
                 }
                 commands.extend(commands_for_catalog);
                 if self.pending_navigation.as_ref().is_some_and(|navigation| {
@@ -11160,6 +11180,13 @@ impl App {
                     .is_some_and(|(_, expected)| *expected == generation)
                 {
                     self.pending_redis_browser_target = None;
+                }
+                if self
+                    .pending_redis_object_create
+                    .as_ref()
+                    .is_some_and(|(_, expected)| *expected == generation)
+                {
+                    self.pending_redis_object_create = None;
                 }
                 let is_editor_target_switch = self.pending_editor_target_switch.is_some_and(
                     |(_, pending_profile_id, pending_generation)| {
@@ -12791,6 +12818,150 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::RedisMutationPlanReady(plan) => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+                    && editor.connection == plan.request.connection
+                    && editor.request_id == plan.request.request_id
+                {
+                    editor.plan_ready(plan);
+                }
+                Vec::new()
+            }
+            Action::RedisMutationPlanFailed { request, message } => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+                    && editor.connection == request.connection
+                    && editor.request_id == request.request_id
+                {
+                    editor.plan_failed(message);
+                } else {
+                    self.notify_error("Redis", message);
+                }
+                Vec::new()
+            }
+            Action::RedisMutationSucceeded { plan, result } => {
+                if matches!(
+                    self.overlay.as_ref(),
+                    Some(Overlay::RedisObjectEditor(editor))
+                        if editor.connection == plan.request.connection
+                            && editor.request_id == plan.request.request_id
+                ) {
+                    self.overlay = None;
+                }
+                self.apply_redis_mutation(plan, result)
+            }
+            Action::RedisMutationFailed { plan, message } => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+                    && editor.connection == plan.request.connection
+                    && editor.request_id == plan.request.request_id
+                {
+                    editor.plan_failed(message);
+                } else {
+                    self.notify_error("Redis", message);
+                }
+                Vec::new()
+            }
+            Action::OpenRedisObjectCreate => self.open_redis_object_create(),
+            Action::OpenRedisObjectCreateAt {
+                profile_id,
+                database,
+            } => self.open_redis_object_create_at(profile_id, database),
+            Action::OpenRedisObjectEdit => self.open_redis_object_edit(),
+            Action::RedisObjectEditorCancel => self.cancel_redis_object_editor(),
+            Action::RedisObjectEditorFocusNext => {
+                self.redis_object_editor_move_focus(1);
+                Vec::new()
+            }
+            Action::RedisObjectEditorFocusPrevious => {
+                self.redis_object_editor_move_focus(-1);
+                Vec::new()
+            }
+            Action::RedisObjectEditorInsert(character) => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Insert(
+                    character,
+                ));
+                Vec::new()
+            }
+            Action::RedisObjectEditorPaste(value) => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+                    && let Some(input) = editor.focused_input_mut()
+                {
+                    input.paste(value);
+                    editor.error = None;
+                    editor.plan = None;
+                }
+                Vec::new()
+            }
+            Action::RedisObjectEditorBackspace => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Backspace);
+                Vec::new()
+            }
+            Action::RedisObjectEditorDeletePreviousWord => {
+                self.redis_object_editor_edit(
+                    crate::model::text_input::TextInputEdit::DeletePreviousWord,
+                );
+                Vec::new()
+            }
+            Action::RedisObjectEditorDeleteToStart => {
+                self.redis_object_editor_edit(
+                    crate::model::text_input::TextInputEdit::DeleteToStart,
+                );
+                Vec::new()
+            }
+            Action::RedisObjectEditorDelete => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Delete);
+                Vec::new()
+            }
+            Action::RedisObjectEditorMoveLeft => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::MoveLeft);
+                Vec::new()
+            }
+            Action::RedisObjectEditorMoveRight => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::MoveRight);
+                Vec::new()
+            }
+            Action::RedisObjectEditorMoveHome => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::MoveHome);
+                Vec::new()
+            }
+            Action::RedisObjectEditorMoveEnd => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::MoveEnd);
+                Vec::new()
+            }
+            Action::RedisObjectEditorUndo => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Undo);
+                Vec::new()
+            }
+            Action::RedisObjectEditorRedo => {
+                self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Redo);
+                Vec::new()
+            }
+            Action::RedisObjectEditorCycleType(delta) => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut() {
+                    editor.cycle_type(delta);
+                    editor.error = None;
+                    editor.plan = None;
+                }
+                Vec::new()
+            }
+            Action::RedisObjectEditorCycleTtl(delta) => {
+                if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut() {
+                    let modes = [
+                        crate::model::redis_object_editor::RedisEditorTtlMode::Preserve,
+                        crate::model::redis_object_editor::RedisEditorTtlMode::Persistent,
+                        crate::model::redis_object_editor::RedisEditorTtlMode::Expires,
+                    ];
+                    let current = modes
+                        .iter()
+                        .position(|mode| *mode == editor.ttl_mode)
+                        .unwrap_or(0);
+                    let next = (current as isize + delta).rem_euclid(modes.len() as isize) as usize;
+                    editor.ttl_mode = modes[next];
+                    editor.error = None;
+                    editor.plan = None;
+                }
+                Vec::new()
+            }
+            Action::RedisObjectEditorApply => self.apply_redis_object_editor(),
             Action::OpenRedisDatabase {
                 profile_id,
                 database,
@@ -13452,16 +13623,24 @@ impl App {
                 DatabaseKind::MariaDb => {
                     crate::db::mysql::MySqlAdapter::catalog_mutation_capabilities()
                 }
-                DatabaseKind::Oracle => return None,
+                DatabaseKind::Oracle => Default::default(),
                 DatabaseKind::Sqlite => {
                     crate::db::sqlite::SqliteAdapter::catalog_mutation_capabilities()
                 }
                 DatabaseKind::SqlServer => {
                     crate::db::mssql::MsSqlAdapter::catalog_mutation_capabilities()
                 }
-                DatabaseKind::Redis => return None,
+                DatabaseKind::Redis => Default::default(),
             };
-            let options = capabilities.create_options(&anchor, None).ok()?;
+            let namespace_model = match profile.kind {
+                DatabaseKind::MySql | DatabaseKind::MariaDb => {
+                    crate::db::catalog::NamespaceModel::DatabaseIsSchema
+                }
+                _ => crate::db::catalog::NamespaceModel::DatabaseAndSchema,
+            };
+            let options = capabilities
+                .create_options_for_namespace(&anchor, None, namespace_model)
+                .ok()?;
             return (!options.is_empty()).then_some(CatalogCreateSelection {
                 anchor,
                 catalog_epoch: 0,
@@ -13496,7 +13675,15 @@ impl App {
             _ => None,
         };
         let capabilities = &self.connection.mutation_capabilities;
-        let options = capabilities.create_options(&anchor, entry).ok()?;
+        let namespace_model = match profile.kind {
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
+                crate::db::catalog::NamespaceModel::DatabaseIsSchema
+            }
+            _ => crate::db::catalog::NamespaceModel::DatabaseAndSchema,
+        };
+        let options = capabilities
+            .create_options_for_namespace(&anchor, entry, namespace_model)
+            .ok()?;
         (!options.is_empty()).then_some(CatalogCreateSelection {
             anchor,
             catalog_epoch: profile_state.catalog_epoch,
@@ -17865,9 +18052,7 @@ impl App {
             .iter()
             .find(|profile| profile.id == profile_id)
             .map_or(Some("Connection is unavailable"), |profile| {
-                if profile.kind != DatabaseKind::Postgres {
-                    Some("PostgreSQL only")
-                } else if profile.read_only {
+                if profile.read_only {
                     Some("Read-only connection")
                 } else if self.connection.active_identity().is_none() {
                     Some("Connect this connection first")
@@ -17953,8 +18138,7 @@ impl App {
         else {
             return Vec::new();
         };
-        if profile.kind != DatabaseKind::Postgres
-            || profile.read_only
+        if profile.read_only
             || self
                 .connection
                 .active_identity()
@@ -18833,6 +19017,294 @@ impl App {
             }
         }
         self.ensure_redis_browser_loaded(index, true)
+    }
+
+    fn apply_redis_mutation(
+        &mut self,
+        plan: crate::db::redis::mutation::RedisMutationPlan,
+        result: crate::db::redis::mutation::RedisMutationResult,
+    ) -> Vec<Command> {
+        let Some(index) = self.tabs.iter().position(|tab| {
+            matches!(
+                tab,
+                WorkspaceTab::RedisBrowser(tab)
+                    if tab.target == plan.request.key.target
+            )
+        }) else {
+            self.notify_success("Redis", "Key mutation applied");
+            return Vec::new();
+        };
+        let mut preview_command = None;
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) {
+            let key_node =
+                crate::model::redis_key_tree::KeyTreeNodeId::Key(plan.request.key.key.clone());
+            tab.keyspace.refresh();
+            if tab.tree.contains(&key_node) {
+                let tab_id = tab.id;
+                tab.select(Some(key_node));
+                preview_command = Some(tab_id);
+            }
+        }
+        self.notify_success("Redis", format!("{:?} mutation applied", result.value_type));
+        let mut commands = Vec::new();
+        if let Some(tab_id) = preview_command {
+            commands.extend(self.select_redis_key(
+                tab_id,
+                Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(
+                    plan.request.key.key.clone(),
+                )),
+            ));
+        }
+        commands.extend(self.ensure_redis_browser_loaded(index, true));
+        commands
+    }
+
+    fn redis_target_from_active_tab(&self) -> Option<(Uuid, crate::db::redis::types::RedisTarget)> {
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::RedisBrowser(tab)) => Some((tab.id, tab.target.clone())),
+            _ => None,
+        }
+    }
+
+    fn redis_profile_is_read_only(&self, profile_id: Uuid) -> bool {
+        self.profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .is_some_and(|profile| profile.read_only)
+    }
+
+    fn open_redis_object_create_at(&mut self, profile_id: Uuid, database: u32) -> Vec<Command> {
+        let target = crate::db::redis::types::RedisTarget {
+            profile_id,
+            database,
+        };
+        let commands = self.open_redis_browser(profile_id, database);
+        if let Some(generation) = commands.iter().find_map(|command| match command {
+            Command::Connect { generation, .. } => Some(*generation),
+            _ => None,
+        }) {
+            self.pending_redis_object_create = Some((target, generation));
+            return commands;
+        }
+        let mut commands = commands;
+        commands.extend(self.open_redis_object_create());
+        commands
+    }
+
+    fn open_redis_object_create(&mut self) -> Vec<Command> {
+        let Some((tab_id, target)) = self.redis_target_from_active_tab() else {
+            return Vec::new();
+        };
+        let Some(connection) = self.connection.active_identity() else {
+            self.notify_warning("Redis", "Redis is not connected");
+            return Vec::new();
+        };
+        if connection.profile_id != target.profile_id
+            || self.connection.target.as_ref().is_none_or(|active| {
+                active.database != target.database.to_string() || active.schema.is_some()
+            })
+        {
+            self.notify_warning("Redis", "The selected Redis database is not connected");
+            return Vec::new();
+        }
+        if self.redis_profile_is_read_only(target.profile_id) {
+            self.notify_warning("Redis", "Redis editing requires a writable profile");
+            return Vec::new();
+        }
+        let prefix = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| match tab {
+                WorkspaceTab::RedisBrowser(tab) => tab.tree.selected.as_ref(),
+                _ => None,
+            })
+            .map_or_else(Vec::new, |selected| match selected {
+                crate::model::redis_key_tree::KeyTreeNodeId::Prefix(prefix) => prefix.clone(),
+                crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => key
+                    .iter()
+                    .rposition(|byte| *byte == b':')
+                    .map_or_else(Vec::new, |index| key[..=index].to_vec()),
+            });
+        let mut editor = crate::model::redis_object_editor::RedisObjectEditorState::create(
+            tab_id, connection, target,
+        );
+        editor
+            .key
+            .set(crate::model::redis_object_editor::display_bytes(&prefix));
+        self.overlay = Some(Overlay::RedisObjectEditor(Box::new(editor)));
+        Vec::new()
+    }
+
+    fn open_redis_object_edit(&mut self) -> Vec<Command> {
+        let Some((tab_id, target)) = self.redis_target_from_active_tab() else {
+            return Vec::new();
+        };
+        let Some(connection) = self.connection.active_identity() else {
+            self.notify_warning("Redis", "Redis is not connected");
+            return Vec::new();
+        };
+        if connection.profile_id != target.profile_id
+            || self.connection.target.as_ref().is_none_or(|active| {
+                active.database != target.database.to_string() || active.schema.is_some()
+            })
+        {
+            self.notify_warning("Redis", "The selected Redis database is not connected");
+            return Vec::new();
+        }
+        if self.redis_profile_is_read_only(target.profile_id) {
+            self.notify_warning("Redis", "Redis editing requires a writable profile");
+            return Vec::new();
+        }
+        let page = match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::RedisBrowser(tab)) => match &tab.value_page {
+                crate::model::redis_browser::RedisValuePageState::Ready(page)
+                    if page.metadata.key.target == target =>
+                {
+                    page.clone()
+                }
+                crate::model::redis_browser::RedisValuePageState::Loading { .. } => {
+                    self.notify_info("Redis", "Wait for the selected value to finish loading");
+                    return Vec::new();
+                }
+                crate::model::redis_browser::RedisValuePageState::Failed { message, .. } => {
+                    self.notify_warning("Redis", message.clone());
+                    return Vec::new();
+                }
+                _ => {
+                    self.notify_info("Redis", "Select a Redis key before editing");
+                    return Vec::new();
+                }
+            },
+            _ => return Vec::new(),
+        };
+        if page.truncated
+            || !matches!(
+                page.position,
+                crate::db::redis::read::RedisPagePosition::Complete
+            )
+        {
+            self.notify_warning(
+                "Redis",
+                "This value is larger than the safe editor preview; use a targeted edit",
+            );
+            return Vec::new();
+        }
+        if !matches!(
+            page.metadata.value_type,
+            crate::db::redis::read::RedisType::String
+                | crate::db::redis::read::RedisType::Hash
+                | crate::db::redis::read::RedisType::List
+                | crate::db::redis::read::RedisType::Set
+                | crate::db::redis::read::RedisType::SortedSet
+        ) {
+            self.notify_warning(
+                "Redis",
+                "This Redis value type is not editable by the native editor",
+            );
+            return Vec::new();
+        }
+        let editor = crate::model::redis_object_editor::RedisObjectEditorState::edit_from_page(
+            tab_id, connection, &page,
+        );
+        self.overlay = Some(Overlay::RedisObjectEditor(Box::new(editor)));
+        Vec::new()
+    }
+
+    fn cancel_redis_object_editor(&mut self) -> Vec<Command> {
+        if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_ref()
+            && editor.busy
+        {
+            self.notify_warning("Redis", "Wait for the Redis mutation to finish");
+        } else if matches!(self.overlay, Some(Overlay::RedisObjectEditor(_))) {
+            self.overlay = None;
+        }
+        Vec::new()
+    }
+
+    fn redis_object_editor_move_focus(&mut self, delta: isize) {
+        if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+            && !editor.busy
+        {
+            editor.move_focus(delta);
+        }
+    }
+
+    fn redis_object_editor_edit(&mut self, edit: crate::model::text_input::TextInputEdit) {
+        if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
+            && !editor.busy
+            && let Some(input) = editor.focused_input_mut()
+        {
+            input.apply(edit);
+            editor.error = None;
+            editor.plan = None;
+        }
+    }
+
+    fn allocate_redis_request_id(&mut self, profile_id: Uuid) -> Option<u64> {
+        self.explorer
+            .normalized
+            .profiles
+            .get_mut(&profile_id)
+            .and_then(|profile| profile.allocate_request_id())
+    }
+
+    fn apply_redis_object_editor(&mut self) -> Vec<Command> {
+        let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_ref() else {
+            return Vec::new();
+        };
+        if editor.busy {
+            return Vec::new();
+        }
+        if let Some(plan) = editor.plan.clone() {
+            if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut() {
+                editor.busy = true;
+                editor.error = None;
+            }
+            return vec![Command::ExecuteRedisMutation(plan)];
+        }
+        let profile_id = editor.connection.profile_id;
+        let Some(request_id) = self.allocate_redis_request_id(profile_id) else {
+            if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut() {
+                editor.plan_failed("Redis request ID exhausted");
+            }
+            return Vec::new();
+        };
+        let (request, operation, ttl, baseline) = {
+            let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut() else {
+                return Vec::new();
+            };
+            editor.request_id = request_id;
+            let request = match editor.request() {
+                Ok(request) => request,
+                Err(error) => {
+                    editor.plan_failed(error);
+                    return Vec::new();
+                }
+            };
+            let operation = match editor.operation() {
+                Ok(operation) => operation,
+                Err(error) => {
+                    editor.plan_failed(error);
+                    return Vec::new();
+                }
+            };
+            let ttl = match editor.ttl_mutation() {
+                Ok(ttl) => ttl,
+                Err(error) => {
+                    editor.plan_failed(error);
+                    return Vec::new();
+                }
+            };
+            let baseline = editor.baseline;
+            editor.begin_plan(request_id);
+            (request, operation, ttl, baseline)
+        };
+        vec![Command::PlanRedisMutation {
+            request,
+            operation,
+            ttl,
+            baseline,
+        }]
     }
 
     fn move_redis_find(&mut self, delta: isize) -> Vec<Command> {

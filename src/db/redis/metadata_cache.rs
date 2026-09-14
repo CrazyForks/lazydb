@@ -57,6 +57,13 @@ impl MetadataCache {
         self.entries.retain(|key, _| key.connection != connection);
     }
 
+    pub fn invalidate_key(&mut self, connection: ConnectionIdentity, key: &[u8]) {
+        self.entries.remove(&MetadataCacheKey {
+            connection,
+            key: key.to_vec(),
+        });
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -106,6 +113,10 @@ mod tests {
         cache.insert(cache_key(b"a"), metadata(b"a"));
         cache.insert(cache_key(b"b"), metadata(b"b"));
         assert_eq!(cache.len(), 1);
+        cache.insert(cache_key(b"b"), metadata(b"b"));
+        cache.invalidate_key(connection, b"b");
+        assert!(cache.is_empty());
+        cache.insert(cache_key(b"a"), metadata(b"a"));
         cache.invalidate_connection(connection);
         assert_eq!(cache.len(), 0);
     }
