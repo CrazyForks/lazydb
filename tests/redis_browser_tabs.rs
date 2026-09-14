@@ -5,7 +5,10 @@ use lazydb::{
     model::execution_target::ExecutionTarget,
     model::redis_key_tree::KeyTreeNodeId,
     model::workspace::ConnectionStatus,
-    model::{redis_browser::RedisPreviewState, tab::WorkspaceTab},
+    model::{
+        redis_browser::{RedisPreviewState, RedisValuePageState},
+        tab::WorkspaceTab,
+    },
 };
 use uuid::Uuid;
 
@@ -174,6 +177,28 @@ fn selecting_keys_advances_preview_generation_so_old_results_can_be_rejected() {
     let first = tab.preview_generation;
     tab.select(Some(KeyTreeNodeId::Key(b"b".to_vec())));
     assert!(first < tab.preview_generation);
+}
+
+#[test]
+fn selecting_a_key_starts_a_typed_value_page_lifecycle() {
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(1),
+        RedisTarget {
+            profile_id: Uuid::from_u128(2),
+            database: 0,
+        },
+    );
+    tab.tree.rebuild(&[RedisKeyId {
+        target: tab.target.clone(),
+        key: b"user:1".to_vec(),
+    }]);
+    tab.select(Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
+    assert!(matches!(
+        tab.value_page,
+        RedisValuePageState::Loading { .. }
+    ));
+    tab.select(None);
+    assert_eq!(tab.value_page, RedisValuePageState::Empty);
 }
 
 #[test]

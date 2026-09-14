@@ -12285,6 +12285,38 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::RedisValuePageLoaded {
+                tab_id,
+                connection,
+                preview_generation,
+                page,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                {
+                    tab.value_page = crate::model::redis_browser::RedisValuePageState::Ready(page);
+                }
+                Vec::new()
+            }
+            Action::RedisValuePageFailed {
+                tab_id,
+                connection,
+                preview_generation,
+                key,
+                message,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                {
+                    tab.value_page =
+                        crate::model::redis_browser::RedisValuePageState::Failed { key, message };
+                }
+                Vec::new()
+            }
             Action::OpenRedisDatabase {
                 profile_id,
                 database,
