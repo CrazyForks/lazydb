@@ -6253,8 +6253,10 @@ impl App {
             }
             Action::ExecuteHelpShortcut(id) => self.execute_help_shortcut(id),
             Action::DismissOverlay => {
-                if let Some(Overlay::SqlHistory(view)) = self.overlay.take() {
-                    self.editor.close_console(view.editor_session_id);
+                if matches!(self.overlay, Some(Overlay::SqlHistory(_))) {
+                    if let Some(Overlay::SqlHistory(view)) = self.overlay.take() {
+                        self.editor.close_console(view.editor_session_id);
+                    }
                     return Vec::new();
                 }
                 if matches!(self.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
