@@ -10,7 +10,7 @@ use lazydb::db::mssql::MsSqlAdapter;
 use lazydb::db::mysql::MySqlAdapter;
 use lazydb::db::oracle::OracleAdapter;
 use lazydb::db::sqlite::SqliteAdapter;
-use lazydb::model::catalog_editor::{CatalogDraft, TableDraft};
+use lazydb::model::catalog_editor::{CatalogDraft, TableDraft, ViewDraft};
 use lazydb::model::explorer::ExplorerNodeId;
 use lazydb::model::explorer_actions::{ExplorerActionAvailability, ExplorerActionContext};
 use lazydb::profile::DatabaseKind;
@@ -345,7 +345,7 @@ fn mysql_database_is_schema_advertises_table_and_view_creation() {
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
             .is_none()
     );
-    assert_eq!(capabilities.edit.len(), 1);
+    assert_eq!(capabilities.edit.len(), 2);
 }
 
 #[test]
@@ -375,6 +375,71 @@ fn mysql_table_create_plan_uses_backtick_quoting() {
     assert_eq!(
         plan.statements()[0],
         "CREATE TABLE `shop``db`.`line``item` (`id` BIGINT)"
+    );
+}
+
+#[test]
+fn mysql_view_edit_plan_renames_and_replaces_the_definition() {
+    let profile_id = Uuid::from_u128(12);
+    let object = CatalogId::new(profile_id, CatalogKind::View, ["shop", "shop", "old_view"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 2,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::View),
+        current_database: Some("shop".to_owned()),
+    };
+    let view = ViewDraft {
+        name: "new_view".into(),
+        schema: "shop".into(),
+        owner: "".into(),
+        comment: "".into(),
+        query: "SELECT 2".into(),
+        output_columns: "".into(),
+        security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable(
+            "not applicable to MySQL",
+        ),
+        security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable(
+            "not applicable to MySQL",
+        ),
+        check_option: lazydb::db::catalog_mutation::ViewOption::unavailable("not mapped for MySQL"),
+        focus: lazydb::model::catalog_editor::CatalogFormFocus::Name,
+    };
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::View(
+        lazydb::db::catalog_mutation::ViewDefinition {
+            database: "shop".into(),
+            schema: "shop".into(),
+            name: "old_view".into(),
+            owner: "".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            query: "SELECT 1".into(),
+            output_columns: vec!["value".into()],
+            security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable to MySQL",
+            ),
+            security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable to MySQL",
+            ),
+            check_option: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not mapped for MySQL",
+            ),
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        MySqlAdapter::plan_catalog_mutation(request, CatalogDraft::View(view), Some(baseline))
+            .expect("MySQL view edit plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &[
+            "RENAME TABLE `shop`.`old_view` TO `shop`.`new_view`",
+            "CREATE OR REPLACE VIEW `shop`.`new_view` AS SELECT 2"
+        ]
     );
 }
 

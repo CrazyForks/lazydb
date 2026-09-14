@@ -32,7 +32,7 @@ for the first mutation slice is:
 | --- | --- |
 | PostgreSQL | Existing PostgreSQL create/edit contract |
 | Oracle | Create and edit table/view/sequence from schema object groups; complex column/index/constraint edits remain gated |
-| MySQL/MariaDB | Create table/view from the database-is-schema namespace; edit remains gated |
+| MySQL/MariaDB | Create and edit table/view from the database-is-schema namespace; column/index/constraint edits remain gated |
 | SQL Server | Create table/view from a database/schema object group; edit remains gated |
 | SQLite | Create table/view; edit and lossless table rebuild remain gated |
 | Redis | No SQL catalog mutation; native Key-Value mutation is a separate planned protocol |

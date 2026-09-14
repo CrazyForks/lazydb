@@ -41,7 +41,7 @@ use super::{
         CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationOption,
         CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
         CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
-        CatalogSelectionHint, ColumnDefinition, TableDefinition,
+        CatalogSelectionHint, ColumnDefinition, TableDefinition, ViewDefinition, ViewOption,
     },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
@@ -436,10 +436,13 @@ impl MySqlAdapter {
                     availability: CatalogMutationAvailability::Available,
                 })
                 .collect(),
-            edit: vec![CatalogMutationOption {
-                object_type: CatalogObjectType::Catalog(CatalogKind::Table),
-                availability: CatalogMutationAvailability::Available,
-            }],
+            edit: [CatalogKind::Table, CatalogKind::View]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
             ..CatalogMutationCapabilities::default()
         }
     }
@@ -455,6 +458,77 @@ impl MySqlAdapter {
                     reason: "MySQL edit requires a catalog object anchor",
                 });
             };
+            if object.kind == CatalogKind::View {
+                let Some(CatalogObjectDefinition::View(_)) = baseline else {
+                    return Err(CatalogMutationError::StaleState);
+                };
+                let crate::model::catalog_editor::CatalogDraft::View(draft) = draft else {
+                    return Err(CatalogMutationError::InvalidDraft {
+                        reason: "MySQL view edit requires a view draft".into(),
+                    });
+                };
+                draft.validate()?;
+                let [database, schema, name] = object.native_path.as_slice() else {
+                    return Err(CatalogMutationError::InvalidAnchor {
+                        reason: "MySQL view identity is incomplete",
+                    });
+                };
+                let object_id = object.clone();
+                let database_name = database.clone();
+                let schema_name = schema.clone();
+                let name_value = name.clone();
+                let new_name = draft.name.value().trim();
+                if new_name.is_empty() {
+                    return Err(CatalogMutationError::InvalidDraft {
+                        reason: "MySQL view name is required".into(),
+                    });
+                }
+                let new_object = CatalogId::new(
+                    request.connection.profile_id,
+                    CatalogKind::View,
+                    [database.clone(), schema.clone(), new_name.to_owned()],
+                );
+                let mut statements = Vec::new();
+                if new_name != name {
+                    statements.push(format!(
+                        "RENAME TABLE {}.{} TO {}.{}",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&name_value),
+                        quote_identifier(&schema_name),
+                        quote_identifier(new_name)
+                    ));
+                }
+                statements.push(format!(
+                    "CREATE OR REPLACE VIEW {}.{} AS {}",
+                    quote_identifier(&schema_name),
+                    quote_identifier(new_name),
+                    draft.query.value().trim()
+                ));
+                return CatalogMutationPlan::new(
+                    request,
+                    CatalogObjectType::Catalog(CatalogKind::View),
+                    CatalogMutationExecutionMode::Autocommit,
+                    CatalogMutationTarget::database_target(
+                        crate::model::execution_target::ExecutionTarget {
+                            profile_id: object_id.profile_id(),
+                            database: database_name.clone(),
+                            schema: Some(schema_name.clone()),
+                        },
+                    )?,
+                    vec![CatalogTarget::Objects {
+                        schema: CatalogId::new(
+                            object_id.profile_id(),
+                            CatalogKind::Schema,
+                            [database_name, schema_name.clone()],
+                        ),
+                        group: ObjectGroup::Views,
+                    }],
+                    CatalogSelectionHint::Object(new_object),
+                    None,
+                    Vec::new(),
+                    statements,
+                );
+            }
             let Some(CatalogObjectDefinition::Table(_)) = baseline else {
                 return Err(CatalogMutationError::StaleState);
             };
@@ -654,12 +728,61 @@ impl MySqlAdapter {
                 "MySQL table identity is incomplete",
             ));
         };
+        let mut connection = self.pool.acquire().await.map_err(sql_error)?;
+        if request.object.kind == CatalogKind::View {
+            let sql = format!(
+                "SHOW CREATE VIEW {}.{}",
+                quote_identifier(schema),
+                quote_identifier(name)
+            );
+            let row = sqlx::query(AssertSqlSafe(sql))
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(sql_error)?;
+            let Some(row) = row else {
+                return Err(DatabaseError::configuration(
+                    "MySQL view definition is unavailable",
+                ));
+            };
+            let show_create: String = row.try_get(1).map_err(decode_error)?;
+            let uppercase = show_create.to_ascii_uppercase();
+            let Some(as_index) = uppercase.find(" AS ") else {
+                return Err(DatabaseError::configuration(
+                    "MySQL view definition has no query body",
+                ));
+            };
+            let query = show_create[as_index + 4..].trim().to_owned();
+            let output_rows = sqlx::query(
+                "SELECT column_name FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
+            )
+            .bind(schema)
+            .bind(name)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(sql_error)?;
+            let output_columns = output_rows
+                .into_iter()
+                .map(|row| row.try_get(0).map_err(decode_error))
+                .collect::<Result<Vec<String>, DatabaseError>>()?;
+            return Ok(CatalogObjectDefinition::View(ViewDefinition {
+                database: database.clone(),
+                schema: schema.clone(),
+                name: name.clone(),
+                owner: String::new(),
+                comment: OptionalMetadata::Unsupported,
+                query: query.clone(),
+                output_columns,
+                security_barrier: ViewOption::unavailable("not applicable to MySQL"),
+                security_invoker: ViewOption::unavailable("not applicable to MySQL"),
+                check_option: ViewOption::unavailable("not mapped for MySQL"),
+                baseline_fingerprint: format!("mysql:view:{database}:{schema}:{name}:{query}"),
+            }));
+        }
         if request.object.kind != CatalogKind::Table {
             return Err(DatabaseError::configuration(
-                "MySQL definition loading currently supports tables only",
+                "MySQL definition loading currently supports tables and views only",
             ));
         }
-        let mut connection = self.pool.acquire().await.map_err(sql_error)?;
         let rows = sqlx::query(
             "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
         )
