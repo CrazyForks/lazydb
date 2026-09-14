@@ -31,7 +31,7 @@ for the first mutation slice is:
 | Driver | Currently advertised catalog mutation |
 | --- | --- |
 | PostgreSQL | Existing PostgreSQL create/edit contract |
-| Oracle | Create table/view/sequence from schema object groups; edit remains gated until authoritative definition loading is implemented |
+| Oracle | Create and edit table/view/sequence from schema object groups; complex column/index/constraint edits remain gated |
 | MySQL/MariaDB | Create table/view from the database-is-schema namespace; edit remains gated |
 | SQL Server | Create table/view from a database/schema object group; edit remains gated |
 | SQLite | Create table/view; edit and lossless table rebuild remain gated |
