@@ -34,8 +34,8 @@ impl Default for ReplyBudget {
 pub struct BoundedReply {
     pub reply: RedisReply,
     pub truncated: bool,
-    pub original_nodes: usize,
-    pub original_bytes: usize,
+    pub visited_nodes: usize,
+    pub visited_bytes: usize,
 }
 
 impl RedisReply {
@@ -45,8 +45,8 @@ impl RedisReply {
         BoundedReply {
             reply,
             truncated: state.truncated,
-            original_nodes: state.nodes,
-            original_bytes: state.bytes,
+            visited_nodes: state.nodes,
+            visited_bytes: state.bytes,
         }
     }
 }
@@ -75,12 +75,19 @@ impl BoundState {
                     RedisReply::Bytes(value.clone())
                 }
             }
-            RedisReply::Array(values) => RedisReply::Array(
-                values
-                    .iter()
-                    .map(|value| self.visit(value, budget, depth + 1))
-                    .collect(),
-            ),
+            RedisReply::Array(values) => {
+                let mut bounded = Vec::new();
+                for value in values {
+                    if self.truncated {
+                        break;
+                    }
+                    bounded.push(self.visit(value, budget, depth + 1));
+                }
+                if bounded.len() < values.len() {
+                    self.truncated = true;
+                }
+                RedisReply::Array(bounded)
+            }
             other => other.clone(),
         }
     }

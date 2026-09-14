@@ -33,6 +33,37 @@ pub struct RedisKeyMetadata {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisPagePosition {
+    StringOffset(u64),
+    HashCursor(u64),
+    ListOffset(u64),
+    SetCursor(u64),
+    SortedSetOffset(u64),
+    StreamId(Vec<u8>),
+    Complete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisPageValue {
+    String(Vec<u8>),
+    Hash(Vec<(Vec<u8>, Vec<u8>)>),
+    List(Vec<(u64, Vec<u8>)>),
+    Set(Vec<Vec<u8>>),
+    SortedSet(Vec<(Vec<u8>, Vec<u8>)>),
+    Stream(Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RedisValuePage {
+    pub metadata: RedisKeyMetadata,
+    pub position: RedisPagePosition,
+    pub value: RedisPageValue,
+    pub truncated: bool,
+    pub raw_bytes: usize,
+    pub formatted_bytes: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RedisReadRequest {
     StringRange {
         key: RedisKeyId,
@@ -67,21 +98,23 @@ impl RedisReadRequest {
             Self::StringRange { start, end, .. } if end < start => {
                 Err("string range end precedes start")
             }
-            Self::StringRange { start, end, .. }
-                if end.saturating_sub(*start) + 1 > MAX_STRING_PREVIEW_BYTES as u64 =>
-            {
-                Err("string range exceeds preview budget")
+            Self::StringRange { start, end, .. } => {
+                match end.checked_sub(*start).and_then(|v| v.checked_add(1)) {
+                    Some(length) if length <= MAX_STRING_PREVIEW_BYTES as u64 => Ok(()),
+                    Some(_) => Err("string range exceeds preview budget"),
+                    None => Err("string range exceeds preview budget"),
+                }
             }
             Self::HashScan { count, .. } | Self::SetScan { count, .. }
                 if *count as usize > MAX_COLLECTION_PREVIEW_ITEMS =>
             {
                 Err("collection count exceeds preview budget")
             }
-            Self::ListRange { start, end, .. } | Self::SortedSetRange { start, end, .. }
-                if end < start
-                    || end.saturating_sub(*start) + 1 > MAX_COLLECTION_PREVIEW_ITEMS as u64 =>
-            {
-                Err("collection range exceeds preview budget")
+            Self::ListRange { start, end, .. } | Self::SortedSetRange { start, end, .. } => {
+                match end.checked_sub(*start).and_then(|v| v.checked_add(1)) {
+                    Some(length) if length <= MAX_COLLECTION_PREVIEW_ITEMS as u64 => Ok(()),
+                    Some(_) | None => Err("collection range exceeds preview budget"),
+                }
             }
             _ => Ok(()),
         }

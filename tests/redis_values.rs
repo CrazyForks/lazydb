@@ -53,13 +53,39 @@ fn reply_bounds_preserve_types_and_mark_truncation() {
         max_depth: 4,
     });
     assert!(bounded.truncated);
-    assert_eq!(bounded.original_nodes, 3);
+    assert_eq!(bounded.visited_nodes, 2);
     assert_eq!(
         bounded.reply,
-        RedisReply::Array(vec![
-            RedisReply::Status("<reply bytes truncated>".into()),
-            RedisReply::Integer(3)
-        ])
+        RedisReply::Array(vec![RedisReply::Status("<reply bytes truncated>".into())])
+    );
+}
+
+#[test]
+fn read_range_validation_rejects_integer_overflow() {
+    let key = lazydb::db::redis::types::RedisKeyId {
+        target: lazydb::db::redis::types::RedisTarget {
+            profile_id: uuid::Uuid::nil(),
+            database: 0,
+        },
+        key: b"key".to_vec(),
+    };
+    assert!(
+        lazydb::db::redis::read::RedisReadRequest::StringRange {
+            key: key.clone(),
+            start: 0,
+            end: u64::MAX,
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        lazydb::db::redis::read::RedisReadRequest::ListRange {
+            key,
+            start: 0,
+            end: u64::MAX,
+        }
+        .validate()
+        .is_err()
     );
 }
 
