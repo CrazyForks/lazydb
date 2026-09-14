@@ -102,3 +102,13 @@ fn unsupported_format_falls_back_without_losing_raw_value() {
     assert!(lazydb::ui::redis_value::format_page(&page, ValueView::Json).is_err());
     assert_eq!(lazydb::ui::redis_value::page_text(&page), "not json");
 }
+
+#[test]
+fn java_detection_requires_the_complete_stream_header() {
+    assert!(!lazydb::value_preview::java::is_java_serialization(
+        b"\xac\xed"
+    ));
+    assert!(lazydb::value_preview::java::is_java_serialization(
+        b"\xac\xed\x00\x05"
+    ));
+}
