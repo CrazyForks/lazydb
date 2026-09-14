@@ -1258,21 +1258,41 @@ impl Keymap {
             {
                 return Some(Action::RedisRetryScan);
             }
-            if event.code == KeyCode::Char('h') || event.code == KeyCode::Left {
+            if event.code == KeyCode::Char('h') {
                 return Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                 ));
             }
-            if event.code == KeyCode::Char('l') || event.code == KeyCode::Right {
+            if event.code == KeyCode::Char('l') {
                 return Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Preview,
                 ));
             }
             if event.code == KeyCode::PageDown {
-                return Some(Action::RedisKeysScroll(10));
+                return Some(
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    ) {
+                        Action::RedisPreviewScroll(10)
+                    } else {
+                        Action::RedisKeysScroll(10)
+                    },
+                );
             }
             if event.code == KeyCode::PageUp {
-                return Some(Action::RedisKeysScroll(-10));
+                return Some(
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    ) {
+                        Action::RedisPreviewScroll(-10)
+                    } else {
+                        Action::RedisKeysScroll(-10)
+                    },
+                );
             }
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(match action {
@@ -1296,6 +1316,14 @@ impl Keymap {
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                     KeyCode::Char('k') | KeyCode::Up,
                 ) => Some(Action::RedisMoveSelection(-1)),
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Preview,
+                    KeyCode::Char('j') | KeyCode::Down,
+                ) => Some(Action::RedisPreviewScroll(1)),
+                (
+                    crate::model::redis_browser::RedisBrowserFocus::Preview,
+                    KeyCode::Char('k') | KeyCode::Up,
+                ) => Some(Action::RedisPreviewScroll(-1)),
                 (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Right) => {
                     Some(Action::RedisExpandSelection)
                 }
@@ -1303,6 +1331,9 @@ impl Keymap {
                     Some(Action::RedisCollapseSelection)
                 }
                 (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Enter) => {
+                    Some(Action::RedisPrimarySelection)
+                }
+                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('o')) => {
                     Some(Action::RedisPrimarySelection)
                 }
                 _ => None,

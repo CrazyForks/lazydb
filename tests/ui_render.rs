@@ -7489,6 +7489,30 @@ fn redis_browser_keys_and_preview_panels_show_local_focus() {
 }
 
 #[test]
+fn redis_browser_tab_title_uses_its_connection_name() {
+    let mut profile = import_connection_url("redis://localhost/0", Some("cache"))
+        .unwrap()
+        .profile;
+    profile.id = uuid::Uuid::from_u128(83);
+    let mut app = App::new(vec![profile]);
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(
+            uuid::Uuid::from_u128(84),
+            lazydb::db::redis::types::RedisTarget {
+                profile_id: uuid::Uuid::from_u128(83),
+                database: 0,
+            },
+        ),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+
+    let output = render(&app, 120, 32);
+    assert!(output.contains("Redis @cache"));
+    assert!(!output.contains("Redis @Redis"));
+}
+
+#[test]
 fn redis_browser_explains_not_loaded_loading_empty_and_failure_states() {
     use lazydb::model::keyspace::KeyspaceStatus;
     let mut profile = import_connection_url("redis://localhost/0", Some("cache"))

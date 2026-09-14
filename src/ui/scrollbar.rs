@@ -1,4 +1,12 @@
-use ratatui::layout::Rect;
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::Style,
+    text::{Line, Span},
+    widgets::Paragraph,
+};
+
+use super::theme::Theme;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ScrollbarGeometry {
@@ -85,6 +93,57 @@ pub(crate) fn geometry(
         thumb_length,
         max_offset,
     })
+}
+
+pub(crate) fn render_vertical(
+    frame: &mut Frame<'_>,
+    track: Rect,
+    geometry: ScrollbarGeometry,
+    theme: Theme,
+) {
+    let before = geometry.thumb_start;
+    let after = geometry
+        .rail
+        .height
+        .saturating_sub(before)
+        .saturating_sub(geometry.thumb_length);
+    let mut lines = Vec::with_capacity(track.height as usize);
+    lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+    lines.extend((0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.extend(
+        (0..geometry.thumb_length)
+            .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+    );
+    lines.extend((0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))));
+    lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme.surface)),
+        track,
+    );
+}
+
+pub(crate) fn render_horizontal(
+    frame: &mut Frame<'_>,
+    track: Rect,
+    geometry: ScrollbarGeometry,
+    theme: Theme,
+) {
+    let thumb = geometry.thumb_length;
+    let offset = geometry.thumb_start;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("‹", Style::new().fg(theme.muted)),
+            Span::styled("─".repeat(offset as usize), Style::new().fg(theme.muted)),
+            Span::styled("━".repeat(thumb as usize), Style::new().fg(theme.accent)),
+            Span::styled(
+                "─".repeat(geometry.rail.width.saturating_sub(offset + thumb) as usize),
+                Style::new().fg(theme.muted),
+            ),
+            Span::styled("›", Style::new().fg(theme.muted)),
+        ]))
+        .style(Style::new().bg(theme.surface)),
+        track,
+    );
 }
 
 #[cfg(test)]

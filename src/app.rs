@@ -12323,15 +12323,20 @@ impl App {
             }
             Action::RedisKeysLoaded(batch) => {
                 let tab_id = batch.identity.owner_id;
-                let Some(WorkspaceTab::RedisBrowser(tab)) =
-                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
-                else {
-                    return Vec::new();
+                let selected = {
+                    let Some(WorkspaceTab::RedisBrowser(tab)) =
+                        self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    else {
+                        return Vec::new();
+                    };
+                    if tab.keyspace.apply_batch(batch) {
+                        tab.insert_tree_keys();
+                        tab.select_first_root_if_empty()
+                    } else {
+                        None
+                    }
                 };
-                if tab.keyspace.apply_batch(batch) {
-                    tab.insert_tree_keys();
-                }
-                Vec::new()
+                selected.map_or_else(Vec::new, |node| self.select_redis_key(tab_id, Some(node)))
             }
             Action::RedisKeysFailed { identity, message } => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self
@@ -12464,6 +12469,33 @@ impl App {
                                 .select(ids.get(tab.scroll + tab.viewport_rows - 1).cloned());
                         }
                     }
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewScroll(delta) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.scroll_pane(
+                        crate::model::redis_browser::RedisBrowserPane::Preview,
+                        delta,
+                        tab.preview_content_rows,
+                    );
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewViewportChanged {
+                tab_id,
+                rows,
+                content_rows,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                {
+                    tab.set_pane_viewport(
+                        crate::model::redis_browser::RedisBrowserPane::Preview,
+                        rows,
+                        content_rows,
+                    );
+                    tab.preview_content_rows = content_rows;
                 }
                 Vec::new()
             }
@@ -17861,6 +17893,9 @@ impl App {
         };
         self.active_tab = index;
         self.focus = Focus::Results;
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) {
+            tab.focus = crate::model::redis_browser::RedisBrowserFocus::Keys;
+        }
         let active_target = self.connection.target.as_ref();
         if self.connection.profile_id != Some(profile_id)
             || active_target.is_none_or(|active| {
@@ -18063,7 +18098,14 @@ impl App {
         let Some(selected) = tab.tree.selected.clone() else {
             return Vec::new();
         };
-        if tab.toggle_prefix(&selected) {
+        if matches!(
+            selected,
+            crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_)
+        ) && tab.tree.contains(&selected)
+        {
+            if tab.tree.expanded.insert(selected.clone()) {
+                return Vec::new();
+            }
             if let Some(child) = tab.tree.first_child(&selected) {
                 tab.tree.select(Some(child));
             }

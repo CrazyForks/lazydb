@@ -29,6 +29,12 @@ pub enum RedisBrowserFocus {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RedisBrowserPane {
+    Keys,
+    Preview,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RedisFindPhase {
     Editing,
     Confirmed,
@@ -58,6 +64,9 @@ pub struct RedisBrowserTab {
     pub find: Option<RedisKeyFindState>,
     pub scroll: usize,
     pub viewport_rows: usize,
+    pub preview_scroll: usize,
+    pub preview_viewport_rows: usize,
+    pub preview_content_rows: usize,
 }
 
 impl RedisBrowserTab {
@@ -74,6 +83,9 @@ impl RedisBrowserTab {
             find: None,
             scroll: 0,
             viewport_rows: 0,
+            preview_scroll: 0,
+            preview_viewport_rows: 0,
+            preview_content_rows: 0,
         }
     }
 
@@ -83,6 +95,19 @@ impl RedisBrowserTab {
 
     pub fn insert_tree_keys(&mut self) {
         self.tree.insert_keys(&self.keyspace.keys);
+    }
+
+    /// Select the first top-level node after the initial tree population.
+    ///
+    /// Incremental scan batches must not move an existing selection, so this
+    /// is intentionally a no-op once a valid selection exists.
+    pub fn select_first_root_if_empty(&mut self) -> Option<super::redis_key_tree::KeyTreeNodeId> {
+        if self.tree.selected.is_some() {
+            return None;
+        }
+        let first = self.tree.nodes.first()?.id.clone();
+        self.tree.select(Some(first.clone()));
+        Some(first)
     }
 
     pub fn select(&mut self, node: Option<super::redis_key_tree::KeyTreeNodeId>) {
@@ -106,10 +131,36 @@ impl RedisBrowserTab {
             },
             None => RedisValuePageState::Empty,
         };
+        self.preview_scroll = 0;
     }
 
     pub fn preview_generation(&self) -> Option<u64> {
         (!matches!(self.preview, RedisPreviewState::Empty)).then_some(self.preview_generation)
+    }
+
+    pub fn scroll_pane(&mut self, pane: RedisBrowserPane, delta: isize, content_rows: usize) {
+        let (scroll, viewport) = match pane {
+            RedisBrowserPane::Keys => (&mut self.scroll, self.viewport_rows),
+            RedisBrowserPane::Preview => (&mut self.preview_scroll, self.preview_viewport_rows),
+        };
+        let max = content_rows.saturating_sub(viewport.max(1));
+        *scroll = scroll.saturating_add_signed(delta).min(max);
+    }
+
+    pub fn set_pane_viewport(
+        &mut self,
+        pane: RedisBrowserPane,
+        viewport_rows: usize,
+        content_rows: usize,
+    ) {
+        let (scroll, viewport) = match pane {
+            RedisBrowserPane::Keys => (&mut self.scroll, &mut self.viewport_rows),
+            RedisBrowserPane::Preview => {
+                (&mut self.preview_scroll, &mut self.preview_viewport_rows)
+            }
+        };
+        *viewport = viewport_rows;
+        *scroll = (*scroll).min(content_rows.saturating_sub(viewport_rows.max(1)));
     }
 
     pub fn toggle_prefix(&mut self, node: &super::redis_key_tree::KeyTreeNodeId) -> bool {

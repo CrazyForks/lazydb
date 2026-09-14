@@ -1,8 +1,8 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
-    text::Line,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::collections::HashMap;
@@ -10,13 +10,23 @@ use std::collections::HashMap;
 use crate::model::redis_browser::RedisValuePageState;
 use crate::{
     app::App,
+    db::catalog::ObjectGroup,
+    model::workspace::Focus,
     model::{
         redis_browser::{RedisBrowserFocus, RedisPreviewState},
         redis_key_tree::VisibleKeyTreeRow,
     },
+    ui::{Theme, icons::IconSet},
 };
 
-pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::UiState) {
+pub fn render(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    ui: &mut crate::ui::UiState,
+    theme: Theme,
+    icons: IconSet,
+) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -25,22 +35,31 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
     else {
         return;
     };
-    let keys_block = Block::default().borders(Borders::ALL);
+    let keys_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Keys;
+    let preview_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Preview;
+    let keys_block = super::panel_block("", keys_focused, theme);
     let mut keys_area = keys_block.inner(columns[0]);
-    ui.redis_keys_viewport_rows = Some((tab.id, keys_area.height as usize));
     if tab.find.is_some() {
         keys_area.height = keys_area.height.saturating_sub(1);
     }
-    let inner_preview = Block::default().borders(Borders::ALL).title("Preview");
+    let inner_preview = super::panel_block("Preview", preview_focused, theme);
     let preview_area = inner_preview.inner(columns[1]);
     frame.render_widget(
         keys_block
             .title(keys_title(tab))
-            .border_style(panel_style(tab.focus == RedisBrowserFocus::Keys)),
+            .border_style(Style::new().fg(if keys_focused {
+                theme.accent
+            } else {
+                theme.border
+            })),
         columns[0],
     );
     frame.render_widget(
-        inner_preview.border_style(panel_style(tab.focus == RedisBrowserFocus::Preview)),
+        inner_preview.border_style(Style::new().fg(if preview_focused {
+            theme.accent
+        } else {
+            theme.border
+        })),
         columns[1],
     );
     let rows = tab.tree.visible_rows();
@@ -109,11 +128,18 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
             .height
             .saturating_sub(status_rows + u16::from(query.is_some())),
     );
+    ui.redis_keys_viewport_rows = Some((tab.id, row_area.height as usize));
     let visible_rows = rows
         .iter()
         .skip(tab.scroll)
         .take(row_area.height as usize)
         .collect::<Vec<_>>();
+    let keys_scroll_track = Rect::new(
+        keys_area.right().saturating_sub(1),
+        keys_area.y,
+        1,
+        keys_area.height,
+    );
     let keys = visible_rows
         .iter()
         .enumerate()
@@ -125,6 +151,8 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
                 tab.id,
                 row_area,
                 index,
+                theme,
+                icons,
             )
         })
         .collect::<Vec<_>>();
@@ -138,7 +166,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
         frame.render_widget(Paragraph::new(keys), row_area);
         frame.render_widget(
             Paragraph::new(status)
-                .style(Style::default().fg(Color::Gray))
+                .style(Style::new().fg(theme.muted).bg(theme.surface))
                 .wrap(Wrap { trim: true }),
             footer,
         );
@@ -165,15 +193,17 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
         };
         frame.render_widget(
             Paragraph::new(format!("{phase}{query}  {} matches", matches.unwrap_or(0))).block(
-                Block::default().borders(Borders::TOP).border_style(
-                    if tab.find.as_ref().is_some_and(|find| {
-                        find.phase == crate::model::redis_browser::RedisFindPhase::Editing
-                    }) {
-                        panel_style(true)
-                    } else {
-                        panel_style(false)
-                    },
-                ),
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::new().fg(
+                        if tab.find.as_ref().is_some_and(|find| {
+                            find.phase == crate::model::redis_browser::RedisFindPhase::Editing
+                        }) {
+                            theme.accent
+                        } else {
+                            theme.border
+                        },
+                    )),
             ),
             search_area,
         );
@@ -194,35 +224,70 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
             });
         }
     }
-    let preview = match &tab.value_page {
-        RedisValuePageState::Ready(page) => {
-            Paragraph::new(crate::ui::redis_value::page_lines(page))
-        }
+    if let Some(geometry) = crate::ui::scrollbar::geometry(
+        keys_scroll_track,
+        row_area.height as usize,
+        rows.len(),
+        tab.scroll,
+    ) {
+        crate::ui::scrollbar::render_vertical(frame, keys_scroll_track, geometry, theme);
+    }
+    let preview_lines = match &tab.value_page {
+        RedisValuePageState::Ready(page) => crate::ui::redis_value::page_lines(page),
         RedisValuePageState::Loading { key } => {
-            Paragraph::new(Line::from(format!("Loading {}", display_bytes(&key.key))))
+            vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
         }
-        RedisValuePageState::Failed { key, message } => Paragraph::new(vec![
+        RedisValuePageState::Failed { key, message } => vec![
             Line::from(display_bytes(&key.key)),
             Line::from(message.as_str()),
-        ])
-        .style(Style::default().fg(Color::Red)),
+        ],
         RedisValuePageState::Empty => match &tab.preview {
-            RedisPreviewState::Empty => Paragraph::new(Line::from("Select a key to preview")),
+            RedisPreviewState::Empty => vec![Line::from("Select a key to preview")],
             RedisPreviewState::Loading { key } => {
-                Paragraph::new(Line::from(format!("Loading {}", display_bytes(&key.key))))
+                vec![Line::from(format!("Loading {}", display_bytes(&key.key)))]
             }
-            RedisPreviewState::Ready { key, content } => Paragraph::new(vec![
+            RedisPreviewState::Ready { key, content } => vec![
                 Line::from(display_bytes(&key.key)),
                 Line::from(content.as_str()),
-            ]),
-            RedisPreviewState::Failed { key, message } => Paragraph::new(vec![
+            ],
+            RedisPreviewState::Failed { key, message } => vec![
                 Line::from(display_bytes(&key.key)),
                 Line::from(message.as_str()),
-            ])
-            .style(Style::default().fg(Color::Red)),
+            ],
         },
     };
-    frame.render_widget(preview, preview_area);
+    let preview_content_rows = preview_lines.len();
+    frame.render_widget(
+        Paragraph::new(preview_lines)
+            .style(Style::new().bg(theme.surface))
+            .scroll((tab.preview_scroll.min(u16::MAX as usize) as u16, 0)),
+        preview_area,
+    );
+    ui.redis_preview_viewport_rows =
+        Some((tab.id, preview_area.height as usize, preview_content_rows));
+    if let Some(geometry) = crate::ui::scrollbar::geometry(
+        Rect::new(
+            columns[1].right().saturating_sub(1),
+            preview_area.y,
+            1,
+            preview_area.height,
+        ),
+        preview_area.height as usize,
+        preview_content_rows,
+        tab.preview_scroll,
+    ) {
+        crate::ui::scrollbar::render_vertical(
+            frame,
+            Rect::new(
+                columns[1].right().saturating_sub(1),
+                preview_area.y,
+                1,
+                preview_area.height,
+            ),
+            geometry,
+            theme,
+        );
+    }
 }
 
 fn keys_title(tab: &crate::model::redis_browser::RedisBrowserTab) -> String {
@@ -249,6 +314,7 @@ fn keyspace_empty_text(status: &crate::model::keyspace::KeyspaceStatus) -> Strin
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_row(
     row: &VisibleKeyTreeRow,
     selected: bool,
@@ -256,6 +322,8 @@ fn render_row(
     tab_id: uuid::Uuid,
     area: Rect,
     visible_index: usize,
+    theme: Theme,
+    icons: IconSet,
 ) -> Line<'static> {
     let marker = if !row.expandable {
         "  "
@@ -269,10 +337,18 @@ fn render_row(
     } else {
         display_bytes(&row.label)
     };
-    let style = if selected {
-        Style::default().bg(Color::DarkGray).fg(Color::White)
+    let background = if selected {
+        theme.selection
     } else {
-        Style::default()
+        theme.surface
+    };
+    let style = if selected {
+        Style::new()
+            .bg(background)
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().bg(background).fg(theme.text)
     };
     ui.hit_regions.push(crate::ui::HitRegion {
         area: Rect::new(
@@ -295,15 +371,20 @@ fn render_row(
             },
         });
     }
-    Line::from(format!("{}{}{}", "  ".repeat(row.depth), marker, label)).style(style)
-}
-
-fn panel_style(focused: bool) -> Style {
-    if focused {
-        Style::default().fg(Color::Cyan)
+    let icon = if row.expandable {
+        icons.group(ObjectGroup::Tables, row.expanded)
     } else {
-        Style::default().fg(Color::Gray)
-    }
+        "·"
+    };
+    Line::from(vec![
+        Span::styled(format!("{}{} ", "  ".repeat(row.depth), marker), style),
+        Span::styled(format!("{} ", icon), style),
+        Span::styled(label, style),
+        Span::styled(
+            " ".repeat(area.width.saturating_sub(1) as usize),
+            Style::new().bg(background),
+        ),
+    ])
 }
 
 fn display_bytes(value: &[u8]) -> String {

@@ -1134,6 +1134,12 @@ pub enum Action {
         rows: usize,
     },
     RedisKeysScroll(isize),
+    RedisPreviewScroll(isize),
+    RedisPreviewViewportChanged {
+        tab_id: Uuid,
+        rows: usize,
+        content_rows: usize,
+    },
     RedisRetryScan,
     RedisFindOpen,
     RedisFindInsert(char),
