@@ -5,6 +5,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::collections::HashMap;
 
 use crate::{
     app::App,
@@ -48,19 +49,20 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
             .iter()
             .cloned()
             .collect::<std::collections::HashSet<_>>();
+        let rows_by_id = rows
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect::<HashMap<_, _>>();
         (
             find.rows
                 .iter()
                 .filter_map(|(id, label)| {
-                    rows.iter()
-                        .find(|row| &row.id == id)
-                        .cloned()
-                        .map(|mut row| {
-                            if matching.contains(id) {
-                                row.label = label.as_bytes().to_vec();
-                            }
-                            row
-                        })
+                    rows_by_id.get(id).cloned().map(|mut row| {
+                        if matching.contains(id) {
+                            row.label = label.as_bytes().to_vec();
+                        }
+                        row
+                    })
                 })
                 .collect::<Vec<_>>(),
             tab.tree.selected.clone(),
