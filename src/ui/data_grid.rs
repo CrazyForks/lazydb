@@ -253,9 +253,8 @@ pub(crate) fn render(
         .row_highlight_style(row_highlight_style)
         .cell_highlight_style(Style::new().bg(theme.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("▌");
-    // The cell highlight style is applied after cell rendering by ratatui and
-    // cannot preserve value-specific foreground colors. Paint the selected
-    // cell below instead, so Null and other semantic colors remain visible.
+    // Paint the selected row below the table so Null and other semantic
+    // foreground colors remain visible.
     let mut table_state = TableState::default();
     frame.render_stateful_widget(table, area, &mut table_state);
     if row_count > 0
@@ -620,6 +619,7 @@ fn row_number_width(row_count: usize) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
+#[cfg(test)]
 fn selected_data_cell(visible_position: usize) -> usize {
     2usize.saturating_add(visible_position.saturating_mul(2))
 }
