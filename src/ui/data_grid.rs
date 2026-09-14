@@ -251,12 +251,7 @@ pub(crate) fn render(
         .block(block)
         .column_spacing(0)
         .row_highlight_style(row_highlight_style)
-        .cell_highlight_style(
-            Style::new()
-                .bg(theme.accent)
-                .fg(theme.background)
-                .add_modifier(Modifier::BOLD),
-        )
+        .cell_highlight_style(Style::new().bg(theme.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("▌");
     let selected_cell = (row_count > 0).then(|| {
         let selected_column = visible
@@ -268,6 +263,56 @@ pub(crate) fn render(
     });
     let mut table_state = TableState::new().with_selected_cell(selected_cell);
     frame.render_stateful_widget(table, area, &mut table_state);
+    // Ratatui applies the row/cell highlight after rendering the cells. A
+    // highlight style with only a background consequently resets the cell
+    // foreground to the backend default. Restore the value-aware foreground
+    // for the selected row while keeping the selection backgrounds intact.
+    if row_count > 0
+        && grid.selected_row >= row_offset
+        && grid.selected_row < row_offset.saturating_add(visible_rows)
+    {
+        let row = edit
+            .and_then(|session| session.rows.get(grid.selected_row))
+            .map(|row| row.current.as_slice())
+            .unwrap_or_else(|| result.rows[grid.selected_row].as_slice());
+        let y = row_y.saturating_add((grid.selected_row - row_offset) as u16);
+        let mut x = data_start_x(table_area, number_width);
+        let buffer = frame.buffer_mut();
+        for (position, column) in visible.iter().enumerate() {
+            let value = row.get(column.index).unwrap_or(&CellValue::Null);
+            let foreground = if matches!(value, CellValue::Null) {
+                theme.muted
+            } else if matches!(value, CellValue::Unsupported { .. }) {
+                theme.warning
+            } else {
+                theme.text
+            };
+            let mut style =
+                Style::new()
+                    .fg(foreground)
+                    .bg(if column.index == grid.selected_column {
+                        theme.accent
+                    } else {
+                        theme.selection
+                    });
+            if column.index == grid.selected_column {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            buffer.set_style(
+                Rect::new(
+                    x,
+                    y,
+                    column.rendered_width.min(content_right.saturating_sub(x)),
+                    1,
+                ),
+                style,
+            );
+            x = x.saturating_add(column.rendered_width).saturating_add(1);
+            if position + 1 == visible.len() {
+                break;
+            }
+        }
+    }
     if result.rows.is_empty() && table_area.height >= 2 {
         frame.render_widget(
             Paragraph::new("No rows")
