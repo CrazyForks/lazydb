@@ -21,7 +21,8 @@ use super::catalog::{
 use super::catalog_mutation::{
     CatalogMutationAvailability, CatalogMutationCapabilities, CatalogMutationExecutionMode,
     CatalogMutationOption, CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
-    CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+    CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
+    CatalogSelectionHint, ColumnDefinition, TableDefinition,
 };
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
@@ -229,6 +230,102 @@ impl OracleAdapter {
         }
         outcome
             .ok_or_else(|| DatabaseError::configuration("Oracle mutation plan has no statements"))
+    }
+
+    pub async fn load_catalog_object_definition(
+        &self,
+        request: &CatalogObjectDefinitionRequest,
+    ) -> Result<CatalogObjectDefinition, DatabaseError> {
+        request
+            .validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        if request.connection.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "Oracle catalog definition profile mismatch",
+            ));
+        }
+        #[cfg(not(feature = "driver-oracle"))]
+        {
+            let _ = request;
+            Err(oracle_disabled())
+        }
+        #[cfg(feature = "driver-oracle")]
+        {
+            let object = request.object.clone();
+            let connection = Arc::clone(&self.connection);
+            let database = self.database.clone();
+            tokio::task::spawn_blocking(move || {
+                let [object_database, schema, name] = object.native_path.as_slice() else {
+                    return Err(oracle_error("invalid Oracle catalog definition identity"));
+                };
+                if object_database != &database {
+                    return Err(oracle_error("Oracle object belongs to another service"));
+                }
+                if object.kind != CatalogKind::Table {
+                    return Err(oracle_error(format!(
+                        "Oracle definition loading for {:?} is not implemented",
+                        object.kind
+                    )));
+                }
+                let connection = connection
+                    .lock()
+                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                let rows = connection
+                    .query(
+                        "SELECT column_name, data_type, data_precision, data_scale, nullable, data_default, column_id FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+                        &[schema, name],
+                    )
+                    .map_err(|error| oracle_error_with_query(error, "all_tab_columns"))?;
+                let mut columns = Vec::new();
+                for row in rows {
+                    let row = row.map_err(oracle_error)?;
+                    let column_name: String = row.get(0).map_err(oracle_error)?;
+                    let native_type: String = row.get(1).map_err(oracle_error)?;
+                    let precision: Option<i64> = row.get(2).map_err(oracle_error)?;
+                    let scale: Option<i64> = row.get(3).map_err(oracle_error)?;
+                    let nullable: String = row.get(4).map_err(oracle_error)?;
+                    let default_expression: Option<String> = row.get(5).map_err(oracle_error)?;
+                    let ordinal: i64 = row.get(6).map_err(oracle_error)?;
+                    let native_type = match (precision, scale) {
+                        (Some(precision), Some(scale)) => {
+                            format!("{native_type}({precision},{scale})")
+                        }
+                        (Some(precision), None) => format!("{native_type}({precision})"),
+                        _ => native_type,
+                    };
+                    columns.push(ColumnDefinition {
+                        name: column_name,
+                        ordinal_position: u32::try_from(ordinal).map_err(oracle_error)?,
+                        native_type,
+                        nullable: nullable == "Y",
+                        default_expression: OptionalMetadata::Supported(default_expression),
+                        identity: OptionalMetadata::Unsupported,
+                        generated_expression: OptionalMetadata::Unsupported,
+                        collation: OptionalMetadata::Unsupported,
+                        comment: OptionalMetadata::Unsupported,
+                    });
+                }
+                if columns.is_empty() {
+                    return Err(oracle_error("Oracle table has no visible columns"));
+                }
+                let baseline_fingerprint = format!(
+                    "oracle:table:{object_database}:{schema}:{name}:{columns:?}"
+                );
+                Ok(CatalogObjectDefinition::Table(TableDefinition {
+                    database: object_database.clone(),
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    owner: schema.clone(),
+                    comment: OptionalMetadata::Unsupported,
+                    columns,
+                    indexes: Vec::new(),
+                    constraints: Vec::new(),
+                    baseline_fingerprint,
+                }))
+            })
+            .await
+            .map_err(|error| oracle_task_error(error.to_string()))?
+        }
     }
 
     pub async fn connect(

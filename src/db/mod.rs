@@ -668,13 +668,12 @@ impl DatabaseConnection {
     ) -> Result<CatalogObjectDefinition, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.load_catalog_object_definition(request).await,
-            Self::MySql(_)
-            | Self::MariaDb(_)
-            | Self::Oracle(_)
-            | Self::Sqlite(_)
-            | Self::SqlServer(_) => Err(DatabaseError::configuration(
-                "catalog object definition loading is not supported for this database",
-            )),
+            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => {
+                Err(DatabaseError::configuration(
+                    "catalog object definition loading is not supported for this database",
+                ))
+            }
+            Self::Oracle(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "Redis does not support SQL catalog object definitions",
             )),
