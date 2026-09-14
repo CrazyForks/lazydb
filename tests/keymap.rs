@@ -113,6 +113,102 @@ fn redis_keys_use_h_and_l_for_tree_depth_navigation() {
 }
 
 #[test]
+fn redis_preview_routes_vim_motion_to_its_read_only_editor() {
+    let target = lazydb::db::redis::types::RedisTarget {
+        profile_id: Uuid::from_u128(30),
+        database: 0,
+    };
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(Uuid::from_u128(31), target),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] {
+        tab.focus = lazydb::model::redis_browser::RedisBrowserFocus::Preview;
+    }
+
+    let mut keymap = Keymap::default();
+    for code in [
+        KeyCode::Char('h'),
+        KeyCode::Char('j'),
+        KeyCode::Char('k'),
+        KeyCode::Char('l'),
+    ] {
+        assert!(
+            matches!(
+                keymap.map(key(code), &app),
+                Some(Action::ReadOnlyEditorKey { session_id, event })
+                    if event.code == code
+                        && session_id
+                            == match &app.tabs[app.active_tab] {
+                                WorkspaceTab::RedisBrowser(tab) => tab.preview_editor_id,
+                                _ => unreachable!(),
+                            }
+            ),
+            "{code:?} should be routed to the Preview editor"
+        );
+    }
+}
+
+#[test]
+fn redis_preview_keeps_application_controls_outside_the_editor_stream() {
+    let target = lazydb::db::redis::types::RedisTarget {
+        profile_id: Uuid::from_u128(32),
+        database: 0,
+    };
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(Uuid::from_u128(33), target),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] {
+        tab.focus = lazydb::model::redis_browser::RedisBrowserFocus::Preview;
+    }
+
+    let mut keymap = Keymap::default();
+    assert!(matches!(
+        keymap.map(key(KeyCode::Char(' ')), &app),
+        Some(Action::ReadOnlyEditorKey { .. })
+    ));
+    assert!(matches!(
+        keymap.map(key(KeyCode::Char('f')), &app),
+        Some(Action::ReadOnlyEditorKey { .. })
+    ));
+    assert!(matches!(
+        keymap.map(key(KeyCode::PageDown), &app),
+        Some(Action::ReadOnlyEditorKey { .. })
+    ));
+}
+
+#[test]
+fn redis_keys_keep_tree_navigation_when_preview_routing_is_enabled() {
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(
+            Uuid::from_u128(34),
+            lazydb::db::redis::types::RedisTarget {
+                profile_id: Uuid::from_u128(35),
+                database: 0,
+            },
+        ),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::RedisMoveSelection(1))
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('h')), &app),
+        Some(Action::RedisCollapseSelection)
+    );
+}
+
+#[test]
 fn redis_keys_route_o_y_and_d_before_generic_results_bindings() {
     let mut app = App::new(Vec::new());
     app.tabs.push(WorkspaceTab::RedisBrowser(

@@ -1214,6 +1214,26 @@ impl Keymap {
             return None;
         }
 
+        // Redis Preview is a read-only Vim buffer. Route its complete input
+        // stream before generic window counts and Redis tree navigation; the
+        // editor must own counts, operators, searches, and motions.
+        if app.focus == Focus::Results
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+            )
+        {
+            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+            {
+                return Some(Action::ReadOnlyEditorKey {
+                    session_id: tab.preview_editor_id,
+                    event,
+                });
+            }
+        }
+
         if app.focus != Focus::Editor
             && event.modifiers.is_empty()
             && !matches!(
@@ -1303,7 +1323,8 @@ impl Keymap {
         if app.focus == Focus::Results
             && matches!(
                 app.tabs.get(app.active_tab),
-                Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
             )
         {
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
