@@ -132,3 +132,17 @@ fn pickle_parser_handles_protocol_four_scalars() {
         "127"
     );
 }
+
+#[test]
+fn protobuf_parser_preserves_repeated_fields_and_validates_lengths() {
+    let data = [0x08, 0x01, 0x08, 0x02, 0x12, 0x03, b'a', b'b', b'c'];
+    let json = lazydb::value_preview::protobuf::parse_protobuf_to_json(&data).unwrap();
+    assert!(json.contains("field_1"));
+    assert!(json.contains("field_2"));
+    assert_eq!(
+        lazydb::value_preview::protobuf::parse_protobuf_to_json(&[0x12, 0x05])
+            .unwrap_err()
+            .status,
+        DecodeStatus::NeedsMoreData
+    );
+}

@@ -8,6 +8,7 @@ pub mod decode;
 pub mod java;
 pub mod php;
 pub mod pickle;
+pub mod protobuf;
 pub mod table;
 
 use std::fmt;

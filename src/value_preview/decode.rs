@@ -17,6 +17,9 @@ pub fn decode(data: &[u8], format: PreviewFormat) -> Result<DecodedValue, Decode
         super::ValueEncoding::Pickle => {
             super::pickle::parse_pickle_to_json(data).map(DecodedValue::Text)
         }
+        super::ValueEncoding::Protobuf => {
+            super::protobuf::parse_protobuf_to_json(data).map(DecodedValue::Text)
+        }
         super::ValueEncoding::Text | super::ValueEncoding::Unknown
             if matches!(format.view, super::ValueView::Raw | super::ValueView::Hex) =>
         {
