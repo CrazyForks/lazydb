@@ -18,6 +18,11 @@ use super::catalog::{
     CatalogEntry, CatalogId, CatalogKind, CatalogPage, CatalogRequest, CatalogTarget,
     DdlProvenance, OptionalMetadata, QualifiedName, RelationDdl,
 };
+use super::catalog_mutation::{
+    CatalogMutationAvailability, CatalogMutationCapabilities, CatalogMutationExecutionMode,
+    CatalogMutationOption, CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
+    CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+};
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
 #[cfg(feature = "driver-oracle")]
@@ -29,6 +34,10 @@ use crate::db::RelationPreview;
 use crate::profile::{ConnectionProfile, DatabaseKind};
 #[cfg(feature = "driver-oracle")]
 use crate::security::sanitize_terminal_text;
+use crate::{
+    model::catalog_editor::{CatalogDraft, DraftRowState},
+    model::execution_target::ExecutionTarget,
+};
 use futures_util::future::BoxFuture;
 
 #[derive(Clone)]
@@ -49,6 +58,179 @@ impl std::fmt::Debug for OracleAdapter {
 }
 
 impl OracleAdapter {
+    pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
+        let create = [CatalogKind::Table, CatalogKind::View, CatalogKind::Sequence]
+            .into_iter()
+            .map(|kind| CatalogMutationOption {
+                object_type: CatalogObjectType::Catalog(kind),
+                availability: CatalogMutationAvailability::Available,
+            })
+            .collect();
+        CatalogMutationCapabilities {
+            create,
+            edit: Vec::new(),
+            profile_create: Vec::new(),
+            ..CatalogMutationCapabilities::default()
+        }
+    }
+
+    pub fn plan_catalog_mutation(
+        request: CatalogMutationRequest,
+        draft: CatalogDraft,
+        baseline: Option<CatalogObjectDefinition>,
+    ) -> Result<CatalogMutationPlan, super::catalog_mutation::CatalogMutationError> {
+        if request.mode != super::catalog_mutation::CatalogMutationMode::Create {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::UnsupportedOperation {
+                    object_type: request.object_type,
+                },
+            );
+        }
+        if baseline.is_some() {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                    reason: "Oracle create plans cannot include a baseline".into(),
+                },
+            );
+        }
+        let super::catalog_mutation::CatalogMutationAnchor::Group { schema, group } =
+            &request.anchor
+        else {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle relation creation requires a schema group anchor",
+                },
+            );
+        };
+        let schema_anchor = schema.clone();
+        let group_kind = *group;
+        let database = schema.native_path.first().cloned().unwrap_or_default();
+        let schema_name = schema.native_path.get(1).cloned().unwrap_or_default();
+        if database.is_empty() || schema_name.is_empty() {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle schema anchor is incomplete",
+                },
+            );
+        }
+        let (kind, name, statements) = match (group, draft) {
+            (ObjectGroup::Tables, CatalogDraft::Table(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                let columns = draft
+                    .columns
+                    .iter()
+                    .filter(|column| !matches!(column.state, DraftRowState::Removed { .. }))
+                    .map(|column| {
+                        let mut sql = format!(
+                            "{} {}",
+                            quote_identifier(column.name.value().trim()),
+                            column.native_type.value().trim()
+                        );
+                        if !column.nullable {
+                            sql.push_str(" NOT NULL");
+                        }
+                        if !column.default_expression.value().trim().is_empty() {
+                            sql.push_str(" DEFAULT ");
+                            sql.push_str(column.default_expression.value().trim());
+                        }
+                        Ok(sql)
+                    })
+                    .collect::<Result<Vec<_>, super::catalog_mutation::CatalogMutationError>>()?;
+                (
+                    CatalogKind::Table,
+                    name.clone(),
+                    vec![format!(
+                        "CREATE TABLE {}.{} ({})",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&name),
+                        columns.join(", ")
+                    )],
+                )
+            }
+            (ObjectGroup::Views, CatalogDraft::View(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                (
+                    CatalogKind::View,
+                    name.clone(),
+                    vec![format!(
+                        "CREATE VIEW {}.{} AS {}",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&name),
+                        draft.query.value().trim()
+                    )],
+                )
+            }
+            (ObjectGroup::Sequences, CatalogDraft::Sequence(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                let mut sql = format!(
+                    "CREATE SEQUENCE {}.{} INCREMENT BY {} START WITH {} CACHE {}",
+                    quote_identifier(&schema_name),
+                    quote_identifier(&name),
+                    draft.increment.value().trim(),
+                    draft.start_value.value().trim(),
+                    draft.cache.value().trim()
+                );
+                if draft.cycle {
+                    sql.push_str(" CYCLE");
+                }
+                (CatalogKind::Sequence, name, vec![sql])
+            }
+            (_, draft) => {
+                return Err(
+                    super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                        reason: format!(
+                            "Oracle draft does not match the selected object group: {draft:?}"
+                        ),
+                    },
+                );
+            }
+        };
+        let object = CatalogId::new(
+            request.connection.profile_id,
+            kind,
+            [database.clone(), schema_name.clone(), name.clone()],
+        );
+        let target = CatalogMutationTarget::database_target(ExecutionTarget {
+            profile_id: request.connection.profile_id,
+            database,
+            schema: Some(schema_name),
+        })?;
+        CatalogMutationPlan::new(
+            request,
+            CatalogObjectType::Catalog(kind),
+            CatalogMutationExecutionMode::Autocommit,
+            target,
+            vec![CatalogTarget::Objects {
+                schema: schema_anchor,
+                group: group_kind,
+            }],
+            CatalogSelectionHint::Object(object),
+            None,
+            Vec::new(),
+            statements,
+        )
+    }
+
+    pub async fn execute_catalog_mutation(
+        &self,
+        plan: &CatalogMutationPlan,
+    ) -> Result<QueryOutcome, DatabaseError> {
+        plan.validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let mut outcome = None;
+        for statement in plan.statements() {
+            outcome = Some(
+                self.execute_pool_with_budget(statement, QueryBudget::UNBOUNDED)
+                    .await?,
+            );
+        }
+        outcome
+            .ok_or_else(|| DatabaseError::configuration("Oracle mutation plan has no statements"))
+    }
+
     pub async fn connect(
         profile: &ConnectionProfile,
         password: Option<&SecretString>,

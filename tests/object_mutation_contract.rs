@@ -5,6 +5,7 @@ use lazydb::db::catalog_mutation::{
     CatalogMutationMode, CatalogMutationOption, CatalogObjectType, MutationCompletion,
     MutationProgress,
 };
+use lazydb::db::oracle::OracleAdapter;
 use lazydb::model::explorer::ExplorerNodeId;
 use lazydb::model::explorer_actions::{ExplorerActionAvailability, ExplorerActionContext};
 use lazydb::profile::DatabaseKind;
@@ -125,4 +126,25 @@ fn mutation_progress_distinguishes_rollback_partial_apply_and_unknown_commit() {
         MutationCompletion::OutcomeUnknown
     );
     assert_eq!(MutationProgress::succeeded(2).completed_steps, vec![0, 1]);
+}
+
+#[test]
+fn oracle_advertises_only_the_object_groups_with_creation_plans() {
+    let capabilities = OracleAdapter::catalog_mutation_capabilities();
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Table))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::View))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Sequence))
+            .is_some()
+    );
+    assert!(capabilities.edit.is_empty());
 }
