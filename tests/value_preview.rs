@@ -162,3 +162,26 @@ fn detection_prefers_validated_json_and_uses_hex_for_unknown_binary() {
         PreviewFormat::RAW
     );
 }
+
+#[test]
+fn collections_default_to_table_before_binary_detection() {
+    assert_eq!(
+        lazydb::value_preview::detect::default_format(b"not-json", true),
+        PreviewFormat::TABLE
+    );
+}
+
+#[test]
+fn serialization_candidates_are_validated_before_selection() {
+    let php = lazydb::value_preview::detect::detect(b"s:5:\"hello\";");
+    assert_eq!(
+        php.first().map(|candidate| candidate.format.encoding),
+        Some(ValueEncoding::Php)
+    );
+    let invalid_php = lazydb::value_preview::detect::detect(b"s:99:\"x\";");
+    assert!(
+        invalid_php
+            .iter()
+            .all(|candidate| candidate.status != DecodeStatus::Complete)
+    );
+}
