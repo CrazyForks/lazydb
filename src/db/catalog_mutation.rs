@@ -5,7 +5,8 @@ use uuid::Uuid;
 
 use crate::{
     db::catalog::{
-        CatalogEntry, CatalogId, CatalogKind, CatalogTarget, ObjectGroup, OptionalMetadata,
+        CatalogEntry, CatalogId, CatalogKind, CatalogTarget, NamespaceModel, ObjectGroup,
+        OptionalMetadata,
     },
     identity::ConnectionIdentity,
     model::execution_target::ExecutionTarget,
@@ -191,6 +192,15 @@ impl CatalogMutationCapabilities {
         anchor: &CatalogMutationAnchor,
         entry: Option<&CatalogEntry>,
     ) -> Result<Vec<CatalogObjectType>, CatalogMutationError> {
+        self.create_options_for_namespace(anchor, entry, NamespaceModel::DatabaseAndSchema)
+    }
+
+    pub fn create_options_for_namespace(
+        &self,
+        anchor: &CatalogMutationAnchor,
+        entry: Option<&CatalogEntry>,
+        namespace_model: NamespaceModel,
+    ) -> Result<Vec<CatalogObjectType>, CatalogMutationError> {
         match anchor {
             CatalogMutationAnchor::Profile { .. } => Ok(self
                 .profile_create
@@ -202,6 +212,14 @@ impl CatalogMutationCapabilities {
                     validate_entry(anchor, entry)?;
                 }
                 let object_types = match id.kind {
+                    CatalogKind::Database
+                        if namespace_model == NamespaceModel::DatabaseIsSchema =>
+                    {
+                        vec![
+                            CatalogObjectType::Catalog(CatalogKind::Table),
+                            CatalogObjectType::Catalog(CatalogKind::View),
+                        ]
+                    }
                     CatalogKind::Database => vec![CatalogObjectType::Catalog(CatalogKind::Schema)],
                     CatalogKind::Schema => vec![
                         CatalogObjectType::Catalog(CatalogKind::Table),
