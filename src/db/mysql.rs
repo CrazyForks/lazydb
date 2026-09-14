@@ -1787,6 +1787,9 @@ impl MySqlAdapter {
         let constraints = self
             .load_constraint_metadata(connection, database, relation_name)
             .await?;
+        let checks = self
+            .load_check_metadata(connection, database, relation_name)
+            .await?;
         let mut memberships: HashMap<String, Vec<ConstraintMembership>> = HashMap::new();
         let mut entries = Vec::new();
 
@@ -1846,6 +1849,21 @@ impl MySqlAdapter {
                     "constraint",
                     OptionalMetadata::Unsupported,
                     metadata,
+                )
+                .map_err(catalog_invariant)?,
+            );
+        }
+        for check in checks {
+            entries.push(
+                CatalogEntry::relation_child(
+                    relation_child_id(relation, CatalogKind::CheckConstraint, &check.name),
+                    relation.clone(),
+                    qualified_object(database, &check.name),
+                    "check_constraint",
+                    OptionalMetadata::Unsupported,
+                    CatalogMetadata::Constraint(ConstraintMetadata::Check {
+                        expression: check.expression,
+                    }),
                 )
                 .map_err(catalog_invariant)?,
             );
@@ -2451,6 +2469,38 @@ impl MySqlAdapter {
         group_constraint_parts(parts)
     }
 
+    async fn load_check_metadata(
+        &self,
+        connection: &mut MySqlConnection,
+        database: &str,
+        relation: &str,
+    ) -> Result<Vec<MySqlCheckInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT tc.constraint_name, cc.check_clause \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.check_constraints cc \
+               ON BINARY cc.constraint_schema=BINARY tc.constraint_schema \
+              AND BINARY cc.constraint_name=BINARY tc.constraint_name \
+             WHERE BINARY tc.table_schema=BINARY ? \
+               AND BINARY tc.table_name=BINARY ? \
+               AND tc.constraint_type='CHECK' \
+             ORDER BY BINARY tc.constraint_name",
+        )
+        .bind(database)
+        .bind(relation)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(MySqlCheckInfo {
+                    name: row.try_get(0).map_err(decode_error)?,
+                    expression: row.try_get(1).map_err(decode_error)?,
+                })
+            })
+            .collect()
+    }
+
     pub async fn object_ddl(
         &self,
         kind: CatalogKind,
@@ -2950,6 +3000,12 @@ struct MySqlConstraintInfo {
     referenced_relation: Option<String>,
     referenced_columns: Vec<String>,
     referenced_ordinals: Vec<u32>,
+}
+
+#[derive(Debug)]
+struct MySqlCheckInfo {
+    name: String,
+    expression: String,
 }
 
 #[derive(Debug)]

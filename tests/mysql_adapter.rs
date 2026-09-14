@@ -104,6 +104,14 @@ fn mysql_definition_queries_include_auto_increment_metadata() {
 }
 
 #[test]
+fn mysql_relation_children_read_check_constraints_structurally() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("information_schema.check_constraints"));
+    assert!(source.contains("CatalogKind::CheckConstraint"));
+    assert!(source.contains("ConstraintMetadata::Check"));
+}
+
+#[test]
 fn quotes_mysql_identifiers_and_uses_information_schema() {
     assert_eq!(mysql::quote_identifier("odd`name"), "`odd``name`");
     assert!(mysql::CATALOG_TABLES_SQL.contains("information_schema.tables"));
