@@ -6357,7 +6357,6 @@ fn data_grid_keeps_null_muted_on_the_selected_row() {
     let (buffer, _) = render_buffer_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
     let null = find_text_cell(&buffer, "<null>").expect("null preview");
     let null_text = find_text_cell(&buffer, "NULL").expect("NULL text value");
-
     assert_ne!(buffer[null].fg, buffer[null_text].fg);
 }
 
