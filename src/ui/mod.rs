@@ -115,6 +115,11 @@ pub enum HitTarget {
     },
     RedisFindInput(Uuid),
     RedisPreviewFormat(Uuid),
+    RedisPreviewTableCell {
+        tab_id: Uuid,
+        row: usize,
+        column: usize,
+    },
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,
