@@ -253,20 +253,11 @@ pub(crate) fn render(
         .row_highlight_style(row_highlight_style)
         .cell_highlight_style(Style::new().bg(theme.accent).add_modifier(Modifier::BOLD))
         .highlight_symbol("▌");
-    let selected_cell = (row_count > 0).then(|| {
-        let selected_column = visible
-            .iter()
-            .position(|column| column.index == grid.selected_column)
-            .map_or_else(|| selected_data_cell(0), selected_data_cell);
-        let selected_row = grid.selected_row.saturating_sub(row_offset);
-        (selected_row, selected_column)
-    });
-    let mut table_state = TableState::new().with_selected_cell(selected_cell);
+    // The cell highlight style is applied after cell rendering by ratatui and
+    // cannot preserve value-specific foreground colors. Paint the selected
+    // cell below instead, so Null and other semantic colors remain visible.
+    let mut table_state = TableState::default();
     frame.render_stateful_widget(table, area, &mut table_state);
-    // Ratatui applies the row/cell highlight after rendering the cells. A
-    // highlight style with only a background consequently resets the cell
-    // foreground to the backend default. Restore the value-aware foreground
-    // for the selected row while keeping the selection backgrounds intact.
     if row_count > 0
         && grid.selected_row >= row_offset
         && grid.selected_row < row_offset.saturating_add(visible_rows)
@@ -278,7 +269,7 @@ pub(crate) fn render(
         let y = row_y.saturating_add((grid.selected_row - row_offset) as u16);
         let mut x = data_start_x(table_area, number_width);
         let buffer = frame.buffer_mut();
-        for (position, column) in visible.iter().enumerate() {
+        for column in visible.iter() {
             let value = row.get(column.index).unwrap_or(&CellValue::Null);
             let foreground = if matches!(value, CellValue::Null) {
                 theme.muted
@@ -287,30 +278,17 @@ pub(crate) fn render(
             } else {
                 theme.text
             };
-            let mut style =
-                Style::new()
-                    .fg(foreground)
-                    .bg(if column.index == grid.selected_column {
-                        theme.accent
-                    } else {
-                        theme.selection
-                    });
-            if column.index == grid.selected_column {
-                style = style.add_modifier(Modifier::BOLD);
+            let cell_width = column.rendered_width.min(content_right.saturating_sub(x));
+            for cell_x in x..x.saturating_add(cell_width) {
+                buffer[(cell_x, y)]
+                    .set_fg(foreground)
+                    .set_bg(theme.selection);
+                if column.index == grid.selected_column {
+                    buffer[(cell_x, y)].set_bg(theme.accent);
+                    buffer[(cell_x, y)].modifier.insert(Modifier::BOLD);
+                }
             }
-            buffer.set_style(
-                Rect::new(
-                    x,
-                    y,
-                    column.rendered_width.min(content_right.saturating_sub(x)),
-                    1,
-                ),
-                style,
-            );
             x = x.saturating_add(column.rendered_width).saturating_add(1);
-            if position + 1 == visible.len() {
-                break;
-            }
         }
     }
     if result.rows.is_empty() && table_area.height >= 2 {

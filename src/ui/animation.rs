@@ -200,7 +200,15 @@ impl AnimationState {
     }
 
     pub(crate) fn start_effect(&mut self, kind: EffectKind, area: Rect) {
-        if self.mode != MotionMode::Full || area.width == 0 || area.height == 0 {
+        // Result cells use semantic foreground colors (for example muted
+        // NULL values). A foreground fade would overwrite those colors with
+        // black on every frame, making the result unreadable and breaking
+        // value-aware styling. Keep the transition for overlays only.
+        if kind == EffectKind::Result
+            || self.mode != MotionMode::Full
+            || area.width == 0
+            || area.height == 0
+        {
             return;
         }
         self.effect =
