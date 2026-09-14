@@ -1,4 +1,5 @@
 pub mod discovery;
+pub mod key_index;
 pub mod key_store;
 pub mod read;
 pub mod reply;
