@@ -180,6 +180,26 @@ pub struct MySqlAdapter {
     catalog_scope: CatalogScope,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServerCapabilities {
+    pub catalog: bool,
+    pub sequences: bool,
+    pub relation_edit: bool,
+}
+
+impl ServerCapabilities {
+    pub fn for_kind(kind: DatabaseKind, version: &str) -> Self {
+        let catalog = supports_catalog_version_for_kind(kind, version);
+        Self {
+            catalog,
+            sequences: matches!(kind, DatabaseKind::MariaDb) && catalog,
+            // Data-grid editing is not advertised until the complete mutation
+            // round trip has passed the MariaDB integration suite.
+            relation_edit: false,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct MySqlSearchCandidate {
     kind: CatalogKind,

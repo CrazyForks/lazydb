@@ -1,7 +1,7 @@
 mod support;
 
 use lazydb::{
-    db::mysql::supports_catalog_version_for_kind,
+    db::mysql::{ServerCapabilities, supports_catalog_version_for_kind},
     model::profile_manager::DRIVER_ORDER,
     profile::{ConnectionUrlFormat, DatabaseKind, parse_connection_url},
 };
@@ -61,6 +61,14 @@ fn catalog_version_gate_distinguishes_mysql_and_mariadb() {
         DatabaseKind::MySql,
         "5.5.5-10.11.8-MariaDB"
     ));
+}
+
+#[test]
+fn mariadb_server_capabilities_keep_unverified_mutations_gated() {
+    let capabilities = ServerCapabilities::for_kind(DatabaseKind::MariaDb, "11.4.2-MariaDB");
+    assert!(capabilities.catalog);
+    assert!(capabilities.sequences);
+    assert!(!capabilities.relation_edit);
 }
 
 #[tokio::test]
