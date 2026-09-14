@@ -8,13 +8,20 @@ pub struct RedisPreviewFormatState {
     pub automatic: bool,
 }
 
-pub const FORMATS: [PreviewFormat; 5] = [
+pub const FORMATS: [PreviewFormat; 8] = [
     PreviewFormat::RAW,
     PreviewFormat::JSON,
     PreviewFormat::YAML,
     PreviewFormat::TABLE,
     PreviewFormat::HEX,
+    PreviewFormat::preset(ValueEncoding::Java),
+    PreviewFormat::preset(ValueEncoding::Php),
+    PreviewFormat::preset(ValueEncoding::Pickle),
 ];
+
+pub const fn format_choices() -> usize {
+    FORMATS.len() + 1
+}
 
 impl Default for RedisPreviewFormatState {
     fn default() -> Self {
@@ -27,13 +34,6 @@ impl Default for RedisPreviewFormatState {
 
 impl RedisPreviewFormatState {
     pub fn cycle(&mut self) {
-        const FORMATS: [PreviewFormat; 5] = [
-            PreviewFormat::RAW,
-            PreviewFormat::JSON,
-            PreviewFormat::YAML,
-            PreviewFormat::TABLE,
-            PreviewFormat::HEX,
-        ];
         let index = FORMATS
             .iter()
             .position(|format| *format == self.selected)
@@ -57,5 +57,16 @@ impl RedisPreviewFormatState {
 
     pub fn view(&self) -> ValueView {
         self.selected.view
+    }
+
+    pub fn menu_index(&self) -> usize {
+        if self.automatic {
+            0
+        } else {
+            FORMATS
+                .iter()
+                .position(|format| *format == self.selected)
+                .map_or(1, |index| index + 1)
+        }
     }
 }

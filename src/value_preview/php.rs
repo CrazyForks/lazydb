@@ -10,14 +10,27 @@ enum PhpValue {
     Float(f64),
     String(Vec<u8>),
     Array(Vec<(PhpValue, PhpValue)>),
+    Object {
+        class: Vec<u8>,
+        properties: Vec<(PhpValue, PhpValue)>,
+    },
+    Reference(i64),
 }
 
 pub fn is_php_serialization(data: &[u8]) -> bool {
-    matches!(data.first(), Some(b'a' | b'b' | b'd' | b'i' | b'N' | b's'))
-        && (data.get(1) == Some(&b':') || data.first() == Some(&b'N'))
+    matches!(
+        data.first(),
+        Some(b'a' | b'b' | b'd' | b'i' | b'N' | b's' | b'O' | b'C' | b'r' | b'R')
+    ) && (data.get(1) == Some(&b':') || data.first() == Some(&b'N'))
 }
 
 pub fn parse_php_to_json(data: &[u8]) -> Result<String, DecodeError> {
+    if data.len() > super::MAX_PREVIEW_INPUT_BYTES {
+        return Err(DecodeError::new(
+            DecodeStatus::Unsupported,
+            "PHP value exceeds preview input budget",
+        ));
+    }
     let (value, offset) = parse_value(data, 0)?;
     if data[offset..]
         .iter()
@@ -25,8 +38,15 @@ pub fn parse_php_to_json(data: &[u8]) -> Result<String, DecodeError> {
     {
         return Err(DecodeError::new(DecodeStatus::Invalid, "trailing PHP data").at(offset));
     }
-    serde_json::to_string_pretty(&to_json(value))
-        .map_err(|error| DecodeError::new(DecodeStatus::Invalid, error.to_string()))
+    let output = serde_json::to_string_pretty(&to_json(value))
+        .map_err(|error| DecodeError::new(DecodeStatus::Invalid, error.to_string()))?;
+    if output.len() > super::MAX_PREVIEW_OUTPUT_BYTES {
+        return Err(DecodeError::new(
+            DecodeStatus::Unsupported,
+            "PHP preview exceeds output budget",
+        ));
+    }
+    Ok(output)
 }
 
 fn parse_value(data: &[u8], mut offset: usize) -> Result<(PhpValue, usize), DecodeError> {
@@ -60,6 +80,15 @@ fn parse_value(data: &[u8], mut offset: usize) -> Result<(PhpValue, usize), Deco
         }
         b's' => parse_string(data, offset),
         b'a' => parse_array(data, offset),
+        b'O' => parse_object(data, offset),
+        b'r' | b'R' => {
+            let (token, offset) = field(data, offset, b';')?;
+            let value = std::str::from_utf8(token)
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| invalid_error(offset, "invalid PHP reference"))?;
+            Ok((PhpValue::Reference(value), offset))
+        }
         _ => {
             Err(DecodeError::new(DecodeStatus::Unsupported, "unsupported PHP type").at(offset - 1))
         }
@@ -83,7 +112,6 @@ fn parse_string(data: &[u8], offset: usize) -> Result<(PhpValue, usize), DecodeE
 
 fn parse_array(data: &[u8], offset: usize) -> Result<(PhpValue, usize), DecodeError> {
     let (count, mut offset) = length_prefix(data, offset)?;
-    offset = expect(data, offset, b':')?;
     offset = expect(data, offset, b'{')?;
     let mut items = Vec::with_capacity(count.min(10_000));
     for _ in 0..count {
@@ -95,6 +123,24 @@ fn parse_array(data: &[u8], offset: usize) -> Result<(PhpValue, usize), DecodeEr
     Ok((PhpValue::Array(items), expect(data, offset, b'}')?))
 }
 
+fn parse_object(data: &[u8], offset: usize) -> Result<(PhpValue, usize), DecodeError> {
+    let (class, mut offset) = parse_string_payload(data, offset)?;
+    offset = expect(data, offset, b':')?;
+    let (count, next) = length_prefix(data, offset)?;
+    offset = expect(data, next, b'{')?;
+    let mut properties = Vec::with_capacity(count.min(10_000));
+    for _ in 0..count {
+        let (key, next) = parse_value(data, offset)?;
+        let (value, next) = parse_value(data, next)?;
+        properties.push((key, value));
+        offset = next;
+    }
+    Ok((
+        PhpValue::Object { class, properties },
+        expect(data, offset, b'}')?,
+    ))
+}
+
 fn length_prefix(data: &[u8], offset: usize) -> Result<(usize, usize), DecodeError> {
     let (token, offset) = field(data, offset, b':')?;
     let length = std::str::from_utf8(token)
@@ -102,6 +148,20 @@ fn length_prefix(data: &[u8], offset: usize) -> Result<(usize, usize), DecodeErr
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| invalid_error(offset, "invalid PHP length"))?;
     Ok((length, offset))
+}
+
+fn parse_string_payload(data: &[u8], offset: usize) -> Result<(Vec<u8>, usize), DecodeError> {
+    let (length, mut offset) = length_prefix(data, offset)?;
+    offset = expect(data, offset, b'"')?;
+    let end = offset
+        .checked_add(length)
+        .ok_or_else(|| invalid_error(offset, "PHP string length overflow"))?;
+    let bytes = data
+        .get(offset..end)
+        .ok_or_else(|| truncated(offset))?
+        .to_vec();
+    offset = expect(data, end, b'"')?;
+    Ok((bytes, offset))
 }
 
 fn field(data: &[u8], offset: usize, delimiter: u8) -> Result<(&[u8], usize), DecodeError> {
@@ -115,10 +175,10 @@ fn field(data: &[u8], offset: usize, delimiter: u8) -> Result<(&[u8], usize), De
 }
 
 fn expect(data: &[u8], offset: usize, expected: u8) -> Result<usize, DecodeError> {
-    if data.get(offset) == Some(&expected) {
-        Ok(offset + 1)
-    } else {
-        Err(truncated(offset))
+    match data.get(offset) {
+        Some(value) if *value == expected => Ok(offset + 1),
+        Some(_) => Err(invalid_error(offset, "unexpected PHP delimiter")),
+        None => Err(truncated(offset)),
     }
 }
 
@@ -141,7 +201,14 @@ fn to_json(value: PhpValue) -> Value {
             serde_json::Number::from_f64(value).map_or(Value::Null, Value::Number)
         }
         PhpValue::String(value) => String::from_utf8(value)
-            .map_or_else(|_| Value::String("<binary>".into()), Value::String),
+            .map_or_else(
+                |value| serde_json::json!({
+                    "__php_type": "binary",
+                    "length": value.as_bytes().len(),
+                    "hex": value.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                }),
+                Value::String,
+            ),
         PhpValue::Array(items) => {
             let indexed = items.iter().enumerate().all(|(index, (key, _))| matches!(key, PhpValue::Int(value) if *value >= 0 && *value as usize == index));
             if indexed {
@@ -161,5 +228,29 @@ fn to_json(value: PhpValue) -> Value {
                 )
             }
         }
+        PhpValue::Object { class, properties } => {
+            let mut object = Map::new();
+            object.insert(
+                "__php_class".into(),
+                String::from_utf8_lossy(&class).into_owned().into(),
+            );
+            object.insert(
+                "properties".into(),
+                Value::Array(
+                    properties
+                        .into_iter()
+                        .map(|(key, value)| serde_json::json!({
+                            "key": to_json(key),
+                            "value": to_json(value),
+                        }))
+                        .collect(),
+                ),
+            );
+            Value::Object(object)
+        }
+        PhpValue::Reference(value) => serde_json::json!({
+            "__php_type": "reference",
+            "id": value,
+        }),
     }
 }

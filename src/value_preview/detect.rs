@@ -57,11 +57,19 @@ pub fn default_format(data: &[u8], collection: bool) -> PreviewFormat {
     if collection {
         return PreviewFormat::TABLE;
     }
-    detect(data)
+    let candidates = detect(data);
+    candidates
         .into_iter()
+        .filter(|candidate| candidate.status == DecodeStatus::Complete)
         .max_by_key(|candidate| candidate.confidence)
         .map(|candidate| candidate.format)
-        .unwrap_or(PreviewFormat::HEX)
+        .unwrap_or_else(|| {
+            if std::str::from_utf8(data).is_ok() {
+                PreviewFormat::RAW
+            } else {
+                PreviewFormat::HEX
+            }
+        })
 }
 
 fn candidate(

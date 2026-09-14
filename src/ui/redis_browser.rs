@@ -243,7 +243,10 @@ pub fn render(
     });
     let value_area = value_block.inner(value_outer);
     frame.render_widget(value_block.clone(), value_outer);
-    let format_label = format!(" f:{} ▾ ", preview_format_label(tab.format.selected));
+    let format_label = format!(
+        " f:{} ▾ ",
+        preview_format_label(tab.format.selected, tab.format.automatic)
+    );
     let wrap_label = if tab.preview_wrap {
         " W:Wrap ON "
     } else {
@@ -440,13 +443,23 @@ fn render_table_preview(
     frame.render_stateful_widget(widget, area, &mut TableState::default());
 }
 
-fn preview_format_label(format: crate::value_preview::PreviewFormat) -> &'static str {
-    match format.view {
-        crate::value_preview::ValueView::Raw => "RAW",
-        crate::value_preview::ValueView::Json => "JSON",
-        crate::value_preview::ValueView::Yaml => "YAML",
-        crate::value_preview::ValueView::Table => "Table",
-        crate::value_preview::ValueView::Hex => "Hex",
+fn preview_format_label(format: crate::value_preview::PreviewFormat, automatic: bool) -> String {
+    let label = match format.encoding {
+        crate::value_preview::ValueEncoding::Java => "Java",
+        crate::value_preview::ValueEncoding::Php => "PHP",
+        crate::value_preview::ValueEncoding::Pickle => "Pickle",
+        _ => match format.view {
+            crate::value_preview::ValueView::Raw => "RAW",
+            crate::value_preview::ValueView::Json => "JSON",
+            crate::value_preview::ValueView::Yaml => "YAML",
+            crate::value_preview::ValueView::Table => "Table",
+            crate::value_preview::ValueView::Hex => "Hex",
+        },
+    };
+    if automatic {
+        format!("Auto · {label}")
+    } else {
+        label.to_string()
     }
 }
 

@@ -15,6 +15,9 @@ pub mod table;
 
 use std::fmt;
 
+pub const MAX_PREVIEW_INPUT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PREVIEW_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ValueEncoding {
     Text,

@@ -165,8 +165,12 @@ impl RedisBrowserTab {
     }
 
     pub fn select(&mut self, node: Option<super::redis_key_tree::KeyTreeNodeId>) {
+        let previous_key = self.tree.selected_key().map(ToOwned::to_owned);
         self.preview_generation = self.preview_generation.saturating_add(1);
         self.tree.select(node);
+        if previous_key != self.tree.selected_key().map(ToOwned::to_owned) {
+            self.format.reset_auto();
+        }
         self.preview = match self.tree.selected_key() {
             Some(key) => RedisPreviewState::Loading {
                 key: RedisKeyId {
