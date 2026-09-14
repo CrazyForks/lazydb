@@ -12504,9 +12504,10 @@ impl App {
                             crate::model::redis_browser::RedisPreviewContentState::Ready {
                                 key: page.metadata.key.clone(),
                                 page: page.clone(),
-                                format: crate::value_preview::PreviewFormat::RAW,
+                                format: tab.format.selected,
                             };
-                        let text = crate::ui::redis_value::page_text(page);
+                        let text = crate::ui::redis_value::format_page(page, tab.format.view())
+                            .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
                         self.editor.open_read_only(tab.preview_editor_id, &text);
                     }
                 }

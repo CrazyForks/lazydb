@@ -73,3 +73,32 @@ fn redis_table_keeps_collection_columns_and_raw_identity() {
     assert_eq!(table.rows[0].cells, vec!["field", "value"]);
     assert_eq!(table.rows[0].identity[0], b"field");
 }
+
+#[test]
+fn unsupported_format_falls_back_without_losing_raw_value() {
+    use lazydb::db::redis::read::{RedisKeyMetadata, RedisPagePosition, RedisType, TtlState};
+    use lazydb::db::redis::types::{RedisKeyId, RedisTarget};
+    let page = lazydb::db::redis::read::RedisValuePage {
+        metadata: RedisKeyMetadata {
+            key: RedisKeyId {
+                target: RedisTarget {
+                    profile_id: uuid::Uuid::nil(),
+                    database: 0,
+                },
+                key: b"key".to_vec(),
+            },
+            value_type: RedisType::String,
+            ttl: TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: None,
+        },
+        position: RedisPagePosition::Complete,
+        value: lazydb::db::redis::read::RedisPageValue::String(b"not json".to_vec()),
+        truncated: false,
+        complete: true,
+        raw_bytes: 8,
+        formatted_bytes: 8,
+    };
+    assert!(lazydb::ui::redis_value::format_page(&page, ValueView::Json).is_err());
+    assert_eq!(lazydb::ui::redis_value::page_text(&page), "not json");
+}
