@@ -1,6 +1,8 @@
 # Omni Bar
 
-Press `F2` from any pane or overlay to open the global action and object switcher.
+Press `F2` (or the configured `omni` shortcut) from any pane or overlay to open
+the global action and object switcher. The shortcut is also searchable as
+“open Omni search” in the Help panel.
 The Omni Bar searches local commands, connection profiles, SQL consoles, open
 tabs, and loaded catalog relations. With an active connection, non-command
 queries are also sent to the database catalog after the existing debounce.
@@ -15,6 +17,14 @@ queries are also sent to the database catalog after the existing debounce.
 | `Tab` | Show actions for a selected catalog relation |
 | `Escape` | Return one step; close Omni from the root step |
 | `Ctrl-C` | Dismiss Omni and restore the underlying interaction |
+
+Results use a type icon to distinguish commands, connections, consoles, recent
+locations, resumable interactions, and catalog objects such as tables and
+views. The object name is rendered as the primary text; connection, database,
+and schema details use a secondary color so they remain available without
+competing with the name. Icons follow the configured Nerd Font, Unicode, or
+ASCII icon mode. `Esc` returns to the previous Omni step when a nested step is
+active and closes Omni from the root step.
 
 Opening a cached relation on another profile starts a connection switch and
 continues to that exact relation only when the matching connection attempt

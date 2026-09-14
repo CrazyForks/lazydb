@@ -875,7 +875,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
                 area,
                 target: HitTarget::Omni,
             });
-            omni::render(frame, app, state, theme);
+            omni::render(frame, app, state, theme, icons);
         }
         return;
     }
@@ -1047,7 +1047,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
             area,
             target: HitTarget::Omni,
         });
-        omni::render(frame, app, state, theme);
+        omni::render(frame, app, state, theme, icons);
         state.animations.render_effect(frame, Instant::now());
     }
     if let Some(sequence) = sequence {
