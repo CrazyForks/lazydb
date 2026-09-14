@@ -481,7 +481,49 @@ fn sqlite_exposes_only_native_table_and_view_creation() {
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
             .is_none()
     );
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 2);
+}
+
+#[test]
+fn sqlite_table_edit_plan_uses_native_rename() {
+    let profile_id = Uuid::from_u128(15);
+    let object = CatalogId::new(profile_id, CatalogKind::Table, [":memory:", "main", "old"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 5,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some(":memory:".to_owned()),
+    };
+    let mut table = TableDraft::new("main");
+    table.name.set("new");
+    table.columns[0].name.set("id");
+    table.columns[0].native_type.set("INTEGER");
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(
+        lazydb::db::catalog_mutation::TableDefinition {
+            database: ":memory:".into(),
+            schema: "main".into(),
+            name: "old".into(),
+            owner: String::new(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            columns: vec![],
+            indexes: vec![],
+            constraints: vec![],
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        SqliteAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), Some(baseline))
+            .expect("SQLite table rename plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &["ALTER TABLE \"main\".\"old\" RENAME TO \"new\""]
+    );
 }
 
 #[test]

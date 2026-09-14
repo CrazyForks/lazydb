@@ -69,6 +69,84 @@ async fn sqlite_executes_a_table_create_plan_against_a_temporary_database() {
 }
 
 #[tokio::test]
+async fn sqlite_loads_and_executes_a_table_edit_plan_against_a_temporary_database() {
+    let imported = import_connection_url("sqlite://:memory:", Some("edit-plan")).unwrap();
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    database
+        .execute("CREATE TABLE records (id INTEGER NOT NULL, value TEXT)")
+        .await
+        .unwrap();
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        [":memory:", "main", "records"],
+    );
+    let definition = database
+        .load_catalog_object_definition(
+            &lazydb::db::catalog_mutation::CatalogObjectDefinitionRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 1,
+                catalog_epoch: 1,
+                object: object.clone(),
+                target: lazydb::model::execution_target::ExecutionTarget {
+                    profile_id,
+                    database: ":memory:".to_owned(),
+                    schema: Some("main".to_owned()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition) = definition
+    else {
+        panic!("SQLite table definition loader returned the wrong object type");
+    };
+    assert_eq!(table_definition.columns.len(), 2);
+    let mut draft = TableDraft::from_definition(&table_definition);
+    draft.name.set("renamed_records");
+    let plan = database
+        .plan_catalog_mutation(
+            lazydb::db::catalog_mutation::CatalogMutationRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 2,
+                catalog_epoch: 1,
+                mode: CatalogMutationMode::Edit,
+                anchor: CatalogMutationAnchor::Catalog(object),
+                object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+                current_database: Some(":memory:".to_owned()),
+            },
+            CatalogDraft::Table(draft),
+            Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition)),
+        )
+        .unwrap();
+    database.execute_catalog_mutation(&plan).await.unwrap();
+    assert!(
+        database
+            .object_ddl(CatalogKind::Table, "main", "renamed_records")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        database
+            .object_ddl(CatalogKind::Table, "main", "records")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    database.close().await;
+}
+
+#[tokio::test]
 async fn relation_reads_use_request_scope_without_reconnecting() {
     let mut imported = import_connection_url("sqlite://:memory:", Some("request-scope")).unwrap();
     imported.profile.catalog_scope = CatalogScope::for_profile(
@@ -913,7 +991,7 @@ fn sqlite_mutation_capabilities_expose_native_table_and_view_creation() {
                 lazydb::db::catalog::CatalogKind::View,
             )
     }));
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 2);
 }
 
 #[tokio::test]

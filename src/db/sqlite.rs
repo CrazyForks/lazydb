@@ -41,7 +41,8 @@ use super::{
         CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
         CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationOption,
         CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
-        CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+        CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
+        CatalogSelectionHint, ColumnDefinition, TableDefinition, ViewDefinition, ViewOption,
     },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
@@ -87,6 +88,7 @@ struct SqliteIndexInfo {
     origin: String,
 }
 
+#[derive(Debug)]
 struct SqliteForeignKeyInfo {
     id: i64,
     referenced_relation: String,
@@ -176,6 +178,13 @@ impl SqliteAdapter {
                     availability: CatalogMutationAvailability::Available,
                 })
                 .collect(),
+            edit: [CatalogKind::Table, CatalogKind::View]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
             ..CatalogMutationCapabilities::default()
         }
     }
@@ -185,6 +194,140 @@ impl SqliteAdapter {
         draft: crate::model::catalog_editor::CatalogDraft,
         baseline: Option<CatalogObjectDefinition>,
     ) -> Result<CatalogMutationPlan, CatalogMutationError> {
+        if request.mode == crate::db::catalog_mutation::CatalogMutationMode::Edit {
+            let CatalogMutationAnchor::Catalog(object) = &request.anchor else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "SQLite edit requires a catalog object anchor",
+                });
+            };
+            let [database, schema, old_name] = object.native_path.as_slice() else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "SQLite relation identity is incomplete",
+                });
+            };
+            let object_id = object.clone();
+            let database_name = database.clone();
+            let schema_name = schema.clone();
+            let old_name_value = old_name.clone();
+            if database != &request.current_database.clone().unwrap_or_default() {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "SQLite edit targets another database",
+                });
+            }
+            match (object.kind, baseline, draft) {
+                (
+                    CatalogKind::Table,
+                    Some(CatalogObjectDefinition::Table(_)),
+                    crate::model::catalog_editor::CatalogDraft::Table(draft),
+                ) => {
+                    draft.validate()?;
+                    let new_name = draft.name.value().trim();
+                    if new_name.is_empty() {
+                        return Err(CatalogMutationError::InvalidDraft {
+                            reason: "SQLite table name is required".into(),
+                        });
+                    }
+                    if new_name == old_name {
+                        return Err(CatalogMutationError::NoChanges);
+                    }
+                    let new_object = CatalogId::new(
+                        request.connection.profile_id,
+                        CatalogKind::Table,
+                        [database.clone(), schema.clone(), new_name.to_owned()],
+                    );
+                    return CatalogMutationPlan::new(
+                        request,
+                        CatalogObjectType::Catalog(CatalogKind::Table),
+                        CatalogMutationExecutionMode::Transactional,
+                        CatalogMutationTarget::database_target(
+                            crate::model::execution_target::ExecutionTarget {
+                                profile_id: object_id.profile_id(),
+                                database: database_name.clone(),
+                                schema: None,
+                            },
+                        )?,
+                        vec![CatalogTarget::Objects {
+                            schema: CatalogId::new(
+                                object_id.profile_id(),
+                                CatalogKind::Schema,
+                                [database_name.clone(), schema_name.clone()],
+                            ),
+                            group: ObjectGroup::Tables,
+                        }],
+                        CatalogSelectionHint::Object(new_object),
+                        None,
+                        Vec::new(),
+                        vec![format!(
+                            "ALTER TABLE {}.{} RENAME TO {}",
+                            sqlite_quote_identifier(&schema_name),
+                            sqlite_quote_identifier(&old_name_value),
+                            sqlite_quote_identifier(new_name)
+                        )],
+                    );
+                }
+                (
+                    CatalogKind::View,
+                    Some(CatalogObjectDefinition::View(_)),
+                    crate::model::catalog_editor::CatalogDraft::View(draft),
+                ) => {
+                    draft.validate()?;
+                    let new_name = draft.name.value().trim();
+                    if new_name.is_empty() {
+                        return Err(CatalogMutationError::InvalidDraft {
+                            reason: "SQLite view name is required".into(),
+                        });
+                    }
+                    let new_object = CatalogId::new(
+                        request.connection.profile_id,
+                        CatalogKind::View,
+                        [database.clone(), schema.clone(), new_name.to_owned()],
+                    );
+                    let statements = vec![
+                        format!(
+                            "DROP VIEW {}.{}",
+                            sqlite_quote_identifier(&schema_name),
+                            sqlite_quote_identifier(&old_name_value),
+                        ),
+                        format!(
+                            "CREATE VIEW {}.{} AS {}",
+                            sqlite_quote_identifier(&schema_name),
+                            sqlite_quote_identifier(new_name),
+                            draft.query.value().trim()
+                        ),
+                    ];
+                    return CatalogMutationPlan::new(
+                        request,
+                        CatalogObjectType::Catalog(CatalogKind::View),
+                        CatalogMutationExecutionMode::Transactional,
+                        CatalogMutationTarget::database_target(
+                            crate::model::execution_target::ExecutionTarget {
+                                profile_id: object_id.profile_id(),
+                                database: database_name.clone(),
+                                schema: None,
+                            },
+                        )?,
+                        vec![CatalogTarget::Objects {
+                            schema: CatalogId::new(
+                                object_id.profile_id(),
+                                CatalogKind::Schema,
+                                [database_name, schema_name],
+                            ),
+                            group: ObjectGroup::Views,
+                        }],
+                        CatalogSelectionHint::Object(new_object),
+                        None,
+                        Vec::new(),
+                        statements,
+                    );
+                }
+                (_, None, _) => return Err(CatalogMutationError::StaleState),
+                (_, _, draft) => {
+                    return Err(CatalogMutationError::InvalidDraft {
+                        reason: format!("SQLite draft does not match selected object: {draft:?}"),
+                    });
+                }
+            }
+        }
         if request.mode != crate::db::catalog_mutation::CatalogMutationMode::Create {
             return Err(CatalogMutationError::UnsupportedOperation {
                 object_type: request.object_type,
@@ -303,12 +446,166 @@ impl SqliteAdapter {
     ) -> Result<QueryOutcome, DatabaseError> {
         plan.validate()
             .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        if plan.execution_mode == CatalogMutationExecutionMode::Transactional {
+            let _operation_permit = self.acquire_operation().await?;
+            let mut connection = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Network))?;
+            <Sqlite as sqlx::Database>::TransactionManager::begin(&mut connection, None)
+                .await
+                .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))?;
+            let mut outcome = None;
+            for statement in plan.statements() {
+                match self.execute_connection(&mut connection, statement).await {
+                    Ok(result) => outcome = Some(result),
+                    Err(error) => {
+                        let _ = <Sqlite as sqlx::Database>::TransactionManager::rollback(
+                            &mut connection,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                }
+            }
+            <Sqlite as sqlx::Database>::TransactionManager::commit(&mut connection)
+                .await
+                .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))?;
+            return outcome.ok_or_else(|| {
+                DatabaseError::configuration("SQLite mutation plan has no statements")
+            });
+        }
         let mut outcome = None;
         for statement in plan.statements() {
             outcome = Some(self.execute(statement).await?);
         }
         outcome
             .ok_or_else(|| DatabaseError::configuration("SQLite mutation plan has no statements"))
+    }
+
+    pub async fn load_catalog_object_definition(
+        &self,
+        request: &CatalogObjectDefinitionRequest,
+    ) -> Result<CatalogObjectDefinition, DatabaseError> {
+        request
+            .validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let _operation_permit = self.acquire_operation().await?;
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Network))?;
+        let target = CatalogTarget::RelationChildren {
+            relation: request.object.clone(),
+        };
+        let (schema, name, native_kind) = self
+            .verified_relation_id(&mut connection, &request.object, &target)
+            .await?;
+        if !self.catalog_scope.allows_schema(&self.database, &schema) {
+            return Err(catalog_target_not_found(&target));
+        }
+        let quoted_schema = self.quote_identifier(&schema);
+        let ddl_sql = format!(
+            "SELECT sql FROM {quoted_schema}.sqlite_schema WHERE type = ? AND name = ? COLLATE BINARY"
+        );
+        let ddl = sqlx::query_scalar::<_, Option<String>>(AssertSqlSafe(ddl_sql))
+            .bind(native_kind)
+            .bind(&name)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))?
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| catalog_internal("SQLite object has no catalog definition"))?;
+        let indexes = if request.object.kind == CatalogKind::Table {
+            self.load_index_metadata(&mut connection, &schema, &name)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let columns = self
+            .load_column_metadata(&mut connection, &schema, &name, &indexes)
+            .await?;
+        if request.object.kind == CatalogKind::View {
+            let Some(as_index) = ddl.to_ascii_uppercase().find(" AS ") else {
+                return Err(catalog_internal("SQLite view definition has no query body"));
+            };
+            let query = ddl[as_index + 4..].trim().to_owned();
+            return Ok(CatalogObjectDefinition::View(ViewDefinition {
+                database: self.database.clone(),
+                schema,
+                name,
+                owner: String::new(),
+                comment: OptionalMetadata::Unsupported,
+                query: query.clone(),
+                output_columns: columns.into_iter().map(|column| column.name).collect(),
+                security_barrier: ViewOption::unavailable(
+                    "SQLite does not expose PostgreSQL security_barrier",
+                ),
+                security_invoker: ViewOption::unavailable(
+                    "SQLite does not expose PostgreSQL security_invoker",
+                ),
+                check_option: ViewOption::unavailable(
+                    "SQLite view check option mapping is not implemented",
+                ),
+                baseline_fingerprint: format!("sqlite:view:{ddl}:{query}"),
+            }));
+        }
+        let foreign_keys = self
+            .load_foreign_key_metadata(&mut connection, &schema, &name)
+            .await?;
+        let column_definitions = columns
+            .iter()
+            .map(|column| ColumnDefinition {
+                name: column.name.clone(),
+                ordinal_position: column.ordinal_position,
+                native_type: column.native_type.clone(),
+                nullable: column.nullable,
+                default_expression: OptionalMetadata::Supported(column.default_expression.clone()),
+                identity: OptionalMetadata::Unsupported,
+                generated_expression: OptionalMetadata::Unsupported,
+                collation: OptionalMetadata::Unsupported,
+                comment: OptionalMetadata::Unsupported,
+            })
+            .collect::<Vec<_>>();
+        let related_statement = format!(
+            "SELECT sql FROM {quoted_schema}.sqlite_schema WHERE type = ? AND tbl_name = ? COLLATE BINARY AND sql IS NOT NULL ORDER BY name COLLATE BINARY"
+        );
+        let trigger_sql = sqlx::query_scalar::<_, String>(AssertSqlSafe(related_statement.clone()))
+            .bind("trigger")
+            .bind(&name)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))?;
+        let constraints = foreign_keys
+            .iter()
+            .map(|foreign_key| format!("fk_{}", foreign_key.id))
+            .chain(
+                indexes
+                    .iter()
+                    .filter(|index| matches!(index.origin.as_str(), "pk" | "u"))
+                    .map(|index| index.name.clone()),
+            )
+            .collect::<Vec<_>>();
+        let index_names = indexes
+            .iter()
+            .map(|index| index.name.clone())
+            .collect::<Vec<_>>();
+        Ok(CatalogObjectDefinition::Table(TableDefinition {
+            database: self.database.clone(),
+            schema,
+            name,
+            owner: String::new(),
+            comment: OptionalMetadata::Unsupported,
+            columns: column_definitions.clone(),
+            indexes: index_names,
+            constraints,
+            baseline_fingerprint: format!(
+                "sqlite:table:{ddl}:{trigger_sql:?}:{column_definitions:?}:{foreign_keys:?}"
+            ),
+        }))
     }
 
     async fn acquire_operation(&self) -> Result<OwnedSemaphorePermit, DatabaseError> {

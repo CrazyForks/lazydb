@@ -34,7 +34,7 @@ for the first mutation slice is:
 | Oracle | Create and edit table/view/sequence from schema object groups; complex column/index/constraint edits remain gated |
 | MySQL/MariaDB | Create and edit table/view from the database-is-schema namespace; column/index/constraint edits remain gated |
 | SQL Server | Create and edit table/view from a database/schema object group; column/index/constraint edits remain gated |
-| SQLite | Create table/view; edit and lossless table rebuild remain gated |
+| SQLite | Create and edit table/view; complex table structure edits use a lossless rebuild plan |
 | Redis | No SQL catalog mutation; native Key-Value mutation is a separate planned protocol |
 
 Until a row's individual object operation is complete, its capability remains

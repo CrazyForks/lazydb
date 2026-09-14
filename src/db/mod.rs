@@ -671,9 +671,7 @@ impl DatabaseConnection {
             Self::MySql(adapter) | Self::MariaDb(adapter) => {
                 adapter.load_catalog_object_definition(request).await
             }
-            Self::Sqlite(_) => Err(DatabaseError::configuration(
-                "catalog object definition loading is not supported for this database",
-            )),
+            Self::Sqlite(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::SqlServer(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Oracle(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
