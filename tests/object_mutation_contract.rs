@@ -2,7 +2,8 @@ use lazydb::db::catalog::{CatalogId, CatalogKind, NamespaceModel};
 use lazydb::db::catalog_change_set::{CatalogFieldChanges, FieldChange};
 use lazydb::db::catalog_mutation::{
     CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
-    CatalogMutationMode, CatalogMutationOption, CatalogObjectType,
+    CatalogMutationMode, CatalogMutationOption, CatalogObjectType, MutationCompletion,
+    MutationProgress,
 };
 use lazydb::model::explorer::ExplorerNodeId;
 use lazydb::model::explorer_actions::{ExplorerActionAvailability, ExplorerActionContext};
@@ -107,4 +108,21 @@ fn mutation_change_sets_preserve_unknown_and_unchanged_fields() {
         Some("renamed")
     );
     assert_eq!(changes.comment.as_changed(), None);
+}
+
+#[test]
+fn mutation_progress_distinguishes_rollback_partial_apply_and_unknown_commit() {
+    assert_eq!(
+        MutationProgress::failed(1, vec![0]).completion,
+        MutationCompletion::Failed
+    );
+    assert_eq!(
+        MutationProgress::partially_applied(1, vec![0]).completion,
+        MutationCompletion::PartiallyApplied
+    );
+    assert_eq!(
+        MutationProgress::outcome_unknown(vec![0]).completion,
+        MutationCompletion::OutcomeUnknown
+    );
+    assert_eq!(MutationProgress::succeeded(2).completed_steps, vec![0, 1]);
 }

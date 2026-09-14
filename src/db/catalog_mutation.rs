@@ -679,6 +679,55 @@ pub enum CatalogMutationExecutionMode {
     Autocommit,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationCompletion {
+    Succeeded,
+    Failed,
+    PartiallyApplied,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationProgress {
+    pub completed_steps: Vec<usize>,
+    pub failed_step: Option<usize>,
+    pub completion: MutationCompletion,
+}
+
+impl MutationProgress {
+    pub fn succeeded(step_count: usize) -> Self {
+        Self {
+            completed_steps: (0..step_count).collect(),
+            failed_step: None,
+            completion: MutationCompletion::Succeeded,
+        }
+    }
+
+    pub fn failed(failed_step: usize, completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: Some(failed_step),
+            completion: MutationCompletion::Failed,
+        }
+    }
+
+    pub fn partially_applied(failed_step: usize, completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: Some(failed_step),
+            completion: MutationCompletion::PartiallyApplied,
+        }
+    }
+
+    pub fn outcome_unknown(completed_steps: Vec<usize>) -> Self {
+        Self {
+            completed_steps,
+            failed_step: None,
+            completion: MutationCompletion::OutcomeUnknown,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogSelectionHint {
     Object(CatalogId),
@@ -906,6 +955,10 @@ impl CatalogMutationPlan {
 
     pub fn statements(&self) -> &[String] {
         &self.statements
+    }
+
+    pub const fn step_count(&self) -> usize {
+        self.statements.len()
     }
 
     pub fn sql(&self) -> String {
