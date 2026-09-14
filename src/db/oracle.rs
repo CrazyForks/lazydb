@@ -19,11 +19,11 @@ use super::catalog::{
     DdlProvenance, OptionalMetadata, QualifiedName, RelationDdl,
 };
 use super::catalog_mutation::{
-    CatalogMutationAvailability, CatalogMutationCapabilities, CatalogMutationExecutionMode,
-    CatalogMutationOption, CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
-    CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
-    CatalogSelectionHint, ColumnDefinition, SequenceBound, SequenceDefinition, TableDefinition,
-    ViewDefinition, ViewOption,
+    CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
+    CatalogMutationExecutionMode, CatalogMutationMode, CatalogMutationOption, CatalogMutationPlan,
+    CatalogMutationRequest, CatalogMutationTarget, CatalogObjectDefinition,
+    CatalogObjectDefinitionRequest, CatalogObjectType, CatalogSelectionHint, ColumnDefinition,
+    SequenceBound, SequenceDefinition, TableDefinition, ViewDefinition, ViewOption,
 };
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
@@ -70,7 +70,13 @@ impl OracleAdapter {
             .collect();
         CatalogMutationCapabilities {
             create,
-            edit: Vec::new(),
+            edit: [CatalogKind::Table, CatalogKind::View, CatalogKind::Sequence]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
             profile_create: Vec::new(),
             ..CatalogMutationCapabilities::default()
         }
@@ -81,7 +87,10 @@ impl OracleAdapter {
         draft: CatalogDraft,
         baseline: Option<CatalogObjectDefinition>,
     ) -> Result<CatalogMutationPlan, super::catalog_mutation::CatalogMutationError> {
-        if request.mode != super::catalog_mutation::CatalogMutationMode::Create {
+        if request.mode == CatalogMutationMode::Edit {
+            return Self::plan_edit(request, draft, baseline);
+        }
+        if request.mode != CatalogMutationMode::Create {
             return Err(
                 super::catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
@@ -214,6 +223,131 @@ impl OracleAdapter {
             Vec::new(),
             statements,
         )
+    }
+
+    fn plan_edit(
+        request: CatalogMutationRequest,
+        draft: CatalogDraft,
+        baseline: Option<CatalogObjectDefinition>,
+    ) -> Result<CatalogMutationPlan, super::catalog_mutation::CatalogMutationError> {
+        let CatalogMutationAnchor::Catalog(object) = &request.anchor else {
+            return Err(
+                super::catalog_mutation::CatalogMutationError::InvalidAnchor {
+                    reason: "Oracle edit requires a catalog object anchor",
+                },
+            );
+        };
+        let Some(baseline) = baseline else {
+            return Err(super::catalog_mutation::CatalogMutationError::StaleState);
+        };
+        let database = object.native_path.first().cloned().unwrap_or_default();
+        let schema = object.native_path.get(1).cloned().unwrap_or_default();
+        let old_name = object.native_path.get(2).cloned().unwrap_or_default();
+        let (kind, new_name, statements) = match (baseline, draft) {
+            (CatalogObjectDefinition::Table(_), CatalogDraft::Table(draft)) => {
+                let new_name = draft.name.value().trim().to_owned();
+                if new_name.is_empty() {
+                    return Err(
+                        super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                            reason: "Oracle table name is required".into(),
+                        },
+                    );
+                }
+                let statements = (new_name != old_name).then(|| {
+                    format!(
+                        "ALTER TABLE {}.{} RENAME TO {}",
+                        quote_identifier(&schema),
+                        quote_identifier(&old_name),
+                        quote_identifier(&new_name)
+                    )
+                });
+                (
+                    CatalogKind::Table,
+                    new_name,
+                    statements.into_iter().collect(),
+                )
+            }
+            (CatalogObjectDefinition::View(_), CatalogDraft::View(draft)) => {
+                draft.validate()?;
+                let new_name = draft.name.value().trim().to_owned();
+                let sql = format!(
+                    "CREATE OR REPLACE VIEW {}.{} AS {}",
+                    quote_identifier(&schema),
+                    quote_identifier(&new_name),
+                    draft.query.value().trim()
+                );
+                (CatalogKind::View, new_name, vec![sql])
+            }
+            (CatalogObjectDefinition::Sequence(_), CatalogDraft::Sequence(draft)) => {
+                draft.validate()?;
+                let new_name = draft.name.value().trim().to_owned();
+                let sql = format!(
+                    "ALTER SEQUENCE {}.{} INCREMENT BY {} CACHE {} {}",
+                    quote_identifier(&schema),
+                    quote_identifier(&old_name),
+                    draft.increment.value().trim(),
+                    draft.cache.value().trim(),
+                    if draft.cycle { "CYCLE" } else { "NOCYCLE" }
+                );
+                (CatalogKind::Sequence, new_name, vec![sql])
+            }
+            (_, draft) => {
+                return Err(
+                    super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                        reason: format!(
+                            "Oracle edit draft does not match the selected object: {draft:?}"
+                        ),
+                    },
+                );
+            }
+        };
+        if statements.is_empty() {
+            return Err(super::catalog_mutation::CatalogMutationError::NoChanges);
+        }
+        let old_object = object.clone();
+        let new_object = CatalogId::new(
+            request.connection.profile_id,
+            kind,
+            [database.clone(), schema.clone(), new_name],
+        );
+        CatalogMutationPlan::new(
+            request,
+            CatalogObjectType::Catalog(kind),
+            CatalogMutationExecutionMode::Autocommit,
+            CatalogMutationTarget::database_target(ExecutionTarget {
+                profile_id: old_object.profile_id(),
+                database: database.clone(),
+                schema: Some(schema.clone()),
+            })?,
+            vec![CatalogTarget::Objects {
+                schema: CatalogId::new(
+                    old_object.profile_id(),
+                    CatalogKind::Schema,
+                    [database, schema],
+                ),
+                group: match kind {
+                    CatalogKind::Table => ObjectGroup::Tables,
+                    CatalogKind::View => ObjectGroup::Views,
+                    CatalogKind::Sequence => ObjectGroup::Sequences,
+                    _ => ObjectGroup::Tables,
+                },
+            }],
+            CatalogSelectionHint::Object(new_object),
+            None,
+            Vec::new(),
+            statements,
+        )
+        .map(|plan| {
+            plan.with_impact(super::catalog_mutation::CatalogMutationImpact {
+                old_object_id: old_object,
+                owning_relation_id: None,
+                namespace: super::catalog_mutation::CatalogMutationNamespace {
+                    database: None,
+                    schema: None,
+                },
+                native_identity_changed: true,
+            })
+        })
     }
 
     pub async fn execute_catalog_mutation(

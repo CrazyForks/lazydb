@@ -151,13 +151,180 @@ fn oracle_advertises_only_the_object_groups_with_creation_plans() {
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Sequence))
             .is_some()
     );
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 3);
 }
 
 #[test]
-fn oracle_does_not_advertise_editing_before_authoritative_definitions_exist() {
+fn oracle_advertises_editing_only_for_loaded_definition_types() {
     let capabilities = OracleAdapter::catalog_mutation_capabilities();
-    assert!(capabilities.edit.is_empty());
+    assert!(capabilities.edit.iter().all(|option| matches!(
+        option.object_type,
+        CatalogObjectType::Catalog(CatalogKind::Table | CatalogKind::View | CatalogKind::Sequence)
+    )));
+}
+
+#[test]
+fn oracle_table_edit_plan_renames_only_the_table_identity() {
+    let profile_id = Uuid::from_u128(9);
+    let object = CatalogId::new(profile_id, CatalogKind::Table, ["SERVICE", "APP", "OLD"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 2,
+        catalog_epoch: 3,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("SERVICE".to_owned()),
+    };
+    let mut table = TableDraft::new("APP");
+    table.name.set("NEW");
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(
+        lazydb::db::catalog_mutation::TableDefinition {
+            database: "SERVICE".into(),
+            schema: "APP".into(),
+            name: "OLD".into(),
+            owner: "APP".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            columns: vec![],
+            indexes: vec![],
+            constraints: vec![],
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        OracleAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), Some(baseline))
+            .expect("Oracle rename plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &["ALTER TABLE \"APP\".\"OLD\" RENAME TO \"NEW\""]
+    );
+}
+
+#[test]
+fn oracle_view_edit_plan_replaces_the_definition() {
+    let profile_id = Uuid::from_u128(10);
+    let object = CatalogId::new(profile_id, CatalogKind::View, ["SERVICE", "APP", "V"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 3,
+        catalog_epoch: 4,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::View),
+        current_database: Some("SERVICE".to_owned()),
+    };
+    let mut view = lazydb::model::catalog_editor::ViewDraft {
+        name: "V".into(),
+        schema: "APP".into(),
+        owner: "APP".into(),
+        comment: Default::default(),
+        query: "SELECT 1 FROM dual".into(),
+        output_columns: Default::default(),
+        security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable("not applicable"),
+        security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable("not applicable"),
+        check_option: lazydb::db::catalog_mutation::ViewOption::unavailable("not applicable"),
+        focus: lazydb::model::catalog_editor::CatalogFormFocus::Name,
+    };
+    view.query.set("SELECT 2 FROM dual");
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::View(
+        lazydb::db::catalog_mutation::ViewDefinition {
+            database: "SERVICE".into(),
+            schema: "APP".into(),
+            name: "V".into(),
+            owner: "APP".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            query: "SELECT 1 FROM dual".into(),
+            output_columns: vec![],
+            security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable",
+            ),
+            security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable",
+            ),
+            check_option: lazydb::db::catalog_mutation::ViewOption::unavailable("not applicable"),
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        OracleAdapter::plan_catalog_mutation(request, CatalogDraft::View(view), Some(baseline))
+            .expect("Oracle view replace plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &["CREATE OR REPLACE VIEW \"APP\".\"V\" AS SELECT 2 FROM dual"]
+    );
+}
+
+#[test]
+fn oracle_sequence_edit_plan_updates_runtime_attributes() {
+    let profile_id = Uuid::from_u128(11);
+    let object = CatalogId::new(profile_id, CatalogKind::Sequence, ["SERVICE", "APP", "SEQ"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 4,
+        catalog_epoch: 5,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Sequence),
+        current_database: Some("SERVICE".to_owned()),
+    };
+    let sequence = lazydb::model::catalog_editor::SequenceDraft {
+        name: "SEQ".into(),
+        schema: "APP".into(),
+        owner: "APP".into(),
+        comment: Default::default(),
+        data_type: "NUMBER".into(),
+        increment: "5".into(),
+        min_value: lazydb::model::catalog_editor::SequenceBoundDraft::from(
+            lazydb::db::catalog_mutation::SequenceBound::Unset,
+        ),
+        max_value: lazydb::model::catalog_editor::SequenceBoundDraft::from(
+            lazydb::db::catalog_mutation::SequenceBound::Unset,
+        ),
+        start_value: "1".into(),
+        restart_value: Default::default(),
+        cache: "20".into(),
+        cycle: true,
+        owned_by: "NONE".into(),
+        focus: lazydb::model::catalog_editor::CatalogFormFocus::Name,
+    };
+    sequence.validate().unwrap();
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Sequence(
+        lazydb::db::catalog_mutation::SequenceDefinition {
+            database: "SERVICE".into(),
+            schema: "APP".into(),
+            name: "SEQ".into(),
+            owner: "APP".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            data_type: "NUMBER".into(),
+            increment: "1".into(),
+            min_value: lazydb::db::catalog_mutation::SequenceBound::Unset,
+            max_value: lazydb::db::catalog_mutation::SequenceBound::Unset,
+            start_value: "1".into(),
+            cache: "1".into(),
+            cycle: false,
+            owned_by: None,
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan = OracleAdapter::plan_catalog_mutation(
+        request,
+        CatalogDraft::Sequence(sequence),
+        Some(baseline),
+    )
+    .expect("Oracle sequence edit plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &["ALTER SEQUENCE \"APP\".\"SEQ\" INCREMENT BY 5 CACHE 20 CYCLE"]
+    );
 }
 
 #[test]

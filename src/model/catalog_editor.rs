@@ -3143,6 +3143,17 @@ impl CatalogEditorState {
         if let Some(CatalogObjectDefinition::Role(definition)) = self.baseline.as_ref() {
             self.draft = Some(CatalogDraft::Role(RoleDraft::from_definition(definition)));
         }
+        if let Some(CatalogObjectDefinition::Table(definition)) = self.baseline.as_ref() {
+            self.draft = Some(CatalogDraft::Table(TableDraft::from_definition(definition)));
+        }
+        if let Some(CatalogObjectDefinition::View(definition)) = self.baseline.as_ref() {
+            self.draft = Some(CatalogDraft::View(ViewDraft::from_definition(definition)));
+        }
+        if let Some(CatalogObjectDefinition::Sequence(definition)) = self.baseline.as_ref() {
+            self.draft = Some(CatalogDraft::Sequence(SequenceDraft::from_definition(
+                definition,
+            )));
+        }
         self.page = CatalogEditorPage::Form;
         true
     }
