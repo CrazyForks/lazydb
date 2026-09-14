@@ -22,7 +22,8 @@ use super::catalog_mutation::{
     CatalogMutationAvailability, CatalogMutationCapabilities, CatalogMutationExecutionMode,
     CatalogMutationOption, CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
     CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
-    CatalogSelectionHint, ColumnDefinition, TableDefinition,
+    CatalogSelectionHint, ColumnDefinition, SequenceBound, SequenceDefinition, TableDefinition,
+    ViewDefinition, ViewOption,
 };
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
@@ -261,15 +262,93 @@ impl OracleAdapter {
                 if object_database != &database {
                     return Err(oracle_error("Oracle object belongs to another service"));
                 }
+                let connection = connection
+                    .lock()
+                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                if object.kind == CatalogKind::View {
+                    let row = connection
+                        .query_row(
+                            "SELECT text FROM all_views WHERE owner = :1 AND view_name = :2",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let query: String = row.get(0).map_err(oracle_error)?;
+                    let column_rows = connection
+                        .query(
+                            "SELECT column_name FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let mut output_columns = Vec::new();
+                    for row in column_rows {
+                        output_columns.push(row.map_err(oracle_error)?.get(0).map_err(oracle_error)?);
+                    }
+                    let baseline_fingerprint = format!(
+                        "oracle:view:{object_database}:{schema}:{name}:{query}:{output_columns:?}"
+                    );
+                    return Ok(CatalogObjectDefinition::View(ViewDefinition {
+                        database: object_database.clone(),
+                        schema: schema.clone(),
+                        name: name.clone(),
+                        owner: schema.clone(),
+                        comment: OptionalMetadata::Unsupported,
+                        query,
+                        output_columns,
+                        security_barrier: ViewOption::unavailable(
+                            "Oracle does not expose PostgreSQL security_barrier",
+                        ),
+                        security_invoker: ViewOption::unavailable(
+                            "Oracle does not expose PostgreSQL security_invoker",
+                        ),
+                        check_option: ViewOption::unavailable(
+                            "Oracle view check option mapping is not implemented",
+                        ),
+                        baseline_fingerprint,
+                    }));
+                }
+                if object.kind == CatalogKind::Sequence {
+                    let row = connection
+                        .query_row(
+                            "SELECT increment_by, min_value, max_value, last_number, cache_size, cycle_flag FROM all_sequences WHERE sequence_owner = :1 AND sequence_name = :2",
+                            &[schema, name],
+                        )
+                        .map_err(oracle_error)?;
+                    let increment: i64 = row.get(0).map_err(oracle_error)?;
+                    let min_value: Option<i64> = row.get(1).map_err(oracle_error)?;
+                    let max_value: Option<i64> = row.get(2).map_err(oracle_error)?;
+                    let start_value: i64 = row.get(3).map_err(oracle_error)?;
+                    let cache: i64 = row.get(4).map_err(oracle_error)?;
+                    let cycle: String = row.get(5).map_err(oracle_error)?;
+                    let baseline_fingerprint = format!(
+                        "oracle:sequence:{object_database}:{schema}:{name}:{increment}:{min_value:?}:{max_value:?}:{start_value}:{cache}:{cycle}"
+                    );
+                    return Ok(CatalogObjectDefinition::Sequence(SequenceDefinition {
+                        database: object_database.clone(),
+                        schema: schema.clone(),
+                        name: name.clone(),
+                        owner: schema.clone(),
+                        comment: OptionalMetadata::Unsupported,
+                        data_type: "NUMBER".to_owned(),
+                        increment: increment.to_string(),
+                        min_value: min_value.map_or(SequenceBound::Unset, |value| {
+                            SequenceBound::Value(value.to_string())
+                        }),
+                        max_value: max_value.map_or(SequenceBound::Unset, |value| {
+                            SequenceBound::Value(value.to_string())
+                        }),
+                        start_value: start_value.to_string(),
+                        cache: cache.to_string(),
+                        cycle: cycle == "Y",
+                        owned_by: None,
+                        baseline_fingerprint,
+                    }));
+                }
                 if object.kind != CatalogKind::Table {
                     return Err(oracle_error(format!(
                         "Oracle definition loading for {:?} is not implemented",
                         object.kind
                     )));
                 }
-                let connection = connection
-                    .lock()
-                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
                 let rows = connection
                     .query(
                         "SELECT column_name, data_type, data_precision, data_scale, nullable, data_default, column_id FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
