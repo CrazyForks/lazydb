@@ -420,24 +420,6 @@ impl EditorWorkspace {
     }
 
     pub(crate) fn key(&mut self, id: Uuid, event: KeyEvent) -> Result<(), EditorError> {
-        if let Some((_, height, _, _)) = self
-            .sessions
-            .get(&id)
-            .and_then(|session| session.preview_layout.get())
-        {
-            let rows = match (event.code, event.modifiers) {
-                (KeyCode::PageDown, _) => Some(height as isize),
-                (KeyCode::PageUp, _) => Some(-(height as isize)),
-                (KeyCode::Char('d'), KeyModifiers::CONTROL) => Some((height / 2).max(1) as isize),
-                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-                    Some(-((height / 2).max(1) as isize))
-                }
-                _ => None,
-            };
-            if let Some(rows) = rows {
-                return self.scroll(id, rows, 0);
-            }
-        }
         let key = if crate::input::is_text_redo(event) {
             EditorKey::Redo
         } else if crate::input::is_text_undo(event) {

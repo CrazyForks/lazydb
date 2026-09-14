@@ -2054,6 +2054,57 @@ fn wrapped_preview_scrolls_visual_rows_and_preserves_source_positions() {
 }
 
 #[test]
+fn wrapped_preview_page_keys_move_cursor_and_keep_it_visible() {
+    let text = (0..12)
+        .map(|line| format!("line-{line}-abcdefgh"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut workspace = EditorWorkspace::new();
+    let id = uuid::Uuid::new_v4();
+    workspace.open_read_only(id, &text);
+    let viewport = EditorViewport {
+        width: 6,
+        height: 3,
+    };
+    let language = crate::model::editor_language::EditorLanguage::Plain;
+    workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, true)
+        .unwrap();
+    workspace
+        .key(
+            id,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('d'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+        )
+        .unwrap();
+    let after_half_page = workspace.position(id).unwrap();
+    assert!(after_half_page.line > 0);
+    let snapshot = workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, true)
+        .unwrap();
+    assert!(snapshot.cursor_screen_cell.is_some());
+
+    workspace
+        .key(
+            id,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::PageDown,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        )
+        .unwrap();
+    let after_page = workspace.position(id).unwrap();
+    assert!(after_page.line >= after_half_page.line);
+    let snapshot = workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, true)
+        .unwrap();
+    assert!(snapshot.cursor_screen_cell.is_some());
+    assert_eq!(workspace.text(id).unwrap(), text);
+}
+
+#[test]
 fn preview_yaml_comments_are_not_duplicated_and_strings_keep_hashes() {
     let spans = EditorWorkspace::preview_highlight_spans(
         "name: 'a#b' # comment",
