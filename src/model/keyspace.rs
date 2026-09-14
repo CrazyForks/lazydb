@@ -46,6 +46,7 @@ pub struct KeyspaceState {
     pending_keys: Vec<Vec<u8>>,
     pending_next: Option<ScanPosition>,
     store: MemoryKeyStore,
+    staged_store: MemoryKeyStore,
 }
 
 impl KeyspaceState {
@@ -70,6 +71,7 @@ impl KeyspaceState {
             pending_keys: Vec::new(),
             pending_next: None,
             store: MemoryKeyStore::new(target.clone()),
+            staged_store: MemoryKeyStore::new(target.clone()),
         }
     }
 
@@ -122,6 +124,7 @@ impl KeyspaceState {
                 }
                 self.staged_bytes += key.len();
                 self.staged_set.insert(key.clone());
+                self.staged_store.insert_batch(std::slice::from_ref(key));
                 self.staged_keys.push(RedisKeyId {
                     target: self.target.clone(),
                     key: key.clone(),
@@ -164,11 +167,16 @@ impl KeyspaceState {
             self.keys = std::mem::take(&mut self.staged_keys);
             self.key_set = std::mem::take(&mut self.staged_set);
             self.key_bytes = self.staged_bytes;
+            self.store = std::mem::replace(
+                &mut self.staged_store,
+                MemoryKeyStore::new(self.target.clone()),
+            );
         }
         self.refreshing_snapshot = false;
         self.staged_keys.clear();
         self.staged_set.clear();
         self.staged_bytes = 0;
+        self.staged_store = MemoryKeyStore::new(self.target.clone());
         self.position = batch.next;
         self.status = if matches!(self.position, ScanPosition::Complete) {
             if self.keys.is_empty() {
@@ -230,6 +238,7 @@ impl KeyspaceState {
         self.pending_keys.clear();
         self.pending_next = None;
         self.store = MemoryKeyStore::new(self.target.clone());
+        self.staged_store = MemoryKeyStore::new(self.target.clone());
         self.in_flight = false;
         self.status = if self.refreshing_snapshot {
             KeyspaceStatus::Stale

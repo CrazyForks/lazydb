@@ -207,4 +207,6 @@ fn refreshing_replaces_old_snapshot_only_when_first_page_fits_budget() {
             .collect::<Vec<_>>(),
         vec![b"new".as_slice()]
     );
+    assert_eq!(state.stored_count(), 1);
+    assert_eq!(state.stored_bytes(), 3);
 }
