@@ -1,5 +1,6 @@
 pub mod capabilities;
 pub mod catalog;
+pub mod catalog_change_set;
 pub mod catalog_drop;
 pub mod catalog_mutation;
 pub(crate) mod ddl;

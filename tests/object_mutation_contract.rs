@@ -1,4 +1,5 @@
 use lazydb::db::catalog::{CatalogId, CatalogKind, NamespaceModel};
+use lazydb::db::catalog_change_set::{CatalogFieldChanges, FieldChange};
 use lazydb::db::catalog_mutation::{
     CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
     CatalogMutationMode, CatalogMutationOption, CatalogObjectType,
@@ -91,4 +92,19 @@ fn explorer_action_resolution_returns_a_reason_instead_of_silently_dropping_a_ke
         context.resolve(Some(&selected), CatalogMutationMode::Create),
         ExplorerActionAvailability::Unavailable(reason) if reason.contains("Oracle")
     ));
+}
+
+#[test]
+fn mutation_change_sets_preserve_unknown_and_unchanged_fields() {
+    let changes = CatalogFieldChanges::<String> {
+        name: FieldChange::changed("renamed".to_owned()),
+        comment: FieldChange::Unknown,
+    };
+
+    assert!(changes.has_changes());
+    assert_eq!(
+        changes.name.as_changed().map(String::as_str),
+        Some("renamed")
+    );
+    assert_eq!(changes.comment.as_changed(), None);
 }
