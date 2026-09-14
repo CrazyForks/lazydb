@@ -13149,7 +13149,15 @@ impl App {
                 }
                 DatabaseKind::Redis => Default::default(),
             };
-            let options = capabilities.create_options(&anchor, None).ok()?;
+            let namespace_model = match profile.kind {
+                DatabaseKind::MySql | DatabaseKind::MariaDb => {
+                    crate::db::catalog::NamespaceModel::DatabaseIsSchema
+                }
+                _ => crate::db::catalog::NamespaceModel::DatabaseAndSchema,
+            };
+            let options = capabilities
+                .create_options_for_namespace(&anchor, None, namespace_model)
+                .ok()?;
             return (!options.is_empty()).then_some(CatalogCreateSelection {
                 anchor,
                 catalog_epoch: 0,
@@ -13184,7 +13192,15 @@ impl App {
             _ => None,
         };
         let capabilities = &self.connection.mutation_capabilities;
-        let options = capabilities.create_options(&anchor, entry).ok()?;
+        let namespace_model = match profile.kind {
+            DatabaseKind::MySql | DatabaseKind::MariaDb => {
+                crate::db::catalog::NamespaceModel::DatabaseIsSchema
+            }
+            _ => crate::db::catalog::NamespaceModel::DatabaseAndSchema,
+        };
+        let options = capabilities
+            .create_options_for_namespace(&anchor, entry, namespace_model)
+            .ok()?;
         (!options.is_empty()).then_some(CatalogCreateSelection {
             anchor,
             catalog_epoch: profile_state.catalog_epoch,
