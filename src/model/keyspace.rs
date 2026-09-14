@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
+use crate::db::redis::key_store::{KeyStore, MemoryKeyStore};
 use crate::db::redis::types::{
     KeyScanBatch, RedisKeyId, RedisRequestIdentity, RedisTarget, ScanPosition,
 };
@@ -44,13 +45,14 @@ pub struct KeyspaceState {
     staged_bytes: usize,
     pending_keys: Vec<Vec<u8>>,
     pending_next: Option<ScanPosition>,
+    store: MemoryKeyStore,
 }
 
 impl KeyspaceState {
     pub fn new(owner_id: Uuid, target: RedisTarget, pattern: Vec<u8>) -> Self {
         Self {
             owner_id,
-            target,
+            target: target.clone(),
             pattern,
             generation: 0,
             connection: None,
@@ -67,6 +69,7 @@ impl KeyspaceState {
             staged_bytes: 0,
             pending_keys: Vec::new(),
             pending_next: None,
+            store: MemoryKeyStore::new(target.clone()),
         }
     }
 
@@ -140,6 +143,7 @@ impl KeyspaceState {
                 }
                 self.key_bytes += key.len();
                 self.key_set.insert(key.clone());
+                self.store.insert_batch(std::slice::from_ref(key));
                 self.keys.push(RedisKeyId {
                     target: self.target.clone(),
                     key: key.clone(),
@@ -186,6 +190,14 @@ impl KeyspaceState {
         self.pending_next.as_ref()
     }
 
+    pub fn stored_count(&self) -> usize {
+        self.store.count()
+    }
+
+    pub fn stored_bytes(&self) -> usize {
+        self.store.bytes()
+    }
+
     pub fn fail(&mut self, identity: &RedisRequestIdentity, message: impl Into<String>) -> bool {
         if self.identity().as_ref() != Some(identity) || !self.in_flight {
             return false;
@@ -217,6 +229,7 @@ impl KeyspaceState {
         self.staged_bytes = 0;
         self.pending_keys.clear();
         self.pending_next = None;
+        self.store = MemoryKeyStore::new(self.target.clone());
         self.in_flight = false;
         self.status = if self.refreshing_snapshot {
             KeyspaceStatus::Stale
