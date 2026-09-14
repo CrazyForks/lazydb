@@ -7,6 +7,7 @@ pub mod database_selector;
 pub mod editor;
 pub mod execution_target;
 pub mod explorer;
+pub mod explorer_actions;
 pub mod explorer_add;
 pub mod keyspace;
 pub mod navigation;

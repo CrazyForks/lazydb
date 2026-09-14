@@ -1,8 +1,11 @@
 use lazydb::db::catalog::{CatalogId, CatalogKind, NamespaceModel};
 use lazydb::db::catalog_mutation::{
     CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
-    CatalogMutationOption, CatalogObjectType,
+    CatalogMutationMode, CatalogMutationOption, CatalogObjectType,
 };
+use lazydb::model::explorer::ExplorerNodeId;
+use lazydb::model::explorer_actions::{ExplorerActionAvailability, ExplorerActionContext};
+use lazydb::profile::DatabaseKind;
 use uuid::Uuid;
 
 fn available(object_type: CatalogObjectType) -> CatalogMutationOption {
@@ -69,4 +72,23 @@ fn database_is_schema_does_not_offer_a_phantom_schema_creation() {
             CatalogObjectType::Catalog(CatalogKind::View),
         ]
     );
+}
+
+#[test]
+fn explorer_action_resolution_returns_a_reason_instead_of_silently_dropping_a_key() {
+    let capabilities = CatalogMutationCapabilities::default();
+    let context = ExplorerActionContext {
+        database_kind: DatabaseKind::Oracle,
+        connected: true,
+        read_only: false,
+        namespace_model: NamespaceModel::DatabaseAndSchema,
+        capabilities: &capabilities,
+        selected_entry: None,
+    };
+    let selected = ExplorerNodeId::Profile(Uuid::from_u128(1));
+
+    assert!(matches!(
+        context.resolve(Some(&selected), CatalogMutationMode::Create),
+        ExplorerActionAvailability::Unavailable(reason) if reason.contains("Oracle")
+    ));
 }
