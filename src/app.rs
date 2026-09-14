@@ -271,6 +271,7 @@ pub struct App {
     connect_started_at: Option<Instant>,
     transaction_op_started_at: Option<(Uuid, Instant)>,
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
+    console_manager_origin_target: Option<ExecutionTarget>,
     workspaces: HashMap<Uuid, ConnectionWorkspace>,
     workspace_editors: HashMap<Uuid, EditorWorkspace>,
     workspace_focus: HashMap<Uuid, Focus>,
@@ -735,6 +736,7 @@ impl App {
             connect_started_at: None,
             transaction_op_started_at: None,
             sql_editor_list: Default::default(),
+            console_manager_origin_target: None,
             workspaces: HashMap::new(),
             workspace_editors: HashMap::new(),
             workspace_focus: HashMap::new(),
@@ -826,6 +828,7 @@ impl App {
     /// Returns the console records in the order used by the console manager.
     pub fn visible_console_records(&self, query: &str) -> Vec<&ConsoleRecord> {
         let query = query.to_lowercase();
+        let mut seen = HashSet::new();
         let mut records = self
             .sql_editors
             .iter()
@@ -834,6 +837,7 @@ impl App {
                     .values()
                     .flat_map(|workspace| workspace.sql_editors.iter()),
             )
+            .filter(|record| seen.insert(record.id))
             .filter(|record| {
                 let target = record.execution_target.as_ref();
                 let profile = target.and_then(|target| {
@@ -891,8 +895,6 @@ impl App {
             .iter()
             .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default()))
             .collect();
-        self.workspace_editors
-            .insert(profile_id, std::mem::take(&mut self.editor));
         Some((
             profile_id,
             ConnectionWorkspace {
@@ -968,53 +970,9 @@ impl App {
     }
 
     fn install_workspace(&mut self, profile_id: Uuid, workspace: ConnectionWorkspace) {
-        self.tabs = workspace.tabs;
-        self.sql_editors = workspace.sql_editors;
-        self.editor = self
-            .workspace_editors
-            .remove(&profile_id)
-            .unwrap_or_else(|| {
-                let mut editor = EditorWorkspace::new();
-                for (id, text) in &workspace.sql {
-                    editor.open_console(*id, text);
-                    if let Some(tab) = self
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.id() == *id)
-                        .and_then(WorkspaceTab::as_console)
-                    {
-                        editor.open_read_only(tab.output_editor_id, &output_text(tab));
-                    }
-                }
-                editor
-            });
-        let relation_sessions = self
-            .tabs
-            .iter()
-            .filter_map(|tab| match tab {
-                WorkspaceTab::Relation(tab) => Some((
-                    tab.ddl_editor_id,
-                    match &tab.ddl {
-                        RelationLoad::Ready(snapshot) => snapshot.value.sql.clone(),
-                        RelationLoad::Loading { previous, .. }
-                        | RelationLoad::Failed { previous, .. }
-                        | RelationLoad::Cancelled { previous } => previous
-                            .as_ref()
-                            .map_or_else(String::new, |snapshot| snapshot.value.sql.clone()),
-                        RelationLoad::Empty => String::new(),
-                    },
-                )),
-                WorkspaceTab::Sql(_) => None,
-                WorkspaceTab::Dashboard(_) => None,
-                WorkspaceTab::History(_) => None,
-                WorkspaceTab::RedisBrowser(_) => None,
-            })
-            .collect::<Vec<_>>();
-        for (id, text) in relation_sessions {
-            self.editor.open_read_only(id, &text);
-        }
-        self.active_tab = workspace
-            .active_tab_id
+        let active_tab_id = workspace.active_tab_id;
+        self.append_workspace(profile_id, workspace);
+        self.active_tab = active_tab_id
             .and_then(|id| self.tabs.iter().position(|tab| tab.id() == id))
             .unwrap_or(0)
             .min(self.tabs.len().saturating_sub(1));
@@ -5043,6 +5001,7 @@ impl App {
                     .active_console_opt()
                     .map(|tab| tab.id)
                     .or_else(|| self.visible_console_ids("").first().copied());
+                self.console_manager_origin_target = self.default_console_target();
                 self.sql_editor_list =
                     crate::model::sql_editor_list::SqlEditorListState::new(selected_id);
                 self.overlay = Some(Overlay::SqlEditorList(self.sql_editor_list.clone()));
@@ -13709,8 +13668,11 @@ impl App {
     }
 
     fn create_and_activate_sql_editor_named(&mut self, name: String) -> Vec<Command> {
+        let origin_target = self.console_manager_origin_target.take();
         if self.active_workspace_profile.is_none()
-            && let Some(target) = self.default_console_target()
+            && let Some(target) = origin_target
+                .clone()
+                .or_else(|| self.default_console_target())
         {
             let profile_id = target.profile_id;
             if let Some(workspace) = self.workspaces.remove(&profile_id) {
@@ -13725,7 +13687,7 @@ impl App {
         if !self.has_active_workspace() {
             return Vec::new();
         }
-        self.create_sql_editor_named(name);
+        self.create_sql_editor_named(name, origin_target);
         self.active_tab = self.tabs.len().saturating_sub(1);
         self.focus = Focus::Editor;
         vec![self.persist_workspace_command()]
@@ -13753,9 +13715,9 @@ impl App {
         Vec::new()
     }
 
-    fn create_sql_editor_named(&mut self, name: String) {
+    fn create_sql_editor_named(&mut self, name: String, default_target: Option<ExecutionTarget>) {
         let mut tab = ConsoleTab::new(name);
-        tab.execution_target = self.default_console_target();
+        tab.execution_target = default_target.or_else(|| self.default_console_target());
         let id = tab.id;
         self.editor.open_console(id, "");
         self.editor.open_read_only(tab.output_editor_id, "");
@@ -13770,6 +13732,33 @@ impl App {
     }
 
     fn default_console_target(&self) -> Option<ExecutionTarget> {
+        if self.focus != Focus::Explorer {
+            if let Some(target) = self
+                .active_console_opt()
+                .and_then(|tab| tab.execution_target.clone())
+            {
+                return Some(target);
+            }
+            if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) {
+                let profile = self
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == tab.descriptor.key.profile_id)?;
+                let target = ExecutionTarget {
+                    profile_id: profile.id,
+                    database: tab
+                        .descriptor
+                        .qualified_name
+                        .database
+                        .clone()
+                        .or_else(|| profile.database.clone())?,
+                    schema: tab.descriptor.qualified_name.schema.clone(),
+                };
+                if target.is_valid(profile) {
+                    return Some(target);
+                }
+            }
+        }
         resolve_default_target(
             self.explorer.normalized.selected.as_ref(),
             &self.profiles,
@@ -15093,7 +15082,11 @@ impl App {
                 | EditorEffect::SetConnectionTarget(_)
                 | EditorEffect::SetDatabaseTarget(_)
                 | EditorEffect::SetSchemaTarget(_) => continue,
-                EditorEffect::OpenTargetSelector => Action::OpenTargetSelector,
+                EditorEffect::OpenTargetSelector => self
+                    .active_console_opt()
+                    .map_or(Action::OpenTargetSelector, |tab| {
+                        Action::OpenConsoleTargetSelector { console_id: tab.id }
+                    }),
                 EditorEffect::OpenDatabaseSelector => Action::OpenDatabaseSelector,
                 EditorEffect::ToggleTransaction => {
                     Action::SetTransactionMode(match self.active_console().transaction_mode {
@@ -20253,25 +20246,38 @@ impl App {
             );
             return Vec::new();
         }
-        let Some(connection) = self.database_command_identity() else {
-            return Vec::new();
-        };
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
-        if tab.descriptor.key.profile_id != connection.profile_id {
-            return Vec::new();
-        }
-        if tab.stale_native_identity {
-            return Vec::new();
-        }
         let Some(profile) = self
             .profiles
             .iter()
-            .find(|profile| profile.id == connection.profile_id)
+            .find(|profile| profile.id == tab.descriptor.key.profile_id)
         else {
             return Vec::new();
         };
+        let target =
+            relation_execution_target(tab, profile).or_else(|| self.connection.target.clone());
+        let connection = target.as_ref().and_then(|target| {
+            self.sessions
+                .get(target)
+                .filter(|session| session.status == crate::model::session::SessionStatus::Connected)
+                .map(|session| session.identity)
+        });
+        let Some(connection) = connection.or_else(|| {
+            self.connection.active_identity().filter(|identity| {
+                identity.profile_id == tab.descriptor.key.profile_id
+                    && (tab.descriptor.qualified_name.database.is_none()
+                        || self.connection.target.as_ref().is_none_or(|current| {
+                            target.as_ref().is_none_or(|target| current == target)
+                        }))
+            })
+        }) else {
+            return Vec::new();
+        };
+        if tab.stale_native_identity {
+            return Vec::new();
+        }
         if !relation_is_in_scope(tab, &profile.catalog_scope) {
             return Vec::new();
         }
@@ -20683,6 +20689,23 @@ impl App {
         self.connection.pending_profile_id == Some(profile_id)
             && self.connection.pending_generation == Some(generation)
     }
+}
+
+fn relation_execution_target(
+    tab: &RelationTab,
+    profile: &ConnectionProfile,
+) -> Option<ExecutionTarget> {
+    let mut target = ExecutionTarget::from_profile(profile);
+    if let Some(database) = tab.descriptor.qualified_name.database.clone() {
+        target.database = database;
+    }
+    if matches!(
+        profile.kind,
+        DatabaseKind::Postgres | DatabaseKind::SqlServer | DatabaseKind::Oracle
+    ) {
+        target.schema = tab.descriptor.qualified_name.schema.clone();
+    }
+    target.is_valid(profile).then_some(target)
 }
 
 fn relation_is_in_scope(tab: &RelationTab, scope: &crate::profile::CatalogScope) -> bool {
@@ -23759,7 +23782,7 @@ mod tests {
     #[test]
     fn background_console_output_does_not_affect_active_tab() {
         let mut app = App::new(Vec::new());
-        app.create_sql_editor_named("background".into());
+        app.create_sql_editor_named("background".into(), None);
         let background = app
             .tabs
             .last()

@@ -5914,10 +5914,9 @@ fn render_console_manager(
                         .is_some_and(|(target, profile)| target.is_valid(profile));
                     let connected = target.is_some_and(|target| {
                         target_valid
-                            && app.connection.status
-                                == crate::model::workspace::ConnectionStatus::Connected
-                            && app.connection.profile_id == Some(target.profile_id)
-                            && app.connection.target.as_ref() == Some(target)
+                            && app.sessions.get(target).is_some_and(|session| {
+                                session.status == crate::model::session::SessionStatus::Connected
+                            })
                     });
                     let connection_status = if target.is_none() {
                         "未绑定"
