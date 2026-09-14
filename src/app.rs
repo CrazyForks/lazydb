@@ -900,7 +900,7 @@ impl App {
             .iter()
             .filter(|record| self.console_belongs_to_profile(record, profile_id))
             .cloned()
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Some((
             profile_id,
             ConnectionWorkspace {
