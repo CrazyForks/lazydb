@@ -61,6 +61,46 @@ fn duplicate_keys_are_removed_and_zero_cursor_completes() {
 }
 
 #[test]
+fn budget_pause_commits_fitting_keys_and_preserves_pending_response() {
+    let mut state = state();
+    for index in 0..lazydb::model::keyspace::MAX_KEYS - 1 {
+        let identity = state
+            .start_scan(ConnectionIdentity {
+                profile_id: Uuid::from_u128(1),
+                generation: 1,
+            })
+            .unwrap();
+        assert!(state.apply_batch(KeyScanBatch {
+            identity,
+            keys: vec![format!("key-{index}").into_bytes()],
+            next: ScanPosition::Continue(index as u64 + 1),
+        }));
+    }
+    let identity = state
+        .start_scan(ConnectionIdentity {
+            profile_id: Uuid::from_u128(1),
+            generation: 1,
+        })
+        .unwrap();
+
+    assert!(state.apply_batch(KeyScanBatch {
+        identity,
+        keys: vec![
+            b"fits".to_vec(),
+            b"pending-1".to_vec(),
+            b"pending-2".to_vec()
+        ],
+        next: ScanPosition::Continue(42),
+    }));
+    assert_eq!(state.status, KeyspaceStatus::Paused { loaded: 10_000 });
+    assert_eq!(
+        state.pending_keys(),
+        &[b"pending-1".to_vec(), b"pending-2".to_vec()]
+    );
+    assert_eq!(state.pending_position(), Some(&ScanPosition::Continue(42)));
+}
+
+#[test]
 fn stale_identity_cannot_mutate_current_scan() {
     let mut state = state();
     let old = state

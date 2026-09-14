@@ -42,6 +42,8 @@ pub struct KeyspaceState {
     staged_keys: Vec<RedisKeyId>,
     staged_set: HashSet<Vec<u8>>,
     staged_bytes: usize,
+    pending_keys: Vec<Vec<u8>>,
+    pending_next: Option<ScanPosition>,
 }
 
 impl KeyspaceState {
@@ -63,6 +65,8 @@ impl KeyspaceState {
             staged_keys: Vec::new(),
             staged_set: HashSet::new(),
             staged_bytes: 0,
+            pending_keys: Vec::new(),
+            pending_next: None,
         }
     }
 
@@ -95,34 +99,68 @@ impl KeyspaceState {
             return false;
         }
         self.in_flight = false;
-        let (base_keys, base_set, base_bytes) = if self.refreshing_snapshot {
-            (&self.staged_keys, &self.staged_set, self.staged_bytes)
+        let mut incoming = self.pending_keys.drain(..).collect::<Vec<_>>();
+        incoming.extend(batch.keys);
+        self.pending_next = None;
+        let mut pending = Vec::new();
+        let mut index = 0;
+        if self.refreshing_snapshot {
+            while index < incoming.len() {
+                let key = &incoming[index];
+                if self.staged_set.contains(key) {
+                    index += 1;
+                    continue;
+                }
+                if self.staged_keys.len() >= MAX_KEYS
+                    || self.staged_bytes.saturating_add(key.len()) > MAX_KEY_BYTES
+                {
+                    pending.extend(incoming.into_iter().skip(index));
+                    break;
+                }
+                self.staged_bytes += key.len();
+                self.staged_set.insert(key.clone());
+                self.staged_keys.push(RedisKeyId {
+                    target: self.target.clone(),
+                    key: key.clone(),
+                });
+                index += 1;
+            }
         } else {
-            (&self.keys, &self.key_set, self.key_bytes)
-        };
-        let mut next_keys = base_keys.clone();
-        let mut next_set = base_set.clone();
-        let mut next_bytes = base_bytes;
-        for key in batch.keys {
-            if next_set.contains(&key) {
-                continue;
+            while index < incoming.len() {
+                let key = &incoming[index];
+                if self.key_set.contains(key) {
+                    index += 1;
+                    continue;
+                }
+                if self.keys.len() >= MAX_KEYS
+                    || self.key_bytes.saturating_add(key.len()) > MAX_KEY_BYTES
+                {
+                    pending.extend(incoming.into_iter().skip(index));
+                    break;
+                }
+                self.key_bytes += key.len();
+                self.key_set.insert(key.clone());
+                self.keys.push(RedisKeyId {
+                    target: self.target.clone(),
+                    key: key.clone(),
+                });
+                index += 1;
             }
-            if next_keys.len() >= MAX_KEYS || next_bytes.saturating_add(key.len()) > MAX_KEY_BYTES {
-                self.status = KeyspaceStatus::Paused {
-                    loaded: self.keys.len(),
-                };
-                return true;
-            }
-            next_bytes += key.len();
-            next_set.insert(key.clone());
-            next_keys.push(RedisKeyId {
-                target: self.target.clone(),
-                key,
-            });
         }
-        self.keys = next_keys;
-        self.key_set = next_set;
-        self.key_bytes = next_bytes;
+        if !pending.is_empty() {
+            self.pending_keys = pending;
+            self.position = batch.next.clone();
+            self.pending_next = Some(batch.next);
+            self.status = KeyspaceStatus::Paused {
+                loaded: self.keys.len(),
+            };
+            return true;
+        }
+        if self.refreshing_snapshot {
+            self.keys = std::mem::take(&mut self.staged_keys);
+            self.key_set = std::mem::take(&mut self.staged_set);
+            self.key_bytes = self.staged_bytes;
+        }
         self.refreshing_snapshot = false;
         self.staged_keys.clear();
         self.staged_set.clear();
@@ -138,6 +176,14 @@ impl KeyspaceState {
             KeyspaceStatus::Partial
         };
         true
+    }
+
+    pub fn pending_keys(&self) -> &[Vec<u8>] {
+        &self.pending_keys
+    }
+
+    pub fn pending_position(&self) -> Option<&ScanPosition> {
+        self.pending_next.as_ref()
     }
 
     pub fn fail(&mut self, identity: &RedisRequestIdentity, message: impl Into<String>) -> bool {
@@ -169,6 +215,8 @@ impl KeyspaceState {
         self.staged_keys.clear();
         self.staged_set.clear();
         self.staged_bytes = 0;
+        self.pending_keys.clear();
+        self.pending_next = None;
         self.in_flight = false;
         self.status = if self.refreshing_snapshot {
             KeyspaceStatus::Stale
