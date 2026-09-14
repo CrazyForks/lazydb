@@ -13,7 +13,6 @@ use crate::sql::ExecutionDraft;
 use super::dashboard::DashboardTab;
 use super::data_query::DataQueryOptions;
 use super::data_query::DataQueryState;
-use super::history_tab::HistoryTab;
 use super::pagination::{PageRequest, PageSize, ResultPagination};
 use super::redis_browser::RedisBrowserTab;
 use super::relation::RelationTab;
@@ -23,7 +22,6 @@ pub enum TabKind {
     Sql,
     Relation,
     Dashboard,
-    History,
     RedisBrowser,
 }
 
@@ -83,7 +81,6 @@ pub enum WorkspaceTab {
     Sql(ConsoleTab),
     Relation(RelationTab),
     Dashboard(DashboardTab),
-    History(HistoryTab),
     RedisBrowser(RedisBrowserTab),
 }
 
@@ -93,7 +90,6 @@ impl WorkspaceTab {
             Self::Sql(tab) => tab.id,
             Self::Relation(tab) => tab.id,
             Self::Dashboard(tab) => tab.id,
-            Self::History(tab) => tab.id,
             Self::RedisBrowser(tab) => tab.id,
         }
     }
@@ -103,7 +99,6 @@ impl WorkspaceTab {
             Self::Sql(tab) => &tab.name,
             Self::Relation(tab) => tab.title(),
             Self::Dashboard(_) => "Dashboard",
-            Self::History(_) => HistoryTab::TITLE,
             Self::RedisBrowser(_) => "Redis",
         }
     }
@@ -113,7 +108,6 @@ impl WorkspaceTab {
             Self::Sql(_) => TabKind::Sql,
             Self::Relation(_) => TabKind::Relation,
             Self::Dashboard(_) => TabKind::Dashboard,
-            Self::History(_) => TabKind::History,
             Self::RedisBrowser(_) => TabKind::RedisBrowser,
         }
     }
@@ -123,7 +117,6 @@ impl WorkspaceTab {
             Self::Sql(tab) => Some(tab),
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
-            Self::History(_) => None,
             Self::RedisBrowser(_) => None,
         }
     }
@@ -133,7 +126,6 @@ impl WorkspaceTab {
             Self::Sql(tab) => Some(tab),
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
-            Self::History(_) => None,
             Self::RedisBrowser(_) => None,
         }
     }

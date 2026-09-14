@@ -484,6 +484,38 @@ enum CompletionAfterEdit {
 }
 
 impl App {
+    fn load_sql_history_overlay(&mut self, append: bool) -> Vec<Command> {
+        let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() else {
+            return Vec::new();
+        };
+        if append && view.next_cursor.is_none() {
+            return Vec::new();
+        }
+        if view.loading {
+            return Vec::new();
+        }
+        let cursor = append.then(|| view.next_cursor.clone()).flatten();
+        let generation = if append {
+            view.query_generation
+        } else {
+            view.begin_query()
+        };
+        let overlay_id = view.overlay_id;
+        view.request(cursor.clone());
+        vec![Command::LoadSqlHistory {
+            overlay_id,
+            generation,
+            request: crate::persistence::sql_history::HistoryPageRequest {
+                limit: 100,
+                cursor,
+                search: (!view.search.value().is_empty()).then(|| view.search.value().to_owned()),
+                status: view.status_filter,
+                transaction_outcome: view.transaction_filter,
+                database: view.database_filter.clone(),
+            },
+        }]
+    }
+
     pub fn is_editor_target_switch_pending(&self) -> bool {
         self.pending_editor_target_switch.is_some()
     }
@@ -1265,6 +1297,18 @@ impl App {
             {
                 Some(tab.ddl_editor_id)
             }
+            _ if self.focus == Focus::Results
+                && matches!(
+                    self.overlay,
+                    Some(Overlay::SqlHistory(ref view))
+                        if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+                ) =>
+            {
+                self.overlay.as_ref().and_then(|overlay| match overlay {
+                    Overlay::SqlHistory(view) => Some(view.editor_session_id),
+                    _ => None,
+                })
+            }
             _ => None,
         }
     }
@@ -1285,6 +1329,24 @@ impl App {
             }
             Some(WorkspaceTab::Relation(tab))
                 if session_id == tab.ddl_editor_id && tab.view == RelationView::Ddl =>
+            {
+                Some(Focus::Results)
+            }
+            Some(_)
+                if session_id
+                    == self
+                        .overlay
+                        .as_ref()
+                        .and_then(|overlay| match overlay {
+                            Overlay::SqlHistory(view) => Some(view.editor_session_id),
+                            _ => None,
+                        })
+                        .unwrap_or(Uuid::nil())
+                    && matches!(
+                        self.overlay,
+                        Some(Overlay::SqlHistory(ref view))
+                            if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+                    ) =>
             {
                 Some(Focus::Results)
             }
@@ -1437,7 +1499,6 @@ impl App {
             Some(WorkspaceTab::Sql(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Relation(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Dashboard(tab)) => tab.grid.selected_column,
-            Some(WorkspaceTab::History(_)) => 0,
             Some(WorkspaceTab::RedisBrowser(_)) => 0,
             None => 0,
         }
@@ -1641,6 +1702,28 @@ impl App {
         )
     }
 
+    pub(crate) fn sql_history_editor_snapshot(
+        &self,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
+            return Err(EditorError::MissingSession(Uuid::nil()));
+        };
+        self.editor.render_snapshot_with_dialect_and_ranges(
+            view.editor_session_id,
+            viewport,
+            SqlDialect::Generic,
+            &[],
+        )
+    }
+
+    pub(crate) fn sql_history_editor_revision(&self) -> Option<u64> {
+        let Overlay::SqlHistory(view) = self.overlay.as_ref()? else {
+            return None;
+        };
+        self.editor.revision(view.editor_session_id).ok()
+    }
+
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
         let profile_id = self.connection.profile_id?;
         self.profiles
@@ -1687,7 +1770,6 @@ impl App {
                         WorkspaceTab::Sql(tab) => profile_console_ids.contains(&tab.id),
                         WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
                         WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
-                        WorkspaceTab::History(_) => false,
                         WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
                     })
                     .cloned()
@@ -1824,7 +1906,6 @@ impl App {
                 .is_none_or(|target| target.profile_id == profile_id),
             WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
             WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
-            WorkspaceTab::History(_) => false,
             WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
         }
     }
@@ -1865,7 +1946,6 @@ impl App {
             .collect();
         let tabs = tabs
             .iter()
-            .filter(|tab| !matches!(tab, WorkspaceTab::History(_)))
             .map(|tab| match tab {
                 WorkspaceTab::Sql(tab) => PersistedTab::Console { console_id: tab.id },
                 WorkspaceTab::Relation(tab) => {
@@ -1884,7 +1964,6 @@ impl App {
                     refresh_enabled: tab.refresh_enabled,
                     redis_database: tab.redis_database,
                 },
-                WorkspaceTab::History(_) => unreachable!(),
                 WorkspaceTab::RedisBrowser(tab) => PersistedTab::RedisBrowser {
                     tab_id: tab.id,
                     profile_id: tab.target.profile_id,
@@ -4531,195 +4610,137 @@ impl App {
                 commands
             }
             Action::OpenSqlHistory => {
-                if let Some(index) = self
-                    .tabs
-                    .iter()
-                    .position(|tab| matches!(tab, WorkspaceTab::History(_)))
-                {
-                    self.active_tab = index;
-                } else {
-                    self.tabs.push(WorkspaceTab::History(Default::default()));
-                    self.active_tab = self.tabs.len() - 1;
-                }
+                let mut view = crate::model::sql_history_view::SqlHistoryState::new();
+                let overlay_id = view.overlay_id;
+                let generation = view.begin_query();
+                view.request(None);
+                self.overlay = Some(Overlay::SqlHistory(view));
                 self.focus = Focus::Results;
-                let generation =
-                    if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
-                        tab.loading = true;
-                        tab.query_generation = tab.query_generation.saturating_add(1);
-                        tab.query_generation
-                    } else {
-                        0
-                    };
-                vec![
-                    Command::LoadSqlHistory {
-                        generation,
-                        request: crate::persistence::sql_history::HistoryPageRequest {
-                            limit: 100,
-                            cursor: None,
-                            search: self.tabs.get(self.active_tab).and_then(|tab| match tab {
-                                WorkspaceTab::History(tab) if !tab.search.is_empty() => {
-                                    Some(tab.search.clone())
-                                }
-                                _ => None,
-                            }),
-                            status: self.tabs.get(self.active_tab).and_then(|tab| match tab {
-                                WorkspaceTab::History(tab) => tab.status_filter,
-                                _ => None,
-                            }),
-                            transaction_outcome: self.tabs.get(self.active_tab).and_then(|tab| {
-                                match tab {
-                                    WorkspaceTab::History(tab) => tab.transaction_filter,
-                                    _ => None,
-                                }
-                            }),
-                            database: self.tabs.get(self.active_tab).and_then(|tab| match tab {
-                                WorkspaceTab::History(tab) => tab.database_filter.clone(),
-                                _ => None,
-                            }),
-                        },
+                vec![Command::LoadSqlHistory {
+                    overlay_id,
+                    generation,
+                    request: crate::persistence::sql_history::HistoryPageRequest {
+                        limit: 100,
+                        cursor: None,
+                        search: None,
+                        status: None,
+                        transaction_outcome: None,
+                        database: None,
                     },
-                    self.persist_workspace_command(),
-                ]
+                }]
             }
             Action::SqlHistoryOpenDetail => {
-                let Some(WorkspaceTab::History(tab)) = self.tabs.get(self.active_tab) else {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Sql;
+                    let session_id = view.editor_session_id;
+                    let selected = view
+                        .selected_item()
+                        .map(|item| (item.execution_id, item.sql.clone()));
+                    if let Some((execution_id, sql)) = selected {
+                        let text = crate::security::sanitize_terminal_text(&sql);
+                        self.editor.open_read_only(session_id, &text);
+                        view.loaded_execution_id = Some(execution_id);
+                    }
                     return Vec::new();
-                };
-                let Some(id) = tab.selected_execution else {
-                    return Vec::new();
-                };
-                let Some(item) = tab.items.iter().find(|item| item.execution_id == id) else {
-                    return Vec::new();
-                };
-                self.update(Action::OpenTextDetail(
-                    crate::model::text_detail::TextDetailRequest::new(
-                        "SQL History",
-                        Uuid::nil(),
-                        0,
-                        &item.sql,
-                        item.sql.clone(),
-                        None,
-                    ),
-                ))
+                }
+                Vec::new()
+            }
+            Action::SqlHistoryBackToBrowse => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Browse;
+                }
+                Vec::new()
             }
             Action::SqlHistoryCopy => {
-                let Some(WorkspaceTab::History(tab)) = self.tabs.get(self.active_tab) else {
-                    return Vec::new();
-                };
-                let Some(id) = tab.selected_execution else {
-                    return Vec::new();
-                };
-                let Some(item) = tab.items.iter().find(|item| item.execution_id == id) else {
-                    return Vec::new();
-                };
-                vec![Command::WriteClipboard(ClipboardPayload {
-                    description: "SQL History: complete SQL".into(),
-                    text: item.sql.clone(),
-                    sensitive: false,
-                })]
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref()
+                    && let Some(item) = view.selected_item()
+                {
+                    return vec![Command::WriteClipboard(ClipboardPayload {
+                        description: "SQL History: complete SQL".into(),
+                        text: item.sql.clone(),
+                        sensitive: false,
+                    })];
+                }
+                Vec::new()
             }
             Action::SqlHistorySelect(index) => {
-                if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
-                    if let Some(item) = tab.items.get(index) {
-                        tab.selected_execution = Some(item.execution_id);
-                    }
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.select_index(index);
+                    return Vec::new();
                 }
                 Vec::new()
             }
             Action::SqlHistorySearchInsert(character) => {
-                if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
-                    tab.search.push(character);
-                    tab.query_generation = tab.query_generation.saturating_add(1);
-                    tab.loading = true;
-                    return vec![Command::LoadSqlHistory {
-                        generation: tab.query_generation,
-                        request: crate::persistence::sql_history::HistoryPageRequest {
-                            limit: 100,
-                            cursor: None,
-                            search: Some(tab.search.clone()),
-                            status: tab.status_filter,
-                            transaction_outcome: tab.transaction_filter,
-                            database: tab.database_filter.clone(),
-                        },
-                    }];
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                    view.search.insert(character);
+                    return self.load_sql_history_overlay(false);
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchOpen => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchBackspace => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.search.backspace();
+                    return self.load_sql_history_overlay(false);
                 }
                 Vec::new()
             }
             Action::SqlHistorySearchClear => {
-                if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
-                    tab.search.clear();
-                    tab.query_generation = tab.query_generation.saturating_add(1);
-                    tab.loading = true;
-                    return vec![Command::LoadSqlHistory {
-                        generation: tab.query_generation,
-                        request: crate::persistence::sql_history::HistoryPageRequest {
-                            limit: 100,
-                            cursor: None,
-                            search: None,
-                            status: tab.status_filter,
-                            transaction_outcome: tab.transaction_filter,
-                            database: tab.database_filter.clone(),
-                        },
-                    }];
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.search.clear();
+                    return self.load_sql_history_overlay(false);
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchConfirm | Action::SqlHistorySearchCancel => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Browse;
                 }
                 Vec::new()
             }
             Action::SqlHistoryMove(delta) => {
-                if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab)
-                    && !tab.items.is_empty()
-                {
-                    let current = tab
-                        .selected_execution
-                        .and_then(|id| tab.items.iter().position(|item| item.execution_id == id))
-                        .unwrap_or(0);
-                    let next =
-                        (current as isize + delta).rem_euclid(tab.items.len() as isize) as usize;
-                    tab.selected_execution = Some(tab.items[next].execution_id);
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.move_selection(delta);
+                    return Vec::new();
                 }
                 Vec::new()
             }
             Action::SqlHistoryCycleStatus | Action::SqlHistoryCycleTransaction => {
-                let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) else {
-                    return Vec::new();
-                };
-                if matches!(action, Action::SqlHistoryCycleStatus) {
-                    use crate::model::sql_history::HistoryExecutionStatus::*;
-                    tab.status_filter = match tab.status_filter {
-                        None => Some(Succeeded),
-                        Some(Succeeded) => Some(Failed),
-                        Some(Failed) => Some(TimedOut),
-                        Some(TimedOut) => Some(Cancelled),
-                        Some(Cancelled) => Some(Running),
-                        Some(Running) => None,
-                        Some(_) => None,
-                    };
-                } else {
-                    use crate::model::sql_history::HistoryTransactionOutcome::*;
-                    tab.transaction_filter = match tab.transaction_filter {
-                        None => Some(Pending),
-                        Some(Pending) => Some(Committed),
-                        Some(Committed) => Some(RolledBack),
-                        Some(RolledBack) => Some(Unknown),
-                        Some(Unknown) => None,
-                        Some(_) => None,
-                    };
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    if matches!(action, Action::SqlHistoryCycleStatus) {
+                        use crate::model::sql_history::HistoryExecutionStatus::*;
+                        view.status_filter = match view.status_filter {
+                            None => Some(Succeeded),
+                            Some(Succeeded) => Some(Failed),
+                            Some(Failed) => Some(TimedOut),
+                            Some(TimedOut) => Some(Cancelled),
+                            Some(Cancelled) => Some(Running),
+                            Some(Running) => None,
+                            Some(_) => None,
+                        };
+                    } else {
+                        use crate::model::sql_history::HistoryTransactionOutcome::*;
+                        view.transaction_filter = match view.transaction_filter {
+                            None => Some(Pending),
+                            Some(Pending) => Some(Committed),
+                            Some(Committed) => Some(RolledBack),
+                            Some(RolledBack) => Some(Unknown),
+                            Some(Unknown) => None,
+                            Some(_) => None,
+                        };
+                    }
+                    return self.load_sql_history_overlay(false);
                 }
-                tab.query_generation = tab.query_generation.saturating_add(1);
-                tab.loading = true;
-                Some(Command::LoadSqlHistory {
-                    generation: tab.query_generation,
-                    request: crate::persistence::sql_history::HistoryPageRequest {
-                        limit: 100,
-                        cursor: None,
-                        search: (!tab.search.is_empty()).then(|| tab.search.clone()),
-                        status: tab.status_filter,
-                        transaction_outcome: tab.transaction_filter,
-                        database: tab.database_filter.clone(),
-                    },
-                })
-                .into_iter()
-                .collect()
+                Vec::new()
             }
+            Action::SqlHistoryRefresh => self.load_sql_history_overlay(false),
+            Action::SqlHistoryLoadNext => self.load_sql_history_overlay(true),
             Action::DashboardSetPage(page) => {
                 let Some(WorkspaceTab::Dashboard(tab)) = self.tabs.get_mut(self.active_tab) else {
                     return Vec::new();
@@ -6111,6 +6132,30 @@ impl App {
                         sensitive: false,
                     })]
                 }
+                crate::ui::text_selection::TextGestureSource::SqlHistory => {
+                    let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
+                        return Vec::new();
+                    };
+                    if view.editor_session_id != session_id
+                        || self.editor.revision(session_id).ok() != Some(revision)
+                    {
+                        return Vec::new();
+                    }
+                    let Ok(text) = self.editor.mouse_range_text(session_id, start, end) else {
+                        return Vec::new();
+                    };
+                    if text.is_empty() {
+                        return Vec::new();
+                    }
+                    vec![Command::WriteClipboard(ClipboardPayload {
+                        description: format!(
+                            "SQL History selection: {} chars",
+                            text.chars().count()
+                        ),
+                        text,
+                        sensitive: false,
+                    })]
+                }
             },
             Action::CopyTextDetailAll { session_id } => {
                 let Some(Overlay::TextDetail(view)) = self.overlay.as_ref() else {
@@ -6175,6 +6220,12 @@ impl App {
             }
             Action::ExecuteHelpShortcut(id) => self.execute_help_shortcut(id),
             Action::DismissOverlay => {
+                if matches!(self.overlay, Some(Overlay::SqlHistory(_))) {
+                    if let Some(Overlay::SqlHistory(view)) = self.overlay.take() {
+                        self.editor.close_console(view.editor_session_id);
+                    }
+                    return Vec::new();
+                }
                 if matches!(self.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
                     self.overlay = None;
                     self.workspace_save_closing = false;
@@ -13016,18 +13067,34 @@ impl App {
                 }
             }
             Action::ToggleTerminalSelection => Vec::new(),
-            Action::SqlHistoryLoaded { generation, page } => {
-                if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab)
-                    && tab.query_generation == generation
-                {
-                    tab.loading = false;
-                    tab.selected_execution = page.items.first().map(|item| item.execution_id);
-                    tab.items = page.items;
+            Action::SqlHistoryLoaded {
+                overlay_id,
+                generation,
+                page,
+            } => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    let request = view.in_flight.clone();
+                    if let Some(request) = request
+                        && request.overlay_id == overlay_id
+                        && request.generation == generation
+                    {
+                        view.complete(&request, page.items, page.next_cursor);
+                    }
                 }
                 Vec::new()
             }
-            Action::SqlHistoryLoadFailed { message, .. } => {
-                self.notify_warning("SQL History", message);
+            Action::SqlHistoryLoadFailed {
+                overlay_id,
+                generation,
+                message,
+            } => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut()
+                    && let Some(request) = view.in_flight.clone()
+                    && request.overlay_id == overlay_id
+                    && request.generation == generation
+                {
+                    view.fail(&request, message);
+                }
                 Vec::new()
             }
         }
@@ -14542,7 +14609,6 @@ impl App {
                 WorkspaceTab::Sql(tab) => !removed_ids.contains(&tab.id),
                 WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id != profile_id,
                 WorkspaceTab::Dashboard(tab) => tab.profile_id != Some(profile_id),
-                WorkspaceTab::History(_) => true,
                 WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id != profile_id,
             });
             self.active_workspace_profile = self.sql_editors.iter().find_map(|record| {
@@ -15653,6 +15719,25 @@ impl App {
             Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
             Some(DatabaseKind::Redis) => SqlDialect::Generic,
             None => SqlDialect::Generic,
+        }
+    }
+
+    pub(crate) fn sql_history_dialect(&self, profile_id: Option<Uuid>) -> SqlDialect {
+        let Some(profile_id) = profile_id else {
+            return SqlDialect::Generic;
+        };
+        match self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.kind)
+        {
+            Some(DatabaseKind::Postgres) => SqlDialect::Postgres,
+            Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => SqlDialect::MySql,
+            Some(DatabaseKind::Oracle) => SqlDialect::Oracle,
+            Some(DatabaseKind::Sqlite) => SqlDialect::Sqlite,
+            Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
+            Some(DatabaseKind::Redis) | None => SqlDialect::Generic,
         }
     }
 
@@ -17330,6 +17415,15 @@ impl App {
 
     fn ensure_read_only_session(&mut self, session_id: Uuid) {
         if self.editor.has_session(session_id) {
+            return;
+        }
+        if let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref()
+            && view.editor_session_id == session_id
+        {
+            let text = view
+                .selected_item()
+                .map_or_else(String::new, |item| item.sql.clone());
+            self.editor.open_read_only(session_id, &text);
             return;
         }
         for tab in &self.tabs {
@@ -23308,7 +23402,6 @@ mod tests {
             WorkspaceTab::Relation(tab) => tab.descriptor.key.clone(),
             WorkspaceTab::Sql(_) => unreachable!(),
             WorkspaceTab::Dashboard(_) => unreachable!(),
-            WorkspaceTab::History(_) => unreachable!(),
             WorkspaceTab::RedisBrowser(_) => unreachable!(),
         };
         let scope = app.profiles[0].catalog_scope.clone();

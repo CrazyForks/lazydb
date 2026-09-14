@@ -126,6 +126,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::Help(_) => ShortcutContext::Help,
                 Overlay::RecordView(_) => ShortcutContext::RecordView,
                 Overlay::TextDetail(_) => ShortcutContext::Message,
+                Overlay::SqlHistory(_) => ShortcutContext::Message,
                 Overlay::ProfileManager => {
                     match app.profile_manager.as_ref().map(|state| state.page) {
                         Some(ProfileManagerPage::Scope) => ShortcutContext::ProfileManagerScope,

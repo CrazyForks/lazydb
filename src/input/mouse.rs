@@ -131,16 +131,22 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     cursor: position,
                 });
             }
-            if matches!(app.overlay, Some(Overlay::TextDetail(_)))
-                && *ui.mouse_gesture.borrow() == Some(crate::ui::text_selection::GestureOwner::Text)
+            if matches!(
+                app.overlay,
+                Some(Overlay::TextDetail(_) | Overlay::SqlHistory(_))
+            ) && *ui.mouse_gesture.borrow()
+                == Some(crate::ui::text_selection::GestureOwner::Text)
             {
                 let gesture = ui.text_gesture.borrow().as_ref().copied()?;
                 let target = ui
                     .text_selection_targets
                     .iter()
                     .find(|target| target.session_id == gesture.session_id)?;
-                if gesture.source != crate::ui::text_selection::TextGestureSource::TextDetail
-                    || gesture.session_id != target.session_id
+                if !matches!(
+                    gesture.source,
+                    crate::ui::text_selection::TextGestureSource::TextDetail
+                        | crate::ui::text_selection::TextGestureSource::SqlHistory
+                ) || gesture.session_id != target.session_id
                 {
                     ui.cancel_mouse_gesture();
                     return None;
@@ -279,6 +285,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::ui::text_selection::TextGestureSource::TextDetail => {
                         matches!(app.overlay, Some(Overlay::TextDetail(_)))
                     }
+                    crate::ui::text_selection::TextGestureSource::SqlHistory => {
+                        matches!(
+                            &app.overlay,
+                            Some(Overlay::SqlHistory(view))
+                                if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+                        )
+                    }
                 };
                 let target_matches = target_is_current
                     && ui
@@ -349,36 +362,62 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             ui.editor_scrollbar_drag.borrow_mut().take();
             ui.explorer_scrollbar_drag.borrow_mut().take();
             ui.pane_resize_drag.borrow_mut().take();
-            if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
+            if let Some(overlay) = app.overlay.as_ref()
+                && let Some((session_id, revision, source)) = match overlay {
+                    Overlay::TextDetail(view) => Some((
+                        view.session_id,
+                        view.revision,
+                        crate::ui::text_selection::TextGestureSource::TextDetail,
+                    )),
+                    Overlay::SqlHistory(view)
+                        if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql =>
+                    {
+                        Some((
+                            view.editor_session_id,
+                            app.sql_history_editor_revision().unwrap_or_default(),
+                            crate::ui::text_selection::TextGestureSource::SqlHistory,
+                        ))
+                    }
+                    _ => None,
+                }
+            {
                 if let Some(target) = ui.target_at(event.column, event.row).cloned() {
                     return match target {
-                        HitTarget::TextDetailCopyAll => Some(Action::CopyTextDetailAll {
-                            session_id: view.session_id,
-                        }),
-                        HitTarget::TextDetailClose => Some(Action::CloseTextDetail),
+                        HitTarget::TextDetailCopyAll
+                            if source
+                                == crate::ui::text_selection::TextGestureSource::TextDetail =>
+                        {
+                            Some(Action::CopyTextDetailAll { session_id })
+                        }
+                        HitTarget::TextDetailClose
+                            if source
+                                == crate::ui::text_selection::TextGestureSource::TextDetail =>
+                        {
+                            Some(Action::CloseTextDetail)
+                        }
                         HitTarget::OpenTextDetail(request) => Some(Action::OpenTextDetail(request)),
                         _ => None,
                     };
                 }
                 let position = ui
                     .text_selection_target_at(event.column, event.row)
-                    .filter(|(target, _)| target.session_id == view.session_id)
+                    .filter(|(target, _)| target.session_id == session_id)
                     .map(|(_, position)| position);
                 return position.map(|position| {
                     ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
-                        session_id: view.session_id,
-                        source: crate::ui::text_selection::TextGestureSource::TextDetail,
+                        session_id,
+                        source,
                         start: position,
                         end: position,
-                        revision: view.revision,
+                        revision,
                         has_dragged: false,
                     });
                     // Text detail is read-only; the gesture itself is the preview state.
                     let _ = position;
                     Action::SetEditorMouseCursor {
-                        session_id: view.session_id,
+                        session_id,
                         position: editor_position(position),
-                        revision: view.revision,
+                        revision,
                     }
                 });
             }

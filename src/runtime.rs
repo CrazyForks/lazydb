@@ -574,9 +574,10 @@ impl Runtime {
                 sql,
             } => self.run_query(connection, target, tab_id, generation, sql),
             Command::LoadSqlHistory {
+                overlay_id,
                 generation,
                 request,
-            } => self.load_sql_history(generation, request),
+            } => self.load_sql_history(overlay_id, generation, request),
             Command::LoadDashboardMetrics {
                 tab_id,
                 tab_generation,
@@ -2719,11 +2720,13 @@ impl Runtime {
 
     fn load_sql_history(
         &mut self,
+        overlay_id: uuid::Uuid,
         generation: u64,
         request: crate::persistence::sql_history::HistoryPageRequest,
     ) {
         let Some(store) = self.history_store.clone() else {
             let _ = self.event_sender.send(Action::SqlHistoryLoadFailed {
+                overlay_id,
                 generation,
                 message: "SQL history database is not available".into(),
             });
@@ -2733,10 +2736,15 @@ impl Runtime {
         self.background_tasks.push(tokio::spawn(async move {
             match store.page(request).await {
                 Ok(page) => {
-                    let _ = sender.send(Action::SqlHistoryLoaded { generation, page });
+                    let _ = sender.send(Action::SqlHistoryLoaded {
+                        overlay_id,
+                        generation,
+                        page,
+                    });
                 }
                 Err(error) => {
                     let _ = sender.send(Action::SqlHistoryLoadFailed {
+                        overlay_id,
                         generation,
                         message: error.to_string(),
                     });
