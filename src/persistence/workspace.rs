@@ -87,6 +87,8 @@ pub enum PersistedTab {
         page: crate::model::dashboard::DashboardPage,
         #[serde(default = "default_dashboard_refresh")]
         refresh_enabled: bool,
+        #[serde(default)]
+        redis_database: Option<u32>,
     },
     RedisBrowser {
         tab_id: Uuid,

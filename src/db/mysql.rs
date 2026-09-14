@@ -296,6 +296,7 @@ impl MySqlAdapter {
             // Uptime is sampled for reset detection, not used as a generation because it changes every poll.
             server_generation: 1,
             values,
+            redis_details: None,
         })
     }
 

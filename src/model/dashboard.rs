@@ -29,6 +29,13 @@ pub enum MetricKey {
     TempBytes,
     BytesRead,
     BytesWritten,
+    RedisCommands,
+    RedisMemory,
+    RedisKeys,
+    RedisEvictedKeys,
+    RedisExpiredKeys,
+    RedisKeyspaceHits,
+    RedisKeyspaceMisses,
     WalBytes,
     AbortedClients,
     AbortedConnections,
@@ -50,6 +57,13 @@ impl MetricKey {
             | Self::ActiveConnections
             | Self::IdleConnections
             | Self::ServerUptime => MetricKind::Gauge,
+            Self::RedisCommands | Self::RedisMemory | Self::RedisKeys => MetricKind::Gauge,
+            Self::RedisEvictedKeys
+            | Self::RedisExpiredKeys
+            | Self::RedisKeyspaceHits
+            | Self::RedisKeyspaceMisses
+            | Self::BytesRead
+            | Self::BytesWritten => MetricKind::Counter,
             _ => MetricKind::Counter,
         }
     }
@@ -115,11 +129,13 @@ impl MetricHistory {
         keys.dedup();
 
         for key in keys {
-            let value = previous.and_then(|previous| {
-                (!generation_changed)
-                    .then(|| rate(previous, &sample, key))
-                    .flatten()
-            });
+            let value = match previous {
+                Some(previous) if !generation_changed => rate(previous, &sample, key),
+                None => sample.values.get(&key).copied().filter(|value| {
+                    value.is_finite() && matches!(key.kind(), MetricKind::Gauge | MetricKind::Ratio)
+                }),
+                _ => None,
+            };
             let points = self.points.entry(key).or_default();
             for sample in self.samples.iter().skip(points.len()) {
                 points.push(MetricPoint {
@@ -185,11 +201,14 @@ fn rate(previous: &RawSample, current: &RawSample, key: MetricKey) -> Option<f64
     }
     let current_value = *current.values.get(&key)?;
     let previous_value = *previous.values.get(&key)?;
-    if !current_value.is_finite() || !previous_value.is_finite() || current_value < previous_value {
+    if !current_value.is_finite() || !previous_value.is_finite() {
         return None;
     }
     match key.kind() {
-        MetricKind::Counter => Some((current_value - previous_value) / elapsed),
+        MetricKind::Counter if current_value >= previous_value => {
+            Some((current_value - previous_value) / elapsed)
+        }
+        MetricKind::Counter => None,
         MetricKind::Gauge | MetricKind::Ratio => Some(current_value),
     }
 }
@@ -240,6 +259,7 @@ pub enum DashboardPage {
     Overview,
     Processes,
     Charts,
+    Info,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -338,6 +358,9 @@ pub struct DashboardTab {
     pub profile_id: Option<Uuid>,
     pub connection: Option<ConnectionIdentity>,
     pub generation: u64,
+    /// Selected Redis logical database context; metrics remain instance-scoped.
+    pub redis_database: Option<u32>,
+    pub redis_details: Option<crate::db::redis::monitor::RedisMonitorDetails>,
     pub page: DashboardPage,
     pub refresh_enabled: bool,
     pub include_idle: bool,
@@ -367,6 +390,8 @@ impl DashboardTab {
             profile_id: None,
             connection: None,
             generation: 0,
+            redis_database: None,
+            redis_details: None,
             page: DashboardPage::Overview,
             refresh_enabled: true,
             include_idle: false,
@@ -413,6 +438,7 @@ impl DashboardPage {
             Self::Overview => 0,
             Self::Processes => 1,
             Self::Charts => 2,
+            Self::Info => 3,
         }
     }
 }
@@ -452,12 +478,12 @@ mod tests {
     }
 
     #[test]
-    fn first_sample_only_establishes_a_baseline() {
+    fn first_sample_exposes_gauges_and_establishes_counter_baseline() {
         let mut history = MetricHistory::default();
         history.push(sample(1_000, 10.0));
 
         assert_eq!(history.points(MetricKey::Commits)[0].value, None);
-        assert_eq!(history.points(MetricKey::Connections)[0].value, None);
+        assert_eq!(history.points(MetricKey::Connections)[0].value, Some(4.0));
     }
 
     #[test]
