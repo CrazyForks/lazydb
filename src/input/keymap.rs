@@ -139,7 +139,7 @@ impl Keymap {
                 && view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
             {
                 return match event.code {
-                    KeyCode::Esc => Some(Action::DismissOverlay),
+                    KeyCode::Esc => Some(Action::SqlHistoryBackToBrowse),
                     KeyCode::Tab => Some(Action::SqlHistoryBackToBrowse),
                     _ => Some(Action::ReadOnlyEditorKey {
                         session_id: view.editor_session_id,
@@ -153,7 +153,7 @@ impl Keymap {
                 return match event.code {
                     KeyCode::Esc => Some(Action::SqlHistorySearchCancel),
                     KeyCode::Enter => Some(Action::SqlHistorySearchConfirm),
-                    KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
+                    KeyCode::Backspace => Some(Action::SqlHistorySearchBackspace),
                     KeyCode::Char(character) if event.modifiers.is_empty() => {
                         Some(Action::SqlHistorySearchInsert(character))
                     }
@@ -168,6 +168,7 @@ impl Keymap {
                 KeyCode::Char('t') => Some(Action::SqlHistoryCycleTransaction),
                 KeyCode::Char('r') => Some(Action::SqlHistoryRefresh),
                 KeyCode::PageDown => Some(Action::SqlHistoryLoadNext),
+                KeyCode::Char('/') => Some(Action::SqlHistorySearchOpen),
                 KeyCode::Char('j') | KeyCode::Down => Some(Action::SqlHistoryMove(1)),
                 KeyCode::Char('k') | KeyCode::Up => Some(Action::SqlHistoryMove(-1)),
                 KeyCode::Backspace => Some(Action::SqlHistorySearchClear),

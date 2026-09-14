@@ -4665,6 +4665,19 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::SqlHistorySearchOpen => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchBackspace => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.search.backspace();
+                    return self.load_sql_history_overlay(false);
+                }
+                Vec::new()
+            }
             Action::SqlHistorySearchClear => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
                     view.search.clear();

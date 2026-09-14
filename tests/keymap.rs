@@ -28,6 +28,34 @@ fn control(code: KeyCode) -> KeyEvent {
 }
 
 #[test]
+fn sql_history_overlay_routes_navigation_by_mode() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Results;
+    app.overlay = Some(Overlay::SqlHistory(Default::default()));
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('/')), &app),
+        Some(Action::SqlHistorySearchOpen)
+    );
+    app.update(Action::SqlHistorySearchOpen);
+    assert_eq!(
+        keymap.map(key(KeyCode::Backspace), &app),
+        Some(Action::SqlHistorySearchBackspace)
+    );
+    app.update(Action::SqlHistorySearchConfirm);
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::SqlHistoryOpenDetail)
+    );
+    app.update(Action::SqlHistoryOpenDetail);
+    assert!(matches!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::ReadOnlyEditorKey { .. })
+    ));
+}
+
+#[test]
 fn redis_keys_routes_before_generic_results_navigation_and_supports_find() {
     let mut app = App::new(Vec::new());
     app.tabs.push(WorkspaceTab::RedisBrowser(

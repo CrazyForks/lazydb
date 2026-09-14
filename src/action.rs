@@ -45,6 +45,8 @@ pub enum Action {
     SqlHistoryCopy,
     SqlHistorySelect(usize),
     SqlHistorySearchInsert(char),
+    SqlHistorySearchOpen,
+    SqlHistorySearchBackspace,
     SqlHistorySearchClear,
     SqlHistorySearchConfirm,
     SqlHistorySearchCancel,
