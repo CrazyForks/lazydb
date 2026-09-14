@@ -76,9 +76,6 @@ impl RoleDraft {
     pub(crate) fn password_value(&self) -> &str {
         self.password_input.value()
     }
-    pub(crate) fn password_cursor(&self) -> usize {
-        self.password_input.cursor()
-    }
     pub(crate) fn password_insert(&mut self, character: char) {
         self.password_input.insert(character);
         self.sync_password();
@@ -2847,6 +2844,7 @@ impl CatalogDraft {
                 draft.focus,
                 CatalogFormFocus::Name
                     | CatalogFormFocus::Comment
+                    | CatalogFormFocus::Password
                     | CatalogFormFocus::ValidUntil
                     | CatalogFormFocus::ConnectionLimit
                     | CatalogFormFocus::Memberships
@@ -2941,7 +2939,20 @@ impl CatalogDraft {
 
     pub fn focused_action(&self) -> Option<CatalogFormFocus> {
         let focus = match self {
-            Self::Database(_) | Self::Role(_) => return Some(CatalogFormFocus::Review),
+            Self::Database(draft) => {
+                return Some(if draft.focus == CatalogFormFocus::Cancel {
+                    CatalogFormFocus::Cancel
+                } else {
+                    CatalogFormFocus::Review
+                });
+            }
+            Self::Role(draft) => {
+                return Some(if draft.focus == CatalogFormFocus::Cancel {
+                    CatalogFormFocus::Cancel
+                } else {
+                    CatalogFormFocus::Review
+                });
+            }
             Self::View(draft) => draft.focus,
             Self::MaterializedView(draft) => draft.focus,
             Self::Sequence(draft) => draft.focus,
@@ -2978,11 +2989,7 @@ impl CatalogDraft {
     pub fn paste(&mut self, text: &str) {
         match self {
             Self::Database(draft) => draft.paste(text),
-            Self::Role(draft) => {
-                if let Some(input) = draft.selected_input_mut() {
-                    input.paste(text);
-                }
-            }
+            Self::Role(draft) => draft.paste(text),
             Self::Table(draft) => draft.paste(text),
             Self::View(draft) => draft.paste(text),
             Self::MaterializedView(draft) => draft.paste(text),
@@ -3021,6 +3028,9 @@ impl CatalogDraft {
             Self::View(d) => d.delete_previous_word(),
             Self::MaterializedView(d) => d.delete_previous_word(),
             Self::Sequence(d) => d.delete_previous_word(),
+            Self::Role(d) if d.focus == CatalogFormFocus::Password => {
+                d.password_delete_previous_word()
+            }
             _ => {}
         }
     }
@@ -3031,6 +3041,7 @@ impl CatalogDraft {
             Self::View(d) => d.delete_to_start(),
             Self::MaterializedView(d) => d.delete_to_start(),
             Self::Sequence(d) => d.delete_to_start(),
+            Self::Role(d) if d.focus == CatalogFormFocus::Password => d.password_delete_to_start(),
             _ => {}
         }
     }
@@ -3041,6 +3052,7 @@ impl CatalogDraft {
             Self::View(d) => d.move_left(),
             Self::MaterializedView(d) => d.move_left(),
             Self::Sequence(d) => d.move_left(),
+            Self::Role(d) => d.move_left(),
             _ => {}
         }
     }
@@ -3051,6 +3063,7 @@ impl CatalogDraft {
             Self::View(d) => d.move_right(),
             Self::MaterializedView(d) => d.move_right(),
             Self::Sequence(d) => d.move_right(),
+            Self::Role(d) => d.move_right(),
             _ => {}
         }
     }
@@ -3061,6 +3074,7 @@ impl CatalogDraft {
             Self::View(d) => d.move_home(),
             Self::MaterializedView(d) => d.move_home(),
             Self::Sequence(d) => d.move_home(),
+            Self::Role(d) => d.move_home(),
             _ => {}
         }
     }
@@ -3071,23 +3085,42 @@ impl CatalogDraft {
             Self::View(d) => d.move_end(),
             Self::MaterializedView(d) => d.move_end(),
             Self::Sequence(d) => d.move_end(),
+            Self::Role(d) => d.move_end(),
             _ => {}
         }
     }
 
     pub fn undo(&mut self) {
+        if let Self::Role(draft) = self
+            && draft.focus == CatalogFormFocus::Password
+        {
+            draft.password_undo();
+            return;
+        }
         if let Some(input) = self.selected_input_mut() {
             input.undo();
         }
     }
 
     pub fn redo(&mut self) {
+        if let Self::Role(draft) = self
+            && draft.focus == CatalogFormFocus::Password
+        {
+            draft.password_redo();
+            return;
+        }
         if let Some(input) = self.selected_input_mut() {
             input.redo();
         }
     }
 
     pub fn finish_edit_group(&mut self) {
+        if let Self::Role(draft) = self
+            && draft.focus == CatalogFormFocus::Password
+        {
+            draft.password_finish_edit_group();
+            return;
+        }
         if let Some(input) = self.selected_input_mut() {
             input.finish_edit_group();
         }

@@ -259,9 +259,17 @@ fn form(
     };
     frame.render_widget(Paragraph::new(header), chunks[0]);
     if let Some(CatalogDraft::Database(draft)) = editor.draft.as_ref() {
-        render_database(frame, chunks[1], draft, theme);
+        render_database(
+            frame,
+            chunks[1],
+            draft,
+            ui,
+            theme,
+            app.catalog_owner_choices(),
+            &editor.owner_picker,
+        );
     } else if let Some(CatalogDraft::Role(draft)) = editor.draft.as_ref() {
-        render_role(frame, chunks[1], draft, theme);
+        render_role(frame, chunks[1], draft, ui, theme);
     } else if let Some(CatalogDraft::Schema(draft)) = editor.draft.as_ref() {
         let owner_choices = app.catalog_owner_choices();
         render_schema(
@@ -336,7 +344,9 @@ fn form(
         if let Some(
             draft @ (CatalogDraft::View(_)
             | CatalogDraft::MaterializedView(_)
-            | CatalogDraft::Sequence(_)),
+            | CatalogDraft::Sequence(_)
+            | CatalogDraft::Database(_)
+            | CatalogDraft::Role(_)),
         ) = editor.draft.as_ref()
         {
             match draft
@@ -568,79 +578,350 @@ fn render_owner_picker(
     }
 }
 
-fn render_role(frame: &mut Frame<'_>, area: Rect, draft: &RoleDraft, theme: Theme) {
-    let password = draft.password.as_ref().map_or("<unchanged>", |_| "<set>");
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::raw(format!(
-                "Name: {}  Login: {}",
-                draft.name.value(),
-                draft.login
-            )),
-            Line::raw(format!(
-                "Superuser: {}  Create DB: {}  Create Role: {}",
-                draft.superuser, draft.createdb, draft.createrole
-            )),
-            Line::raw(format!(
-                "Inherit: {}  Replication: {}  Bypass RLS: {}",
-                draft.inherit, draft.replication, draft.bypass_rls
-            )),
-            Line::raw(format!(
-                "Connection limit: {}  Valid until: {}",
-                draft.connection_limit.value(),
-                draft.valid_until.value()
-            )),
-            Line::raw(format!(
-                "Password: {}  Memberships: {}",
-                password,
-                draft.memberships.value()
-            )),
-            Line::raw(format!("Comment: {}", draft.comment.value())),
-        ])
-        .style(Style::new().fg(theme.text))
-        .wrap(Wrap { trim: true }),
-        area,
+fn render_role(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    draft: &RoleDraft,
+    ui: &mut UiState,
+    theme: Theme,
+) {
+    let mut y = area.y;
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "GENERAL",
+        false,
+        theme,
     );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Name *",
+        &draft.name,
+        draft.focus == CatalogFormFocus::Name,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Name),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Comment",
+        &draft.comment,
+        draft.focus == CatalogFormFocus::Comment,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Comment),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(2);
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "AUTHENTICATION",
+        false,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_toggle_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Login",
+        draft.login,
+        "On",
+        "Off",
+        draft.focus == CatalogFormFocus::Login,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Login),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_role_password(frame, Rect::new(area.x, y, area.width, 1), draft, ui, theme);
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Valid until",
+        &draft.valid_until,
+        draft.focus == CatalogFormFocus::ValidUntil,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::ValidUntil),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Connection limit",
+        &draft.connection_limit,
+        draft.focus == CatalogFormFocus::ConnectionLimit,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::ConnectionLimit),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(2);
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "PRIVILEGES",
+        false,
+        theme,
+    );
+    y = y.saturating_add(1);
+    for (label, focus, value) in [
+        ("Superuser", CatalogFormFocus::Superuser, draft.superuser),
+        (
+            "Create database",
+            CatalogFormFocus::CreateDb,
+            draft.createdb,
+        ),
+        (
+            "Create role",
+            CatalogFormFocus::CreateRole,
+            draft.createrole,
+        ),
+        ("Inherit", CatalogFormFocus::Inherit, draft.inherit),
+        (
+            "Replication",
+            CatalogFormFocus::Replication,
+            draft.replication,
+        ),
+        ("Bypass RLS", CatalogFormFocus::BypassRls, draft.bypass_rls),
+    ] {
+        render_catalog_toggle_field(
+            frame,
+            Rect::new(area.x, y, area.width, 1),
+            label,
+            value,
+            "On",
+            "Off",
+            draft.focus == focus,
+            true,
+            HitTarget::CatalogEditorFormField(focus),
+            ui,
+            theme,
+        );
+        y = y.saturating_add(1);
+    }
+    y = y.saturating_add(1);
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "MEMBERSHIP",
+        false,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Member of",
+        &draft.memberships,
+        draft.focus == CatalogFormFocus::Memberships,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Memberships),
+        ui,
+        theme,
+    );
+    render_catalog_actions(frame, area, draft.focus, ui, theme);
 }
 
-fn render_database(frame: &mut Frame<'_>, area: Rect, draft: &DatabaseDraft, theme: Theme) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::raw(format!(
-                "Name: {}  Owner: {}",
-                draft.name.value(),
-                draft.owner.value()
-            )),
-            Line::raw(format!(
-                "Template: {}  Encoding: {}",
-                draft.template.value(),
-                draft.encoding.value()
-            )),
-            Line::raw(format!(
-                "Locale provider: {}  Locale: {}",
-                draft.locale_provider.value(),
-                draft.locale.value()
-            )),
-            Line::raw(format!(
-                "Collation: {}  Ctype: {}",
-                draft.collation.value(),
-                draft.ctype.value()
-            )),
-            Line::raw(format!(
-                "Tablespace: {}  Connection limit: {}",
-                draft.tablespace.value(),
-                draft.connection_limit.value()
-            )),
-            Line::raw(format!(
-                "Allow connections: {}  Is template: {}",
-                draft.allow_connections, draft.is_template
-            )),
-            Line::raw(format!("Comment: {}", draft.comment.value())),
-        ])
-        .style(Style::new().fg(theme.text))
-        .wrap(Wrap { trim: true }),
-        area,
+fn render_database(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    draft: &DatabaseDraft,
+    ui: &mut UiState,
+    theme: Theme,
+    owner_choices: Option<&[crate::db::catalog_mutation::CatalogOwnerChoice]>,
+    picker: &crate::model::catalog_editor::OwnerPickerState,
+) {
+    let mut y = area.y;
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "GENERAL",
+        false,
+        theme,
     );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Name *",
+        &draft.name,
+        draft.focus == CatalogFormFocus::Name,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Name),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Owner *",
+        &draft.owner,
+        draft.focus == CatalogFormFocus::Owner,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Owner),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Comment",
+        &draft.comment,
+        draft.focus == CatalogFormFocus::Comment,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Comment),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(2);
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "LOCALE & ENCODING",
+        false,
+        theme,
+    );
+    y = y.saturating_add(1);
+    for (label, focus, input) in [
+        ("Template *", CatalogFormFocus::Template, &draft.template),
+        ("Encoding *", CatalogFormFocus::Encoding, &draft.encoding),
+        (
+            "Locale provider",
+            CatalogFormFocus::LocaleProvider,
+            &draft.locale_provider,
+        ),
+        ("Locale", CatalogFormFocus::Locale, &draft.locale),
+        ("Collation", CatalogFormFocus::Collation, &draft.collation),
+        ("Ctype", CatalogFormFocus::Ctype, &draft.ctype),
+    ] {
+        render_catalog_text_field(
+            frame,
+            Rect::new(area.x, y, area.width, 1),
+            label,
+            input,
+            draft.focus == focus,
+            draft.focus_enabled(focus),
+            HitTarget::CatalogEditorFormField(focus),
+            ui,
+            theme,
+        );
+        y = y.saturating_add(1);
+    }
+    y = y.saturating_add(1);
+    render_catalog_section_heading(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "OPTIONS",
+        false,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Tablespace",
+        &draft.tablespace,
+        draft.focus == CatalogFormFocus::Tablespace,
+        draft.focus_enabled(CatalogFormFocus::Tablespace),
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::Tablespace),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_text_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Connection limit",
+        &draft.connection_limit,
+        draft.focus == CatalogFormFocus::ConnectionLimit,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::ConnectionLimit),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_toggle_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Allow connections",
+        draft.allow_connections,
+        "On",
+        "Off",
+        draft.focus == CatalogFormFocus::AllowConnections,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::AllowConnections),
+        ui,
+        theme,
+    );
+    y = y.saturating_add(1);
+    render_catalog_toggle_field(
+        frame,
+        Rect::new(area.x, y, area.width, 1),
+        "Is template",
+        draft.is_template,
+        "On",
+        "Off",
+        draft.focus == CatalogFormFocus::IsTemplate,
+        true,
+        HitTarget::CatalogEditorFormField(CatalogFormFocus::IsTemplate),
+        ui,
+        theme,
+    );
+    render_owner_picker(frame, area, owner_choices, picker, ui, theme);
+    render_catalog_actions(frame, area, draft.focus, ui, theme);
+}
+
+fn render_role_password(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    draft: &RoleDraft,
+    ui: &mut UiState,
+    theme: Theme,
+) {
+    let (label_area, value_area) = catalog_field_areas(area);
+    let active = draft.focus == CatalogFormFocus::Password;
+    render_catalog_field_label(frame, label_area, "Password", active, true, theme);
+    let value = if draft.password_value().is_empty() {
+        if draft.password.is_some() {
+            "Set"
+        } else {
+            "Unchanged"
+        }
+        .to_owned()
+    } else if active {
+        "•".repeat(draft.password_value().chars().count())
+    } else {
+        "Set".to_owned()
+    };
+    let value = if active && !draft.password_value().is_empty() {
+        format!("{value}▌")
+    } else {
+        value
+    };
+    frame.render_widget(
+        Paragraph::new(value).style(Style::new().fg(theme.text).bg(if active {
+            theme.selection
+        } else {
+            theme.surface
+        })),
+        value_area,
+    );
+    ui.hit_regions.push(HitRegion {
+        area,
+        target: HitTarget::CatalogEditorFormField(CatalogFormFocus::Password),
+    });
 }
 
 fn render_sequence(

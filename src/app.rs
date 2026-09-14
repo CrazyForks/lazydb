@@ -396,6 +396,10 @@ fn catalog_owner_field_focused(draft: &crate::model::catalog_editor::CatalogDraf
         draft,
         crate::model::catalog_editor::CatalogDraft::Sequence(sequence)
             if sequence.focus == crate::model::catalog_editor::CatalogFormFocus::Owner
+    ) || matches!(
+        draft,
+        crate::model::catalog_editor::CatalogDraft::Database(database)
+            if database.focus == crate::model::catalog_editor::CatalogFormFocus::Owner
     )
 }
 

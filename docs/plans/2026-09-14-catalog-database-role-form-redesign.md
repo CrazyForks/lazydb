@@ -440,6 +440,7 @@ Task 1 契约
 
 ## 6. 执行记录
 
-- 当前状态：计划已完成，功能实现尚未开始。
-- 自动化验证：本次仅编写计划，未运行产品测试。
-- 人工终端/在线 PostgreSQL 验证：待实现后进行。
+- 当前状态：计划核心功能已在 `task/catalog-form-redesign` worktree 实施完成。
+- 已完成：Database / User / Role 类型化焦点、键盘与鼠标表单控件、共享秘密输入、Owner picker 接入、分组字段布局、固定操作提示和密码脱敏回归。
+- 自动化验证：`cargo fmt --check`、`cargo check`、`cargo test` 全部通过；全量测试包含 1 个显式 ignored 的规模基准。
+- 人工终端/在线 PostgreSQL 验证：本次未执行真实终端交互和在线 PostgreSQL apply；需在合并前按项目环境补充。
