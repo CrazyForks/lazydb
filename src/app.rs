@@ -18235,8 +18235,16 @@ impl App {
                     ),
                 }
             }
-            crate::db::redis::read::RedisPagePosition::Complete
-            | crate::db::redis::read::RedisPagePosition::StreamId(_) => return Vec::new(),
+            crate::db::redis::read::RedisPagePosition::Complete => return Vec::new(),
+            crate::db::redis::read::RedisPagePosition::StreamId(start) => {
+                let mut next = start.clone();
+                next.push(0);
+                crate::db::redis::read::RedisReadRequest::StreamRange {
+                    key: page.metadata.key.clone(),
+                    start: next,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
         };
         let Some(connection) = self.connection.active_identity() else {
             return Vec::new();

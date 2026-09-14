@@ -99,6 +99,11 @@ pub enum RedisReadRequest {
         start: u64,
         end: u64,
     },
+    StreamRange {
+        key: RedisKeyId,
+        start: Vec<u8>,
+        count: u32,
+    },
 }
 
 impl RedisReadRequest {
@@ -124,6 +129,9 @@ impl RedisReadRequest {
                     Some(length) if length <= MAX_COLLECTION_PREVIEW_ITEMS as u64 => Ok(()),
                     Some(_) | None => Err("collection range exceeds preview budget"),
                 }
+            }
+            Self::StreamRange { count, .. } if *count as usize > MAX_COLLECTION_PREVIEW_ITEMS => {
+                Err("stream count exceeds preview budget")
             }
             _ => Ok(()),
         }
@@ -238,7 +246,8 @@ impl RedisAdapter {
             | RedisReadRequest::HashScan { key, .. }
             | RedisReadRequest::ListRange { key, .. }
             | RedisReadRequest::SetScan { key, .. }
-            | RedisReadRequest::SortedSetRange { key, .. } => key,
+            | RedisReadRequest::SortedSetRange { key, .. }
+            | RedisReadRequest::StreamRange { key, .. } => key,
         };
         let metadata = self.key_metadata(key).await?;
         let mut connection = self.connection_clone();
@@ -362,6 +371,23 @@ impl RedisAdapter {
                     },
                 )
             }
+            RedisReadRequest::StreamRange { start, count, .. } => {
+                let values: redis::Value = redis::cmd("XRANGE")
+                    .arg(&key.key)
+                    .arg(start)
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(*count)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let entries = parse_stream_entries(values)?;
+                let position = entries
+                    .last()
+                    .map(|(id, _)| RedisPagePosition::StreamId(id.clone()))
+                    .unwrap_or_else(|| RedisPagePosition::Complete);
+                (RedisPageValue::Stream(entries), position)
+            }
         };
         let raw_bytes = value_bytes(&value);
         let complete = matches!(position, RedisPagePosition::Complete);
@@ -466,6 +492,52 @@ fn value_bytes(value: &RedisPageValue) -> usize {
             })
             .sum(),
     }
+}
+
+pub fn parse_stream_entries(value: redis::Value) -> Result<Vec<RedisStreamEntry>, DatabaseError> {
+    let redis::Value::Array(entries) = value else {
+        return Err(DatabaseError::configuration(
+            "invalid Redis stream response",
+        ));
+    };
+    entries
+        .into_iter()
+        .map(|entry| {
+            let redis::Value::Array(mut parts) = entry else {
+                return Err(DatabaseError::configuration("invalid Redis stream entry"));
+            };
+            if parts.len() != 2 {
+                return Err(DatabaseError::configuration(
+                    "invalid Redis stream entry shape",
+                ));
+            }
+            let id = stream_bytes_value(parts.remove(0))?;
+            let redis::Value::Array(fields) = parts.remove(0) else {
+                return Err(DatabaseError::configuration("invalid Redis stream fields"));
+            };
+            let mut pairs = Vec::new();
+            for pair in fields.chunks(2) {
+                pairs.push((stream_bytes(pair.first())?, stream_bytes(pair.get(1))?));
+            }
+            Ok((id, pairs))
+        })
+        .collect()
+}
+
+fn stream_bytes_value(value: redis::Value) -> Result<Vec<u8>, DatabaseError> {
+    match value {
+        redis::Value::BulkString(value) => Ok(value),
+        redis::Value::SimpleString(value) => Ok(value.into_bytes()),
+        _ => Err(DatabaseError::configuration("invalid Redis stream value")),
+    }
+}
+
+fn stream_bytes(value: Option<&redis::Value>) -> Result<Vec<u8>, DatabaseError> {
+    stream_bytes_value(
+        value
+            .cloned()
+            .ok_or_else(|| DatabaseError::configuration("missing Redis stream field"))?,
+    )
 }
 
 async fn best_effort_u64(
