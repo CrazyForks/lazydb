@@ -1901,6 +1901,64 @@ fn filtered_help_moves_to_non_first_id_and_executes_it() {
     assert_eq!(app.overlay, None);
 }
 
+#[test]
+fn help_sql_history_enter_opens_history_and_loads_first_page() {
+    for focus in [Focus::Explorer, Focus::Editor, Focus::Results] {
+        let mut app = App::new(Vec::new());
+        app.update(Action::EditorKey(key(KeyCode::Esc)));
+        app.focus = focus;
+        let tab_count = app.tabs.len();
+        let active_tab = app.active_tab;
+
+        app.update(Action::ShowHelp);
+        app.update(Action::HelpPaste("SQL execution history".into()));
+        assert_eq!(
+            app.help_selected_id(),
+            Some(lazydb::help::HelpShortcutId::OpenSqlHistory),
+            "history should be selected from {focus:?}"
+        );
+
+        let mut keymap = Keymap::default();
+        let action = keymap.map(key(KeyCode::Enter), &app);
+        assert_eq!(
+            action,
+            Some(Action::ExecuteHelpShortcut(
+                lazydb::help::HelpShortcutId::OpenSqlHistory
+            ))
+        );
+        let commands = app.update(action.unwrap());
+
+        let Some(Overlay::SqlHistory(view)) = app.overlay.as_ref() else {
+            panic!("expected SQL history overlay from {focus:?}");
+        };
+        assert_eq!(
+            view.mode,
+            lazydb::model::sql_history_view::SqlHistoryMode::Browse
+        );
+        assert!(view.loading);
+        assert_ne!(view.overlay_id, Uuid::nil());
+        assert!(view.query_generation > 0);
+        assert_eq!(app.focus, Focus::Results);
+        assert_eq!(app.tabs.len(), tab_count);
+        assert_eq!(app.active_tab, active_tab);
+
+        let [
+            lazydb::action::Command::LoadSqlHistory {
+                overlay_id,
+                generation,
+                request,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("expected exactly one SQL history load command");
+        };
+        assert_eq!(*overlay_id, view.overlay_id);
+        assert_eq!(*generation, view.query_generation);
+        assert!(request.cursor.is_none());
+        assert!(request.limit > 0);
+    }
+}
+
 fn profile(name: &str) -> ConnectionProfile {
     import_connection_url(":memory:", Some(name))
         .unwrap()

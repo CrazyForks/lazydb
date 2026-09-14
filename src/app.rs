@@ -2367,6 +2367,7 @@ impl App {
             Id::CloseOtherTabs => vec![Action::CloseOtherTabs],
             Id::DeleteConsole => vec![Action::RequestDeleteActiveConsole],
             Id::OpenSqlEditors => vec![Action::OpenSqlEditorList],
+            Id::OpenSqlHistory => vec![Action::OpenSqlHistory],
             Id::OpenNotificationHistory => vec![Action::OpenNotificationHistory],
             Id::OpenNotificationHistoryLeader => vec![Action::OpenNotificationHistory],
             Id::OpenUpdateCenter => vec![Action::OpenUpdateCenter],
