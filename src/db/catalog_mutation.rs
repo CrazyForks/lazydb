@@ -694,6 +694,79 @@ pub struct MutationProgress {
     pub completion: MutationCompletion,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogRebuildPlan {
+    pub steps: Vec<CatalogRebuildStep>,
+    pub preserves_data: bool,
+    pub preserves_indexes: bool,
+    pub preserves_triggers: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogRebuildStep {
+    CreateReplacement,
+    CopyRows {
+        column_mapping: Vec<(String, String)>,
+    },
+    DropOriginal,
+    RenameReplacement,
+    RestoreIndexes,
+    RestoreTriggers,
+    Validate,
+}
+
+impl CatalogRebuildPlan {
+    pub fn validate(&self) -> Result<(), CatalogMutationError> {
+        if self.steps.is_empty() {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan must contain steps".into(),
+            });
+        }
+        let create = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::CreateReplacement));
+        let copy = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::CopyRows { .. }));
+        let drop = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::DropOriginal));
+        let rename = self
+            .steps
+            .iter()
+            .position(|step| matches!(step, CatalogRebuildStep::RenameReplacement));
+        if create >= copy || copy >= drop || drop >= rename {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild steps must create, copy, drop, and rename in order".into(),
+            });
+        }
+        if self.preserves_indexes
+            && !self
+                .steps
+                .iter()
+                .any(|step| matches!(step, CatalogRebuildStep::RestoreIndexes))
+        {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan claims to preserve indexes without restoring them".into(),
+            });
+        }
+        if self.preserves_triggers
+            && !self
+                .steps
+                .iter()
+                .any(|step| matches!(step, CatalogRebuildStep::RestoreTriggers))
+        {
+            return Err(CatalogMutationError::InvalidPlan {
+                reason: "rebuild plan claims to preserve triggers without restoring them".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl MutationProgress {
     pub fn succeeded(step_count: usize) -> Self {
         Self {

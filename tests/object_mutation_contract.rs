@@ -5,6 +5,7 @@ use lazydb::db::catalog_mutation::{
     CatalogMutationMode, CatalogMutationOption, CatalogObjectType, MutationCompletion,
     MutationProgress,
 };
+use lazydb::db::catalog_mutation::{CatalogRebuildPlan, CatalogRebuildStep};
 use lazydb::db::mssql::MsSqlAdapter;
 use lazydb::db::mysql::MySqlAdapter;
 use lazydb::db::oracle::OracleAdapter;
@@ -267,6 +268,27 @@ fn sql_server_exposes_only_native_table_and_view_creation() {
             .any(|option| { option.object_type == CatalogObjectType::Catalog(CatalogKind::View) })
     );
     assert!(capabilities.edit.is_empty());
+}
+
+#[test]
+fn sqlite_rebuild_plan_requires_lossless_ordered_steps() {
+    let plan = CatalogRebuildPlan {
+        steps: vec![
+            CatalogRebuildStep::CreateReplacement,
+            CatalogRebuildStep::CopyRows {
+                column_mapping: vec![("old".to_owned(), "new".to_owned())],
+            },
+            CatalogRebuildStep::DropOriginal,
+            CatalogRebuildStep::RenameReplacement,
+            CatalogRebuildStep::RestoreIndexes,
+            CatalogRebuildStep::RestoreTriggers,
+            CatalogRebuildStep::Validate,
+        ],
+        preserves_data: true,
+        preserves_indexes: true,
+        preserves_triggers: true,
+    };
+    assert!(plan.validate().is_ok());
 }
 
 #[test]
