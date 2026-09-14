@@ -1664,6 +1664,17 @@ impl Keymap {
                 KeyCode::Char('o') => Some(Action::DashboardSetPage(
                     match app.tabs.get(app.active_tab) {
                         Some(crate::model::tab::WorkspaceTab::Dashboard(tab))
+                            if tab.redis_details.is_some()
+                                && tab.page == crate::model::dashboard::DashboardPage::Info =>
+                        {
+                            crate::model::dashboard::DashboardPage::Overview
+                        }
+                        Some(crate::model::tab::WorkspaceTab::Dashboard(tab))
+                            if tab.redis_details.is_some() =>
+                        {
+                            crate::model::dashboard::DashboardPage::Info
+                        }
+                        Some(crate::model::tab::WorkspaceTab::Dashboard(tab))
                             if tab.page == crate::model::dashboard::DashboardPage::Processes =>
                         {
                             crate::model::dashboard::DashboardPage::Overview
@@ -1677,6 +1688,19 @@ impl Keymap {
             };
             if dashboard_action.is_some() {
                 return dashboard_action;
+            }
+            if matches!(
+                event.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+            ) && matches!(app.tabs.get(app.active_tab), Some(crate::model::tab::WorkspaceTab::Dashboard(tab)) if tab.page == crate::model::dashboard::DashboardPage::Info)
+            {
+                return Some(Action::DashboardInfoScroll(match event.code {
+                    KeyCode::Up => -1,
+                    KeyCode::Down => 1,
+                    KeyCode::PageUp => -10,
+                    KeyCode::PageDown => 10,
+                    _ => 0,
+                }));
             }
         }
         if relation_tab

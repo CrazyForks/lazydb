@@ -2,6 +2,7 @@ pub mod discovery;
 pub mod key_index;
 pub mod key_store;
 pub mod metadata_cache;
+pub mod monitor;
 pub mod preview_scheduler;
 pub mod read;
 pub mod reconnect;
@@ -24,6 +25,20 @@ pub struct RedisAdapter {
 }
 
 impl RedisAdapter {
+    pub async fn load_monitor_snapshot(
+        &self,
+    ) -> Result<crate::db::monitor::MonitorSnapshot, DatabaseError> {
+        let mut connection = self.connection.clone();
+        let raw = redis::cmd("INFO")
+            .query_async::<String>(&mut connection)
+            .await
+            .map_err(|error| redis_error(error, crate::db::ErrorCategory::Network))?;
+        let (mut snapshot, details) =
+            monitor::parse_info(&raw, chrono::Utc::now().timestamp_millis() as u64);
+        snapshot.redis_details = Some(details);
+        Ok(snapshot)
+    }
+
     pub async fn connect(
         profile: &ConnectionProfile,
         password: Option<&SecretString>,

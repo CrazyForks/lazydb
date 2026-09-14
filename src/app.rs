@@ -236,6 +236,7 @@ pub struct App {
     pub recent_targets: Vec<ExecutionTarget>,
     pub active_tab: usize,
     pub focus: Focus,
+    pub redis_info_scroll: u16,
     pub pane_maximized: bool,
     pub pane_sizes: PaneSizePreferences,
     pane_layout: PaneLayoutMetrics,
@@ -268,6 +269,7 @@ pub struct App {
     next_pending_execution_id: u64,
     pending_workspace_database_switch: Option<(Uuid, u64)>,
     pending_redis_browser_target: Option<(crate::db::redis::types::RedisTarget, u64)>,
+    pending_dashboard_target: Option<PendingDashboardTarget>,
     connect_started_at: Option<Instant>,
     transaction_op_started_at: Option<(Uuid, Instant)>,
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
@@ -317,6 +319,13 @@ struct PendingNavigation {
     generation: u64,
     intent: crate::commands::UserIntent,
     descriptor: Option<RelationDescriptor>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingDashboardTarget {
+    profile_id: Uuid,
+    database: Option<u32>,
+    generation: u64,
 }
 
 struct SuspendedInteraction {
@@ -700,6 +709,7 @@ impl App {
             recent_targets: Vec::new(),
             active_tab: 0,
             focus: Focus::Editor,
+            redis_info_scroll: 0,
             pane_maximized: false,
             pane_sizes: PaneSizePreferences::default(),
             pane_layout: PaneLayoutMetrics::default(),
@@ -733,6 +743,7 @@ impl App {
             next_pending_execution_id: 0,
             pending_workspace_database_switch: None,
             pending_redis_browser_target: None,
+            pending_dashboard_target: None,
             connect_started_at: None,
             transaction_op_started_at: None,
             sql_editor_list: Default::default(),
@@ -801,16 +812,55 @@ impl App {
         self.active_workspace_profile.is_some() || self.profiles.is_empty()
     }
 
+    fn dashboard_target(&self) -> Option<PendingDashboardTarget> {
+        if let Some(target) = self.pending_dashboard_target {
+            return Some(target);
+        }
+        let selected = self.explorer.selected_id()?;
+        match selected {
+            ExplorerNodeId::Profile(profile_id) => self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == *profile_id)
+                .map(|_| PendingDashboardTarget {
+                    profile_id: *profile_id,
+                    database: None,
+                    generation: self.connection.pending_generation.unwrap_or_default(),
+                }),
+            ExplorerNodeId::RedisDatabase {
+                profile_id,
+                database,
+            } => self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == *profile_id && profile.kind == DatabaseKind::Redis)
+                .map(|_| PendingDashboardTarget {
+                    profile_id: *profile_id,
+                    database: Some(*database),
+                    generation: self.connection.pending_generation.unwrap_or_default(),
+                }),
+            _ => None,
+        }
+    }
+
     pub fn dashboard_supported(&self) -> bool {
-        self.active_profile().map_or_else(
-            || {
-                self.connection
-                    .server
-                    .as_ref()
-                    .is_none_or(|server| server.kind != DatabaseKind::SqlServer)
-            },
-            |profile| profile.kind != DatabaseKind::SqlServer,
-        )
+        if self.profiles.is_empty() {
+            return true;
+        }
+        self.dashboard_target()
+            .or_else(|| {
+                self.active_profile().map(|profile| PendingDashboardTarget {
+                    profile_id: profile.id,
+                    database: None,
+                    generation: 0,
+                })
+            })
+            .and_then(|target| {
+                self.profiles
+                    .iter()
+                    .find(|profile| profile.id == target.profile_id)
+            })
+            .is_some_and(|profile| profile.kind != DatabaseKind::SqlServer)
     }
 
     fn next_console_name(&self) -> String {
@@ -1832,6 +1882,7 @@ impl App {
                     dashboard_id: tab.id,
                     page: tab.page,
                     refresh_enabled: tab.refresh_enabled,
+                    redis_database: tab.redis_database,
                 },
                 WorkspaceTab::History(_) => unreachable!(),
                 WorkspaceTab::RedisBrowser(tab) => PersistedTab::RedisBrowser {
@@ -2107,12 +2158,14 @@ impl App {
                     dashboard_id,
                     page,
                     refresh_enabled,
+                    redis_database,
                 } => {
                     let mut tab = crate::model::dashboard::DashboardTab::new();
                     tab.id = *dashboard_id;
                     tab.profile_id = Some(profile.profile_id);
                     tab.page = *page;
                     tab.refresh_enabled = *refresh_enabled;
+                    tab.redis_database = *redis_database;
                     tabs.push(WorkspaceTab::Dashboard(tab));
                 }
                 PersistedTab::RedisBrowser {
@@ -4413,6 +4466,20 @@ impl App {
                 vec![Command::Quit]
             }
             Action::OpenDashboard => {
+                let requested_target = self.dashboard_target();
+                if let Some(target) = requested_target
+                    && self
+                        .connection
+                        .active_identity()
+                        .is_none_or(|identity| identity.profile_id != target.profile_id)
+                {
+                    let commands = self.request_connection(target.profile_id);
+                    self.pending_dashboard_target = Some(PendingDashboardTarget {
+                        generation: self.connection.pending_generation.unwrap_or_default(),
+                        ..target
+                    });
+                    return commands;
+                }
                 if !self.has_active_workspace() {
                     return Vec::new();
                 }
@@ -4423,16 +4490,17 @@ impl App {
                     );
                     return Vec::new();
                 }
-                if let Some(index) = self
-                    .tabs
-                    .iter()
-                    .position(|tab| matches!(tab, WorkspaceTab::Dashboard(_)))
+                let requested_database = requested_target.and_then(|target| target.database);
+                if let Some(index) = self.tabs.iter().position(|tab| {
+                    matches!(tab, WorkspaceTab::Dashboard(tab) if tab.profile_id == requested_target.map(|target| target.profile_id).or(self.active_workspace_profile))
+                })
                 {
                     self.active_tab = index;
                 } else {
                     self.tabs.push(WorkspaceTab::Dashboard({
                         let mut tab = crate::model::dashboard::DashboardTab::new();
                         tab.profile_id = self.active_workspace_profile;
+                        tab.redis_database = requested_database;
                         tab
                     }));
                     self.active_tab = self.tabs.len() - 1;
@@ -4445,6 +4513,9 @@ impl App {
                 {
                     tab.profile_id.get_or_insert(connection.profile_id);
                     tab.connection = Some(connection);
+                    if requested_database.is_some() {
+                        tab.redis_database = requested_database;
+                    }
                     tab.loading = true;
                     commands.push(Command::LoadDashboardMetrics {
                         tab_id: tab.id,
@@ -4654,6 +4725,9 @@ impl App {
                     return Vec::new();
                 };
                 tab.page = page;
+                if page == crate::model::dashboard::DashboardPage::Info {
+                    return Vec::new();
+                }
                 if page == crate::model::dashboard::DashboardPage::Processes {
                     tab.process_loading = true;
                     if let Some(connection) = self.connection.active_identity() {
@@ -4708,6 +4782,11 @@ impl App {
                 if let Some(WorkspaceTab::Dashboard(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.refresh_enabled = !tab.refresh_enabled;
                 }
+                Vec::new()
+            }
+            Action::DashboardInfoScroll(delta) => {
+                self.redis_info_scroll =
+                    (self.redis_info_scroll as i32 + delta as i32).max(0) as u16;
                 Vec::new()
             }
             Action::DashboardProcessFilterInsert(value) => {
@@ -4842,6 +4921,7 @@ impl App {
                 }
                 tab.profile_id = Some(connection.profile_id);
                 tab.connection = Some(connection);
+                tab.redis_details = snapshot.redis_details.clone();
                 let raw = crate::model::dashboard::RawSample {
                     at_millis: snapshot.server_time_millis,
                     server_generation: snapshot.server_generation,
@@ -10668,8 +10748,16 @@ impl App {
                             .any(|tab| matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == *target))
                             .then(|| target.clone())
                     });
+                let pending_dashboard_target = self.pending_dashboard_target.filter(|target| {
+                    target.profile_id == profile_id && target.generation == generation
+                });
                 if pending_redis_target.is_some() {
                     self.pending_redis_browser_target = None;
+                }
+                if pending_dashboard_target.is_some() {
+                    let commands = self.update(Action::OpenDashboard);
+                    self.pending_dashboard_target = None;
+                    return commands;
                 }
                 let interrupted_catalog_targets = if editor_target_switch.is_some() {
                     self.explorer

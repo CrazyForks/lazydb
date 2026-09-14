@@ -51,6 +51,7 @@ pub enum Action {
     DashboardSetPage(crate::model::dashboard::DashboardPage),
     DashboardRefresh,
     DashboardTogglePolling,
+    DashboardInfoScroll(i16),
     DashboardProcessFilterInsert(char),
     DashboardProcessFilterBackspace,
     DashboardProcessFilterClear,

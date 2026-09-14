@@ -114,6 +114,7 @@ pub(crate) fn render(
         crate::model::dashboard::DashboardPage::Overview => {
             render_overview(frame, vertical[1], theme, tab, state)
         }
+        crate::model::dashboard::DashboardPage::Info => {}
     }
 }
 
@@ -517,7 +518,7 @@ fn render_history(
     );
 }
 
-fn render_metric_chart(
+pub(crate) fn render_metric_chart(
     frame: &mut Frame<'_>,
     chart_area: Rect,
     theme: Theme,

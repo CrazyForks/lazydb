@@ -458,6 +458,7 @@ LIMIT 2001
             server_time_millis: monitor_timestamp(&row, "server_time_millis")?,
             server_generation: monitor_timestamp(&row, "server_generation")?,
             values,
+            redis_details: None,
         })
     }
 

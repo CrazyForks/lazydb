@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod query_bar;
 pub mod record_view;
 pub mod redis_browser;
+pub(crate) mod redis_dashboard;
 pub mod redis_value;
 pub mod relation;
 pub(crate) mod scrollbar;
@@ -298,6 +299,7 @@ pub struct UiState {
     pub explorer_viewport_rows: Option<usize>,
     pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
     pub redis_preview_viewport_rows: Option<(Uuid, usize, usize)>,
+    pub redis_info_scroll: u16,
     pub ddl_viewport: Option<DdlViewportMetrics>,
     pub cursor: Option<CursorSpec>,
     pub terminal_selection_mode: bool,
@@ -436,6 +438,7 @@ impl UiState {
             explorer_viewport_rows: None,
             redis_keys_viewport_rows: None,
             redis_preview_viewport_rows: None,
+            redis_info_scroll: 0,
             ddl_viewport: None,
             cursor: None,
             terminal_selection_mode: false,
@@ -912,7 +915,20 @@ pub fn render_with_state_using_icons_sequence_and_theme(
                 area,
                 target: HitTarget::Focus(Focus::Results),
             });
-            dashboard::render(frame, area, app, theme, state);
+            let redis_dashboard = app
+                .tabs
+                .get(app.active_tab)
+                .and_then(|tab| match tab {
+                    WorkspaceTab::Dashboard(tab) => tab.profile_id,
+                    _ => None,
+                })
+                .and_then(|profile_id| app.profiles.iter().find(|profile| profile.id == profile_id))
+                .is_some_and(|profile| profile.kind == DatabaseKind::Redis);
+            if redis_dashboard {
+                redis_dashboard::render(frame, area, app, theme, state);
+            } else {
+                dashboard::render(frame, area, app, theme, state);
+            }
         }
         render_footer(frame, layout.footer, app, theme, sequence, state);
     } else if is_relation {

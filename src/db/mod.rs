@@ -294,12 +294,7 @@ impl DatabaseConnection {
                 message: "SQLite does not expose server monitoring metrics".into(),
                 diagnostic: None,
             }),
-            Self::Redis(_) => Err(DatabaseError {
-                category: ErrorCategory::Unsupported,
-                code: Some("redis_monitoring_unsupported".into()),
-                message: "Redis monitoring is not implemented yet".into(),
-                diagnostic: None,
-            }),
+            Self::Redis(adapter) => adapter.load_monitor_snapshot().await,
         }
     }
 
