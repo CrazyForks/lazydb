@@ -112,3 +112,23 @@ fn java_detection_requires_the_complete_stream_header() {
         b"\xac\xed\x00\x05"
     ));
 }
+
+#[test]
+fn php_parser_uses_byte_lengths_and_distinguishes_truncation() {
+    let value = b"s:6:\"\xe5\xbc\xa0\xe4\xb8\x89\";";
+    let json = lazydb::value_preview::php::parse_php_to_json(value).unwrap();
+    assert!(json.contains("张三"));
+    let error = lazydb::value_preview::php::parse_php_to_json(b"s:6:\"x").unwrap_err();
+    assert_eq!(error.status, DecodeStatus::NeedsMoreData);
+}
+
+#[test]
+fn pickle_parser_handles_protocol_four_scalars() {
+    assert!(lazydb::value_preview::pickle::is_pickle_serialization(
+        b"\x80\x04N."
+    ));
+    assert_eq!(
+        lazydb::value_preview::pickle::parse_pickle_to_json(b"\x80\x04K\x7f.").unwrap(),
+        "127"
+    );
+}

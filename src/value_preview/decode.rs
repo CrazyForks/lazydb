@@ -13,6 +13,10 @@ pub enum DecodedValue {
 pub fn decode(data: &[u8], format: PreviewFormat) -> Result<DecodedValue, DecodeError> {
     match format.encoding {
         super::ValueEncoding::Java => super::java::parse_java_to_json(data).map(DecodedValue::Text),
+        super::ValueEncoding::Php => super::php::parse_php_to_json(data).map(DecodedValue::Text),
+        super::ValueEncoding::Pickle => {
+            super::pickle::parse_pickle_to_json(data).map(DecodedValue::Text)
+        }
         super::ValueEncoding::Text | super::ValueEncoding::Unknown
             if matches!(format.view, super::ValueView::Raw | super::ValueView::Hex) =>
         {
