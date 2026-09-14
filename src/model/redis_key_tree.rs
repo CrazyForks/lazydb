@@ -47,27 +47,28 @@ impl KeyTreeState {
         ) {
             for node in nodes {
                 let expanded = state.expanded.contains(&node.id);
+                let expandable = node.key_id.is_some() || !node.children.is_empty();
                 output.push(VisibleKeyTreeRow {
                     id: node.id.clone(),
                     parent: parent.cloned(),
                     label: node.label.clone(),
                     depth,
                     is_key: node.id.is_key(),
-                    expandable: !node.children.is_empty(),
+                    expandable,
                     expanded,
                 });
-                if let Some(key_id) = &node.key_id {
-                    output.push(VisibleKeyTreeRow {
-                        id: key_id.clone(),
-                        parent: Some(node.id.clone()),
-                        label: node.label.clone(),
-                        depth: depth + 1,
-                        is_key: true,
-                        expandable: false,
-                        expanded: false,
-                    });
-                }
                 if expanded {
+                    if let Some(key_id) = &node.key_id {
+                        output.push(VisibleKeyTreeRow {
+                            id: key_id.clone(),
+                            parent: Some(node.id.clone()),
+                            label: node.label.clone(),
+                            depth: depth + 1,
+                            is_key: true,
+                            expandable: false,
+                            expanded: false,
+                        });
+                    }
                     visit(state, &node.children, Some(&node.id), depth + 1, output);
                 }
             }
@@ -81,10 +82,10 @@ impl KeyTreeState {
         fn visit(state: &KeyTreeState, nodes: &[KeyTreeNode], output: &mut Vec<KeyTreeNodeId>) {
             for node in nodes {
                 output.push(node.id.clone());
-                if let Some(key_id) = &node.key_id {
-                    output.push(key_id.clone());
-                }
                 if state.expanded.contains(&node.id) {
+                    if let Some(key_id) = &node.key_id {
+                        output.push(key_id.clone());
+                    }
                     visit(state, &node.children, output);
                 }
             }
@@ -195,10 +196,10 @@ impl KeyTreeState {
             }
             None
         }
-        find(&self.nodes, id)?
-            .children
-            .first()
-            .map(|node| node.id.clone())
+        let node = find(&self.nodes, id)?;
+        node.key_id
+            .clone()
+            .or_else(|| node.children.first().map(|node| node.id.clone()))
     }
 
     fn rebuild_index(&mut self) {

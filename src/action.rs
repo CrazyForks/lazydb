@@ -843,6 +843,15 @@ pub enum Action {
         identity: crate::db::redis::types::RedisRequestIdentity,
         message: String,
     },
+    RedisKeyDeleted {
+        tab_id: Uuid,
+        key: crate::db::redis::types::RedisKeyId,
+    },
+    RedisKeyDeleteFailed {
+        tab_id: Uuid,
+        key: crate::db::redis::types::RedisKeyId,
+        message: String,
+    },
     RedisPreviewLoaded {
         tab_id: Uuid,
         generation: u64,
@@ -1129,6 +1138,8 @@ pub enum Action {
     RedisExpandSelection,
     RedisCollapseSelection,
     RedisPrimarySelection,
+    RedisCopyKey,
+    RedisDeleteKey,
     RedisFocusPane(crate::model::redis_browser::RedisBrowserFocus),
     RedisKeysViewportChanged {
         tab_id: Uuid,
@@ -1251,6 +1262,11 @@ pub enum Command {
         generation: u64,
     },
     ScanRedisKeys(crate::db::redis::types::KeyScanRequest),
+    DeleteRedisKey {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        key: crate::db::redis::types::RedisKeyId,
+    },
     LoadRedisPreview {
         tab_id: Uuid,
         generation: u64,

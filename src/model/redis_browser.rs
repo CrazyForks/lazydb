@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::db::redis::read::RedisValuePage;
 use crate::db::redis::types::{RedisKeyId, RedisTarget};
 
+use super::redis_key_tree::{KeyTreeNodeId, VisibleKeyTreeRow};
 use super::{keyspace::KeyspaceState, redis_key_tree::KeyTreeState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,8 +45,9 @@ pub enum RedisFindPhase {
 pub struct RedisKeyFindState {
     pub phase: RedisFindPhase,
     pub query: TextInput,
-    pub rows: Vec<(super::redis_key_tree::KeyTreeNodeId, String)>,
-    pub matches: Vec<super::redis_key_tree::KeyTreeNodeId>,
+    pub rows: Vec<VisibleKeyTreeRow>,
+    pub filtered_rows: Vec<VisibleKeyTreeRow>,
+    pub matches: Vec<KeyTreeNodeId>,
     pub current: usize,
     pub original_selected: Option<super::redis_key_tree::KeyTreeNodeId>,
     pub original_scroll: usize,
@@ -95,6 +97,20 @@ impl RedisBrowserTab {
 
     pub fn insert_tree_keys(&mut self) {
         self.tree.insert_keys(&self.keyspace.keys);
+        if self.find.is_some() {
+            self.refresh_find_rows();
+        }
+    }
+
+    pub fn visible_rows(&self) -> Vec<VisibleKeyTreeRow> {
+        self.find.as_ref().map_or_else(
+            || self.tree.visible_rows(),
+            |find| find.filtered_rows.clone(),
+        )
+    }
+
+    pub fn visible_ids(&self) -> Vec<KeyTreeNodeId> {
+        self.visible_rows().into_iter().map(|row| row.id).collect()
     }
 
     /// Select the first top-level node after the initial tree population.
@@ -179,45 +195,102 @@ impl RedisBrowserTab {
         if self.find.is_some() {
             return;
         }
-        let rows = self
-            .tree
-            .visible_ids()
-            .into_iter()
-            .map(|id| {
-                let label = match &id {
-                    super::redis_key_tree::KeyTreeNodeId::Prefix(bytes)
-                    | super::redis_key_tree::KeyTreeNodeId::Key(bytes) => {
-                        String::from_utf8_lossy(bytes).into_owned()
-                    }
-                };
-                (id, label)
-            })
-            .collect::<Vec<_>>();
+        let mut projection = KeyTreeState::default();
+        projection.rebuild(&self.keyspace.keys);
+        for key in &self.keyspace.keys {
+            let mut prefix = Vec::new();
+            let parts = key.key.split(|byte| *byte == b':').collect::<Vec<_>>();
+            for part in parts.iter().take(parts.len().saturating_sub(1)) {
+                prefix.extend_from_slice(part);
+                prefix.push(b':');
+                projection
+                    .expanded
+                    .insert(KeyTreeNodeId::Prefix(prefix.clone()));
+            }
+        }
+        let rows = projection.visible_rows();
         self.find = Some(RedisKeyFindState {
             phase: RedisFindPhase::Editing,
             query: TextInput::default(),
-            rows,
+            rows: rows.clone(),
+            filtered_rows: rows.clone(),
             matches: Vec::new(),
             current: 0,
             original_selected: self.tree.selected.clone(),
             original_scroll: self.scroll,
         });
+        self.refresh_find_rows();
+    }
+
+    fn refresh_find_rows(&mut self) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let mut projection = KeyTreeState::default();
+        projection.rebuild(&self.keyspace.keys);
+        for key in &self.keyspace.keys {
+            let mut prefix = Vec::new();
+            let parts = key.key.split(|byte| *byte == b':').collect::<Vec<_>>();
+            for part in parts.iter().take(parts.len().saturating_sub(1)) {
+                prefix.extend_from_slice(part);
+                prefix.push(b':');
+                projection
+                    .expanded
+                    .insert(KeyTreeNodeId::Prefix(prefix.clone()));
+            }
+        }
+        find.rows = projection.visible_rows();
+        self.update_find();
     }
 
     pub fn update_find(&mut self) {
         let Some(find) = self.find.as_mut() else {
             return;
         };
-        let query = find.query.value().trim().to_lowercase();
+        let query = find.query.value().trim();
         find.matches = if query.is_empty() {
             Vec::new()
         } else {
             find.rows
                 .iter()
-                .filter(|(_, label)| label.to_lowercase().contains(&query))
-                .map(|(id, _)| id.clone())
+                .filter(|row| {
+                    matches!(&row.id, KeyTreeNodeId::Key(_))
+                        && crate::db::catalog::search_text_matches(
+                            &match &row.id {
+                                KeyTreeNodeId::Key(bytes) => {
+                                    crate::model::redis_key_text::display_bytes(bytes)
+                                }
+                                KeyTreeNodeId::Prefix(_) => String::new(),
+                            },
+                            query,
+                        )
+                })
+                .map(|row| row.id.clone())
                 .collect()
         };
+        if query.is_empty() {
+            find.filtered_rows = find.rows.clone();
+        } else {
+            let included = find
+                .matches
+                .iter()
+                .filter_map(|id| find.rows.iter().find(|row| &row.id == id))
+                .flat_map(|row| {
+                    std::iter::successors(Some(row), |current| {
+                        current.parent.as_ref().and_then(|parent| {
+                            find.rows.iter().find(|candidate| &candidate.id == parent)
+                        })
+                    })
+                    .map(|row| row.id.clone())
+                })
+                .collect::<std::collections::HashSet<_>>();
+            find.filtered_rows = find
+                .rows
+                .iter()
+                .filter(|row| included.contains(&row.id))
+                .cloned()
+                .collect();
+        }
         find.current = 0;
         if let Some(id) = find.matches.first().cloned() {
             self.tree.select(Some(id));
@@ -238,6 +311,11 @@ impl RedisBrowserTab {
         find.current =
             (find.current as isize + delta).rem_euclid(find.matches.len() as isize) as usize;
         self.tree.select(find.matches.get(find.current).cloned());
+        if let Some(selected) = self.tree.selected.as_ref()
+            && let Some(index) = self.visible_ids().iter().position(|id| id == selected)
+        {
+            self.scroll = index.saturating_sub(self.viewport_rows.saturating_sub(1));
+        }
     }
 
     pub fn confirm_find(&mut self) {

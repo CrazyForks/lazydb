@@ -20,6 +20,7 @@ pub mod profile_manager;
 pub mod profile_organization;
 pub mod record_view;
 pub mod redis_browser;
+pub mod redis_key_text;
 pub mod redis_key_tree;
 pub mod relation;
 pub mod relation_edit;

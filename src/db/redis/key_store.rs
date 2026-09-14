@@ -20,6 +20,7 @@ pub struct TreePageEntry {
 
 pub trait KeyStore {
     fn insert_batch(&mut self, keys: &[Vec<u8>]) -> usize;
+    fn remove(&mut self, key: &[u8]) -> bool;
     fn page_after(&self, after: Option<&[u8]>, limit: usize) -> KeyPage;
     fn search_page(&self, contains: &[u8], after: Option<&[u8]>, limit: usize) -> KeyPage;
     fn tree_page(
@@ -59,6 +60,15 @@ impl KeyStore for MemoryKeyStore {
             }
         }
         inserted
+    }
+
+    fn remove(&mut self, key: &[u8]) -> bool {
+        if self.keys.remove(key) {
+            self.bytes = self.bytes.saturating_sub(key.len());
+            true
+        } else {
+            false
+        }
     }
 
     fn page_after(&self, after: Option<&[u8]>, limit: usize) -> KeyPage {
