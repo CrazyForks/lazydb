@@ -2,7 +2,7 @@ use lazydb::{
     action::{Action, Command},
     app::App,
     clipboard::ClipboardPayload,
-    model::{history_tab::HistoryTab, sql_history::*, tab::WorkspaceTab},
+    model::{history_tab::HistoryTab, sql_history::*, tab::WorkspaceTab, workspace::Overlay},
 };
 use uuid::Uuid;
 
@@ -57,4 +57,29 @@ fn history_detail_action_opens_existing_complete_text_detail() {
         panic!("expected SQL detail overlay");
     };
     assert_eq!(detail.copy_text, sql);
+}
+
+#[test]
+fn opening_history_uses_an_overlay_without_creating_a_workspace_tab() {
+    let mut app = App::new(Vec::new());
+    let tab_count = app.tabs.len();
+
+    let commands = app.update(Action::OpenSqlHistory);
+
+    assert_eq!(app.tabs.len(), tab_count);
+    assert!(matches!(app.overlay, Some(Overlay::SqlHistory(_))));
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::LoadSqlHistory { overlay_id, .. }]
+            if *overlay_id != Uuid::nil()
+    ));
+}
+
+#[test]
+fn dismissing_history_closes_only_the_history_overlay() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenSqlHistory);
+
+    assert!(app.update(Action::DismissOverlay).is_empty());
+    assert_eq!(app.overlay, None);
 }
