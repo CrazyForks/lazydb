@@ -53,6 +53,14 @@ fn catalog_version_gate_distinguishes_mysql_and_mariadb() {
         DatabaseKind::MariaDb,
         "8.0.36"
     ));
+    assert!(supports_catalog_version_for_kind(
+        DatabaseKind::MariaDb,
+        "5.5.5-10.11.8-MariaDB"
+    ));
+    assert!(!supports_catalog_version_for_kind(
+        DatabaseKind::MySql,
+        "5.5.5-10.11.8-MariaDB"
+    ));
 }
 
 #[tokio::test]

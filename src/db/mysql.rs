@@ -3625,7 +3625,8 @@ pub fn supports_catalog_version_for_kind(kind: DatabaseKind, version: &str) -> b
         }
         DatabaseKind::MariaDb => {
             version.to_ascii_lowercase().contains("mariadb")
-                && parse_version_triplet(version).is_some_and(|version| version >= (10, 5, 0))
+                && parse_mariadb_version_triplet(version)
+                    .is_some_and(|version| version >= (10, 5, 0))
         }
         _ => false,
     }
@@ -3657,6 +3658,18 @@ fn parse_version_triplet(version: &str) -> Option<(u32, u32, u32)> {
         .parse()
         .ok()?;
     Some((major, minor, patch))
+}
+
+fn parse_mariadb_version_triplet(version: &str) -> Option<(u32, u32, u32)> {
+    let version = version.to_ascii_lowercase();
+    if !version.contains("mariadb") {
+        return None;
+    }
+    version
+        .split('-')
+        .rev()
+        .filter_map(parse_version_triplet)
+        .find(|version| *version >= (10, 0, 0))
 }
 
 pub fn quote_identifier(value: &str) -> String {
