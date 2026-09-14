@@ -718,11 +718,14 @@ fn oracle_create_plans_quote_names_and_target_the_selected_group() {
     table.name.set("Order\"Items");
     table.columns[0].name.set("id");
     table.columns[0].native_type.set("NUMBER");
+    table.columns[0].nullable = false;
+    table.columns[0].default_expression.set("1");
     let plan = OracleAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), None)
         .expect("Oracle table plan should be valid");
     assert_eq!(
         plan.statements()[0],
-        "CREATE TABLE \"APP\".\"Order\"\"Items\" (\"id\" NUMBER)"
+        "CREATE TABLE \"APP\".\"Order\"\"Items\" (\"id\" NUMBER DEFAULT 1 NOT NULL)"
     );
+    assert!(lazydb::sql::oracle::prepare_oracle_statement(&plan.statements()[0]).is_ok());
     assert_eq!(plan.step_count(), 1);
 }

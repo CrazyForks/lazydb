@@ -11,19 +11,23 @@ use secrecy::SecretString;
 use super::DatabaseDiagnostic;
 #[cfg(feature = "driver-oracle")]
 use super::catalog::{
-    CatalogCount, CatalogCursor, CatalogMetadata, ColumnMetadata, DiscoveredDatabase, ObjectGroup,
+    CatalogCount, CatalogCursor, CatalogMetadata, ColumnMetadata, DiscoveredDatabase,
     finalize_keyset_page,
 };
 use super::catalog::{
     CatalogEntry, CatalogId, CatalogKind, CatalogPage, CatalogRequest, CatalogTarget,
-    DdlProvenance, OptionalMetadata, QualifiedName, RelationDdl,
+    DdlProvenance, ObjectGroup, OptionalMetadata, QualifiedName, RelationDdl,
 };
 use super::catalog_mutation::{
     CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
     CatalogMutationExecutionMode, CatalogMutationMode, CatalogMutationOption, CatalogMutationPlan,
     CatalogMutationRequest, CatalogMutationTarget, CatalogObjectDefinition,
-    CatalogObjectDefinitionRequest, CatalogObjectType, CatalogSelectionHint, ColumnDefinition,
-    SequenceBound, SequenceDefinition, TableDefinition, ViewDefinition, ViewOption,
+    CatalogObjectDefinitionRequest, CatalogObjectType, CatalogSelectionHint,
+};
+#[cfg(feature = "driver-oracle")]
+use super::catalog_mutation::{
+    ColumnDefinition, SequenceBound, SequenceDefinition, TableDefinition, ViewDefinition,
+    ViewOption,
 };
 #[cfg(feature = "driver-oracle")]
 use super::query::QueryStats;
@@ -138,12 +142,12 @@ impl OracleAdapter {
                             quote_identifier(column.name.value().trim()),
                             column.native_type.value().trim()
                         );
-                        if !column.nullable {
-                            sql.push_str(" NOT NULL");
-                        }
                         if !column.default_expression.value().trim().is_empty() {
                             sql.push_str(" DEFAULT ");
                             sql.push_str(column.default_expression.value().trim());
+                        }
+                        if !column.nullable {
+                            sql.push_str(" NOT NULL");
                         }
                         Ok(sql)
                     })

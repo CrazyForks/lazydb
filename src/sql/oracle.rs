@@ -6,7 +6,7 @@ pub enum OracleSqlError {
     MultipleStatements,
     ClientCommand,
     IncompleteQuote,
-    UnsupportedProgram,
+    UnsupportedProgram(&'static str),
 }
 
 impl fmt::Display for OracleSqlError {
@@ -16,8 +16,11 @@ impl fmt::Display for OracleSqlError {
             Self::MultipleStatements => "Oracle execution accepts one SQL statement at a time",
             Self::ClientCommand => "SQL*Plus client commands are not supported",
             Self::IncompleteQuote => "Oracle SQL contains an incomplete quoted value",
-            Self::UnsupportedProgram => {
-                "PL/SQL blocks are not supported by this execution path yet"
+            Self::UnsupportedProgram(program) => {
+                return write!(
+                    formatter,
+                    "Oracle execution does not yet support {program} statements"
+                );
             }
         };
         formatter.write_str(message)
@@ -37,8 +40,8 @@ pub fn prepare_oracle_statement(sql: &str) -> Result<Cow<'_, str>, OracleSqlErro
     if matches!(first_keyword(sql).as_deref(), Some("BEGIN" | "DECLARE")) {
         return prepare_anonymous_block(sql);
     }
-    if matches!(first_keyword(sql).as_deref(), Some("CREATE" | "ALTER")) {
-        return Err(OracleSqlError::UnsupportedProgram);
+    if let Some(program) = unsupported_program(sql) {
+        return Err(OracleSqlError::UnsupportedProgram(program));
     }
 
     let mut scanner = Scanner::new(sql);
@@ -53,7 +56,7 @@ pub fn prepare_oracle_statement(sql: &str) -> Result<Cow<'_, str>, OracleSqlErro
                 terminator = Some(index);
             }
             Token::ClientSlash(index) if terminator.is_some() => client_slash = Some(index),
-            Token::Code(_) if terminator.is_some() => {
+            Token::Code(_) | Token::Quoted(_) if terminator.is_some() => {
                 return Err(OracleSqlError::MultipleStatements);
             }
             Token::ClientSlash(_) => return Err(OracleSqlError::ClientCommand),
@@ -225,6 +228,50 @@ fn first_keyword(sql: &str) -> Option<String> {
     None
 }
 
+fn unsupported_program(sql: &str) -> Option<&'static str> {
+    let mut scanner = Scanner::new(sql);
+    let mut words = Vec::new();
+    while let Some(token) = scanner.next_token().ok()? {
+        let Token::Code(index) = token else {
+            continue;
+        };
+        let end = code_end(sql.as_bytes(), index);
+        words.push(sql[index..end].to_ascii_uppercase());
+        if words.len() >= 8 {
+            break;
+        }
+    }
+    let first = words.first()?.as_str();
+    if first != "CREATE" {
+        return None;
+    }
+    let mut index = 1;
+    if words.get(index).is_some_and(|word| word == "OR")
+        && words.get(index + 1).is_some_and(|word| word == "REPLACE")
+    {
+        index += 2;
+    }
+    while words
+        .get(index)
+        .is_some_and(|word| matches!(word.as_str(), "EDITIONABLE" | "NONEDITIONABLE"))
+    {
+        index += 1;
+    }
+    match words.get(index).map(String::as_str) {
+        Some("PROCEDURE") => Some("CREATE PROCEDURE"),
+        Some("FUNCTION") => Some("CREATE FUNCTION"),
+        Some("PACKAGE") if words.get(index + 1).is_some_and(|word| word == "BODY") => {
+            Some("CREATE PACKAGE BODY")
+        }
+        Some("PACKAGE") => Some("CREATE PACKAGE"),
+        Some("TRIGGER") => Some("CREATE TRIGGER"),
+        Some("TYPE") if words.get(index + 1).is_some_and(|word| word == "BODY") => {
+            Some("CREATE TYPE BODY")
+        }
+        _ => None,
+    }
+}
+
 fn prepare_anonymous_block(sql: &str) -> Result<Cow<'_, str>, OracleSqlError> {
     let end = plsql_block_end(sql)?;
     let trailing = &sql[end..];
@@ -298,6 +345,8 @@ fn code_end(bytes: &[u8], mut index: usize) -> usize {
     while index < bytes.len()
         && !bytes[index].is_ascii_whitespace()
         && !matches!(bytes[index], b';' | b'\'' | b'"')
+        && !bytes[index..].starts_with(b"/*")
+        && !bytes[index..].starts_with(b"--")
     {
         index += 1;
     }
@@ -416,6 +465,75 @@ mod tests {
         assert_eq!(
             prepare_oracle_statement("-- only comment"),
             Err(OracleSqlError::Empty)
+        );
+    }
+
+    #[test]
+    fn accepts_create_table_from_catalog_editor() {
+        let sql = "CREATE TABLE \"MFGSUPPORT\".\"tt1\" (\"id\" varchar(20) NOT NULL)";
+        assert_eq!(prepare_oracle_statement(sql).unwrap(), sql);
+    }
+
+    #[test]
+    fn accepts_ordinary_oracle_ddl() {
+        for sql in [
+            "CREATE TABLE t (id NUMBER)",
+            "CREATE VIEW v AS SELECT 1 AS id FROM dual",
+            "CREATE OR REPLACE VIEW v AS SELECT 2 AS id FROM dual",
+            "CREATE SEQUENCE s START WITH 1 INCREMENT BY 1 CACHE 20",
+            "CREATE INDEX i ON t (id)",
+            "ALTER TABLE t RENAME TO t2",
+            "ALTER SEQUENCE s INCREMENT BY 2",
+            "ALTER PROCEDURE p COMPILE",
+        ] {
+            assert_eq!(prepare_oracle_statement(sql).unwrap(), sql);
+            assert_eq!(prepare_oracle_statement(&format!("{sql};")).unwrap(), sql);
+        }
+    }
+
+    #[test]
+    fn rejects_only_unsupported_create_program_units() {
+        for (sql, message) in [
+            ("CREATE PROCEDURE p AS BEGIN NULL; END;", "CREATE PROCEDURE"),
+            (
+                "CREATE OR REPLACE FUNCTION f RETURN NUMBER AS BEGIN RETURN 1; END;",
+                "CREATE FUNCTION",
+            ),
+            (
+                "CREATE OR REPLACE PACKAGE BODY p AS BEGIN NULL; END;",
+                "CREATE PACKAGE BODY",
+            ),
+            (
+                "CREATE TRIGGER t BEFORE INSERT ON x BEGIN NULL; END;",
+                "CREATE TRIGGER",
+            ),
+            (
+                "CREATE TYPE BODY t AS MEMBER PROCEDURE p IS BEGIN NULL; END;",
+                "CREATE TYPE BODY",
+            ),
+        ] {
+            assert_eq!(
+                prepare_oracle_statement(sql),
+                Err(OracleSqlError::UnsupportedProgram(message))
+            );
+        }
+    }
+
+    #[test]
+    fn handles_ddl_prefixes_and_rejects_trailing_quoted_statements() {
+        assert_eq!(
+            prepare_oracle_statement(
+                "CREATE OR REPLACE NONEDITIONABLE PACKAGE BODY p AS BEGIN NULL; END;"
+            ),
+            Err(OracleSqlError::UnsupportedProgram("CREATE PACKAGE BODY"))
+        );
+        assert_eq!(
+            prepare_oracle_statement("CREATE/* comment */TABLE t (id NUMBER); 'extra'"),
+            Err(OracleSqlError::MultipleStatements)
+        );
+        assert_eq!(
+            prepare_oracle_statement("/* ddl */ create table t (note VARCHAR2(10));"),
+            Ok("/* ddl */ create table t (note VARCHAR2(10))".into())
         );
     }
 
