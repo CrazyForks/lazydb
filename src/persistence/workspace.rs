@@ -212,16 +212,28 @@ impl WorkspaceStore {
                     expected: WORKSPACE_VERSION,
                 });
             };
+        let allow_missing_sql = version <= 2;
         let sql = profiles
             .iter()
             .flat_map(|profile| profile.consoles.iter())
             .chain(consoles.iter())
             .map(|console| {
                 let path = self.sql_dir.join(&console.sql_file);
-                let text = fs::read_to_string(path).unwrap_or_default();
-                (console.id, text)
+                let text = match fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(_error) if allow_missing_sql => String::new(),
+                    Err(error) => {
+                        return Err(WorkspaceError::Invalid(format!(
+                            "failed to read SQL for console {} from {}: {}",
+                            console.id,
+                            path.display(),
+                            error
+                        )));
+                    }
+                };
+                Ok((console.id, text))
             })
-            .collect();
+            .collect::<Result<Vec<_>, WorkspaceError>>()?;
         let snapshot = WorkspaceSnapshot {
             active_profile,
             profiles,

@@ -81,10 +81,11 @@ then returns to the exact underlying overlay; Ctrl-C dismisses Omni without
 quitting. Idle Profile Manager and Catalog Editor overlays can be moved into an
 in-memory, owner-tagged suspended interaction and explicitly resumed. Busy
 operations and confirmation dialogs are not suspended. Suspended form state and
-credentials are not persisted. During an in-process profile switch, App moves
-the actual `EditorWorkspace` into a profile-keyed runtime cache, preserving
-cursor, Vim mode, undo history, and editor prompt state; persisted workspaces
-remain text-based snapshots and are rebuilt on process restart.
+credentials are not persisted. During an in-process profile switch, the global
+tab/document surface remains installed; connection changes do not duplicate or
+move Console documents. The actual `EditorWorkspace` is keyed by console UUID,
+preserving cursor, Vim mode, undo history, and editor prompt state; persisted
+workspaces remain text-based snapshots and are rebuilt on process restart.
 
 The editor is an App-owned `EditorWorkspace` keyed by console UUID. Modalkit
 types stay behind that boundary; actions and UI consume LazyDB-owned editor
@@ -117,6 +118,13 @@ or editing the document does not redirect or mutate its SQL snapshot. Workspace
 format v5 stores global Console documents, tab order, target bindings, active tab,
 and recent targets. Console labels render the document name with an `@connection`
 suffix, while the persisted document name remains unchanged.
+
+The persistence boundary validates each Console UUID and SQL entry globally.
+Legacy v1/v2 workspaces retain their historical missing-SQL compatibility during
+migration; v3 and later workspaces report a missing SQL file instead of silently
+replacing document text with an empty string. Saving after multiple profiles are
+opened serializes each Console once, even while compatibility caches for older
+profile workspaces are still present in memory.
 
 ## Profile and Credential Boundary
 
