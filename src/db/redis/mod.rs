@@ -4,6 +4,7 @@ pub mod key_store;
 pub mod metadata_cache;
 pub mod preview_scheduler;
 pub mod read;
+pub mod reconnect;
 pub mod reply;
 pub mod scan_scheduler;
 pub mod types;
@@ -172,5 +173,24 @@ fn redis_error(error: redis::RedisError, default_category: ErrorCategory) -> Dat
         code: error.code().map(str::to_owned),
         message: crate::security::sanitize_terminal_text(&message),
         diagnostic: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redis_error_classifies_auth_permission_and_cluster_redirects() {
+        let error = redis::RedisError::from((redis::ErrorKind::AuthenticationFailed, "WRONGPASS"));
+        assert_eq!(
+            redis_error(error, ErrorCategory::Network).category,
+            ErrorCategory::Authentication
+        );
+        let error = redis::RedisError::from((redis::ErrorKind::InvalidClientConfig, "NOPERM"));
+        assert_eq!(
+            redis_error(error, ErrorCategory::Network).category,
+            ErrorCategory::Permission
+        );
     }
 }
