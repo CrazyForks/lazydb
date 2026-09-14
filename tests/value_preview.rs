@@ -63,3 +63,13 @@ fn json_and_yaml_views_format_valid_structured_text() {
     let yaml = lazydb::ui::redis_value::format_page(&page, ValueView::Yaml).unwrap();
     assert!(yaml.contains("name:"));
 }
+
+#[test]
+fn redis_table_keeps_collection_columns_and_raw_identity() {
+    let value =
+        lazydb::db::redis::read::RedisPageValue::Hash(vec![(b"field".to_vec(), b"value".to_vec())]);
+    let table = lazydb::value_preview::table::from_page(&value);
+    assert_eq!(table.columns, vec!["Field", "Value"]);
+    assert_eq!(table.rows[0].cells, vec!["field", "value"]);
+    assert_eq!(table.rows[0].identity[0], b"field");
+}
