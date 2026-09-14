@@ -156,6 +156,10 @@ impl Keymap {
             self.pending = None;
             return Some(Action::OpenNotificationHistory);
         }
+        if self.bindings.matches("open-sql-history", event) && app.overlay.is_none() {
+            self.pending = None;
+            return Some(Action::OpenSqlHistory);
+        }
         if app
             .overlay
             .as_ref()
@@ -4365,6 +4369,10 @@ mod tests {
         let mut app = App::new(Vec::new());
         app.focus = Focus::Explorer;
         let mut keymap = Keymap::default();
+        assert_eq!(
+            keymap.map(key(KeyCode::F(7)), &app),
+            Some(Action::OpenSqlHistory)
+        );
         assert_eq!(
             keymap.map(key(KeyCode::F(8)), &app),
             Some(Action::OpenNotificationHistory)

@@ -291,6 +291,7 @@ pub enum HelpShortcutId {
     PreviousTabAlias,
     NextTabAlias,
     OpenDashboard,
+    OpenSqlHistory,
     DashboardToggleView,
     DashboardRefresh,
     DashboardTogglePolling,
@@ -1118,6 +1119,23 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         ],
         "F8",
         "open notification history"
+    ),
+    row!(
+        OpenSqlHistory,
+        [
+            Explorer,
+            EditorNormal,
+            EditorInsert,
+            EditorVisual,
+            DataQueryInput,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDdl,
+            NotificationHistory
+        ],
+        "F7",
+        "open SQL execution history"
     ),
     row!(
         OpenNotificationHistoryLeader,
@@ -2890,6 +2908,7 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::OpenOmni => Some("omni"),
         HelpShortcutId::TerminalSelection => Some("terminal-selection"),
         HelpShortcutId::OpenDashboard => Some("open-dashboard"),
+        HelpShortcutId::OpenSqlHistory => Some("open-sql-history"),
         HelpShortcutId::OpenNotificationHistory => Some("notification-history"),
         HelpShortcutId::FocusExplorerLeader => Some("open-explorer"),
         HelpShortcutId::OpenSqlEditors => Some("open-editors"),

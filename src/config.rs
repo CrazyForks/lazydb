@@ -34,6 +34,7 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "quit",
     "terminal-selection",
     "notification-history",
+    "open-sql-history",
     "update",
     "focus-next-pane",
     "focus-previous-pane",

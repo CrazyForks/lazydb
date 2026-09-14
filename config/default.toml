@@ -73,6 +73,8 @@ quit = ["Ctrl-c"]
 terminal-selection = ["Ctrl-Shift-s"]
 # F8 opens notification history.
 notification-history = ["F8"]
+# F7 opens SQL execution history.
+open-sql-history = ["F7"]
 # F9 opens the update center.
 update = ["F9"]
 # Tab focuses the next pane.
