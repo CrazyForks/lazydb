@@ -270,6 +270,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HelpShortcutId {
     Help,
+    OpenOmni,
     Quit,
     TerminalSelection,
     FocusExplorer,
@@ -811,6 +812,25 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "? (also F1)",
         "open this help panel",
         display
+    ),
+    row!(
+        OpenOmni,
+        [
+            Explorer,
+            EditorNormal,
+            EditorInsert,
+            EditorVisual,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDataEdit,
+            RelationDataVisual,
+            RelationDataBusy,
+            RelationDdl,
+            Dashboard
+        ],
+        "F2",
+        "open Omni search"
     ),
     row!(
         Quit,
@@ -2867,6 +2887,7 @@ pub(crate) fn configured_sequence(
 ) -> String {
     let command = match shortcut.id {
         HelpShortcutId::Help => Some("help"),
+        HelpShortcutId::OpenOmni => Some("omni"),
         HelpShortcutId::TerminalSelection => Some("terminal-selection"),
         HelpShortcutId::OpenDashboard => Some("open-dashboard"),
         HelpShortcutId::OpenNotificationHistory => Some("notification-history"),

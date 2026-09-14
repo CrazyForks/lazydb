@@ -75,6 +75,38 @@ impl IconSet {
         }
     }
 
+    pub(crate) const fn omni_command(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_CONSOLE,
+            IconMode::Unicode => "⌘",
+            IconMode::Ascii => ">",
+        }
+    }
+
+    pub(crate) const fn omni_console(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_CONSOLE,
+            IconMode::Unicode => "▣",
+            IconMode::Ascii => "[]",
+        }
+    }
+
+    pub(crate) const fn omni_recent(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_HISTORY,
+            IconMode::Unicode => "↶",
+            IconMode::Ascii => "<",
+        }
+    }
+
+    pub(crate) const fn omni_resume(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => md::MD_PLAY_CIRCLE_OUTLINE,
+            IconMode::Unicode => "▶",
+            IconMode::Ascii => ">",
+        }
+    }
+
     pub(crate) const fn dashboard(self, metric: DashboardMetric) -> &'static str {
         match self.mode {
             IconMode::NerdFont => match metric {

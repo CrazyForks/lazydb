@@ -2186,6 +2186,7 @@ impl App {
             |code| Action::EditorKey(KeyEvent::new(code, KeyModifiers::CONTROL));
         let actions = match id {
             Id::Help => unreachable!("help shortcut is handled before dispatch"),
+            Id::OpenOmni => vec![Action::OpenOmni],
             Id::Quit => vec![Action::Quit],
             Id::FocusExplorer => vec![Action::Focus(Focus::Explorer)],
             Id::FocusExplorerLeader => vec![Action::Focus(Focus::Explorer)],
@@ -2481,6 +2482,7 @@ impl App {
                     "Resume",
                     OmniItemAction::ResumeInteraction(*session_id),
                 );
+                item.kind = crate::model::omni::OmniItemKind::Resume;
                 item.context.profile_id = interaction.profile_id;
                 item.context.tab_id = interaction.tab_id;
                 items.push(item);
@@ -2498,6 +2500,7 @@ impl App {
                 "Recent",
                 OmniItemAction::OpenTab(location.tab_id),
             );
+            item.kind = crate::model::omni::OmniItemKind::Recent;
             item.context.profile_id = location.profile_id;
             item.context.target = location.target.clone();
             item.context.tab_id = Some(location.tab_id);
@@ -2511,6 +2514,7 @@ impl App {
                 "Navigation",
                 OmniItemAction::Command(CommandId::ReturnToPreviousLocation),
             );
+            item.kind = crate::model::omni::OmniItemKind::Action;
             item.context.profile_id = location.profile_id;
             item.context.target = location.target.clone();
             item.context.tab_id = Some(location.tab_id);
@@ -2536,6 +2540,7 @@ impl App {
                     "Command",
                     OmniItemAction::Command(spec.id),
                 );
+                item.kind = crate::model::omni::OmniItemKind::Command;
                 item.keywords = spec
                     .aliases
                     .iter()
@@ -2555,6 +2560,7 @@ impl App {
                         "Connection",
                         OmniItemAction::OpenProfile(profile.id),
                     );
+                    item.kind = crate::model::omni::OmniItemKind::Connection(profile.kind);
                     item.context.profile_id = Some(profile.id);
                     items.push(item);
                 }
@@ -2586,6 +2592,7 @@ impl App {
                             console_id: record.id,
                         },
                     );
+                    item.kind = crate::model::omni::OmniItemKind::Console;
                     item.context.profile_id = profile_id;
                     item.context.target = record.execution_target.clone();
                     item.context.tab_id = Some(record.id);
@@ -2611,12 +2618,13 @@ impl App {
                                 entry.qualified_name.database.as_deref().unwrap_or_default(),
                                 entry.qualified_name.schema.as_deref().unwrap_or_default()
                             ),
-                            "Table",
+                            format!("{:?}", entry.kind),
                             OmniItemAction::OpenRelation {
                                 id: id.clone(),
                                 view: RelationView::Data,
                             },
                         );
+                        item.kind = crate::model::omni::OmniItemKind::Catalog(entry.kind);
                         item.context.profile_id = Some(id.profile_id());
                         item.context.catalog_id = Some(id);
                         items.push(item);
@@ -2635,6 +2643,7 @@ impl App {
                         view: RelationView::Data,
                     },
                 );
+                data.kind = crate::model::omni::OmniItemKind::Action;
                 data.context.catalog_id = Some(id.clone());
                 data.context.profile_id = Some(id.profile_id());
                 let mut ddl = data.clone();
@@ -2655,6 +2664,7 @@ impl App {
                     "Connection",
                     OmniItemAction::OpenProfile(profile.id),
                 );
+                item.kind = crate::model::omni::OmniItemKind::Connection(profile.kind);
                 item.context.profile_id = Some(profile.id);
                 items.push(item);
             }
@@ -2835,12 +2845,13 @@ impl App {
                 crate::model::omni::OmniItemId::Catalog(id.clone()),
                 hit.entry.qualified_name.object.clone(),
                 hit.qualified_path(),
-                "Table",
+                format!("{:?}", hit.entry.kind),
                 crate::model::omni::OmniItemAction::OpenRelation {
                     id: id.clone(),
                     view: RelationView::Data,
                 },
             );
+            item.kind = crate::model::omni::OmniItemKind::Catalog(hit.entry.kind);
             item.context.profile_id = Some(id.profile_id());
             item.context.catalog_id = Some(id.clone());
             item.keywords.extend(

@@ -19,6 +19,17 @@ pub enum OmniItemId {
     SuspendedSession(Uuid),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OmniItemKind {
+    Command,
+    Connection(crate::profile::DatabaseKind),
+    Console,
+    Catalog(crate::db::catalog::CatalogKind),
+    Recent,
+    Resume,
+    Action,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OmniItemAction {
     Command(CommandId),
@@ -40,6 +51,7 @@ pub enum OmniItemAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OmniItem {
     pub id: OmniItemId,
+    pub kind: OmniItemKind,
     pub title: String,
     pub subtitle: String,
     pub category: String,
@@ -58,8 +70,10 @@ impl OmniItem {
         category: impl Into<String>,
         action: OmniItemAction,
     ) -> Self {
+        let kind = OmniItemKind::from_id(&id);
         Self {
             id,
+            kind,
             title: title.into(),
             subtitle: subtitle.into(),
             category: category.into(),
@@ -76,6 +90,19 @@ impl OmniItem {
             .chain(std::iter::once(self.subtitle.as_str()))
             .chain(std::iter::once(self.category.as_str()))
             .chain(self.keywords.iter().map(String::as_str))
+    }
+}
+
+impl OmniItemKind {
+    fn from_id(id: &OmniItemId) -> Self {
+        match id {
+            OmniItemId::Command(_) => Self::Command,
+            OmniItemId::Profile(_) => Self::Connection(crate::profile::DatabaseKind::Sqlite),
+            OmniItemId::Console { .. } => Self::Console,
+            OmniItemId::Catalog(_) => Self::Catalog(crate::db::catalog::CatalogKind::Table),
+            OmniItemId::Tab(_) => Self::Recent,
+            OmniItemId::SuspendedSession(_) => Self::Resume,
+        }
     }
 }
 
