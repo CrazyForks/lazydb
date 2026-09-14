@@ -9261,11 +9261,18 @@ impl App {
                 self.notify_success("Clipboard", format!("Copied {description}"));
                 Vec::new()
             }
-            Action::CopyEditorYank(text) => vec![Command::WriteClipboard(ClipboardPayload {
-                description: format!("SQL selection: {} chars", text.chars().count()),
-                text,
-                sensitive: false,
-            })],
+            Action::CopyEditorYank(text) => {
+                let description = if self.active_read_only_session_id().is_some() {
+                    format!("Preview selection: {} chars", text.chars().count())
+                } else {
+                    format!("SQL selection: {} chars", text.chars().count())
+                };
+                vec![Command::WriteClipboard(ClipboardPayload {
+                    description,
+                    text,
+                    sensitive: false,
+                })]
+            }
             Action::CopyEditorSelection {
                 session_id,
                 start,
@@ -18003,6 +18010,19 @@ impl App {
         }
         for tab in &self.tabs {
             match tab {
+                WorkspaceTab::RedisBrowser(tab) if tab.preview_editor_id == session_id => {
+                    let text = match &tab.content {
+                        crate::model::redis_browser::RedisPreviewContentState::Ready {
+                            page,
+                            format,
+                            ..
+                        } => crate::ui::redis_value::format_page(page, format.view)
+                            .unwrap_or_else(|_| crate::ui::redis_value::page_text(page)),
+                        _ => String::new(),
+                    };
+                    self.editor.open_read_only(session_id, &text);
+                    return;
+                }
                 WorkspaceTab::Sql(tab) if tab.output_editor_id == session_id => {
                     self.editor.open_read_only(session_id, &output_text(tab));
                     return;
