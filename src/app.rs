@@ -12659,9 +12659,15 @@ impl App {
                             crate::db::redis::read::RedisPageValue::String(_)
                         );
                         if tab.format.automatic {
-                            let bytes = crate::ui::redis_value::page_text(page).into_bytes();
-                            tab.format.selected =
-                                crate::value_preview::detect::default_format(&bytes, is_collection);
+                            tab.format.selected = match &page.value {
+                                crate::db::redis::read::RedisPageValue::String(bytes) => {
+                                    crate::value_preview::detect::default_format(bytes, false)
+                                }
+                                _ => crate::value_preview::detect::default_format(
+                                    crate::ui::redis_value::page_text(page).as_bytes(),
+                                    is_collection,
+                                ),
+                            };
                         }
                         tab.content =
                             crate::model::redis_browser::RedisPreviewContentState::Ready {

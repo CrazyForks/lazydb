@@ -124,19 +124,30 @@ pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
 }
 
 pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
-    let raw = page_text(page);
     match view {
-        ValueView::Raw | ValueView::Hex | ValueView::Table => Ok(raw),
+        ValueView::Raw | ValueView::Table => Ok(page_text(page)),
+        ValueView::Hex => Ok(page_bytes(page)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()),
         ValueView::Json => {
-            let value: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|error| format!("JSON parse error: {error}"))?;
+            let bytes = page_bytes(page);
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| format!("JSON parse error: {error}"))?;
             serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
         }
         ValueView::Yaml => {
-            let value: serde_yaml::Value =
-                serde_yaml::from_str(&raw).map_err(|error| format!("YAML parse error: {error}"))?;
+            let value: serde_yaml::Value = serde_yaml::from_slice(page_bytes(page))
+                .map_err(|error| format!("YAML parse error: {error}"))?;
             serde_yaml::to_string(&value).map_err(|error| error.to_string())
         }
+    }
+}
+
+fn page_bytes(page: &RedisValuePage) -> &[u8] {
+    match &page.value {
+        RedisPageValue::String(value) => value,
+        _ => &[],
     }
 }
 
@@ -186,13 +197,9 @@ fn ttl_text(ttl: &crate::db::redis::read::TtlState) -> String {
 }
 
 fn display_bytes(value: &[u8]) -> String {
-    if value
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
-    {
-        String::from_utf8_lossy(value).into_owned()
-    } else {
-        value.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+    match std::str::from_utf8(value) {
+        Ok(text) => text.to_owned(),
+        Err(_) => value.iter().map(|byte| format!("\\x{byte:02x}")).collect(),
     }
 }
 
