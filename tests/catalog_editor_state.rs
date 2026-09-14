@@ -118,6 +118,22 @@ fn role_form_toggle_changes_only_the_focused_permission() {
 }
 
 #[test]
+fn role_password_editing_keeps_value_redacted_and_syncs_secret_state() {
+    let mut role = lazydb::model::catalog_editor::RoleDraft::new(true);
+    role.focus = CatalogFormFocus::Password;
+    role.insert('s');
+    role.paste("ecret");
+
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secret");
+    assert_eq!(format!("{role:?}").contains("secret"), false);
+
+    role.backspace();
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secre");
+    role.delete();
+    assert_eq!(role.password.as_ref().unwrap().expose(), "secre");
+}
+
+#[test]
 fn catalog_form_target_maps_database_name_and_role_memberships() {
     let mut database = CatalogDraft::Database(DatabaseDraft::new(""));
     database

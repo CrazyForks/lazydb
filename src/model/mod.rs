@@ -28,6 +28,7 @@ pub mod redis_preview;
 pub mod relation;
 pub mod relation_edit;
 pub mod relation_review;
+pub(crate) mod secret_text_input;
 pub mod session;
 pub mod sql_editor_list;
 pub mod sql_history;

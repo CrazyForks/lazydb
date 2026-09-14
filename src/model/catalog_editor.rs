@@ -7,6 +7,7 @@ use crate::{
             CatalogMutationAnchor, CatalogMutationMode, CatalogObjectType, CatalogOwnerChoice,
         },
     },
+    model::secret_text_input::SecretTextInput,
     model::text_input::TextInput,
     security::RedactedSecret,
 };
@@ -23,6 +24,7 @@ pub struct RoleDraft {
     pub bypass_rls: bool,
     pub connection_limit: TextInput,
     pub password: Option<RedactedSecret>,
+    password_input: SecretTextInput,
     pub valid_until: TextInput,
     pub memberships: TextInput,
     pub comment: TextInput,
@@ -43,6 +45,7 @@ impl RoleDraft {
             bypass_rls: false,
             connection_limit: "-1".into(),
             password: None,
+            password_input: SecretTextInput::default(),
             valid_until: "infinity".into(),
             memberships: TextInput::default(),
             comment: TextInput::default(),
@@ -66,7 +69,35 @@ impl RoleDraft {
         role
     }
     pub fn set_password(&mut self, value: impl Into<String>) {
-        self.password = Some(RedactedSecret::new(value));
+        let value = value.into();
+        self.password_input.set(value.clone());
+        self.password = (!value.is_empty()).then(|| RedactedSecret::new(value));
+    }
+    pub(crate) fn password_value(&self) -> &str {
+        self.password_input.value()
+    }
+    pub(crate) fn password_cursor(&self) -> usize {
+        self.password_input.cursor()
+    }
+    pub(crate) fn password_insert(&mut self, character: char) {
+        self.password_input.insert(character);
+        self.sync_password();
+    }
+    pub(crate) fn password_paste(&mut self, text: &str) {
+        self.password_input.paste(text);
+        self.sync_password();
+    }
+    pub(crate) fn password_backspace(&mut self) {
+        self.password_input.backspace();
+        self.sync_password();
+    }
+    pub(crate) fn password_delete(&mut self) {
+        self.password_input.delete();
+        self.sync_password();
+    }
+    fn sync_password(&mut self) {
+        self.password = (!self.password_input.value().is_empty())
+            .then(|| RedactedSecret::new(self.password_input.value()));
     }
     pub fn validate(&self) -> Result<(), crate::db::catalog_mutation::CatalogMutationError> {
         if self.name.value().trim().is_empty() {
@@ -107,18 +138,96 @@ impl RoleDraft {
     }
 
     pub fn insert(&mut self, c: char) {
-        if let Some(i) = self.selected_input_mut() {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_insert(c);
+        } else if let Some(i) = self.selected_input_mut() {
             i.insert(c)
         }
     }
+    pub fn paste(&mut self, text: &str) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_paste(text);
+        } else if let Some(input) = self.selected_input_mut() {
+            input.paste(text);
+        }
+    }
+    pub fn insert_password(&mut self, character: char) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_insert(character);
+        }
+    }
     pub fn backspace(&mut self) {
-        if let Some(i) = self.selected_input_mut() {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_backspace();
+        } else if let Some(i) = self.selected_input_mut() {
             i.backspace()
         }
     }
     pub fn delete(&mut self) {
-        if let Some(i) = self.selected_input_mut() {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_delete();
+        } else if let Some(i) = self.selected_input_mut() {
             i.delete()
+        }
+    }
+    pub(crate) fn password_delete_previous_word(&mut self) {
+        self.password_input.delete_previous_word();
+        self.sync_password();
+    }
+    pub(crate) fn password_delete_to_start(&mut self) {
+        self.password_input.delete_to_start();
+        self.sync_password();
+    }
+    pub(crate) fn password_move_left(&mut self) {
+        self.password_input.move_left();
+    }
+    pub(crate) fn password_move_right(&mut self) {
+        self.password_input.move_right();
+    }
+    pub(crate) fn password_move_home(&mut self) {
+        self.password_input.move_home();
+    }
+    pub(crate) fn password_move_end(&mut self) {
+        self.password_input.move_end();
+    }
+    pub(crate) fn password_undo(&mut self) {
+        self.password_input.undo();
+        self.sync_password();
+    }
+    pub(crate) fn password_redo(&mut self) {
+        self.password_input.redo();
+        self.sync_password();
+    }
+    pub(crate) fn password_finish_edit_group(&mut self) {
+        self.password_input.finish_edit_group();
+    }
+
+    pub fn move_left(&mut self) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_move_left();
+        } else if let Some(input) = self.selected_input_mut() {
+            input.move_left();
+        }
+    }
+    pub fn move_right(&mut self) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_move_right();
+        } else if let Some(input) = self.selected_input_mut() {
+            input.move_right();
+        }
+    }
+    pub fn move_home(&mut self) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_move_home();
+        } else if let Some(input) = self.selected_input_mut() {
+            input.move_home();
+        }
+    }
+    pub fn move_end(&mut self) {
+        if self.focus == CatalogFormFocus::Password {
+            self.password_move_end();
+        } else if let Some(input) = self.selected_input_mut() {
+            input.move_end();
         }
     }
 }
