@@ -669,6 +669,10 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                 )),
                 HitTarget::RedisPreviewFormat(_) => Some(Action::RedisPreviewCycleFormat),
+                HitTarget::RedisPreviewWrap(_) => Some(Action::RedisPreviewToggleWrap),
+                HitTarget::RedisPreviewFocus(_) => Some(Action::RedisFocusPane(
+                    crate::model::redis_browser::RedisBrowserFocus::Preview,
+                )),
                 HitTarget::RedisPreviewTableCell {
                     tab_id,
                     row,
@@ -954,6 +958,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollDown => {
+            if app.overlay.is_none()
+                && let Some(target) = ui.text_selection_targets.iter().find(|target| {
+                    target.hit_maps.iter().any(|map| {
+                        map.area
+                            .contains(ratatui::layout::Position::new(event.column, event.row))
+                    })
+                })
+                && matches!(app.tabs.get(app.active_tab), Some(WorkspaceTab::RedisBrowser(tab)) if tab.preview_editor_id == target.session_id)
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: target.session_id,
+                    rows: 3,
+                    columns: 0,
+                });
+            }
             if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
                 return Some(Action::ReadOnlyEditorScroll {
                     session_id: view.session_id,
@@ -1006,6 +1025,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollUp => {
+            if app.overlay.is_none()
+                && let Some(target) = ui.text_selection_targets.iter().find(|target| {
+                    target.hit_maps.iter().any(|map| {
+                        map.area
+                            .contains(ratatui::layout::Position::new(event.column, event.row))
+                    })
+                })
+                && matches!(app.tabs.get(app.active_tab), Some(WorkspaceTab::RedisBrowser(tab)) if tab.preview_editor_id == target.session_id)
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: target.session_id,
+                    rows: -3,
+                    columns: 0,
+                });
+            }
             if let Some(Overlay::TextDetail(view)) = app.overlay.as_ref() {
                 return Some(Action::ReadOnlyEditorScroll {
                     session_id: view.session_id,
@@ -1144,6 +1178,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::RedisKeyToggle { .. } => Some(Focus::Results),
         HitTarget::RedisFindInput(_) => Some(Focus::Results),
         HitTarget::RedisPreviewFormat(_) => Some(Focus::Results),
+        HitTarget::RedisPreviewWrap(_) => Some(Focus::Results),
+        HitTarget::RedisPreviewFocus(_) => Some(Focus::Results),
         HitTarget::RedisPreviewTableCell { .. } => Some(Focus::Results),
         HitTarget::ResultCell { .. }
         | HitTarget::ToggleResultView

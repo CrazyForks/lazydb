@@ -80,6 +80,7 @@ pub struct RedisKeyFindState {
 pub struct RedisBrowserTab {
     pub id: Uuid,
     pub preview_editor_id: Uuid,
+    pub preview_wrap: bool,
     pub target: RedisTarget,
     pub keyspace: KeyspaceState,
     pub tree: KeyTreeState,
@@ -102,6 +103,7 @@ impl RedisBrowserTab {
         Self {
             id,
             preview_editor_id: Uuid::new_v4(),
+            preview_wrap: true,
             keyspace: KeyspaceState::new(id, target.clone(), b"*".to_vec()),
             target,
             tree: KeyTreeState::default(),

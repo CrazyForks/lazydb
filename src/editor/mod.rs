@@ -197,6 +197,7 @@ struct EditorSession {
     jump_history: JumpHistory,
     capability: EditorSessionCapability,
     pending_tail_scroll: bool,
+    preview_layout: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
 }
 
 const EDITOR_HISTORY_LIMIT: usize = 100;
@@ -383,6 +384,7 @@ impl EditorWorkspace {
                 jump_history: JumpHistory::default(),
                 capability,
                 pending_tail_scroll: false,
+                preview_layout: std::cell::Cell::new(None),
             },
         );
         if capability == EditorSessionCapability::Editable {
@@ -418,6 +420,24 @@ impl EditorWorkspace {
     }
 
     pub(crate) fn key(&mut self, id: Uuid, event: KeyEvent) -> Result<(), EditorError> {
+        if let Some((_, height, _, _)) = self
+            .sessions
+            .get(&id)
+            .and_then(|session| session.preview_layout.get())
+        {
+            let rows = match (event.code, event.modifiers) {
+                (KeyCode::PageDown, _) => Some(height as isize),
+                (KeyCode::PageUp, _) => Some(-(height as isize)),
+                (KeyCode::Char('d'), KeyModifiers::CONTROL) => Some((height / 2).max(1) as isize),
+                (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                    Some(-((height / 2).max(1) as isize))
+                }
+                _ => None,
+            };
+            if let Some(rows) = rows {
+                return self.scroll(id, rows, 0);
+            }
+        }
         let key = if crate::input::is_text_redo(event) {
             EditorKey::Redo
         } else if crate::input::is_text_undo(event) {
@@ -462,6 +482,17 @@ impl EditorWorkspace {
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
+        if let Some((width, height, total, offset)) = session.preview_layout.get() {
+            session.preview_layout.set(Some((
+                width,
+                height,
+                total,
+                offset
+                    .saturating_add_signed(rows)
+                    .min(total.saturating_sub(height)),
+            )));
+            return Ok(());
+        }
         let max_line_width = text
             .split('\n')
             .map(project_editor_line)
@@ -526,6 +557,17 @@ impl EditorWorkspace {
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
+        if let Some((width, height, total, _)) = session.preview_layout.get() {
+            if vertical {
+                session.preview_layout.set(Some((
+                    width,
+                    height,
+                    total,
+                    offset.min(total.saturating_sub(height)),
+                )));
+            }
+            return Ok(());
+        }
         let max_row = text
             .split('\n')
             .count()
@@ -951,6 +993,96 @@ impl EditorWorkspace {
         Ok(snapshot)
     }
 
+    pub(crate) fn render_wrapped_preview_snapshot(
+        &self,
+        id: Uuid,
+        viewport: EditorViewport,
+        language: crate::model::editor_language::EditorLanguage,
+        wrap: bool,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let session = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        if !wrap {
+            session.preview_layout.set(None);
+            return self.render_preview_snapshot(id, viewport, language);
+        }
+        let total = self.line_count(id)?;
+        let mut snapshot = self.render_preview_snapshot(
+            id,
+            EditorViewport {
+                width: viewport.width,
+                height: total,
+            },
+            language,
+        )?;
+        let width = viewport.width.max(1);
+        let mut visual = Vec::new();
+        for (index, line) in snapshot.lines.iter().enumerate() {
+            let cells = line.source_to_display_cells.last().copied().unwrap_or(0);
+            let mut offset = 0;
+            loop {
+                visual.push((index, offset));
+                if cells <= offset + width {
+                    break;
+                }
+                let boundary = line
+                    .source_to_display_cells
+                    .partition_point(|cell| *cell <= offset + width)
+                    .saturating_sub(1);
+                let end = line
+                    .source_to_display_cells
+                    .get(boundary)
+                    .copied()
+                    .filter(|cell| *cell > offset)
+                    .unwrap_or(offset + width);
+                offset = end;
+            }
+        }
+        let old = session.preview_layout.get();
+        let first = old
+            .map_or(0, |(_, _, _, offset)| offset)
+            .min(visual.len().saturating_sub(viewport.height));
+        session
+            .preview_layout
+            .set(Some((width, viewport.height, visual.len(), first)));
+        snapshot.cursor_screen_cell = visual
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(viewport.height)
+            .find_map(|(row, (index, offset))| {
+                let line = &snapshot.lines[*index];
+                if line.line != snapshot.cursor.line {
+                    return None;
+                }
+                let cell = line
+                    .source_to_display_cells
+                    .get(snapshot.cursor.column)
+                    .copied()
+                    .unwrap_or(0);
+                (cell >= *offset && cell < offset + width)
+                    .then_some(((cell.saturating_sub(*offset)) as u16, (row - first) as u16))
+            });
+        snapshot.total_lines = visual.len();
+        snapshot.first_line = first;
+        snapshot.lines = visual
+            .into_iter()
+            .skip(first)
+            .take(viewport.height)
+            .map(|(index, offset)| {
+                let mut line = snapshot.lines[index].clone();
+                line.wrap_offset = offset;
+                line
+            })
+            .collect();
+        snapshot.viewport = viewport;
+        snapshot.horizontal_offset = 0;
+        snapshot.max_line_width = width;
+        Ok(snapshot)
+    }
+
     fn preview_highlight_spans(
         text: &str,
         source_start: usize,
@@ -959,6 +1091,7 @@ impl EditorWorkspace {
         let mut spans = Vec::new();
         let mut token_start = 0usize;
         let mut in_string = false;
+        let mut quote = '"';
         let mut escaped = false;
         let mut index = 0usize;
         let chars = text.char_indices().collect::<Vec<_>>();
@@ -980,7 +1113,7 @@ impl EditorWorkspace {
                     escaped = false;
                 } else if character == '\\' {
                     escaped = true;
-                } else if character == '"' {
+                } else if character == quote {
                     in_string = false;
                     let end = byte + character.len_utf8();
                     flush(&mut spans, token_start, end, EditorHighlightKind::String);
@@ -989,9 +1122,13 @@ impl EditorWorkspace {
                 index += 1;
                 continue;
             }
-            if character == '"' {
+            if character == '"'
+                || (character == '\''
+                    && language == crate::model::editor_language::EditorLanguage::Yaml)
+            {
                 flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
                 in_string = true;
+                quote = character;
                 token_start = byte;
             } else if matches!(
                 language,
@@ -1000,7 +1137,36 @@ impl EditorWorkspace {
             {
                 flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
                 flush(&mut spans, byte, text.len(), EditorHighlightKind::Comment);
+                token_start = text.len();
                 break;
+            } else if character.is_alphabetic() {
+                let end = chars
+                    .iter()
+                    .skip(index)
+                    .take_while(|(_, value)| value.is_alphanumeric() || *value == '_')
+                    .last()
+                    .map_or(byte + character.len_utf8(), |(offset, value)| {
+                        offset + value.len_utf8()
+                    });
+                let token = &text[byte..end];
+                let kind = if matches!(token, "true" | "false" | "null" | "True" | "False" | "Null")
+                {
+                    EditorHighlightKind::Keyword
+                } else if language == crate::model::editor_language::EditorLanguage::Yaml
+                    && text[end..].trim_start().starts_with(':')
+                {
+                    EditorHighlightKind::Identifier
+                } else {
+                    EditorHighlightKind::Plain
+                };
+                flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
+                flush(&mut spans, byte, end, kind);
+                token_start = end;
+                index = chars
+                    .iter()
+                    .position(|(offset, _)| *offset >= end)
+                    .unwrap_or(chars.len());
+                continue;
             } else if character.is_ascii_digit() || (character == '-' && token_start == byte) {
                 if token_start < byte {
                     flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
@@ -1212,6 +1378,7 @@ impl EditorWorkspace {
                     ));
                 }
                 let rendered = EditorRenderLine {
+                    wrap_offset: 0,
                     line: first_line + offset,
                     display_text: projection.text.clone(),
                     spans: if spans.is_empty() {
@@ -2598,6 +2765,55 @@ impl EditorWorkspace {
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
+        if let Some((width, height, total, offset)) = session.preview_layout.get() {
+            let mut visual_row = 0;
+            for (index, line) in text.split('\n').enumerate() {
+                let projection = project_editor_line(line);
+                let cells = projection
+                    .source_to_display_cells
+                    .last()
+                    .copied()
+                    .unwrap_or(0);
+                let cursor_cell = projection
+                    .source_to_display_cells
+                    .get(position.column)
+                    .copied()
+                    .unwrap_or(cells);
+                let mut start = 0;
+                loop {
+                    if index == position.line
+                        && (cursor_cell < start + width || cells <= start + width)
+                    {
+                        let next = if visual_row < offset {
+                            visual_row
+                        } else if visual_row >= offset + height {
+                            visual_row.saturating_add(1).saturating_sub(height)
+                        } else {
+                            offset
+                        };
+                        session.preview_layout.set(Some((
+                            width,
+                            height,
+                            total,
+                            next.min(total.saturating_sub(height)),
+                        )));
+                        return Ok(());
+                    }
+                    visual_row += 1;
+                    if cells <= start + width {
+                        break;
+                    }
+                    start = projection
+                        .source_to_display_cells
+                        .iter()
+                        .copied()
+                        .filter(|cell| *cell > start && *cell <= start + width)
+                        .max()
+                        .unwrap_or(start + width);
+                }
+            }
+            return Ok(());
+        }
         let height = session.viewport.get_height();
         let width = session.viewport.get_width();
         if height == 0 || width == 0 {

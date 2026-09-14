@@ -1336,6 +1336,12 @@ impl App {
 
     fn active_read_only_session_id(&self) -> Option<Uuid> {
         match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if self.focus == Focus::Results
+                    && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview =>
+            {
+                Some(tab.preview_editor_id)
+            }
             Some(WorkspaceTab::Sql(tab))
                 if self.focus == Focus::Results
                     && matches!(tab.result_view, ResultView::Output | ResultView::Plan) =>
@@ -1370,6 +1376,9 @@ impl App {
 
     fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
         match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::RedisBrowser(tab)) if session_id == tab.preview_editor_id => {
+                Some(Focus::Results)
+            }
             Some(WorkspaceTab::Sql(tab)) if session_id == tab.id => Some(Focus::Editor),
             Some(WorkspaceTab::Sql(tab))
                 if session_id == tab.output_editor_id
@@ -1792,8 +1801,12 @@ impl App {
             }
             _ => crate::model::editor_language::EditorLanguage::Plain,
         };
-        self.editor
-            .render_preview_snapshot(tab.preview_editor_id, viewport, language)
+        self.editor.render_wrapped_preview_snapshot(
+            tab.preview_editor_id,
+            viewport,
+            language,
+            tab.preview_wrap,
+        )
     }
 
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
@@ -9278,6 +9291,12 @@ impl App {
                 {
                     self.clear_active_data_query_focus();
                     self.focus = focus;
+                    if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                        self.tabs.get_mut(self.active_tab)
+                        && tab.preview_editor_id == session_id
+                    {
+                        tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                    }
                     if focus == Focus::Editor {
                         self.clear_completion_request();
                         self.active_console_mut().completion = None;
@@ -12766,10 +12785,48 @@ impl App {
                 Vec::new()
             }
             Action::RedisPreviewCycleFormat => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                    self.focus = Focus::Results;
+                    self.overlay = Some(Overlay::RedisPreviewFormat {
+                        selected: crate::model::redis_preview::FORMATS
+                            .iter()
+                            .position(|format| *format == tab.format.selected)
+                            .unwrap_or(0),
+                    });
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewFormatMove(delta) => {
+                if let Some(Overlay::RedisPreviewFormat { selected }) = self.overlay.as_mut() {
+                    *selected = (*selected as isize + delta).rem_euclid(5) as usize;
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewFormatCancel => {
+                if matches!(self.overlay, Some(Overlay::RedisPreviewFormat { .. })) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewToggleWrap => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.preview_wrap = !tab.preview_wrap;
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                    self.focus = Focus::Results;
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewFormatAccept => {
+                let Some(Overlay::RedisPreviewFormat { selected }) = self.overlay.take() else {
+                    return Vec::new();
+                };
                 let editor_update = if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.get_mut(self.active_tab)
                 {
-                    tab.format.cycle();
+                    tab.format
+                        .select(crate::model::redis_preview::FORMATS[selected]);
+                    tab.preview_scroll = 0;
                     crate::ui::redis_value::format_page(
                         match &tab.value_page {
                             crate::model::redis_browser::RedisValuePageState::Ready(page) => page,
@@ -12777,6 +12834,12 @@ impl App {
                         },
                         tab.format.view(),
                     )
+                    .or_else(|_| match &tab.value_page {
+                        crate::model::redis_browser::RedisValuePageState::Ready(page) => {
+                            Ok(crate::ui::redis_value::page_text(page))
+                        }
+                        _ => Err(String::new()),
+                    })
                     .ok()
                     .map(|text| (tab.preview_editor_id, text))
                 } else {
@@ -13057,6 +13120,7 @@ impl App {
                 Vec::new()
             }
             Action::RedisFocusPane(focus) => {
+                self.focus = Focus::Results;
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.focus = focus;
                 }
@@ -13097,6 +13161,10 @@ impl App {
             }
             Action::RedisPreviewScroll(delta) => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    if tab.format.view() != crate::value_preview::ValueView::Table {
+                        let _ = self.editor.scroll(tab.preview_editor_id, delta, 0);
+                        return Vec::new();
+                    }
                     tab.scroll_pane(
                         crate::model::redis_browser::RedisBrowserPane::Preview,
                         delta,

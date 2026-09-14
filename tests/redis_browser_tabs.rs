@@ -21,6 +21,50 @@ fn redis_profile(name: &str) -> lazydb::profile::ConnectionProfile {
         .profile
 }
 
+#[test]
+fn preview_controls_open_picker_and_apply_only_on_enter() {
+    use lazydb::model::{
+        redis_browser::{RedisBrowserFocus, RedisBrowserTab},
+        workspace::Overlay,
+    };
+    let mut app = App::new(Vec::new());
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::new_v4(),
+            RedisTarget {
+                profile_id: Uuid::nil(),
+                database: 0,
+            },
+        )));
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::RedisPreviewCycleFormat);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::RedisPreviewFormat { selected: 0 })
+    ));
+    app.update(Action::RedisPreviewFormatMove(1));
+    let WorkspaceTab::RedisBrowser(tab) = &app.tabs[app.active_tab] else {
+        panic!()
+    };
+    assert_eq!(
+        tab.format.selected,
+        lazydb::value_preview::PreviewFormat::RAW
+    );
+    assert!(tab.preview_wrap);
+    assert_eq!(tab.focus, RedisBrowserFocus::Preview);
+    app.update(Action::RedisPreviewFormatAccept);
+    assert!(app.overlay.is_none());
+    app.update(Action::RedisPreviewToggleWrap);
+    let WorkspaceTab::RedisBrowser(tab) = &app.tabs[app.active_tab] else {
+        panic!()
+    };
+    assert_eq!(
+        tab.format.selected,
+        lazydb::value_preview::PreviewFormat::JSON
+    );
+    assert!(!tab.preview_wrap);
+}
+
 fn connect_redis(app: &mut App, profile_id: Uuid, database: &str) {
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,

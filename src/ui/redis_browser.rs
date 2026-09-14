@@ -39,8 +39,7 @@ pub fn render(
     let preview_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Preview;
     let keys_block = super::panel_block("", keys_focused, theme);
     let keys_area = keys_block.inner(columns[0]);
-    let inner_preview = super::panel_block("Preview", preview_focused, theme);
-    let preview_area = inner_preview.inner(columns[1]);
+    let preview_area = columns[1];
     frame.render_widget(
         keys_block
             .title(keys_title(tab))
@@ -50,14 +49,6 @@ pub fn render(
                 theme.border
             })),
         columns[0],
-    );
-    frame.render_widget(
-        inner_preview.border_style(Style::new().fg(if preview_focused {
-            theme.accent
-        } else {
-            theme.border
-        })),
-        columns[1],
     );
     let rows = tab.visible_rows();
     let (rows, selected_id, query, phase, matches) = if let Some(find) = tab.find.as_ref() {
@@ -243,13 +234,28 @@ pub fn render(
             ]),
             header_area,
         );
-        let format_label = format!(" {} ▾ ", preview_format_label(tab.format.selected));
+    }
+    let value_block = super::panel_block(" VALUE ", preview_focused, theme);
+    let value_outer = value_area;
+    ui.hit_regions.push(crate::ui::HitRegion {
+        area: value_outer,
+        target: crate::ui::HitTarget::RedisPreviewFocus(tab.id),
+    });
+    let value_area = value_block.inner(value_outer);
+    frame.render_widget(value_block.clone(), value_outer);
+    let format_label = format!(" f:{} ▾ ", preview_format_label(tab.format.selected));
+    let wrap_label = if tab.preview_wrap {
+        " W:Wrap ON "
+    } else {
+        " W:Wrap OFF "
+    };
+    if value_outer.width > format_label.cell_width() + wrap_label.cell_width() + 10 {
         let format_area = Rect::new(
-            preview_area
+            value_outer
                 .right()
-                .saturating_sub(format_label.len() as u16),
-            header_area.y + 1,
-            format_label.len() as u16,
+                .saturating_sub(format_label.cell_width() + 1),
+            value_outer.y,
+            format_label.cell_width(),
             1,
         );
         ui.hit_regions.push(crate::ui::HitRegion {
@@ -259,6 +265,20 @@ pub fn render(
         frame.render_widget(
             Paragraph::new(format_label).style(Style::new().fg(theme.action)),
             format_area,
+        );
+        let wrap_area = Rect::new(
+            format_area.x.saturating_sub(wrap_label.cell_width()),
+            value_outer.y,
+            wrap_label.cell_width(),
+            1,
+        );
+        ui.hit_regions.push(crate::ui::HitRegion {
+            area: wrap_area,
+            target: crate::ui::HitTarget::RedisPreviewWrap(tab.id),
+        });
+        frame.render_widget(
+            Paragraph::new(wrap_label).style(Style::new().fg(theme.action)),
+            wrap_area,
         );
     }
     if tab.format.view() == crate::value_preview::ValueView::Table
@@ -284,42 +304,38 @@ pub fn render(
     if let Ok(snapshot) = app.redis_preview_snapshot(
         tab.id,
         crate::model::editor::EditorViewport {
-            width: value_area.width.saturating_sub(1) as usize,
+            width: value_area.width.saturating_sub(4) as usize,
             height: value_area.height as usize,
         },
     ) {
-        super::register_text_selection_target(ui, preview_session, value_area, &snapshot);
-        for (row, line) in snapshot
-            .lines
-            .iter()
-            .take(value_area.height as usize)
-            .enumerate()
-        {
-            frame.render_widget(
-                Paragraph::new(Line::from(crate::ui::editor_line_spans(
-                    line,
-                    &snapshot,
-                    theme,
-                    false,
-                    None,
-                    &super::mouse_selection_cells(ui, preview_session, &snapshot, line),
-                    None,
-                )))
-                .style(Style::new().bg(theme.surface)),
-                Rect::new(value_area.x, value_area.y + row as u16, value_area.width, 1),
-            );
+        let gutter = snapshot.total_lines.max(1).to_string().len() + 1;
+        let snapshot = app
+            .redis_preview_snapshot(
+                tab.id,
+                crate::model::editor::EditorViewport {
+                    width: (value_area.width as usize).saturating_sub(gutter),
+                    height: value_area.height as usize,
+                },
+            )
+            .unwrap_or(snapshot);
+        // Preserve the border controls drawn above while sharing DDL's body renderer.
+        let controls = (value_outer.x..value_outer.right())
+            .map(|x| frame.buffer_mut()[(x, value_outer.y)].clone())
+            .collect::<Vec<_>>();
+        crate::ui::read_only_sql::ReadOnlySqlEditor {
+            session_id: preview_session,
+            snapshot: &snapshot,
+            block: value_block,
+            focused: preview_focused && app.overlay.is_none(),
+            show_line_numbers: true,
         }
+        .render(frame, value_outer, theme, ui);
+        for (index, cell) in controls.into_iter().enumerate() {
+            frame.buffer_mut()[(value_outer.x + index as u16, value_outer.y)] = cell;
+        }
+        ui.redis_editor_viewport = Some((preview_session, snapshot.viewport));
         ui.redis_preview_viewport_rows =
             Some((tab.id, snapshot.viewport.height, snapshot.total_lines));
-        super::render_editor_scrollbars(
-            frame,
-            value_area,
-            Some(preview_session),
-            &snapshot,
-            theme,
-            ui,
-            None,
-        );
     } else {
         let preview_lines = match &tab.value_page {
             RedisValuePageState::Ready(page) => crate::ui::redis_value::page_lines(page),

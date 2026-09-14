@@ -6239,6 +6239,16 @@ fn sync_redis_keys_viewport(app: &mut App, runtime: &mut Runtime, state: &UiStat
 }
 
 fn sync_redis_preview_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    if let Some((session_id, viewport)) = state.redis_editor_viewport {
+        apply_action(
+            app,
+            runtime,
+            Action::OutputViewportChanged {
+                session_id,
+                viewport,
+            },
+        );
+    }
     let Some((tab_id, rows, content_rows)) = state.redis_preview_viewport_rows else {
         return;
     };

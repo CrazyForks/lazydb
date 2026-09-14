@@ -1220,6 +1220,10 @@ pub enum Action {
     RedisKeysScroll(isize),
     RedisPreviewScroll(isize),
     RedisPreviewCycleFormat,
+    RedisPreviewToggleWrap,
+    RedisPreviewFormatMove(isize),
+    RedisPreviewFormatAccept,
+    RedisPreviewFormatCancel,
     RedisPreviewLoadNext,
     RedisPreviewTick,
     RedisPreviewCellDetail {

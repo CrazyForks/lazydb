@@ -671,6 +671,15 @@ impl Keymap {
                 _ => None,
             };
         }
+        if matches!(app.overlay, Some(Overlay::RedisPreviewFormat { .. })) {
+            return match event.code {
+                KeyCode::Enter => Some(Action::RedisPreviewFormatAccept),
+                KeyCode::Esc => Some(Action::RedisPreviewFormatCancel),
+                KeyCode::Down | KeyCode::Char('j') => Some(Action::RedisPreviewFormatMove(1)),
+                KeyCode::Up | KeyCode::Char('k') => Some(Action::RedisPreviewFormatMove(-1)),
+                _ => None,
+            };
+        }
         if app.focus == Focus::Explorer && app.explorer.find.is_some() {
             let confirmed = app.explorer.find.as_ref().is_some_and(|find| {
                 find.phase == crate::model::workspace::ExplorerSearchPhase::Confirmed
@@ -1894,6 +1903,12 @@ impl Keymap {
             }
             if event.modifiers.is_empty() && event.code == KeyCode::Char('/') {
                 return Some(Action::RedisFindOpen);
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
+                return Some(Action::RedisPreviewCycleFormat);
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('W') {
+                return Some(Action::RedisPreviewToggleWrap);
             }
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)

@@ -117,6 +117,8 @@ pub enum HitTarget {
     },
     RedisFindInput(Uuid),
     RedisPreviewFormat(Uuid),
+    RedisPreviewWrap(Uuid),
+    RedisPreviewFocus(Uuid),
     RedisPreviewTableCell {
         tab_id: Uuid,
         row: usize,
@@ -309,6 +311,7 @@ pub struct UiState {
     pub explorer_viewport_rows: Option<usize>,
     pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
     pub redis_preview_viewport_rows: Option<(Uuid, usize, usize)>,
+    pub redis_editor_viewport: Option<(Uuid, crate::model::editor::EditorViewport)>,
     pub redis_info_scroll: u16,
     pub ddl_viewport: Option<DdlViewportMetrics>,
     pub cursor: Option<CursorSpec>,
@@ -448,6 +451,7 @@ impl UiState {
             explorer_viewport_rows: None,
             redis_keys_viewport_rows: None,
             redis_preview_viewport_rows: None,
+            redis_editor_viewport: None,
             redis_info_scroll: 0,
             ddl_viewport: None,
             cursor: None,
@@ -884,6 +888,7 @@ fn render_with_state_at(
     state.explorer_viewport_rows = None;
     state.redis_keys_viewport_rows = None;
     state.redis_preview_viewport_rows = None;
+    state.redis_editor_viewport = None;
     state.ddl_viewport = None;
     state.cursor = None;
     state.text_selection_targets.clear();
@@ -1279,6 +1284,7 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::RedisDeletePreparing { .. } => animation::OverlayKey::DeleteConsole,
         Overlay::SqlEditorList(_) => animation::OverlayKey::SqlEditorList,
         Overlay::PageSizeSelector { .. } => animation::OverlayKey::PageSizeSelector,
+        Overlay::RedisPreviewFormat { .. } => animation::OverlayKey::PageSizeSelector,
         Overlay::CatalogDropConfirm { .. } => animation::OverlayKey::CatalogDropConfirm,
         Overlay::CatalogEditorDestructiveConfirm { .. } => {
             animation::OverlayKey::CatalogEditorDestructiveConfirm
@@ -3196,7 +3202,7 @@ pub(crate) fn register_text_selection_target(
                     ),
                     line: line.line,
                     source_to_display_cells: line.source_to_display_cells.clone(),
-                    horizontal_offset: snapshot.horizontal_offset,
+                    horizontal_offset: snapshot.horizontal_offset + line.wrap_offset,
                 })
                 .collect(),
         });
@@ -4958,6 +4964,27 @@ fn render_overlay(
                     true,
                     theme,
                 )),
+                popup,
+            );
+        }
+        Overlay::RedisPreviewFormat { selected } => {
+            let popup = centered(area, 40, 9);
+            frame.render_widget(Clear, popup);
+            let mut lines = vec![];
+            for (index, label) in ["RAW", "JSON", "YAML", "Table", "Hex"].iter().enumerate() {
+                lines.push(Line::styled(
+                    format!(" {} {label}", if index == *selected { ">" } else { " " }),
+                    if index == *selected {
+                        theme.base().bg(theme.selection)
+                    } else {
+                        theme.base()
+                    },
+                ));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw(" j/k select  Enter apply  Esc cancel"));
+            frame.render_widget(
+                Paragraph::new(lines).block(panel_block(" VALUE FORMAT ", true, theme)),
                 popup,
             );
         }
@@ -7220,6 +7247,7 @@ mod editor_diagnostic_tests {
     fn editor_render_marks_only_the_diagnosed_source_character() {
         let projection = crate::security::project_editor_line("SELECT ignore_col from sys_user");
         let line = EditorRenderLine {
+            wrap_offset: 0,
             line: 2,
             display_text: projection.text.clone(),
             spans: vec![EditorRenderSpan {

@@ -174,6 +174,9 @@ pub enum Overlay {
         relation: bool,
         selected: usize,
     },
+    RedisPreviewFormat {
+        selected: usize,
+    },
     DeleteConsole {
         console_id: Uuid,
         focus: DeleteConsoleFocus,

@@ -2015,3 +2015,62 @@ fn substitute_confirmation_is_immutable_and_cancelable() {
     workspace.cancel_substitute();
     assert_eq!(workspace.text(id).unwrap(), "one one");
 }
+#[test]
+fn wrapped_preview_scrolls_visual_rows_and_preserves_source_positions() {
+    let mut workspace = EditorWorkspace::new();
+    let id = uuid::Uuid::new_v4();
+    workspace.open_read_only(id, "ab界cd界efghijkl");
+    let viewport = EditorViewport {
+        width: 5,
+        height: 2,
+    };
+    let language = crate::model::editor_language::EditorLanguage::Plain;
+    let first = workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, true)
+        .unwrap();
+    assert_eq!(first.lines[1].wrap_offset, 5);
+    assert_eq!(first.lines[1].line, 0);
+    assert_eq!(first.total_lines, 4);
+    workspace.scroll(id, 1, 0).unwrap();
+    let second = workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, true)
+        .unwrap();
+    assert_eq!(second.first_line, 1);
+    assert_eq!(second.lines[0].wrap_offset, 5);
+    assert_eq!(workspace.text(id).unwrap(), "ab界cd界efghijkl");
+    workspace.set_scroll_axis(id, true, usize::MAX).unwrap();
+    assert_eq!(
+        workspace
+            .render_wrapped_preview_snapshot(id, viewport, language, true)
+            .unwrap()
+            .first_line,
+        2
+    );
+    let plain = workspace
+        .render_wrapped_preview_snapshot(id, viewport, language, false)
+        .unwrap();
+    assert_eq!(plain.total_lines, 1);
+    assert_eq!(plain.lines[0].wrap_offset, 0);
+}
+
+#[test]
+fn preview_yaml_comments_are_not_duplicated_and_strings_keep_hashes() {
+    let spans = EditorWorkspace::preview_highlight_spans(
+        "name: 'a#b' # comment",
+        0,
+        crate::model::editor_language::EditorLanguage::Yaml,
+    );
+    assert_eq!(
+        spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>(),
+        "name: 'a#b' # comment"
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|span| span.text == "'a#b'" && span.kind == EditorHighlightKind::String)
+    );
+    assert_eq!(spans.last().unwrap().kind, EditorHighlightKind::Comment);
+}

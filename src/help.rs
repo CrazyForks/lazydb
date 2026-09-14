@@ -204,6 +204,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::RedisDeleteConfirm { .. } => ShortcutContext::DeleteConsoleConfirmation,
                 Overlay::RedisDeletePreparing { .. } => ShortcutContext::DeleteConsoleConfirmation,
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
+                Overlay::RedisPreviewFormat { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
                 Overlay::CatalogEditorDestructiveConfirm { .. } => {
                     ShortcutContext::CatalogEditorPreview

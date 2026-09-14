@@ -66,6 +66,8 @@ pub enum EditorHighlightKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditorRenderLine {
+    /// Horizontal cell offset for a soft-wrapped visual row.
+    pub wrap_offset: usize,
     pub line: usize,
     pub display_text: String,
     pub spans: Vec<EditorRenderSpan>,

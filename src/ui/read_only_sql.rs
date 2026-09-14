@@ -51,7 +51,11 @@ impl ReadOnlySqlEditor<'_> {
                 frame.render_widget(
                     Paragraph::new(format!(
                         "{:>width$} ",
-                        line.line + 1,
+                        if line.wrap_offset == 0 {
+                            (line.line + 1).to_string()
+                        } else {
+                            String::new()
+                        },
                         width = gutter_width as usize - 1
                     ))
                     .style(Style::new().fg(theme.muted)),
@@ -88,7 +92,8 @@ impl ReadOnlySqlEditor<'_> {
                     }))
                     .scroll((
                         0,
-                        self.snapshot.horizontal_offset.min(u16::MAX as usize) as u16,
+                        (self.snapshot.horizontal_offset + line.wrap_offset).min(u16::MAX as usize)
+                            as u16,
                     )),
                 Rect::new(body.x, body.y.saturating_add(row as u16), body.width, 1),
             );

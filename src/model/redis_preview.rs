@@ -8,6 +8,14 @@ pub struct RedisPreviewFormatState {
     pub automatic: bool,
 }
 
+pub const FORMATS: [PreviewFormat; 5] = [
+    PreviewFormat::RAW,
+    PreviewFormat::JSON,
+    PreviewFormat::YAML,
+    PreviewFormat::TABLE,
+    PreviewFormat::HEX,
+];
+
 impl Default for RedisPreviewFormatState {
     fn default() -> Self {
         Self {
