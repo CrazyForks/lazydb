@@ -212,6 +212,7 @@ impl WorkspaceSaveQueue {
                 Err(error) => Action::WorkspaceSaveFailed {
                     revision,
                     message: error.to_string(),
+                    retryable: error.is_retryable(),
                 },
             };
             let _ = sender.send(action);

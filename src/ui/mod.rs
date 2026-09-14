@@ -4417,9 +4417,11 @@ fn render_overlay(
             options,
         } => render_profile_access(frame, area, app, *profile_id, *selected, options, theme),
         Overlay::Message { title, body } => render_message(frame, area, title, body, theme),
-        Overlay::WorkspaceSaveFailed { revision, message } => {
-            render_workspace_save_failed(frame, area, *revision, message, theme)
-        }
+        Overlay::WorkspaceSaveFailed {
+            revision,
+            message,
+            retryable,
+        } => render_workspace_save_failed(frame, area, *revision, message, *retryable, theme),
         Overlay::SubstituteConfirm { remaining } => {
             render_substitute_confirm(frame, area, *remaining, theme)
         }
@@ -6437,6 +6439,7 @@ fn render_workspace_save_failed(
     area: Rect,
     revision: u64,
     message: &str,
+    retryable: bool,
     theme: Theme,
 ) {
     let popup = centered(area, 76, 12);
@@ -6444,6 +6447,11 @@ fn render_workspace_save_failed(
     let block = panel_block(" WORKSPACE SAVE FAILED ", true, theme);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
+    let action_hint = if retryable {
+        "r Retry save    d Discard and quit    Esc Cancel quit"
+    } else {
+        "d Discard and quit    Esc Cancel quit"
+    };
     let lines = vec![
         Line::from(Span::styled(
             format!("Revision {revision} could not be saved."),
@@ -6451,10 +6459,7 @@ fn render_workspace_save_failed(
         )),
         Line::from(Span::styled(message, Style::new().fg(theme.text))),
         Line::from(""),
-        Line::from(Span::styled(
-            "r Retry save    d Discard and quit    Esc Cancel quit",
-            Style::new().fg(theme.action),
-        )),
+        Line::from(Span::styled(action_hint, Style::new().fg(theme.action))),
     ];
     frame.render_widget(
         Paragraph::new(lines)

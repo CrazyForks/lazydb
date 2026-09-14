@@ -30,6 +30,12 @@ pub enum WorkspaceError {
     Invalid(String),
 }
 
+impl WorkspaceError {
+    pub const fn is_retryable(&self) -> bool {
+        matches!(self, Self::Io(_) | Self::Encode(_))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkspaceFile {
     pub version: u16,
@@ -327,7 +333,7 @@ fn migrate_legacy(file: LegacyWorkspaceFile) -> Vec<PersistedProfileWorkspace> {
 pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceError> {
     let mut profile_ids = std::collections::HashSet::new();
     let mut console_ids = std::collections::HashSet::new();
-    let mut relation_ids = std::collections::HashSet::new();
+    let mut tab_ids = std::collections::HashSet::new();
     for profile in &snapshot.profiles {
         if !profile_ids.insert(profile.profile_id) {
             return Err(WorkspaceError::Invalid("duplicate profile ID".into()));
@@ -356,6 +362,7 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
         }
         let mut open_console_ids = std::collections::HashSet::new();
         for tab in &profile.tabs {
+            let id = tab_id(tab);
             match tab {
                 PersistedTab::Console { console_id } => {
                     if !profile_console_ids.contains(console_id) {
@@ -368,13 +375,11 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                     }
                 }
                 PersistedTab::Relation(relation) => {
-                    if !relation_ids.insert(relation.id) {
-                        return Err(WorkspaceError::Invalid("duplicate tab ID".into()));
-                    }
                     if console_ids.contains(&relation.id) {
-                        return Err(WorkspaceError::Invalid(
-                            "relation duplicates a console ID".into(),
-                        ));
+                        return Err(WorkspaceError::Invalid(format!(
+                            "relation tab {} duplicates a console ID",
+                            relation.id
+                        )));
                     }
                     if relation.object_id.profile_id() != profile.profile_id {
                         return Err(WorkspaceError::Invalid(
@@ -383,13 +388,10 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                     }
                 }
                 PersistedTab::Dashboard { dashboard_id, .. } => {
-                    if !relation_ids.insert(*dashboard_id) {
-                        return Err(WorkspaceError::Invalid("duplicate tab ID".into()));
-                    }
                     if console_ids.contains(dashboard_id) {
-                        return Err(WorkspaceError::Invalid(
-                            "dashboard duplicates a console ID".into(),
-                        ));
+                        return Err(WorkspaceError::Invalid(format!(
+                            "dashboard tab {dashboard_id} duplicates a console ID"
+                        )));
                     }
                 }
                 PersistedTab::RedisBrowser {
@@ -400,15 +402,15 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                             "Redis browser belongs to another profile".into(),
                         ));
                     }
-                    if !relation_ids.insert(*tab_id) {
-                        return Err(WorkspaceError::Invalid("duplicate tab ID".into()));
-                    }
                     if console_ids.contains(tab_id) {
-                        return Err(WorkspaceError::Invalid(
-                            "Redis browser duplicates a console ID".into(),
-                        ));
+                        return Err(WorkspaceError::Invalid(format!(
+                            "Redis browser tab {tab_id} duplicates a console ID"
+                        )));
                     }
                 }
+            }
+            if !tab_ids.insert(id) {
+                return Err(WorkspaceError::Invalid(format!("duplicate tab ID {id}")));
             }
         }
     }

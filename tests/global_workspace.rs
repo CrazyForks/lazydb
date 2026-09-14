@@ -127,3 +127,45 @@ fn restoring_a_saved_two_profile_workspace_keeps_both_console_documents_visible(
     assert!(texts.iter().any(|text| text == "SELECT first"));
     assert!(texts.iter().any(|text| text == "SELECT second"));
 }
+
+#[test]
+fn switching_profiles_keeps_the_first_live_editor() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    connect(&mut app, first_id, "first");
+    app.update(Action::ReplaceEditor("SELECT 'latest first'".into()));
+    let console_id = app.active_console().id;
+
+    connect(&mut app, second_id, "second");
+
+    assert_eq!(
+        app.editor_text(console_id).unwrap(),
+        "SELECT 'latest first'"
+    );
+}
+
+#[test]
+fn saving_after_switching_profiles_uses_the_latest_shared_editor_text() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    connect(&mut app, first_id, "first");
+    let first_console_id = app.active_console().id;
+    app.update(Action::ReplaceEditor("SELECT 'new first'".into()));
+    connect(&mut app, second_id, "second");
+
+    let snapshot = app.workspace_snapshot();
+    let first_sql = snapshot
+        .sql
+        .iter()
+        .find(|(id, _)| *id == first_console_id)
+        .map(|(_, text)| text.as_str());
+    assert_eq!(first_sql, Some("SELECT 'new first'"));
+}

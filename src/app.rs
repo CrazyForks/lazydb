@@ -828,16 +828,9 @@ impl App {
     /// Returns the console records in the order used by the console manager.
     pub fn visible_console_records(&self, query: &str) -> Vec<&ConsoleRecord> {
         let query = query.to_lowercase();
-        let mut seen = HashSet::new();
         let mut records = self
             .sql_editors
             .iter()
-            .chain(
-                self.workspaces
-                    .values()
-                    .flat_map(|workspace| workspace.sql_editors.iter()),
-            )
-            .filter(|record| seen.insert(record.id))
             .filter(|record| {
                 let target = record.execution_target.as_ref();
                 let profile = target.and_then(|target| {
@@ -893,15 +886,33 @@ impl App {
         let sql = self
             .sql_editors
             .iter()
+            .filter(|record| self.console_belongs_to_profile(record, profile_id))
             .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default()))
             .collect();
+        let profile_tabs = self
+            .tabs
+            .iter()
+            .filter(|tab| self.tab_belongs_to_profile(tab, profile_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let profile_editors = self
+            .sql_editors
+            .iter()
+            .filter(|record| self.console_belongs_to_profile(record, profile_id))
+            .cloned()
+        .collect::<Vec<_>>();
         Some((
             profile_id,
             ConnectionWorkspace {
-                tabs: self.tabs.clone(),
-                sql_editors: self.sql_editors.clone(),
+                tabs: profile_tabs,
+                sql_editors: profile_editors,
                 sql,
-                active_tab_id: self.active_tab_id(),
+                active_tab_id: self.active_tab_id().filter(|id| {
+                    self.tabs
+                        .iter()
+                        .find(|tab| tab.id() == *id)
+                        .is_some_and(|tab| self.tab_belongs_to_profile(tab, profile_id))
+                }),
             },
         ))
     }
@@ -1652,12 +1663,41 @@ impl App {
                     active_tab_id,
                 ));
             } else if let Some(workspace) = self.workspaces.get(&profile_id) {
-                sql.extend(workspace.sql.iter().cloned());
+                // A legacy runtime workspace can contain a copy of the shared
+                // tab surface captured while another profile was active.  Do
+                // not serialize those foreign tabs a second time.
+                let profile_tabs = workspace
+                    .tabs
+                    .iter()
+                    .filter(|tab| self.tab_belongs_to_profile(tab, profile_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let profile_console_ids = workspace
+                    .sql_editors
+                    .iter()
+                    .filter(|record| self.console_belongs_to_profile(record, profile_id))
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                let profile_editors = workspace
+                    .sql_editors
+                    .iter()
+                    .filter(|record| profile_console_ids.contains(&record.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                sql.extend(
+                    workspace
+                        .sql
+                        .iter()
+                        .filter(|(id, _)| profile_console_ids.contains(id))
+                        .cloned(),
+                );
                 profiles.push(self.persisted_workspace_from_parts(
                     profile_id,
-                    &workspace.tabs,
-                    &workspace.sql_editors,
-                    workspace.active_tab_id,
+                    &profile_tabs,
+                    &profile_editors,
+                    workspace.active_tab_id.filter(|active_tab_id| {
+                        profile_tabs.iter().any(|tab| tab.id() == *active_tab_id)
+                    }),
                 ));
             }
         }
@@ -1719,6 +1759,26 @@ impl App {
         }
     }
 
+    fn console_belongs_to_profile(&self, record: &ConsoleRecord, profile_id: Uuid) -> bool {
+        record
+            .execution_target
+            .as_ref()
+            .is_none_or(|target| target.profile_id == profile_id)
+    }
+
+    fn tab_belongs_to_profile(&self, tab: &WorkspaceTab, profile_id: Uuid) -> bool {
+        match tab {
+            WorkspaceTab::Sql(tab) => tab
+                .execution_target
+                .as_ref()
+                .is_none_or(|target| target.profile_id == profile_id),
+            WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
+            WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
+            WorkspaceTab::History(_) => false,
+            WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
+        }
+    }
+
     fn persisted_console(
         &self,
         record: &ConsoleRecord,
@@ -1776,7 +1836,7 @@ impl App {
                 WorkspaceTab::History(_) => unreachable!(),
                 WorkspaceTab::RedisBrowser(tab) => PersistedTab::RedisBrowser {
                     tab_id: tab.id,
-                    profile_id,
+                    profile_id: tab.target.profile_id,
                     database: tab.target.database,
                     pattern: tab.keyspace.pattern.clone(),
                 },
@@ -4257,7 +4317,11 @@ impl App {
                     succeeded: true,
                 }]
             }
-            Action::WorkspaceSaveFailed { revision, message } => {
+            Action::WorkspaceSaveFailed {
+                revision,
+                message,
+                retryable,
+            } => {
                 self.workspace_save.failed(revision);
                 if self.workspace_save_closing
                     && matches!(
@@ -4271,12 +4335,15 @@ impl App {
                         crate::model::workspace_save::QuitSaveState::Failed {
                             revision,
                             message: message.clone(),
+                            retryable,
                         };
                 }
-                self.notify_error(
-                    "Workspace",
-                    format!("Workspace save {revision} failed: {message}"),
-                );
+                if !self.workspace_save_closing {
+                    self.notify_error(
+                        "Workspace",
+                        format!("Workspace save {revision} failed: {message}"),
+                    );
+                }
                 if matches!(
                     self.workspace_quit_save,
                     crate::model::workspace_save::QuitSaveState::Failed {
@@ -4284,7 +4351,11 @@ impl App {
                         ..
                     } if pending == revision
                 ) {
-                    self.overlay = Some(Overlay::WorkspaceSaveFailed { revision, message });
+                    self.overlay = Some(Overlay::WorkspaceSaveFailed {
+                        revision,
+                        message,
+                        retryable,
+                    });
                 }
                 vec![Command::CompleteWorkspaceSave {
                     revision,
@@ -21579,6 +21650,7 @@ mod tests {
             app.update(Action::WorkspaceSaveFailed {
                 revision,
                 message: "test failure".into(),
+                retryable: true,
             })
             .as_slice(),
             [Command::CompleteWorkspaceSave {
@@ -21602,6 +21674,7 @@ mod tests {
         app.update(Action::WorkspaceSaveFailed {
             revision,
             message: "test failure".into(),
+            retryable: true,
         });
 
         assert!(matches!(
@@ -21623,6 +21696,7 @@ mod tests {
         app.update(Action::WorkspaceSaveFailed {
             revision,
             message: "test failure".into(),
+            retryable: true,
         });
 
         assert!(app.update(Action::DismissOverlay).is_empty());
