@@ -940,14 +940,7 @@ impl EditorWorkspace {
                 }
             };
         }
-        if matches!(
-            language,
-            crate::model::editor_language::EditorLanguage::Plain
-        ) {
-            snapshot.semantic_diagnostics.clear();
-        } else {
-            snapshot.semantic_diagnostics.clear();
-        }
+        snapshot.semantic_diagnostics.clear();
         Ok(snapshot)
     }
 

@@ -323,27 +323,27 @@ pub fn render(
             format_area,
         );
     }
-    if tab.format.view() == crate::value_preview::ValueView::Table {
-        if let RedisValuePageState::Ready(page) = &tab.value_page {
-            render_table_preview(
-                frame,
-                value_area,
-                page,
-                tab.preview_scroll,
-                tab.id,
-                ui,
-                theme,
-            );
-            ui.redis_preview_viewport_rows = Some((
-                tab.id,
-                value_area.height.saturating_sub(1) as usize,
-                crate::value_preview::table::from_page(&page.value)
-                    .rows
-                    .len()
-                    + 1,
-            ));
-            return;
-        }
+    if tab.format.view() == crate::value_preview::ValueView::Table
+        && let RedisValuePageState::Ready(page) = &tab.value_page
+    {
+        render_table_preview(
+            frame,
+            value_area,
+            page,
+            tab.preview_scroll,
+            tab.id,
+            ui,
+            theme,
+        );
+        ui.redis_preview_viewport_rows = Some((
+            tab.id,
+            value_area.height.saturating_sub(1) as usize,
+            crate::value_preview::table::from_page(&page.value)
+                .rows
+                .len()
+                + 1,
+        ));
+        return;
     }
     if let Ok(snapshot) = app.redis_preview_snapshot(
         tab.id,
@@ -436,7 +436,7 @@ fn render_table_preview(
         let mut x = area.x;
         for (column, cell) in row.cells.iter().enumerate() {
             let width =
-                (cell.chars().count().max(6).min(32) as u16).min(area.right().saturating_sub(x));
+                (cell.chars().count().clamp(6, 32) as u16).min(area.right().saturating_sub(x));
             if width == 0 {
                 break;
             }
