@@ -1500,7 +1500,9 @@ impl Runtime {
                         }
                         _ => return,
                     };
-                    adapter.read_value_page(&request).await
+                    adapter
+                        .read_value_page_with_metadata(&request, metadata)
+                        .await
                 }
                 Some(_) => Err(DatabaseError::configuration(
                     "Redis value preview requires a Redis connection",
