@@ -19,7 +19,6 @@ pub mod redis_value;
 pub mod relation;
 pub(crate) mod scrollbar;
 mod shortcut_hints;
-pub(crate) mod sql_history;
 pub(crate) mod sql_history_modal;
 pub(crate) mod sql_preview;
 pub mod text_detail;
@@ -821,7 +820,6 @@ pub fn render_with_state_using_icons_sequence_and_theme(
         app.tabs.get(app.active_tab),
         Some(WorkspaceTab::Dashboard(_))
     );
-    let is_history = matches!(app.tabs.get(app.active_tab), Some(WorkspaceTab::History(_)));
     let is_redis_browser = matches!(
         app.tabs.get(app.active_tab),
         Some(WorkspaceTab::RedisBrowser(_))
@@ -829,7 +827,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     let layout = AppLayout::calculate(
         area,
         app.focus,
-        is_relation || is_dashboard || is_history || is_redis_browser,
+        is_relation || is_dashboard || is_redis_browser,
         app.pane_sizes,
         app.pane_maximized,
     );
@@ -937,23 +935,6 @@ pub fn render_with_state_using_icons_sequence_and_theme(
             area: layout.footer,
             target: HitTarget::Help,
         });
-    } else if is_history {
-        if let Some(area) = layout.relation.or(layout.results) {
-            state.hit_regions.push(HitRegion {
-                area,
-                target: HitTarget::Focus(Focus::Results),
-            });
-            sql_history::render(frame, area, app, theme);
-            if let Some(WorkspaceTab::History(tab)) = app.tabs.get(app.active_tab) {
-                for index in 0..tab.items.len().min(area.height.saturating_sub(2) as usize) {
-                    state.hit_regions.push(HitRegion {
-                        area: Rect::new(area.x, area.y + 1 + index as u16, area.width, 1),
-                        target: HitTarget::SqlHistoryRow(index),
-                    });
-                }
-            }
-        }
-        render_footer(frame, layout.footer, app, theme, sequence, state);
     } else {
         if let Some(area) = layout.explorer {
             state.hit_regions.push(HitRegion {
@@ -1319,7 +1300,6 @@ fn animation_observation(app: &App) -> animation::AnimationObservation {
             }
         }
         WorkspaceTab::Dashboard(_) => {}
-        WorkspaceTab::History(_) => {}
         WorkspaceTab::RedisBrowser(_) => {}
     }
     observation
@@ -1994,7 +1974,6 @@ fn tab_database_kind(app: &App, tab: &WorkspaceTab) -> Option<DatabaseKind> {
             .connection
             .map(|connection| connection.profile_id)
             .or(tab.profile_id)?,
-        WorkspaceTab::History(_) => return None,
         WorkspaceTab::RedisBrowser(_) => return Some(DatabaseKind::Redis),
     };
 
@@ -2131,7 +2110,6 @@ fn render_tabs(
                         .map(|profile| profile.name.clone())
                         .unwrap_or_else(|| "未绑定".to_owned()),
                     WorkspaceTab::Sql(_) => unreachable!(),
-                    WorkspaceTab::History(_) => "全部连接".to_owned(),
                     WorkspaceTab::RedisBrowser(redis) => app
                         .profiles
                         .iter()
@@ -2147,7 +2125,6 @@ fn render_tabs(
                 .collect::<String>();
             let icon = match tab {
                 WorkspaceTab::Relation(tab) => icons.catalog(tab.descriptor.kind),
-                WorkspaceTab::History(_) => icons.catalog(CatalogKind::Table),
                 _ => tab_database_kind(app, tab)
                     .map(|kind| icons.database(kind))
                     .unwrap_or_else(|| icons.catalog(CatalogKind::Database)),

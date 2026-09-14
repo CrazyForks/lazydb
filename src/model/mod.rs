@@ -8,7 +8,6 @@ pub mod editor;
 pub mod execution_target;
 pub mod explorer;
 pub mod explorer_add;
-pub mod history_tab;
 pub mod keyspace;
 pub mod navigation;
 pub mod notification;

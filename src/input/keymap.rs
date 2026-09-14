@@ -1806,24 +1806,6 @@ impl Keymap {
         if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
             return Some(action);
         }
-        if matches!(
-            app.tabs.get(app.active_tab),
-            Some(crate::model::tab::WorkspaceTab::History(_))
-        ) && app.focus == Focus::Results
-        {
-            return match event.code {
-                KeyCode::Char('y') => Some(Action::SqlHistoryCopy),
-                KeyCode::Enter => Some(Action::SqlHistoryOpenDetail),
-                KeyCode::Char('f') => Some(Action::SqlHistoryCycleStatus),
-                KeyCode::Char('t') => Some(Action::SqlHistoryCycleTransaction),
-                KeyCode::Char('j') | KeyCode::Down => Some(Action::SqlHistoryMove(1)),
-                KeyCode::Char('k') | KeyCode::Up => Some(Action::SqlHistoryMove(-1)),
-                KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
-                KeyCode::Char(_character) if !event.modifiers.is_empty() => None,
-                KeyCode::Char(character) => Some(Action::SqlHistorySearchInsert(character)),
-                _ => map_results(event.code, app),
-            };
-        }
         match app.focus {
             Focus::Explorer => map_explorer(event.code, app),
             Focus::Editor => None,
@@ -3547,7 +3529,6 @@ fn active_data_query_has_focus(app: &App) -> bool {
         Some(crate::model::tab::WorkspaceTab::Relation(tab)) => tab.query.focus.is_some(),
         Some(crate::model::tab::WorkspaceTab::Sql(tab)) => tab.query.focus.is_some(),
         Some(crate::model::tab::WorkspaceTab::Dashboard(_)) => false,
-        Some(crate::model::tab::WorkspaceTab::History(_)) => false,
         Some(crate::model::tab::WorkspaceTab::RedisBrowser(_)) => false,
         None => false,
     }

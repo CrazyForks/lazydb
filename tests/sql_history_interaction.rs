@@ -2,14 +2,14 @@ use lazydb::{
     action::{Action, Command},
     app::App,
     clipboard::ClipboardPayload,
-    model::{history_tab::HistoryTab, sql_history::*, tab::WorkspaceTab, workspace::Overlay},
+    model::{sql_history::*, sql_history_view::SqlHistoryState, workspace::Overlay},
 };
 use uuid::Uuid;
 
 fn app_with_history(sql: &str) -> App {
     let mut app = App::new(Vec::new());
     let id = Uuid::new_v4();
-    app.tabs.push(WorkspaceTab::History(HistoryTab {
+    app.overlay = Some(Overlay::SqlHistory(SqlHistoryState {
         selected_execution: Some(id),
         items: vec![ExecutionHistory {
             execution_id: id,
@@ -27,9 +27,8 @@ fn app_with_history(sql: &str) -> App {
             database: None,
             schema: None,
         }],
-        ..HistoryTab::default()
+        ..Default::default()
     }));
-    app.active_tab = app.tabs.len() - 1;
     app
 }
 
@@ -53,10 +52,14 @@ fn history_detail_action_opens_existing_complete_text_detail() {
 
     app.update(Action::SqlHistoryOpenDetail);
 
-    let lazydb::model::workspace::Overlay::TextDetail(detail) = app.overlay.unwrap() else {
-        panic!("expected SQL detail overlay");
+    let Overlay::SqlHistory(view) = app.overlay.unwrap() else {
+        panic!("expected SQL history overlay");
     };
-    assert_eq!(detail.copy_text, sql);
+    assert_eq!(
+        view.mode,
+        lazydb::model::sql_history_view::SqlHistoryMode::Sql
+    );
+    assert_ne!(view.editor_session_id, Uuid::nil());
 }
 
 #[test]
