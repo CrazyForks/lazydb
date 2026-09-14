@@ -1215,6 +1215,18 @@ impl App {
             {
                 Some(tab.ddl_editor_id)
             }
+            _ if self.focus == Focus::Results
+                && matches!(
+                    self.overlay,
+                    Some(Overlay::SqlHistory(ref view))
+                        if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+                ) =>
+            {
+                self.overlay.as_ref().and_then(|overlay| match overlay {
+                    Overlay::SqlHistory(view) => Some(view.editor_session_id),
+                    _ => None,
+                })
+            }
             _ => None,
         }
     }
@@ -1235,6 +1247,24 @@ impl App {
             }
             Some(WorkspaceTab::Relation(tab))
                 if session_id == tab.ddl_editor_id && tab.view == RelationView::Ddl =>
+            {
+                Some(Focus::Results)
+            }
+            Some(_)
+                if session_id
+                    == self
+                        .overlay
+                        .as_ref()
+                        .and_then(|overlay| match overlay {
+                            Overlay::SqlHistory(view) => Some(view.editor_session_id),
+                            _ => None,
+                        })
+                        .unwrap_or(Uuid::nil())
+                    && matches!(
+                        self.overlay,
+                        Some(Overlay::SqlHistory(ref view))
+                            if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+                    ) =>
             {
                 Some(Focus::Results)
             }
@@ -1589,6 +1619,28 @@ impl App {
             self.sql_dialect(),
             &[],
         )
+    }
+
+    pub(crate) fn sql_history_editor_snapshot(
+        &self,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
+            return Err(EditorError::MissingSession(Uuid::nil()));
+        };
+        self.editor.render_snapshot_with_dialect_and_ranges(
+            view.editor_session_id,
+            viewport,
+            SqlDialect::Generic,
+            &[],
+        )
+    }
+
+    pub(crate) fn sql_history_editor_revision(&self) -> Option<u64> {
+        let Overlay::SqlHistory(view) = self.overlay.as_ref()? else {
+            return None;
+        };
+        self.editor.revision(view.editor_session_id).ok()
     }
 
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
@@ -4465,6 +4517,7 @@ impl App {
                 let generation = view.begin_query();
                 view.request(None);
                 self.overlay = Some(Overlay::SqlHistory(view));
+                self.focus = Focus::Results;
                 vec![Command::LoadSqlHistory {
                     overlay_id,
                     generation,
@@ -4481,6 +4534,15 @@ impl App {
             Action::SqlHistoryOpenDetail => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
                     view.mode = crate::model::sql_history_view::SqlHistoryMode::Sql;
+                    let session_id = view.editor_session_id;
+                    let selected = view
+                        .selected_item()
+                        .map(|item| (item.execution_id, item.sql.clone()));
+                    if let Some((execution_id, sql)) = selected {
+                        let text = crate::security::sanitize_terminal_text(&sql);
+                        self.editor.open_read_only(session_id, &text);
+                        view.loaded_execution_id = Some(execution_id);
+                    }
                     return Vec::new();
                 }
                 let Some(WorkspaceTab::History(tab)) = self.tabs.get(self.active_tab) else {
@@ -4502,6 +4564,12 @@ impl App {
                         None,
                     ),
                 ))
+            }
+            Action::SqlHistoryBackToBrowse => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Browse;
+                }
+                Vec::new()
             }
             Action::SqlHistoryCopy => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref()
@@ -6044,6 +6112,30 @@ impl App {
                     }
                     vec![Command::WriteClipboard(ClipboardPayload {
                         description: format!("Text selection: {} chars", text.chars().count()),
+                        text,
+                        sensitive: false,
+                    })]
+                }
+                crate::ui::text_selection::TextGestureSource::SqlHistory => {
+                    let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
+                        return Vec::new();
+                    };
+                    if view.editor_session_id != session_id
+                        || self.editor.revision(session_id).ok() != Some(revision)
+                    {
+                        return Vec::new();
+                    }
+                    let Ok(text) = self.editor.mouse_range_text(session_id, start, end) else {
+                        return Vec::new();
+                    };
+                    if text.is_empty() {
+                        return Vec::new();
+                    }
+                    vec![Command::WriteClipboard(ClipboardPayload {
+                        description: format!(
+                            "SQL History selection: {} chars",
+                            text.chars().count()
+                        ),
                         text,
                         sensitive: false,
                     })]
@@ -17279,6 +17371,15 @@ impl App {
 
     fn ensure_read_only_session(&mut self, session_id: Uuid) {
         if self.editor.has_session(session_id) {
+            return;
+        }
+        if let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref()
+            && view.editor_session_id == session_id
+        {
+            let text = view
+                .selected_item()
+                .map_or_else(String::new, |item| item.sql.clone());
+            self.editor.open_read_only(session_id, &text);
             return;
         }
         for tab in &self.tabs {

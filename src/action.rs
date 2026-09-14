@@ -41,6 +41,7 @@ pub enum Action {
     OpenDashboard,
     OpenSqlHistory,
     SqlHistoryOpenDetail,
+    SqlHistoryBackToBrowse,
     SqlHistoryCopy,
     SqlHistorySelect(usize),
     SqlHistorySearchInsert(char),

@@ -9,7 +9,10 @@ use ratatui::{
 
 use crate::{
     app::App,
-    model::sql_history_view::SqlHistoryState,
+    model::{
+        editor::EditorViewport,
+        sql_history_view::{SqlHistoryMode, SqlHistoryState},
+    },
     ui::{HitRegion, HitTarget, sql_preview, theme::Theme},
 };
 
@@ -191,10 +194,10 @@ fn render_list(
 fn render_detail(
     frame: &mut Frame<'_>,
     area: Rect,
-    _app: &App,
+    app: &App,
     view: &SqlHistoryState,
     theme: Theme,
-    _state: &mut super::UiState,
+    state: &mut super::UiState,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -241,18 +244,38 @@ fn render_detail(
         Paragraph::new(info).style(Style::new().fg(theme.text)),
         sections[0],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "SQL is shown on Enter",
-            Style::new().fg(theme.muted),
-        )))
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::new().fg(theme.border)),
-        ),
-        sections[1],
-    );
+    if view.mode == SqlHistoryMode::Sql {
+        let code_area = sections[1];
+        let viewport = EditorViewport {
+            width: code_area.width.saturating_sub(2) as usize,
+            height: code_area.height as usize,
+        };
+        if let Ok(snapshot) = app.sql_history_editor_snapshot(viewport) {
+            super::read_only_sql::ReadOnlySqlEditor {
+                session_id: view.editor_session_id,
+                snapshot: &snapshot,
+                block: Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::new().fg(theme.border))
+                    .title(" SQL "),
+                focused: true,
+            }
+            .render(frame, code_area, theme, state);
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "SQL is shown on Enter",
+                Style::new().fg(theme.muted),
+            )))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::new().fg(theme.border)),
+            ),
+            sections[1],
+        );
+    }
 }
 
 fn format_timestamp(millis: i64) -> String {

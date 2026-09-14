@@ -197,6 +197,7 @@ pub enum GestureOwner {
 pub enum TextGestureSource {
     Editor,
     TextDetail,
+    SqlHistory,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -135,6 +135,18 @@ impl Keymap {
         }
         if matches!(app.overlay, Some(Overlay::SqlHistory(_))) {
             self.pending = None;
+            if let Some(crate::model::workspace::Overlay::SqlHistory(view)) = app.overlay.as_ref()
+                && view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
+            {
+                return match event.code {
+                    KeyCode::Esc => Some(Action::DismissOverlay),
+                    KeyCode::Tab => Some(Action::SqlHistoryBackToBrowse),
+                    _ => Some(Action::ReadOnlyEditorKey {
+                        session_id: view.editor_session_id,
+                        event,
+                    }),
+                };
+            }
             return match event.code {
                 KeyCode::Esc => Some(Action::DismissOverlay),
                 KeyCode::Char('y') => Some(Action::SqlHistoryCopy),
