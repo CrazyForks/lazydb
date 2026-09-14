@@ -12,6 +12,50 @@ use crate::{app::App, security::sanitize_terminal_text};
 
 use super::{HitRegion, HitTarget, UiState, icons::IconSet, render_text_input, theme::Theme};
 
+pub(super) struct OmniLayout {
+    pub popup: Rect,
+    pub input: Rect,
+    pub results: Rect,
+    pub status: Option<Rect>,
+}
+
+pub(super) fn layout(area: Rect, has_status: bool) -> Option<OmniLayout> {
+    let width = area.width.min(88).saturating_sub(2);
+    let height = area.height.min(22).saturating_sub(2);
+    if width < 10 || height < 5 {
+        return None;
+    }
+
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 3,
+        width,
+        height,
+    );
+    let inner = Rect::new(
+        popup.x.saturating_add(1),
+        popup.y.saturating_add(1),
+        popup.width.saturating_sub(2),
+        popup.height.saturating_sub(2),
+    );
+    let input = Rect::new(inner.x, inner.y, inner.width, 1);
+    let status =
+        has_status.then(|| Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1));
+    let results_height = inner.height.saturating_sub(2 + u16::from(has_status));
+    let results = Rect::new(
+        inner.x,
+        inner.y.saturating_add(2),
+        inner.width,
+        results_height,
+    );
+    Some(OmniLayout {
+        popup,
+        input,
+        results,
+        status,
+    })
+}
+
 pub(super) fn render(
     frame: &mut Frame<'_>,
     app: &App,
@@ -23,9 +67,13 @@ pub(super) fn render(
         return;
     };
     let area = frame.area();
-    let width = area.width.min(88).saturating_sub(2);
-    let height = area.height.min(22).saturating_sub(2);
-    if width < 10 || height < 5 {
+    let visible = omni.visible_items();
+    let status = omni.status.as_deref().unwrap_or(if visible.is_empty() {
+        "No matching actions or objects"
+    } else {
+        ""
+    });
+    let Some(layout) = layout(area, !status.is_empty()) else {
         frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new("Terminal too small for Omni. Resize or press Esc.")
@@ -33,13 +81,8 @@ pub(super) fn render(
             area,
         );
         return;
-    }
-    let popup = Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 3,
-        width,
-        height,
-    );
+    };
+    let popup = layout.popup;
     frame.render_widget(Clear, popup);
     let footer = if matches!(omni.step, crate::model::omni::OmniStep::Root) {
         " ↑↓ select  Enter open  Esc close "
@@ -56,10 +99,9 @@ pub(super) fn render(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let input = Rect::new(inner.x, inner.y, inner.width, 1);
     render_text_input(
         frame,
-        input,
+        layout.input,
         "> ",
         &omni.query,
         Style::new().fg(theme.text).bg(theme.surface_raised),
@@ -70,14 +112,7 @@ pub(super) fn render(
         target: HitTarget::Omni,
     });
 
-    let visible = omni.visible_items();
-    let status = omni.status.as_deref().unwrap_or(if visible.is_empty() {
-        "No matching actions or objects"
-    } else {
-        ""
-    });
-    let status_height = usize::from(!status.is_empty());
-    let rows = usize::from(inner.height.saturating_sub(2 + status_height as u16));
+    let rows = usize::from(layout.results.height);
     let (start, end) = visible_window(
         visible.len(),
         rows,
@@ -164,17 +199,16 @@ pub(super) fn render(
             ListItem::new(line).style(base_style)
         })
         .collect::<Vec<_>>();
-    let results = Rect::new(inner.x, inner.y.saturating_add(2), inner.width, rows as u16);
     frame.render_widget(
         List::new(items).style(Style::new().bg(theme.surface_raised)),
-        results,
+        layout.results,
     );
 
-    if !status.is_empty() && inner.height > 1 {
+    if let Some(status_area) = layout.status {
         frame.render_widget(
             Paragraph::new(sanitize_terminal_text(status))
                 .style(Style::new().fg(theme.muted).bg(theme.surface_raised)),
-            Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+            status_area,
         );
     }
 }
@@ -215,4 +249,27 @@ fn truncate_cells(value: &str, width: usize) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::layout::Rect;
+
+    use super::layout;
+
+    #[test]
+    fn layout_keeps_results_and_status_separate() {
+        let layout = layout(Rect::new(4, 3, 80, 24), true).unwrap();
+        assert!(layout.popup.x >= 4);
+        assert!(layout.popup.right() <= 84);
+        assert!(layout.popup.y >= 3);
+        assert!(layout.popup.bottom() <= 27);
+        assert!(!layout.results.intersects(layout.status.unwrap()));
+        assert!(layout.results.bottom() <= layout.popup.bottom());
+    }
+
+    #[test]
+    fn layout_rejects_terminal_that_is_too_small() {
+        assert!(layout(Rect::new(0, 0, 9, 4), false).is_none());
+    }
 }
