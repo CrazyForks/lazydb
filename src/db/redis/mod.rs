@@ -1,6 +1,7 @@
 pub mod discovery;
 pub mod key_index;
 pub mod key_store;
+pub mod metadata_cache;
 pub mod preview_scheduler;
 pub mod read;
 pub mod reply;
