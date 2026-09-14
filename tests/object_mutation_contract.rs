@@ -209,6 +209,26 @@ fn mysql_table_create_plan_uses_backtick_quoting() {
 }
 
 #[test]
+fn mysql_compatible_catalog_version_gates_remain_engine_specific() {
+    assert!(lazydb::db::mysql::supports_catalog_version_for_kind(
+        DatabaseKind::MySql,
+        "8.0.13"
+    ));
+    assert!(!lazydb::db::mysql::supports_catalog_version_for_kind(
+        DatabaseKind::MySql,
+        "10.5.0-MariaDB"
+    ));
+    assert!(lazydb::db::mysql::supports_catalog_version_for_kind(
+        DatabaseKind::MariaDb,
+        "10.5.0-MariaDB"
+    ));
+    assert!(!lazydb::db::mysql::supports_catalog_version_for_kind(
+        DatabaseKind::MariaDb,
+        "8.0.13"
+    ));
+}
+
+#[test]
 fn oracle_create_plans_quote_names_and_target_the_selected_group() {
     let profile_id = Uuid::from_u128(7);
     let schema = CatalogId::new(profile_id, CatalogKind::Schema, ["SERVICE", "APP"]);
