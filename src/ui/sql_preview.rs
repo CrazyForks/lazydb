@@ -17,6 +17,25 @@ pub(crate) fn lines(
     width: usize,
     theme: Theme,
 ) -> Vec<Line<'static>> {
+    lines_with_options(sql, dialect, width, theme, true)
+}
+
+pub(crate) fn lines_without_line_numbers(
+    sql: &str,
+    dialect: SqlDialect,
+    width: usize,
+    theme: Theme,
+) -> Vec<Line<'static>> {
+    lines_with_options(sql, dialect, width, theme, false)
+}
+
+fn lines_with_options(
+    sql: &str,
+    dialect: SqlDialect,
+    width: usize,
+    theme: Theme,
+    show_line_numbers: bool,
+) -> Vec<Line<'static>> {
     let text = sanitize_terminal_text(sql)
         .replace("\r\n", "\n")
         .replace('\r', "\n")
@@ -39,6 +58,7 @@ pub(crate) fn lines(
                     chunk_offset,
                     theme,
                     chunk_offset == source_offset,
+                    show_line_numbers,
                 ));
                 chunk_offset += chunk.len();
                 chunk.clear();
@@ -54,6 +74,7 @@ pub(crate) fn lines(
             chunk_offset,
             theme,
             chunk_offset == source_offset,
+            show_line_numbers,
         ));
         source_offset += raw.len() + 1;
     }
@@ -67,15 +88,16 @@ fn styled_chunk(
     start: usize,
     theme: Theme,
     first_chunk: bool,
+    show_line_numbers: bool,
 ) -> Line<'static> {
     let mut spans = Vec::new();
     let mut offset = start;
-    if first_chunk {
+    if first_chunk && show_line_numbers {
         spans.push(Span::styled(
             format!("{:>3} ", source_line + 1),
             Style::new().fg(theme.muted),
         ));
-    } else {
+    } else if show_line_numbers {
         spans.push(Span::raw("    "));
     }
     for ch in chunk.chars() {

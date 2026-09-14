@@ -45,6 +45,8 @@ pub enum Action {
     SqlHistoryCopy,
     SqlHistorySelect(usize),
     SqlHistorySearchInsert(char),
+    SqlHistorySearchEdit(crate::model::text_input::TextInputEdit),
+    SqlHistorySearchPaste(String),
     SqlHistorySearchOpen,
     SqlHistorySearchBackspace,
     SqlHistorySearchClear,

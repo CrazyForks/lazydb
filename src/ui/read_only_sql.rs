@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
-    layout::{Position, Rect},
+    layout::{Constraint, Layout, Position, Rect},
+    style::Style,
     text::Line,
     widgets::{Block, Paragraph},
 };
@@ -21,6 +22,7 @@ pub(crate) struct ReadOnlySqlEditor<'a> {
     pub snapshot: &'a EditorRenderSnapshot,
     pub block: Block<'a>,
     pub focused: bool,
+    pub show_line_numbers: bool,
 }
 
 impl ReadOnlySqlEditor<'_> {
@@ -32,9 +34,36 @@ impl ReadOnlySqlEditor<'_> {
         state: &mut UiState,
     ) {
         let inner = self.block.inner(area);
-        let viewport_height = usize::from(inner.height);
-        register_text_selection_target(state, self.session_id, inner, self.snapshot);
+        let gutter_width = if self.show_line_numbers {
+            self.snapshot.total_lines.max(1).to_string().len() + 1
+        } else {
+            0
+        } as u16;
+        let columns =
+            Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(1)]).split(inner);
+        let gutter = columns[0];
+        let body = columns[1];
+        let viewport_height = usize::from(body.height);
+        register_text_selection_target(state, self.session_id, body, self.snapshot);
         frame.render_widget(self.block, area);
+        if self.show_line_numbers {
+            for (row, line) in self.snapshot.lines.iter().take(viewport_height).enumerate() {
+                frame.render_widget(
+                    Paragraph::new(format!(
+                        "{:>width$} ",
+                        line.line + 1,
+                        width = gutter_width as usize - 1
+                    ))
+                    .style(Style::new().fg(theme.muted)),
+                    Rect::new(
+                        gutter.x,
+                        gutter.y.saturating_add(row as u16),
+                        gutter.width,
+                        1,
+                    ),
+                );
+            }
+        }
         for (row, line) in self.snapshot.lines.iter().take(viewport_height).enumerate() {
             let selected = self
                 .snapshot
@@ -61,7 +90,7 @@ impl ReadOnlySqlEditor<'_> {
                         0,
                         self.snapshot.horizontal_offset.min(u16::MAX as usize) as u16,
                     )),
-                Rect::new(inner.x, inner.y.saturating_add(row as u16), inner.width, 1),
+                Rect::new(body.x, body.y.saturating_add(row as u16), body.width, 1),
             );
         }
         render_editor_scrollbars(
@@ -82,7 +111,7 @@ impl ReadOnlySqlEditor<'_> {
             && let Some((x, y)) = self.snapshot.cursor_screen_cell
         {
             state.cursor = Some(CursorSpec {
-                position: Position::new(inner.x.saturating_add(x), inner.y.saturating_add(y)),
+                position: Position::new(body.x.saturating_add(x), body.y.saturating_add(y)),
                 style: CursorStyle::Block,
             });
         }

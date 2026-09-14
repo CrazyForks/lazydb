@@ -484,6 +484,49 @@ enum CompletionAfterEdit {
 }
 
 impl App {
+    fn sync_sql_history_editor(&mut self) {
+        let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
+            return;
+        };
+        let Some(item) = view.selected_item() else {
+            return;
+        };
+        if view.loaded_execution_id == Some(item.execution_id) {
+            return;
+        }
+        let session_id = view.editor_session_id;
+        let execution_id = item.execution_id;
+        let text = crate::security::sanitize_terminal_text(&item.sql);
+        self.editor.open_read_only(session_id, &text);
+        if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+            view.loaded_execution_id = Some(execution_id);
+        }
+    }
+
+    fn update_sql_history_search(
+        &mut self,
+        edit: impl FnOnce(&mut crate::model::text_input::TextInput),
+    ) -> Vec<Command> {
+        let changed = self
+            .overlay
+            .as_mut()
+            .and_then(|overlay| match overlay {
+                Overlay::SqlHistory(view) => {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                    let before = view.search.value().to_owned();
+                    edit(&mut view.search);
+                    Some(view.search.value() != before)
+                }
+                _ => None,
+            })
+            .unwrap_or(false);
+        if changed {
+            self.load_sql_history_overlay(false)
+        } else {
+            Vec::new()
+        }
+    }
+
     fn load_sql_history_overlay(&mut self, append: bool) -> Vec<Command> {
         let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() else {
             return Vec::new();
@@ -491,7 +534,7 @@ impl App {
         if append && view.next_cursor.is_none() {
             return Vec::new();
         }
-        if view.loading {
+        if append && view.loading {
             return Vec::new();
         }
         let cursor = append.then(|| view.next_cursor.clone()).flatten();
@@ -1709,12 +1752,12 @@ impl App {
         let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
             return Err(EditorError::MissingSession(Uuid::nil()));
         };
-        self.editor.render_snapshot_with_dialect_and_ranges(
-            view.editor_session_id,
-            viewport,
-            SqlDialect::Generic,
-            &[],
-        )
+        let dialect = view
+            .selected_item()
+            .map(|item| self.sql_history_dialect(item.profile_id))
+            .unwrap_or(SqlDialect::Generic);
+        self.editor
+            .render_snapshot_with_dialect(view.editor_session_id, viewport, dialect)
     }
 
     pub(crate) fn sql_history_editor_revision(&self) -> Option<u64> {
@@ -4665,15 +4708,7 @@ impl App {
             Action::SqlHistoryOpenDetail => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
                     view.mode = crate::model::sql_history_view::SqlHistoryMode::Sql;
-                    let session_id = view.editor_session_id;
-                    let selected = view
-                        .selected_item()
-                        .map(|item| (item.execution_id, item.sql.clone()));
-                    if let Some((execution_id, sql)) = selected {
-                        let text = crate::security::sanitize_terminal_text(&sql);
-                        self.editor.open_read_only(session_id, &text);
-                        view.loaded_execution_id = Some(execution_id);
-                    }
+                    self.sync_sql_history_editor();
                     return Vec::new();
                 }
                 Vec::new()
@@ -4699,14 +4734,46 @@ impl App {
             Action::SqlHistorySelect(index) => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
                     view.select_index(index);
+                    self.sync_sql_history_editor();
                     return Vec::new();
                 }
                 Vec::new()
             }
             Action::SqlHistorySearchInsert(character) => {
-                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
-                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
-                    view.search.insert(character);
+                self.update_sql_history_search(|search| search.insert(character))
+            }
+            Action::SqlHistorySearchEdit(edit) => {
+                let changed = self
+                    .overlay
+                    .as_mut()
+                    .and_then(|overlay| match overlay {
+                        Overlay::SqlHistory(view) => {
+                            view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                            Some(view.search.apply(edit))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                if changed {
+                    return self.load_sql_history_overlay(false);
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchPaste(value) => {
+                let changed = self
+                    .overlay
+                    .as_mut()
+                    .and_then(|overlay| match overlay {
+                        Overlay::SqlHistory(view) => {
+                            view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                            let before = view.search.value().to_owned();
+                            view.search.paste(value);
+                            Some(view.search.value() != before)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                if changed {
                     return self.load_sql_history_overlay(false);
                 }
                 Vec::new()
@@ -4718,18 +4785,10 @@ impl App {
                 Vec::new()
             }
             Action::SqlHistorySearchBackspace => {
-                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
-                    view.search.backspace();
-                    return self.load_sql_history_overlay(false);
-                }
-                Vec::new()
+                self.update_sql_history_search(|search| search.backspace())
             }
             Action::SqlHistorySearchClear => {
-                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
-                    view.search.clear();
-                    return self.load_sql_history_overlay(false);
-                }
-                Vec::new()
+                self.update_sql_history_search(|search| search.clear())
             }
             Action::SqlHistorySearchConfirm | Action::SqlHistorySearchCancel => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
@@ -4740,6 +4799,7 @@ impl App {
             Action::SqlHistoryMove(delta) => {
                 if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
                     view.move_selection(delta);
+                    self.sync_sql_history_editor();
                     return Vec::new();
                 }
                 Vec::new()
