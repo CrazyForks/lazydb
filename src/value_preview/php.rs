@@ -104,11 +104,7 @@ fn length_prefix(data: &[u8], offset: usize) -> Result<(usize, usize), DecodeErr
     Ok((length, offset))
 }
 
-fn field<'a>(
-    data: &'a [u8],
-    offset: usize,
-    delimiter: u8,
-) -> Result<(&'a [u8], usize), DecodeError> {
+fn field(data: &[u8], offset: usize, delimiter: u8) -> Result<(&[u8], usize), DecodeError> {
     let offset = expect(data, offset, b':')?;
     let end = data[offset..]
         .iter()

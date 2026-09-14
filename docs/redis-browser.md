@@ -20,6 +20,30 @@ use cursors; Lists and Sorted Sets use ranges. A page can be partial and can
 have a next position. The browser preserves raw bytes and only escapes them at
 display time.
 
+## Value preview formats
+
+The selected Redis key displays its complete path, Redis type, Redis memory
+usage when `MEMORY USAGE` is available, and TTL. Size labels use binary units
+(`B`, `KB`, `MB`, and `GB`); the loaded page byte count is not presented as
+the size of the complete key. TTL labels use compact units such as `55m30s`,
+`850ms`, `∞`, `Missing`, or `—`.
+
+The value area uses the same read-only Vim editor session as other LazyDB text
+views, including normal-mode navigation, search, selection, mouse selection,
+and editor scrollbars. `h` and `l` therefore move the Vim cursor when Preview
+is focused; pane focus uses the normal pane-focus commands.
+
+The format label can be clicked or cycled with `f`. RAW, JSON, YAML, Table
+projection, and Hex are supported views. JSON and YAML are formatted from
+validated input; invalid structured input falls back to the raw view. Java,
+PHP, Pickle, and schema-less Protobuf decoders are available in the
+value-preview library and preserve explicit invalid/incomplete statuses.
+
+Automatic selection validates JSON and strong serialization signatures before
+selection, uses RAW for normal UTF-8, Hex for unknown binary, and Table for
+Redis collections. The preview is read-only: decoded JSON/YAML is a display
+projection and is not automatically encoded back to original serialized bytes.
+
 Redis scans and value pages are not snapshots. A key may disappear or change
 type between metadata and value reads. Old responses are discarded after a
 database switch, refresh, tab close, or connection generation change.

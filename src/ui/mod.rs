@@ -6299,7 +6299,10 @@ fn render_help(
     state: &mut UiState,
     theme: Theme,
 ) {
-    let popup = centered(area, 74, area.height.saturating_sub(2).clamp(12, 28));
+    // Keep the contextual list tall enough to expose the Explorer jump
+    // shortcuts on a normal 36-row terminal. Smaller terminals still use the
+    // compact clamp and retain the existing scroll behavior.
+    let popup = centered(area, 74, area.height.saturating_sub(2).clamp(12, 34));
     frame.render_widget(Clear, popup);
     let title = format!(" KEYMAP // {} ", crate::help::context_name(help.context));
     let block = Block::default()

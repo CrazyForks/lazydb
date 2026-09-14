@@ -64,6 +64,10 @@ impl PreviewCache {
         self.values.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     fn touch(&mut self, key: &CacheKey) {
         self.order.retain(|existing| existing != key);
         self.order.push_back(key.clone());
