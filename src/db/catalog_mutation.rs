@@ -890,6 +890,7 @@ pub struct CatalogMutationPlan {
     pub warnings: Vec<String>,
     pub destructive: bool,
     pub impact: CatalogMutationImpact,
+    pub rebuild: Option<CatalogRebuildPlan>,
     pub execution_target: CatalogMutationTarget,
     statements: Vec<String>,
     #[allow(dead_code)]
@@ -934,6 +935,7 @@ impl CatalogMutationPlan {
                 },
                 native_identity_changed: false,
             },
+            rebuild: None,
             statements,
             execution_secret: None,
         };
@@ -942,6 +944,9 @@ impl CatalogMutationPlan {
     }
 
     pub fn validate(&self) -> Result<(), CatalogMutationError> {
+        if let Some(rebuild) = &self.rebuild {
+            rebuild.validate()?;
+        }
         if self.statements.is_empty()
             || self
                 .statements
@@ -1011,6 +1016,11 @@ impl CatalogMutationPlan {
 
     pub fn with_impact(mut self, impact: CatalogMutationImpact) -> Self {
         self.impact = impact;
+        self
+    }
+
+    pub fn with_rebuild_plan(mut self, rebuild: CatalogRebuildPlan) -> Self {
+        self.rebuild = Some(rebuild);
         self
     }
 

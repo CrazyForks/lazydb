@@ -147,6 +147,173 @@ async fn sqlite_loads_and_executes_a_table_edit_plan_against_a_temporary_databas
 }
 
 #[tokio::test]
+async fn sqlite_rebuilds_structural_table_edits_without_losing_data_indexes_or_triggers() {
+    let imported = import_connection_url("sqlite://:memory:", Some("rebuild-plan")).unwrap();
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    database
+        .execute(
+            "CREATE TABLE audit (item_id INTEGER); CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT, normalized TEXT GENERATED ALWAYS AS (lower(value)) STORED); CREATE INDEX items_value_idx ON items(value); CREATE TRIGGER items_audit AFTER INSERT ON items BEGIN INSERT INTO audit VALUES (NEW.id); END; INSERT INTO items(id, value) VALUES (1, 'before');",
+        )
+        .await
+        .unwrap();
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        [":memory:", "main", "items"],
+    );
+    let definition = database
+        .load_catalog_object_definition(
+            &lazydb::db::catalog_mutation::CatalogObjectDefinitionRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 1,
+                catalog_epoch: 1,
+                object: object.clone(),
+                target: lazydb::model::execution_target::ExecutionTarget {
+                    profile_id,
+                    database: ":memory:".to_owned(),
+                    schema: Some("main".to_owned()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition) = definition
+    else {
+        panic!("SQLite table definition loader returned the wrong object type");
+    };
+    let mut draft = TableDraft::from_definition(&table_definition);
+    draft
+        .columns
+        .iter_mut()
+        .find(|column| column.name.value() == "value")
+        .expect("value column should be loaded")
+        .native_type
+        .set("BLOB");
+    let plan = database
+        .plan_catalog_mutation(
+            lazydb::db::catalog_mutation::CatalogMutationRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 2,
+                catalog_epoch: 1,
+                mode: CatalogMutationMode::Edit,
+                anchor: CatalogMutationAnchor::Catalog(object.clone()),
+                object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+                current_database: Some(":memory:".to_owned()),
+            },
+            CatalogDraft::Table(draft),
+            Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition)),
+        )
+        .unwrap();
+    assert!(plan.rebuild.is_some());
+    database.execute_catalog_mutation(&plan).await.unwrap();
+    database
+        .execute("INSERT INTO main.items(id, value) VALUES (2, 'after')")
+        .await
+        .unwrap();
+    let audit = database
+        .execute("SELECT COUNT(*) FROM main.audit")
+        .await
+        .unwrap();
+    assert!(matches!(
+        audit.result_sets[0].rows[0][0],
+        CellValue::Integer(2)
+    ));
+    let ddl = database.relation_ddl(&object).await.unwrap();
+    assert!(ddl.sql.contains("CREATE INDEX items_value_idx"));
+    assert!(ddl.sql.contains("CREATE TRIGGER items_audit"));
+    database.close().await;
+}
+
+#[tokio::test]
+async fn sqlite_rebuild_restores_composite_keys_and_foreign_key_enforcement() {
+    let imported = import_connection_url("sqlite://:memory:", Some("rebuild-foreign-key")).unwrap();
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    database
+        .execute(
+            "CREATE TABLE parent (parent_id INTEGER PRIMARY KEY); INSERT INTO parent VALUES (1); CREATE TABLE child (tenant_id INTEGER NOT NULL, parent_id INTEGER NOT NULL, value INTEGER, PRIMARY KEY (tenant_id, parent_id), FOREIGN KEY (parent_id) REFERENCES parent(parent_id)) WITHOUT ROWID; INSERT INTO child VALUES (7, 1, 10);",
+        )
+        .await
+        .unwrap();
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        [":memory:", "main", "child"],
+    );
+    let definition = database
+        .load_catalog_object_definition(
+            &lazydb::db::catalog_mutation::CatalogObjectDefinitionRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 1,
+                catalog_epoch: 1,
+                object: object.clone(),
+                target: lazydb::model::execution_target::ExecutionTarget {
+                    profile_id,
+                    database: ":memory:".to_owned(),
+                    schema: Some("main".to_owned()),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition) = definition
+    else {
+        panic!("SQLite child definition loader returned the wrong object type");
+    };
+    let mut draft = TableDraft::from_definition(&table_definition);
+    draft
+        .columns
+        .iter_mut()
+        .find(|column| column.name.value() == "value")
+        .expect("value column should be loaded")
+        .native_type
+        .set("TEXT");
+    let plan = database
+        .plan_catalog_mutation(
+            lazydb::db::catalog_mutation::CatalogMutationRequest {
+                connection: ConnectionIdentity {
+                    profile_id,
+                    generation: 1,
+                },
+                request_id: 2,
+                catalog_epoch: 1,
+                mode: CatalogMutationMode::Edit,
+                anchor: CatalogMutationAnchor::Catalog(object.clone()),
+                object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+                current_database: Some(":memory:".to_owned()),
+            },
+            CatalogDraft::Table(draft),
+            Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(table_definition)),
+        )
+        .unwrap();
+    database.execute_catalog_mutation(&plan).await.unwrap();
+    assert!(
+        database
+            .execute("INSERT INTO main.child VALUES (8, 999, 'invalid')")
+            .await
+            .is_err()
+    );
+    let ddl = database.relation_ddl(&object).await.unwrap();
+    assert!(ddl.sql.contains("PRIMARY KEY (tenant_id, parent_id)"));
+    assert!(ddl.sql.contains("FOREIGN KEY (parent_id)"));
+    database.close().await;
+}
+
+#[tokio::test]
 async fn relation_reads_use_request_scope_without_reconnecting() {
     let mut imported = import_connection_url("sqlite://:memory:", Some("request-scope")).unwrap();
     imported.profile.catalog_scope = CatalogScope::for_profile(

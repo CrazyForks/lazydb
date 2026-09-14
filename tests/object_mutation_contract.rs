@@ -504,6 +504,10 @@ fn sqlite_table_edit_plan_uses_native_rename() {
     table.name.set("new");
     table.columns[0].name.set("id");
     table.columns[0].native_type.set("INTEGER");
+    table.columns[0].existing_name = Some("id".into());
+    table.columns[0].state = lazydb::model::catalog_editor::DraftRowState::Existing {
+        id: CatalogId::new(profile_id, CatalogKind::Column, ["id"]),
+    };
     let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(
         lazydb::db::catalog_mutation::TableDefinition {
             database: ":memory:".into(),
@@ -511,7 +515,17 @@ fn sqlite_table_edit_plan_uses_native_rename() {
             name: "old".into(),
             owner: String::new(),
             comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
-            columns: vec![],
+            columns: vec![lazydb::db::catalog_mutation::ColumnDefinition {
+                name: "id".into(),
+                ordinal_position: 1,
+                native_type: "INTEGER".into(),
+                nullable: true,
+                default_expression: lazydb::db::catalog::OptionalMetadata::Unsupported,
+                identity: lazydb::db::catalog::OptionalMetadata::Unsupported,
+                generated_expression: lazydb::db::catalog::OptionalMetadata::Unsupported,
+                collation: lazydb::db::catalog::OptionalMetadata::Unsupported,
+                comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            }],
             indexes: vec![],
             constraints: vec![],
             baseline_fingerprint: "old".into(),
