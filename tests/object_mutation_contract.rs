@@ -151,6 +151,12 @@ fn oracle_advertises_only_the_object_groups_with_creation_plans() {
 }
 
 #[test]
+fn oracle_does_not_advertise_editing_before_authoritative_definitions_exist() {
+    let capabilities = OracleAdapter::catalog_mutation_capabilities();
+    assert!(capabilities.edit.is_empty());
+}
+
+#[test]
 fn oracle_create_plans_quote_names_and_target_the_selected_group() {
     let profile_id = Uuid::from_u128(7);
     let schema = CatalogId::new(profile_id, CatalogKind::Schema, ["SERVICE", "APP"]);
