@@ -155,6 +155,18 @@ fn selecting_a_key_creates_a_preview_command_but_prefix_selection_stays_empty() 
         database: 2,
     });
     let tab_id = app.tabs.last().unwrap().id();
+    if let Some(WorkspaceTab::RedisBrowser(tab)) = app.tabs.last_mut() {
+        tab.tree.rebuild(&[RedisKeyId {
+            target: tab.target.clone(),
+            key: b"user:1".to_vec(),
+        }]);
+    }
+    let commands = app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        commands[0],
+        lazydb::action::Command::LoadRedisValuePreview { .. }
+    ));
     assert!(
         app.select_redis_key(tab_id, Some(KeyTreeNodeId::Prefix(b"user:".to_vec())))
             .is_empty()

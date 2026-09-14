@@ -17798,9 +17798,12 @@ impl App {
         let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
             return Vec::new();
         };
-        vec![Command::LoadRedisPreview {
+        let Some(connection) = self.connection.active_identity() else {
+            return Vec::new();
+        };
+        vec![Command::LoadRedisValuePreview {
             tab_id,
-            generation: tab.keyspace.generation,
+            connection,
             preview_generation: tab.preview_generation,
             key: key.clone(),
         }]

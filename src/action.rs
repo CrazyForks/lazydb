@@ -1255,6 +1255,12 @@ pub enum Command {
         preview_generation: u64,
         request: crate::db::redis::read::RedisReadRequest,
     },
+    LoadRedisValuePreview {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        preview_generation: u64,
+        key: crate::db::redis::types::RedisKeyId,
+    },
     ResolveCatalogRelation {
         connection: ConnectionIdentity,
         catalog_epoch: u64,
