@@ -1650,8 +1650,17 @@ impl App {
         else {
             return Err(EditorError::MissingSession(tab_id));
         };
+        let language = match tab.format.view() {
+            crate::value_preview::ValueView::Json => {
+                crate::model::editor_language::EditorLanguage::Json
+            }
+            crate::value_preview::ValueView::Yaml => {
+                crate::model::editor_language::EditorLanguage::Yaml
+            }
+            _ => crate::model::editor_language::EditorLanguage::Plain,
+        };
         self.editor
-            .render_plain_snapshot(tab.preview_editor_id, viewport)
+            .render_preview_snapshot(tab.preview_editor_id, viewport, language)
     }
 
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {

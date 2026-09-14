@@ -911,14 +911,136 @@ impl EditorWorkspace {
         id: Uuid,
         viewport: EditorViewport,
     ) -> Result<EditorRenderSnapshot, EditorError> {
+        self.render_preview_snapshot(
+            id,
+            viewport,
+            crate::model::editor_language::EditorLanguage::Plain,
+        )
+    }
+
+    pub(crate) fn render_preview_snapshot(
+        &self,
+        id: Uuid,
+        viewport: EditorViewport,
+        language: crate::model::editor_language::EditorLanguage,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
         let mut snapshot = self.render_snapshot_with_dialect(id, viewport, SqlDialect::Generic)?;
         for line in &mut snapshot.lines {
-            for span in &mut line.spans {
-                span.kind = EditorHighlightKind::Plain;
-            }
+            line.spans = match language {
+                crate::model::editor_language::EditorLanguage::Json
+                | crate::model::editor_language::EditorLanguage::Yaml => {
+                    Self::preview_highlight_spans(&line.display_text, line.source_start, language)
+                }
+                crate::model::editor_language::EditorLanguage::Plain
+                | crate::model::editor_language::EditorLanguage::Sql(_) => {
+                    line.spans
+                        .iter_mut()
+                        .for_each(|span| span.kind = EditorHighlightKind::Plain);
+                    line.spans.clone()
+                }
+            };
         }
-        snapshot.semantic_diagnostics.clear();
+        if matches!(
+            language,
+            crate::model::editor_language::EditorLanguage::Plain
+        ) {
+            snapshot.semantic_diagnostics.clear();
+        } else {
+            snapshot.semantic_diagnostics.clear();
+        }
         Ok(snapshot)
+    }
+
+    fn preview_highlight_spans(
+        text: &str,
+        source_start: usize,
+        language: crate::model::editor_language::EditorLanguage,
+    ) -> Vec<EditorRenderSpan> {
+        let mut spans = Vec::new();
+        let mut token_start = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut index = 0usize;
+        let chars = text.char_indices().collect::<Vec<_>>();
+        let flush = |spans: &mut Vec<EditorRenderSpan>, start: usize, end: usize, kind| {
+            if end > start {
+                spans.push(EditorRenderSpan {
+                    text: text[start..end].to_owned(),
+                    source_start: source_start + start,
+                    source_end: source_start + end,
+                    kind,
+                    current_statement: false,
+                });
+            }
+        };
+        while index < chars.len() {
+            let (byte, character) = chars[index];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if character == '\\' {
+                    escaped = true;
+                } else if character == '"' {
+                    in_string = false;
+                    let end = byte + character.len_utf8();
+                    flush(&mut spans, token_start, end, EditorHighlightKind::String);
+                    token_start = end;
+                }
+                index += 1;
+                continue;
+            }
+            if character == '"' {
+                flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
+                in_string = true;
+                token_start = byte;
+            } else if matches!(
+                language,
+                crate::model::editor_language::EditorLanguage::Yaml
+            ) && character == '#'
+            {
+                flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
+                flush(&mut spans, byte, text.len(), EditorHighlightKind::Comment);
+                break;
+            } else if character.is_ascii_digit() || (character == '-' && token_start == byte) {
+                if token_start < byte {
+                    flush(&mut spans, token_start, byte, EditorHighlightKind::Plain);
+                }
+                let end = chars
+                    .iter()
+                    .skip(index)
+                    .take_while(|(_, value)| {
+                        value.is_ascii_digit() || matches!(value, '.' | '-' | '+')
+                    })
+                    .last()
+                    .map_or(byte + character.len_utf8(), |(end, value)| {
+                        end + value.len_utf8()
+                    });
+                flush(&mut spans, byte, end, EditorHighlightKind::Number);
+                token_start = end;
+                index = chars
+                    .iter()
+                    .position(|(offset, _)| *offset >= end)
+                    .unwrap_or(chars.len());
+                continue;
+            }
+            index += 1;
+        }
+        if in_string {
+            flush(
+                &mut spans,
+                token_start,
+                text.len(),
+                EditorHighlightKind::String,
+            );
+        } else {
+            flush(
+                &mut spans,
+                token_start,
+                text.len(),
+                EditorHighlightKind::Plain,
+            );
+        }
+        spans
     }
 
     pub(crate) fn render_snapshot_with_dialect(
