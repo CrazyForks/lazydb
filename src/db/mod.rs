@@ -520,11 +520,12 @@ impl DatabaseConnection {
                 MySqlAdapter::plan_catalog_mutation(request, draft, baseline)
             }
             Self::Sqlite(_) => SqliteAdapter::plan_catalog_mutation(request, draft, baseline),
-            Self::SqlServer(_) => Err(
+            Self::SqlServer(_) => MsSqlAdapter::plan_catalog_mutation(request, draft, baseline),
+            /*
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
                 },
-            ),
+            ),*/
             Self::Oracle(_) => OracleAdapter::plan_catalog_mutation(request, draft, baseline),
             Self::Redis(_) => Err(
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
@@ -544,9 +545,7 @@ impl DatabaseConnection {
                 adapter.execute_catalog_mutation(plan).await
             }
             Self::Sqlite(adapter) => adapter.execute_catalog_mutation(plan).await,
-            Self::SqlServer(_) => Err(DatabaseError::configuration(
-                "catalog mutation is not supported for this database",
-            )),
+            Self::SqlServer(adapter) => adapter.execute_catalog_mutation(plan).await,
             Self::Oracle(adapter) => adapter.execute_catalog_mutation(plan).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "catalog mutation is not supported for Redis",

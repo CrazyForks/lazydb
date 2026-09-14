@@ -5,6 +5,7 @@ use lazydb::db::catalog_mutation::{
     CatalogMutationMode, CatalogMutationOption, CatalogObjectType, MutationCompletion,
     MutationProgress,
 };
+use lazydb::db::mssql::MsSqlAdapter;
 use lazydb::db::mysql::MySqlAdapter;
 use lazydb::db::oracle::OracleAdapter;
 use lazydb::db::sqlite::SqliteAdapter;
@@ -246,6 +247,24 @@ fn sqlite_exposes_only_native_table_and_view_creation() {
         capabilities
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
             .is_none()
+    );
+    assert!(capabilities.edit.is_empty());
+}
+
+#[test]
+fn sql_server_exposes_only_native_table_and_view_creation() {
+    let capabilities = MsSqlAdapter::catalog_mutation_capabilities();
+    assert!(
+        capabilities
+            .create
+            .iter()
+            .any(|option| { option.object_type == CatalogObjectType::Catalog(CatalogKind::Table) })
+    );
+    assert!(
+        capabilities
+            .create
+            .iter()
+            .any(|option| { option.object_type == CatalogObjectType::Catalog(CatalogKind::View) })
     );
     assert!(capabilities.edit.is_empty());
 }
