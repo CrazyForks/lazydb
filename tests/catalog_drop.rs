@@ -577,7 +577,6 @@ fn mysql_planner_reports_unsupported_or_insufficient_metadata() {
     };
     for kind in [
         CatalogKind::MaterializedView,
-        CatalogKind::Sequence,
         CatalogKind::Type,
         CatalogKind::Column,
         CatalogKind::CheckConstraint,

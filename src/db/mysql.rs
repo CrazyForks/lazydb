@@ -3951,10 +3951,11 @@ mod tests {
             "primary_key",
             "unique_constraint",
             "foreign_key",
+            "sequence",
         ] {
             assert!(search_catalog_kind(native).is_ok(), "missing {native}");
         }
-        for unsupported in ["materialized_view", "sequence", "check_constraint", "type"] {
+        for unsupported in ["materialized_view", "check_constraint", "type"] {
             assert!(search_catalog_kind(unsupported).is_err());
         }
         assert_eq!(

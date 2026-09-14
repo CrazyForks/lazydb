@@ -253,10 +253,16 @@ plugin configuration.
 | --- | --- | --- |
 | PostgreSQL | 12 or newer | Databases, schemas, tables, columns, indexes, constraints, views, materialized views, sequences, functions, procedures, types; catalog editing also covers databases and roles; relation rename reconciliation uses readable `pg_class`/`pg_namespace` OIDs |
 | Oracle MySQL | 8.0.13 or newer | Databases, tables, views, functions, procedures, triggers |
+| MariaDB | 10.5 or newer | Databases, tables, views, functions, procedures, triggers, and version-gated sequences; MariaDB uses a dedicated SQL dialect context |
 | SQL Server | SQL Server 2012 or newer | Databases, schemas, tables, views, functions, procedures, sequences, triggers, indexes, keys, foreign keys, and column metadata |
 | SQLite | Native SQLite schema support | Tables, views, indexes, foreign keys, and triggers |
 
-MariaDB is not part of the current MySQL catalog contract. See the complete
+MariaDB shares the MySQL-compatible transport but has its own product/version
+gates. Current support includes SQL execution, transactions, monitoring,
+database-is-schema catalog browsing, CHECK metadata, native trigger DDL, and
+sequence catalog discovery. Data-grid editing, column/index/constraint
+mutation, routine/event management, system-versioned history operations, and
+MariaDB-specific authentication options remain gated. See the complete
 [database capability matrix](docs/database-capabilities.md) for metadata,
 paging, relation DDL, and version details.
 
