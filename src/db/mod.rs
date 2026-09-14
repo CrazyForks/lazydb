@@ -516,7 +516,10 @@ impl DatabaseConnection {
             Self::Postgres(adapter) => {
                 adapter.plan_catalog_mutation_for_adapter(request, draft, baseline)
             }
-            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
+            Self::MySql(_) | Self::MariaDb(_) => {
+                MySqlAdapter::plan_catalog_mutation(request, draft, baseline)
+            }
+            Self::Sqlite(_) | Self::SqlServer(_) => Err(
                 catalog_mutation::CatalogMutationError::UnsupportedOperation {
                     object_type: request.object_type,
                 },
@@ -536,9 +539,12 @@ impl DatabaseConnection {
     ) -> Result<QueryOutcome, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.execute_catalog_mutation(plan).await,
-            Self::MySql(_) | Self::MariaDb(_) | Self::Sqlite(_) | Self::SqlServer(_) => Err(
-                DatabaseError::configuration("catalog mutation is not supported for this database"),
-            ),
+            Self::MySql(adapter) | Self::MariaDb(adapter) => {
+                adapter.execute_catalog_mutation(plan).await
+            }
+            Self::Sqlite(_) | Self::SqlServer(_) => Err(DatabaseError::configuration(
+                "catalog mutation is not supported for this database",
+            )),
             Self::Oracle(adapter) => adapter.execute_catalog_mutation(plan).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "catalog mutation is not supported for Redis",

@@ -5,6 +5,7 @@ use lazydb::db::catalog_mutation::{
     CatalogMutationMode, CatalogMutationOption, CatalogObjectType, MutationCompletion,
     MutationProgress,
 };
+use lazydb::db::mysql::MySqlAdapter;
 use lazydb::db::oracle::OracleAdapter;
 use lazydb::model::catalog_editor::{CatalogDraft, TableDraft};
 use lazydb::model::explorer::ExplorerNodeId;
@@ -154,6 +155,57 @@ fn oracle_advertises_only_the_object_groups_with_creation_plans() {
 fn oracle_does_not_advertise_editing_before_authoritative_definitions_exist() {
     let capabilities = OracleAdapter::catalog_mutation_capabilities();
     assert!(capabilities.edit.is_empty());
+}
+
+#[test]
+fn mysql_database_is_schema_advertises_table_and_view_creation() {
+    let capabilities = MySqlAdapter::catalog_mutation_capabilities();
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Table))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::View))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
+            .is_none()
+    );
+    assert!(capabilities.edit.is_empty());
+}
+
+#[test]
+fn mysql_table_create_plan_uses_backtick_quoting() {
+    let profile_id = Uuid::from_u128(8);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 1,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Create,
+        anchor: CatalogMutationAnchor::Group {
+            schema: CatalogId::new(profile_id, CatalogKind::Schema, ["shop`db", "shop`db"]),
+            group: lazydb::db::catalog::ObjectGroup::Tables,
+        },
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("shop`db".to_owned()),
+    };
+    let mut table = TableDraft::new("shop`db");
+    table.name.set("line`item");
+    table.columns[0].name.set("id");
+    table.columns[0].native_type.set("BIGINT");
+    let plan = MySqlAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), None)
+        .expect("MySQL table plan should be valid");
+    assert_eq!(
+        plan.statements()[0],
+        "CREATE TABLE `shop``db`.`line``item` (`id` BIGINT)"
+    );
 }
 
 #[test]
