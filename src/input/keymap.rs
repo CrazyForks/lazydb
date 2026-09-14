@@ -31,6 +31,7 @@ enum Pending {
     ExplorerAlign,
     Goto,
     LeaderTransaction,
+    RedisPreviewLeader,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1227,6 +1228,15 @@ impl Keymap {
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)
             {
+                if event.modifiers.is_empty()
+                    && event.code == KeyCode::Char(' ')
+                    && app
+                        .active_read_only_editor_mode()
+                        .is_none_or(|mode| mode == EditorMode::Normal)
+                {
+                    self.set_pending(Pending::RedisPreviewLeader, app);
+                    return None;
+                }
                 return Some(Action::ReadOnlyEditorKey {
                     session_id: tab.preview_editor_id,
                     event,
@@ -2692,6 +2702,7 @@ fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, Str
         Pending::ExplorerAlign => Some((ShortcutPrefix::ExplorerAlign, "z".into())),
         Pending::Goto => Some((ShortcutPrefix::Goto, "g".into())),
         Pending::LeaderTransaction => Some((ShortcutPrefix::EditorLeader, "Space t".into())),
+        Pending::RedisPreviewLeader => Some((ShortcutPrefix::Leader, "Space".into())),
     }
 }
 
@@ -2722,6 +2733,9 @@ fn map_pending(
         return None;
     }
     match (pending, event.code) {
+        (Pending::RedisPreviewLeader, KeyCode::Char('f')) => Some(Action::RedisPreviewCycleFormat),
+        (Pending::RedisPreviewLeader, KeyCode::Char('w')) => Some(Action::RedisPreviewToggleWrap),
+        (Pending::RedisPreviewLeader, KeyCode::Char('l')) => Some(Action::RedisPreviewLoadNext),
         (Pending::Leader, KeyCode::Char('B')) if app.active_console_opt().is_some() => {
             Some(Action::OpenConsoleTargetSelector {
                 console_id: app.active_console_opt().expect("checked above").id,

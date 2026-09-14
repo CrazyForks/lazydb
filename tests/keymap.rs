@@ -168,14 +168,21 @@ fn redis_preview_keeps_application_controls_outside_the_editor_stream() {
     }
 
     let mut keymap = Keymap::default();
-    assert!(matches!(
-        keymap.map(key(KeyCode::Char(' ')), &app),
-        Some(Action::ReadOnlyEditorKey { .. })
-    ));
+    assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
     assert!(matches!(
         keymap.map(key(KeyCode::Char('f')), &app),
-        Some(Action::ReadOnlyEditorKey { .. })
+        Some(Action::RedisPreviewCycleFormat)
     ));
+    assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('w')), &app),
+        Some(Action::RedisPreviewToggleWrap)
+    );
+    assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('l')), &app),
+        Some(Action::RedisPreviewLoadNext)
+    );
     assert!(matches!(
         keymap.map(key(KeyCode::PageDown), &app),
         Some(Action::ReadOnlyEditorKey { .. })
