@@ -1176,6 +1176,7 @@ pub enum Action {
     RedisPreviewScroll(isize),
     RedisPreviewCycleFormat,
     RedisPreviewLoadNext,
+    RedisPreviewTick,
     RedisPreviewCellDetail {
         tab_id: Uuid,
         row: usize,

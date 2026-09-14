@@ -287,6 +287,10 @@ pub struct App {
     pending_identity_refreshes: HashMap<u64, IdentityRefresh>,
     pending_parent_recoveries: HashMap<CatalogTarget, crate::db::catalog::CatalogId>,
     catalog_sync_pending: bool,
+    redis_preview_schedulers: HashMap<
+        Uuid,
+        crate::db::redis::preview_scheduler::PreviewScheduler<crate::db::redis::types::RedisKeyId>,
+    >,
 }
 
 #[derive(Clone, Debug)]
@@ -840,6 +844,7 @@ impl App {
             pending_identity_refreshes: HashMap::new(),
             pending_parent_recoveries: HashMap::new(),
             catalog_sync_pending: false,
+            redis_preview_schedulers: HashMap::new(),
         }
     }
 
@@ -12610,6 +12615,9 @@ impl App {
                 key,
                 content,
             } => {
+                if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
+                    scheduler.mark_complete();
+                }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
                     && generation == tab.keyspace.generation
@@ -12628,6 +12636,9 @@ impl App {
                 key,
                 message,
             } => {
+                if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
+                    scheduler.mark_complete();
+                }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
                     && generation == tab.keyspace.generation
@@ -12645,6 +12656,9 @@ impl App {
                 preview_generation,
                 page,
             } => {
+                if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
+                    scheduler.mark_complete();
+                }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
                     && self.connection.active_identity() == Some(connection)
@@ -12705,6 +12719,7 @@ impl App {
                 Vec::new()
             }
             Action::RedisPreviewLoadNext => self.load_next_redis_page(),
+            Action::RedisPreviewTick => self.dispatch_ready_redis_previews(),
             Action::RedisPreviewCellDetail {
                 tab_id,
                 row,
@@ -12717,6 +12732,9 @@ impl App {
                 key,
                 message,
             } => {
+                if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
+                    scheduler.mark_complete();
+                }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
                     && self.connection.active_identity() == Some(connection)
@@ -18446,15 +18464,50 @@ impl App {
         let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
             return Vec::new();
         };
-        let Some(connection) = self.connection.active_identity() else {
-            return Vec::new();
-        };
-        vec![Command::LoadRedisValuePreview {
-            tab_id,
-            connection,
-            preview_generation: tab.preview_generation,
-            key: key.clone(),
-        }]
+        self.redis_preview_schedulers
+            .entry(tab_id)
+            .or_insert_with(|| {
+                crate::db::redis::preview_scheduler::PreviewScheduler::new(
+                    std::time::Duration::from_millis(100),
+                )
+            })
+            .select(crate::db::redis::preview_scheduler::PreviewRequest {
+                tab_id,
+                generation: tab.preview_generation,
+                key: key.clone(),
+            });
+        Vec::new()
+    }
+
+    fn dispatch_ready_redis_previews(&mut self) -> Vec<Command> {
+        let mut commands = Vec::new();
+        let tab_ids = self
+            .redis_preview_schedulers
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for tab_id in tab_ids {
+            let Some(request) = self
+                .redis_preview_schedulers
+                .get_mut(&tab_id)
+                .and_then(|scheduler| scheduler.take_ready())
+            else {
+                continue;
+            };
+            let Some(connection) = self.connection.active_identity() else {
+                continue;
+            };
+            if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
+                scheduler.mark_in_flight();
+            }
+            commands.push(Command::LoadRedisValuePreview {
+                tab_id: request.tab_id,
+                connection,
+                preview_generation: request.generation,
+                key: request.key,
+            });
+        }
+        commands
     }
 
     fn copy_redis_key(&mut self) -> Vec<Command> {

@@ -228,7 +228,7 @@ fn keyspace_status_distinguishes_initial_empty_partial_and_failure() {
 }
 
 #[test]
-fn selecting_a_key_creates_a_preview_command_but_prefix_selection_stays_empty() {
+fn selecting_a_key_is_debounced_but_prefix_selection_stays_empty() {
     let mut app = App::new(Vec::new());
     app.connection.profile_id = Some(Uuid::from_u128(1));
     app.connection.generation = 1;
@@ -250,11 +250,8 @@ fn selecting_a_key_creates_a_preview_command_but_prefix_selection_stays_empty() 
         }]);
     }
     let commands = app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
-    assert_eq!(commands.len(), 1);
-    assert!(matches!(
-        commands[0],
-        lazydb::action::Command::LoadRedisValuePreview { .. }
-    ));
+    assert!(commands.is_empty());
+    assert!(app.update(Action::RedisPreviewTick).is_empty());
     assert!(
         app.select_redis_key(tab_id, Some(KeyTreeNodeId::Prefix(b"user:".to_vec())))
             .is_empty()
@@ -262,6 +259,45 @@ fn selecting_a_key_creates_a_preview_command_but_prefix_selection_stays_empty() 
     assert!(
         matches!(app.tabs.last().unwrap(), WorkspaceTab::RedisBrowser(tab) if tab.preview == RedisPreviewState::Empty)
     );
+}
+
+#[test]
+fn rapid_redis_key_selection_dispatches_only_the_latest_preview() {
+    let mut app = App::new(Vec::new());
+    app.connection.profile_id = Some(Uuid::from_u128(1));
+    app.connection.generation = 1;
+    app.connection.target = Some(ExecutionTarget {
+        profile_id: Uuid::from_u128(1),
+        database: "2".into(),
+        schema: None,
+    });
+    app.connection.status = ConnectionStatus::Connected;
+    app.update(Action::OpenRedisDatabase {
+        profile_id: Uuid::from_u128(1),
+        database: 2,
+    });
+    let tab_id = app.tabs.last().unwrap().id();
+    if let Some(WorkspaceTab::RedisBrowser(tab)) = app.tabs.last_mut() {
+        tab.tree.rebuild(&[
+            RedisKeyId {
+                target: tab.target.clone(),
+                key: b"a".to_vec(),
+            },
+            RedisKeyId {
+                target: tab.target.clone(),
+                key: b"b".to_vec(),
+            },
+        ]);
+    }
+    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"a".to_vec())));
+    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"b".to_vec())));
+    std::thread::sleep(std::time::Duration::from_millis(110));
+    let commands = app.update(Action::RedisPreviewTick);
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0],
+        lazydb::action::Command::LoadRedisValuePreview { key, .. } if key.key == b"b"
+    ));
 }
 
 #[test]

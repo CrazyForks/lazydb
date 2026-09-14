@@ -5750,6 +5750,9 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                     for command in refresh_commands {
                         runtime.dispatch(command);
                     }
+                    for command in app.update(Action::RedisPreviewTick) {
+                        runtime.dispatch(command);
+                    }
                     redraw = app.notifications.expire(now)
                         || ui_state.advance_animations(now)
                         || expired
