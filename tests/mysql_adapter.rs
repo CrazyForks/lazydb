@@ -112,6 +112,27 @@ fn mysql_relation_children_read_check_constraints_structurally() {
 }
 
 #[test]
+fn mariadb_catalog_capabilities_add_sequences_without_changing_mysql() {
+    assert!(
+        !MySqlAdapter::catalog_capabilities()
+            .top_level_groups
+            .contains(&ObjectGroup::Sequences)
+    );
+    assert!(
+        MySqlAdapter::mariadb_catalog_capabilities()
+            .top_level_groups
+            .contains(&ObjectGroup::Sequences)
+    );
+}
+
+#[test]
+fn mariadb_catalog_search_includes_sequence_candidates() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("MARIADB_CATALOG_SEARCH_SEQUENCE_SQL"));
+    assert!(source.contains("FROM information_schema.sequences"));
+}
+
+#[test]
 fn quotes_mysql_identifiers_and_uses_information_schema() {
     assert_eq!(mysql::quote_identifier("odd`name"), "`odd``name`");
     assert!(mysql::CATALOG_TABLES_SQL.contains("information_schema.tables"));

@@ -165,6 +165,11 @@ ORDER BY CASE
 LIMIT 101
 "#;
 
+const MARIADB_CATALOG_SEARCH_SEQUENCE_SQL: &str = " UNION ALL \
+    SELECT 'sequence', sequence_schema, sequence_name, NULL, NULL, sequence_name, \
+           CONCAT(sequence_schema,'.',sequence_name), NULL \
+    FROM information_schema.sequences";
+
 pub const CATALOG_DATABASES_SQL: &str = r#"
 SELECT schema_name
 FROM information_schema.schemata
@@ -446,6 +451,12 @@ impl MySqlAdapter {
             },
             supports_lazy_children: true,
         }
+    }
+
+    pub fn mariadb_catalog_capabilities() -> CatalogCapabilities {
+        let mut capabilities = Self::catalog_capabilities();
+        capabilities.top_level_groups.push(ObjectGroup::Sequences);
+        capabilities
     }
 
     pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
@@ -1184,7 +1195,15 @@ impl MySqlAdapter {
                 }
             })
             .unwrap_or_else(|| "TRUE".to_owned());
-        let sql = CATALOG_SEARCH_CANDIDATES_SQL.replace("{scope_predicate}", &scope_predicate);
+        let candidates = if self.kind == DatabaseKind::MariaDb {
+            CATALOG_SEARCH_CANDIDATES_SQL.replace(
+                "), normalized AS (",
+                &format!("{}), normalized AS (", MARIADB_CATALOG_SEARCH_SEQUENCE_SQL),
+            )
+        } else {
+            CATALOG_SEARCH_CANDIDATES_SQL.to_owned()
+        };
+        let sql = candidates.replace("{scope_predicate}", &scope_predicate);
         let mut query = sqlx::query(AssertSqlSafe(sql));
         let (search_query, ignore_separators) = crate::db::catalog::search_query(&request.query);
         query = query.bind(ignore_separators).bind(ignore_separators);
@@ -1532,22 +1551,32 @@ impl MySqlAdapter {
                 lower_case_table_names,
             )
             .await?;
-        let row = sqlx::query(
+        let count_sql = if self.kind == DatabaseKind::MariaDb {
             "SELECT \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='BASE TABLE') AS tables, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='VIEW') AS views, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='FUNCTION') AS functions, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='PROCEDURE') AS procedures, \
-             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers",
-        )
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(sql_error)?;
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.sequences WHERE BINARY sequence_schema=BINARY ?) AS sequences"
+        } else {
+            "SELECT \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='BASE TABLE') AS tables, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='VIEW') AS views, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='FUNCTION') AS functions, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='PROCEDURE') AS procedures, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers"
+        };
+        let mut query = sqlx::query(AssertSqlSafe(count_sql))
+            .bind(&database)
+            .bind(&database)
+            .bind(&database)
+            .bind(&database)
+            .bind(&database);
+        if self.kind == DatabaseKind::MariaDb {
+            query = query.bind(&database);
+        }
+        let row = query.fetch_one(&mut *connection).await.map_err(sql_error)?;
         let mut summaries = Vec::new();
         for (group, column) in [
             (ObjectGroup::Tables, "tables"),
@@ -1563,6 +1592,19 @@ impl MySqlAdapter {
                         .map_err(decode_error)?
                         .parse::<u64>()
                         .map_err(|_| catalog_internal("MySQL returned an invalid catalog count"))?,
+                ),
+            });
+        }
+        if self.kind == DatabaseKind::MariaDb {
+            summaries.push(CatalogGroupSummary {
+                group: ObjectGroup::Sequences,
+                object_count: CatalogCount::Exact(
+                    row.try_get::<String, _>("sequences")
+                        .map_err(decode_error)?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            catalog_internal("MariaDB returned an invalid sequence count")
+                        })?,
                 ),
             });
         }
@@ -1638,6 +1680,15 @@ impl MySqlAdapter {
                     CatalogKind::Trigger,
                     "trigger",
                     "trigger_name",
+                ),
+                ObjectGroup::Sequences if self.kind == DatabaseKind::MariaDb => (
+                    "information_schema.sequences",
+                    "sequence_schema",
+                    "sequence_name",
+                    "TRUE",
+                    CatalogKind::Sequence,
+                    "sequence",
+                    "sequence_name",
                 ),
                 _ => {
                     return Err(DatabaseError::unsupported_catalog_target(
@@ -3250,6 +3301,7 @@ fn search_catalog_kind(native_kind: &str) -> Result<CatalogKind, DatabaseError> 
         "primary_key" => Ok(CatalogKind::PrimaryKey),
         "unique_constraint" => Ok(CatalogKind::UniqueConstraint),
         "foreign_key" => Ok(CatalogKind::ForeignKey),
+        "sequence" => Ok(CatalogKind::Sequence),
         _ => Err(catalog_internal(format!(
             "unexpected MySQL search catalog kind `{native_kind}`"
         ))),
