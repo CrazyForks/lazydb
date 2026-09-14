@@ -20,7 +20,53 @@ use lazydb::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+use lazydb::db::catalog_mutation::{CatalogMutationAnchor, CatalogMutationMode, CatalogObjectType};
+use lazydb::model::catalog_editor::{CatalogDraft, TableDraft};
+
 const ATTACHED_ALIAS: &str = "ArchiveCase";
+
+#[tokio::test]
+async fn sqlite_executes_a_table_create_plan_against_a_temporary_database() {
+    let imported = import_connection_url("sqlite://:memory:", Some("mutation-plan")).unwrap();
+    let profile_id = imported.profile.id;
+    let database = DatabaseConnection::connect(&imported.profile, None)
+        .await
+        .unwrap();
+    let schema =
+        lazydb::db::catalog::CatalogId::new(profile_id, CatalogKind::Schema, [":memory:", "main"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 1,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Create,
+        anchor: CatalogMutationAnchor::Group {
+            schema,
+            group: ObjectGroup::Tables,
+        },
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some(":memory:".to_owned()),
+    };
+    let mut table = TableDraft::new("main");
+    table.name.set("created_by_plan");
+    table.columns[0].name.set("id");
+    table.columns[0].native_type.set("INTEGER");
+    let plan = lazydb::db::sqlite::SqliteAdapter::plan_catalog_mutation(
+        request,
+        CatalogDraft::Table(table),
+        None,
+    )
+    .unwrap();
+    database.execute_catalog_mutation(&plan).await.unwrap();
+    let result = database
+        .execute("SELECT name FROM sqlite_master WHERE name = 'created_by_plan'")
+        .await
+        .unwrap();
+    assert_eq!(result.result_sets[0].rows.len(), 1);
+    database.close().await;
+}
 
 #[tokio::test]
 async fn relation_reads_use_request_scope_without_reconnecting() {
