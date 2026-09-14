@@ -345,7 +345,7 @@ fn mysql_database_is_schema_advertises_table_and_view_creation() {
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
             .is_none()
     );
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 1);
 }
 
 #[test]

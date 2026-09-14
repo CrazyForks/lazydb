@@ -40,7 +40,8 @@ use super::{
         CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
         CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationOption,
         CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
-        CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+        CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
+        CatalogSelectionHint, ColumnDefinition, TableDefinition,
     },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
@@ -435,6 +436,10 @@ impl MySqlAdapter {
                     availability: CatalogMutationAvailability::Available,
                 })
                 .collect(),
+            edit: vec![CatalogMutationOption {
+                object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+                availability: CatalogMutationAvailability::Available,
+            }],
             ..CatalogMutationCapabilities::default()
         }
     }
@@ -444,6 +449,75 @@ impl MySqlAdapter {
         draft: crate::model::catalog_editor::CatalogDraft,
         baseline: Option<CatalogObjectDefinition>,
     ) -> Result<CatalogMutationPlan, CatalogMutationError> {
+        if request.mode == crate::db::catalog_mutation::CatalogMutationMode::Edit {
+            let CatalogMutationAnchor::Catalog(object) = &request.anchor else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "MySQL edit requires a catalog object anchor",
+                });
+            };
+            let Some(CatalogObjectDefinition::Table(_)) = baseline else {
+                return Err(CatalogMutationError::StaleState);
+            };
+            let crate::model::catalog_editor::CatalogDraft::Table(draft) = draft else {
+                return Err(CatalogMutationError::InvalidDraft {
+                    reason: "MySQL table edit requires a table draft".into(),
+                });
+            };
+            let [database, schema, old_name] = object.native_path.as_slice() else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "MySQL table identity is incomplete",
+                });
+            };
+            let object_id = object.clone();
+            let database_name = database.clone();
+            let schema_name = schema.clone();
+            let old_name_sql = old_name.clone();
+            let schema_sql = schema.clone();
+            let new_name = draft.name.value().trim();
+            if new_name.is_empty() {
+                return Err(CatalogMutationError::InvalidDraft {
+                    reason: "MySQL table name is required".into(),
+                });
+            }
+            if new_name == old_name {
+                return Err(CatalogMutationError::NoChanges);
+            }
+            let new_object = CatalogId::new(
+                request.connection.profile_id,
+                CatalogKind::Table,
+                [database.clone(), schema.clone(), new_name.to_owned()],
+            );
+            return CatalogMutationPlan::new(
+                request,
+                CatalogObjectType::Catalog(CatalogKind::Table),
+                CatalogMutationExecutionMode::Autocommit,
+                CatalogMutationTarget::database_target(
+                    crate::model::execution_target::ExecutionTarget {
+                        profile_id: object_id.profile_id(),
+                        database: database_name.clone(),
+                        schema: Some(schema_name.clone()),
+                    },
+                )?,
+                vec![CatalogTarget::Objects {
+                    schema: CatalogId::new(
+                        object_id.profile_id(),
+                        CatalogKind::Schema,
+                        [database_name.clone(), schema_name.clone()],
+                    ),
+                    group: ObjectGroup::Tables,
+                }],
+                CatalogSelectionHint::Object(new_object),
+                None,
+                Vec::new(),
+                vec![format!(
+                    "RENAME TABLE {}.{} TO {}.{}",
+                    quote_identifier(&schema_sql),
+                    quote_identifier(&old_name_sql),
+                    quote_identifier(&schema_sql),
+                    quote_identifier(new_name)
+                )],
+            );
+        }
         if request.mode != crate::db::catalog_mutation::CatalogMutationMode::Create {
             return Err(CatalogMutationError::UnsupportedOperation {
                 object_type: request.object_type,
@@ -566,6 +640,67 @@ impl MySqlAdapter {
             outcome = Some(self.execute_pool(statement).await?);
         }
         outcome.ok_or_else(|| DatabaseError::configuration("MySQL mutation plan has no statements"))
+    }
+
+    pub async fn load_catalog_object_definition(
+        &self,
+        request: &CatalogObjectDefinitionRequest,
+    ) -> Result<CatalogObjectDefinition, DatabaseError> {
+        request
+            .validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let [database, schema, name] = request.object.native_path.as_slice() else {
+            return Err(DatabaseError::configuration(
+                "MySQL table identity is incomplete",
+            ));
+        };
+        if request.object.kind != CatalogKind::Table {
+            return Err(DatabaseError::configuration(
+                "MySQL definition loading currently supports tables only",
+            ));
+        }
+        let mut connection = self.pool.acquire().await.map_err(sql_error)?;
+        let rows = sqlx::query(
+            "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
+        )
+        .bind(schema)
+        .bind(name)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(sql_error)?;
+        let mut columns = Vec::new();
+        for row in rows {
+            let default = row.try_get::<Option<String>, _>(4).map_err(decode_error)?;
+            columns.push(ColumnDefinition {
+                name: row.try_get(1).map_err(decode_error)?,
+                ordinal_position: row.try_get(0).map_err(decode_error)?,
+                native_type: row.try_get(2).map_err(decode_error)?,
+                nullable: row.try_get::<String, _>(3).map_err(decode_error)? == "YES",
+                default_expression: OptionalMetadata::Supported(default),
+                identity: OptionalMetadata::Unsupported,
+                generated_expression: OptionalMetadata::Supported(
+                    row.try_get(5).map_err(decode_error)?,
+                ),
+                collation: OptionalMetadata::Supported(row.try_get(6).map_err(decode_error)?),
+                comment: OptionalMetadata::Supported(row.try_get(7).map_err(decode_error)?),
+            });
+        }
+        if columns.is_empty() {
+            return Err(DatabaseError::configuration(
+                "MySQL table has no visible columns",
+            ));
+        }
+        Ok(CatalogObjectDefinition::Table(TableDefinition {
+            database: database.clone(),
+            schema: schema.clone(),
+            name: name.clone(),
+            owner: String::new(),
+            comment: OptionalMetadata::Unsupported,
+            columns: columns.clone(),
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+            baseline_fingerprint: format!("mysql:table:{database}:{schema}:{name}:{columns:?}"),
+        }))
     }
 
     pub(crate) async fn transaction_backend(

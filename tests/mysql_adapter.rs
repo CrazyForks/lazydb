@@ -93,7 +93,7 @@ fn mysql_mutation_capabilities_expose_safe_table_and_view_creation() {
             ))
             .is_some()
     );
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 1);
 }
 
 #[test]
