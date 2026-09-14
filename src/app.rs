@@ -12484,6 +12484,16 @@ impl App {
                     && preview_generation == tab.preview_generation
                 {
                     tab.value_page = crate::model::redis_browser::RedisValuePageState::Ready(page);
+                    if let crate::model::redis_browser::RedisValuePageState::Ready(page) =
+                        &tab.value_page
+                    {
+                        tab.content =
+                            crate::model::redis_browser::RedisPreviewContentState::Ready {
+                                key: page.metadata.key.clone(),
+                                page: page.clone(),
+                                format: crate::value_preview::PreviewFormat::RAW,
+                            };
+                    }
                 }
                 Vec::new()
             }
@@ -12501,6 +12511,17 @@ impl App {
                 {
                     tab.value_page =
                         crate::model::redis_browser::RedisValuePageState::Failed { key, message };
+                    if let crate::model::redis_browser::RedisValuePageState::Failed {
+                        key,
+                        message,
+                    } = &tab.value_page
+                    {
+                        tab.content =
+                            crate::model::redis_browser::RedisPreviewContentState::Failed {
+                                key: key.clone(),
+                                message: message.clone(),
+                            };
+                    }
                 }
                 Vec::new()
             }

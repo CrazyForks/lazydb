@@ -6,6 +6,8 @@ use crate::db::redis::types::{RedisKeyId, RedisTarget};
 
 use super::{keyspace::KeyspaceState, redis_key_tree::KeyTreeState};
 
+use crate::value_preview::PreviewFormat;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RedisPreviewState {
     Empty,
@@ -20,6 +22,26 @@ pub enum RedisValuePageState {
     Loading { key: RedisKeyId },
     Ready(RedisValuePage),
     Failed { key: RedisKeyId, message: String },
+}
+
+/// Unified value state used by the Redis preview renderer. The legacy
+/// `preview` field remains during migration so older runtime events can be
+/// accepted without allowing them to replace a newer typed page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisPreviewContentState {
+    Empty,
+    Loading {
+        key: RedisKeyId,
+    },
+    Ready {
+        key: RedisKeyId,
+        page: RedisValuePage,
+        format: PreviewFormat,
+    },
+    Failed {
+        key: RedisKeyId,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +81,7 @@ pub struct RedisBrowserTab {
     pub tree: KeyTreeState,
     pub preview: RedisPreviewState,
     pub value_page: RedisValuePageState,
+    pub content: RedisPreviewContentState,
     pub preview_generation: u64,
     pub focus: RedisBrowserFocus,
     pub find: Option<RedisKeyFindState>,
@@ -78,6 +101,7 @@ impl RedisBrowserTab {
             tree: KeyTreeState::default(),
             preview: RedisPreviewState::Empty,
             value_page: RedisValuePageState::Empty,
+            content: RedisPreviewContentState::Empty,
             preview_generation: 0,
             focus: RedisBrowserFocus::Keys,
             find: None,
@@ -130,6 +154,15 @@ impl RedisBrowserTab {
                 },
             },
             None => RedisValuePageState::Empty,
+        };
+        self.content = match self.tree.selected_key() {
+            Some(key) => RedisPreviewContentState::Loading {
+                key: RedisKeyId {
+                    target: self.target.clone(),
+                    key: key.to_vec(),
+                },
+            },
+            None => RedisPreviewContentState::Empty,
         };
         self.preview_scroll = 0;
     }
