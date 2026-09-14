@@ -7,6 +7,7 @@ use lazydb::db::catalog_mutation::{
 };
 use lazydb::db::mysql::MySqlAdapter;
 use lazydb::db::oracle::OracleAdapter;
+use lazydb::db::sqlite::SqliteAdapter;
 use lazydb::model::catalog_editor::{CatalogDraft, TableDraft};
 use lazydb::model::explorer::ExplorerNodeId;
 use lazydb::model::explorer_actions::{ExplorerActionAvailability, ExplorerActionContext};
@@ -226,6 +227,27 @@ fn mysql_compatible_catalog_version_gates_remain_engine_specific() {
         DatabaseKind::MariaDb,
         "8.0.13"
     ));
+}
+
+#[test]
+fn sqlite_exposes_only_native_table_and_view_creation() {
+    let capabilities = SqliteAdapter::catalog_mutation_capabilities();
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Table))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::View))
+            .is_some()
+    );
+    assert!(
+        capabilities
+            .create_availability(CatalogObjectType::Catalog(CatalogKind::Schema))
+            .is_none()
+    );
+    assert!(capabilities.edit.is_empty());
 }
 
 #[test]

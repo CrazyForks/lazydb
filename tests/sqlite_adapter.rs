@@ -853,11 +853,21 @@ async fn catalog_capabilities_match_implemented_sqlite_metadata() {
 }
 
 #[test]
-fn sqlite_mutation_capabilities_are_empty() {
-    assert_eq!(
-        lazydb::db::sqlite::SqliteAdapter::catalog_mutation_capabilities(),
-        lazydb::db::catalog_mutation::CatalogMutationCapabilities::default()
-    );
+fn sqlite_mutation_capabilities_expose_native_table_and_view_creation() {
+    let capabilities = lazydb::db::sqlite::SqliteAdapter::catalog_mutation_capabilities();
+    assert!(capabilities.create.iter().any(|option| {
+        option.object_type
+            == lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
+                lazydb::db::catalog::CatalogKind::Table,
+            )
+    }));
+    assert!(capabilities.create.iter().any(|option| {
+        option.object_type
+            == lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
+                lazydb::db::catalog::CatalogKind::View,
+            )
+    }));
+    assert!(capabilities.edit.is_empty());
 }
 
 #[tokio::test]

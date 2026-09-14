@@ -37,7 +37,12 @@ use super::{
         finalize_keyset_page,
     },
     catalog_drop::{CatalogDropError, CatalogDropPlan, CatalogDropRequest},
-    catalog_mutation::CatalogMutationCapabilities,
+    catalog_mutation::{
+        CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
+        CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationOption,
+        CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
+        CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+    },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
     query::{
@@ -163,7 +168,147 @@ impl SqliteAdapter {
     }
 
     pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
-        CatalogMutationCapabilities::default()
+        CatalogMutationCapabilities {
+            create: [CatalogKind::Table, CatalogKind::View]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
+            ..CatalogMutationCapabilities::default()
+        }
+    }
+
+    pub fn plan_catalog_mutation(
+        request: CatalogMutationRequest,
+        draft: crate::model::catalog_editor::CatalogDraft,
+        baseline: Option<CatalogObjectDefinition>,
+    ) -> Result<CatalogMutationPlan, CatalogMutationError> {
+        if request.mode != crate::db::catalog_mutation::CatalogMutationMode::Create {
+            return Err(CatalogMutationError::UnsupportedOperation {
+                object_type: request.object_type,
+            });
+        }
+        if baseline.is_some() {
+            return Err(CatalogMutationError::InvalidDraft {
+                reason: "SQLite create plans cannot include a baseline".into(),
+            });
+        }
+        let CatalogMutationAnchor::Group { schema, group } = &request.anchor else {
+            return Err(CatalogMutationError::InvalidAnchor {
+                reason: "SQLite table and view creation requires a group anchor",
+            });
+        };
+        let schema_anchor = schema.clone();
+        let group_kind = *group;
+        let schema_name = schema.native_path.last().cloned().unwrap_or_default();
+        if schema_name.is_empty() {
+            return Err(CatalogMutationError::InvalidAnchor {
+                reason: "SQLite schema anchor is incomplete",
+            });
+        }
+        let (kind, name, sql) = match (group, draft) {
+            (ObjectGroup::Tables, crate::model::catalog_editor::CatalogDraft::Table(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                let columns = draft
+                    .columns
+                    .iter()
+                    .filter(|column| {
+                        !matches!(
+                            column.state,
+                            crate::model::catalog_editor::DraftRowState::Removed { .. }
+                        )
+                    })
+                    .map(|column| {
+                        let mut sql = format!(
+                            "{} {}",
+                            sqlite_quote_identifier(column.name.value().trim()),
+                            column.native_type.value().trim()
+                        );
+                        if !column.nullable {
+                            sql.push_str(" NOT NULL");
+                        }
+                        if !column.default_expression.value().trim().is_empty() {
+                            sql.push_str(" DEFAULT ");
+                            sql.push_str(column.default_expression.value().trim());
+                        }
+                        Ok(sql)
+                    })
+                    .collect::<Result<Vec<_>, CatalogMutationError>>()?;
+                (
+                    CatalogKind::Table,
+                    name.clone(),
+                    format!(
+                        "CREATE TABLE {} ({})",
+                        sqlite_quote_identifier(&name),
+                        columns.join(", ")
+                    ),
+                )
+            }
+            (ObjectGroup::Views, crate::model::catalog_editor::CatalogDraft::View(draft)) => {
+                draft.validate()?;
+                let name = draft.name.value().trim().to_owned();
+                (
+                    CatalogKind::View,
+                    name.clone(),
+                    format!(
+                        "CREATE VIEW {} AS {}",
+                        sqlite_quote_identifier(&name),
+                        draft.query.value().trim()
+                    ),
+                )
+            }
+            (_, draft) => {
+                return Err(CatalogMutationError::InvalidDraft {
+                    reason: format!("SQLite draft does not match the selected group: {draft:?}"),
+                });
+            }
+        };
+        let object = CatalogId::new(
+            request.connection.profile_id,
+            kind,
+            [
+                request.current_database.clone().unwrap_or_default(),
+                schema_name,
+                name,
+            ],
+        );
+        CatalogMutationPlan::new(
+            request,
+            CatalogObjectType::Catalog(kind),
+            CatalogMutationExecutionMode::Transactional,
+            CatalogMutationTarget::database_target(
+                crate::model::execution_target::ExecutionTarget {
+                    profile_id: object.profile_id(),
+                    database: object.native_path[0].clone(),
+                    schema: None,
+                },
+            )?,
+            vec![CatalogTarget::Objects {
+                schema: schema_anchor,
+                group: group_kind,
+            }],
+            CatalogSelectionHint::Object(object),
+            None,
+            Vec::new(),
+            vec![sql],
+        )
+    }
+
+    pub async fn execute_catalog_mutation(
+        &self,
+        plan: &CatalogMutationPlan,
+    ) -> Result<QueryOutcome, DatabaseError> {
+        plan.validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let mut outcome = None;
+        for statement in plan.statements() {
+            outcome = Some(self.execute(statement).await?);
+        }
+        outcome
+            .ok_or_else(|| DatabaseError::configuration("SQLite mutation plan has no statements"))
     }
 
     async fn acquire_operation(&self) -> Result<OwnedSemaphorePermit, DatabaseError> {
@@ -1881,6 +2026,10 @@ impl SqliteAdapter {
     pub async fn close(self) {
         self.pool.close().await;
     }
+}
+
+fn sqlite_quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn sqlite_qualified_name(
