@@ -12288,7 +12288,7 @@ impl App {
                     return Vec::new();
                 };
                 if tab.keyspace.apply_batch(batch) {
-                    tab.rebuild_tree();
+                    tab.insert_tree_keys();
                 }
                 Vec::new()
             }
@@ -12335,6 +12335,38 @@ impl App {
                 {
                     tab.preview =
                         crate::model::redis_browser::RedisPreviewState::Failed { key, message };
+                }
+                Vec::new()
+            }
+            Action::RedisValuePageLoaded {
+                tab_id,
+                connection,
+                preview_generation,
+                page,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                {
+                    tab.value_page = crate::model::redis_browser::RedisValuePageState::Ready(page);
+                }
+                Vec::new()
+            }
+            Action::RedisValuePageFailed {
+                tab_id,
+                connection,
+                preview_generation,
+                key,
+                message,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                {
+                    tab.value_page =
+                        crate::model::redis_browser::RedisValuePageState::Failed { key, message };
                 }
                 Vec::new()
             }
@@ -17867,9 +17899,12 @@ impl App {
         let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
             return Vec::new();
         };
-        vec![Command::LoadRedisPreview {
+        let Some(connection) = self.connection.active_identity() else {
+            return Vec::new();
+        };
+        vec![Command::LoadRedisValuePreview {
             tab_id,
-            generation: tab.keyspace.generation,
+            connection,
             preview_generation: tab.preview_generation,
             key: key.clone(),
         }]

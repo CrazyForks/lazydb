@@ -497,6 +497,20 @@ impl Runtime {
                 preview_generation,
                 key,
             } => self.load_redis_preview(tab_id, generation, preview_generation, key),
+            Command::LoadRedisValuePage {
+                tab_id,
+                connection: request_connection,
+                preview_generation,
+                request,
+            } => {
+                self.load_redis_value_page(tab_id, request_connection, preview_generation, request)
+            }
+            Command::LoadRedisValuePreview {
+                tab_id,
+                connection: request_connection,
+                preview_generation,
+                key,
+            } => self.load_redis_value_preview(tab_id, request_connection, preview_generation, key),
             Command::ResolveCatalogRelation {
                 connection,
                 catalog_epoch,
@@ -1167,6 +1181,172 @@ impl Runtime {
                     let _ = sender.send(Action::RedisPreviewFailed {
                         tab_id,
                         generation,
+                        preview_generation,
+                        key,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn load_redis_value_page(
+        &mut self,
+        tab_id: Uuid,
+        request_connection: crate::identity::ConnectionIdentity,
+        preview_generation: u64,
+        request: crate::db::redis::read::RedisReadRequest,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let key = match &request {
+                crate::db::redis::read::RedisReadRequest::StringRange { key, .. }
+                | crate::db::redis::read::RedisReadRequest::HashScan { key, .. }
+                | crate::db::redis::read::RedisReadRequest::ListRange { key, .. }
+                | crate::db::redis::read::RedisReadRequest::SetScan { key, .. }
+                | crate::db::redis::read::RedisReadRequest::SortedSetRange { key, .. } => key,
+            };
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(active_key, _)| {
+                        active_key.identity == request_connection
+                            && active_key.target.database == key.target.database.to_string()
+                            && active_key.target.schema.is_none()
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let result = match database {
+                Some(crate::db::DatabaseConnection::Redis(adapter)) => {
+                    adapter.read_value_page(&request).await
+                }
+                Some(_) => Err(crate::db::DatabaseError::configuration(
+                    "Redis value pages require a Redis connection",
+                )),
+                None => Err(crate::db::DatabaseError::configuration(
+                    "Redis connection is not active",
+                )),
+            };
+            match result {
+                Ok(page) => {
+                    let _ = sender.send(Action::RedisValuePageLoaded {
+                        tab_id,
+                        connection: request_connection,
+                        preview_generation,
+                        page,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisValuePageFailed {
+                        tab_id,
+                        connection: request_connection,
+                        preview_generation,
+                        key: key.clone(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn load_redis_value_preview(
+        &mut self,
+        tab_id: Uuid,
+        request_connection: crate::identity::ConnectionIdentity,
+        preview_generation: u64,
+        key: crate::db::redis::types::RedisKeyId,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(active_key, _)| {
+                        active_key.identity == request_connection
+                            && active_key.target.database == key.target.database.to_string()
+                            && active_key.target.schema.is_none()
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let result = match database {
+                Some(DatabaseConnection::Redis(adapter)) => {
+                    let metadata = match adapter.key_metadata(&key).await {
+                        Ok(metadata) => metadata,
+                        Err(error) => {
+                            let _ = sender.send(Action::RedisValuePageFailed {
+                                tab_id,
+                                connection: request_connection,
+                                preview_generation,
+                                key: key.clone(),
+                                message: error.to_string(),
+                            });
+                            return;
+                        }
+                    };
+                    let request = match metadata.value_type {
+                        crate::db::redis::read::RedisType::String => {
+                            crate::db::redis::read::RedisReadRequest::StringRange {
+                                key: key.clone(),
+                                start: 0,
+                                end: 64 * 1024 - 1,
+                            }
+                        }
+                        crate::db::redis::read::RedisType::Hash => {
+                            crate::db::redis::read::RedisReadRequest::HashScan {
+                                key: key.clone(),
+                                cursor: 0,
+                                count: 200,
+                            }
+                        }
+                        crate::db::redis::read::RedisType::List => {
+                            crate::db::redis::read::RedisReadRequest::ListRange {
+                                key: key.clone(),
+                                start: 0,
+                                end: 199,
+                            }
+                        }
+                        crate::db::redis::read::RedisType::Set => {
+                            crate::db::redis::read::RedisReadRequest::SetScan {
+                                key: key.clone(),
+                                cursor: 0,
+                                count: 200,
+                            }
+                        }
+                        crate::db::redis::read::RedisType::SortedSet => {
+                            crate::db::redis::read::RedisReadRequest::SortedSetRange {
+                                key: key.clone(),
+                                start: 0,
+                                end: 199,
+                            }
+                        }
+                        _ => return,
+                    };
+                    adapter.read_value_page(&request).await
+                }
+                Some(_) => Err(DatabaseError::configuration(
+                    "Redis value preview requires a Redis connection",
+                )),
+                None => Err(DatabaseError::configuration(
+                    "Redis connection is not active",
+                )),
+            };
+            match result {
+                Ok(page) => {
+                    let _ = sender.send(Action::RedisValuePageLoaded {
+                        tab_id,
+                        connection: request_connection,
+                        preview_generation,
+                        page,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisValuePageFailed {
+                        tab_id,
+                        connection: request_connection,
                         preview_generation,
                         key,
                         message: error.to_string(),

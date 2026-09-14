@@ -22,6 +22,7 @@ pub struct KeyTreeState {
     pub expanded: HashSet<KeyTreeNodeId>,
     pub selected: Option<KeyTreeNodeId>,
     pub nodes: Vec<KeyTreeNode>,
+    node_index: HashSet<KeyTreeNodeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,23 +132,25 @@ impl KeyTreeState {
             insert_key(&mut root, &key.key);
         }
         self.nodes = root.into_values().map(NodeBuilder::build).collect();
+        self.rebuild_index();
         self.selected = self.selected.take().filter(|id| self.contains(id));
-        let valid = self
-            .expanded
-            .iter()
-            .filter(|id| self.contains(id))
-            .cloned()
-            .collect();
-        self.expanded = valid;
+        self.retain_valid_state();
+    }
+
+    /// Insert only new keys while preserving existing node identities and UI state.
+    pub fn insert_keys(&mut self, keys: &[RedisKeyId]) {
+        for key in keys {
+            let key_id = KeyTreeNodeId::Key(key.key.clone());
+            if self.node_index.contains(&key_id) {
+                continue;
+            }
+            insert_key_nodes(&mut self.nodes, &key.key, &mut self.node_index);
+        }
+        self.retain_valid_state();
     }
 
     pub fn contains(&self, id: &KeyTreeNodeId) -> bool {
-        fn visit(nodes: &[KeyTreeNode], id: &KeyTreeNodeId) -> bool {
-            nodes.iter().any(|node| {
-                &node.id == id || node.key_id.as_ref() == Some(id) || visit(&node.children, id)
-            })
-        }
-        visit(&self.nodes, id)
+        self.node_index.contains(id)
     }
 
     pub fn select(&mut self, id: Option<KeyTreeNodeId>) {
@@ -197,6 +200,19 @@ impl KeyTreeState {
             .first()
             .map(|node| node.id.clone())
     }
+
+    fn rebuild_index(&mut self) {
+        self.node_index.clear();
+        index_nodes(&self.nodes, &mut self.node_index);
+    }
+
+    fn retain_valid_state(&mut self) {
+        self.selected = self
+            .selected
+            .take()
+            .filter(|id| self.node_index.contains(id));
+        self.expanded.retain(|id| self.node_index.contains(id));
+    }
 }
 
 impl KeyTreeNodeId {
@@ -229,6 +245,78 @@ impl NodeBuilder {
 fn insert_key(root: &mut BTreeMap<Vec<u8>, NodeBuilder>, key: &[u8]) {
     let parts = key.split(|byte| *byte == b':').collect::<Vec<_>>();
     insert_parts(root, &parts, 0, &mut Vec::new(), key);
+}
+
+fn insert_key_nodes(nodes: &mut Vec<KeyTreeNode>, key: &[u8], index: &mut HashSet<KeyTreeNodeId>) {
+    let parts = key.split(|byte| *byte == b':').collect::<Vec<_>>();
+    insert_node_parts(nodes, &parts, 0, &mut Vec::new(), key, index);
+}
+
+fn insert_node_parts(
+    nodes: &mut Vec<KeyTreeNode>,
+    parts: &[&[u8]],
+    part_index: usize,
+    prefix: &mut Vec<u8>,
+    key: &[u8],
+    index: &mut HashSet<KeyTreeNodeId>,
+) {
+    let part = parts[part_index];
+    let is_last = part_index + 1 == parts.len();
+    prefix.extend_from_slice(part);
+    if !is_last {
+        prefix.push(b':');
+    }
+    let node_id = if is_last {
+        KeyTreeNodeId::Key(key.to_vec())
+    } else {
+        KeyTreeNodeId::Prefix(prefix.clone())
+    };
+    let position = nodes
+        .binary_search_by(|node| node.label.as_slice().cmp(part))
+        .unwrap_or_else(|position| position);
+    if position == nodes.len() || nodes[position].label.as_slice() != part {
+        nodes.insert(
+            position,
+            KeyTreeNode {
+                id: node_id.clone(),
+                key_id: None,
+                label: part.to_vec(),
+                children: Vec::new(),
+                is_key: is_last,
+            },
+        );
+        index.insert(node_id.clone());
+    }
+    let node = &mut nodes[position];
+    if is_last {
+        if matches!(node.id, KeyTreeNodeId::Prefix(_)) {
+            let key_id = KeyTreeNodeId::Key(key.to_vec());
+            node.key_id = Some(key_id.clone());
+            index.insert(key_id);
+        } else {
+            node.is_key = true;
+            index.insert(node.id.clone());
+        }
+    } else {
+        insert_node_parts(
+            &mut node.children,
+            parts,
+            part_index + 1,
+            prefix,
+            key,
+            index,
+        );
+    }
+}
+
+fn index_nodes(nodes: &[KeyTreeNode], index: &mut HashSet<KeyTreeNodeId>) {
+    for node in nodes {
+        index.insert(node.id.clone());
+        if let Some(key_id) = &node.key_id {
+            index.insert(key_id.clone());
+        }
+        index_nodes(&node.children, index);
+    }
 }
 
 fn insert_parts(

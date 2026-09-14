@@ -30,3 +30,28 @@ fn prefix_selection_does_not_create_a_preview() {
     tree.select(Some(KeyTreeNodeId::Prefix(b"a:".to_vec())));
     assert!(tree.selected_key().is_none());
 }
+
+#[test]
+fn incremental_insert_preserves_state_and_matches_full_rebuild() {
+    let mut incremental = KeyTreeState::default();
+    incremental.rebuild(&[key(b"user"), key(b"user:1001")]);
+    incremental
+        .expanded
+        .insert(KeyTreeNodeId::Prefix(b"user:".to_vec()));
+    incremental.select(Some(KeyTreeNodeId::Key(b"user:1001".to_vec())));
+    incremental.insert_keys(&[key(b"user:1002"), key(b"cache:1")]);
+
+    let mut rebuilt = KeyTreeState::default();
+    rebuilt.rebuild(&[
+        key(b"user"),
+        key(b"user:1001"),
+        key(b"user:1002"),
+        key(b"cache:1"),
+    ]);
+    assert_eq!(incremental.visible_rows(), rebuilt.visible_rows());
+    assert_eq!(
+        incremental.selected,
+        Some(KeyTreeNodeId::Key(b"user:1001".to_vec()))
+    );
+    assert!(incremental.contains(&KeyTreeNodeId::Key(b"cache:1".to_vec())));
+}

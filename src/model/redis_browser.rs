@@ -1,6 +1,7 @@
 use crate::model::text_input::TextInput;
 use uuid::Uuid;
 
+use crate::db::redis::read::RedisValuePage;
 use crate::db::redis::types::{RedisKeyId, RedisTarget};
 
 use super::{keyspace::KeyspaceState, redis_key_tree::KeyTreeState};
@@ -10,6 +11,14 @@ pub enum RedisPreviewState {
     Empty,
     Loading { key: RedisKeyId },
     Ready { key: RedisKeyId, content: String },
+    Failed { key: RedisKeyId, message: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisValuePageState {
+    Empty,
+    Loading { key: RedisKeyId },
+    Ready(RedisValuePage),
     Failed { key: RedisKeyId, message: String },
 }
 
@@ -43,6 +52,7 @@ pub struct RedisBrowserTab {
     pub keyspace: KeyspaceState,
     pub tree: KeyTreeState,
     pub preview: RedisPreviewState,
+    pub value_page: RedisValuePageState,
     pub preview_generation: u64,
     pub focus: RedisBrowserFocus,
     pub find: Option<RedisKeyFindState>,
@@ -58,6 +68,7 @@ impl RedisBrowserTab {
             target,
             tree: KeyTreeState::default(),
             preview: RedisPreviewState::Empty,
+            value_page: RedisValuePageState::Empty,
             preview_generation: 0,
             focus: RedisBrowserFocus::Keys,
             find: None,
@@ -68,6 +79,10 @@ impl RedisBrowserTab {
 
     pub fn rebuild_tree(&mut self) {
         self.tree.rebuild(&self.keyspace.keys);
+    }
+
+    pub fn insert_tree_keys(&mut self) {
+        self.tree.insert_keys(&self.keyspace.keys);
     }
 
     pub fn select(&mut self, node: Option<super::redis_key_tree::KeyTreeNodeId>) {
@@ -81,6 +96,15 @@ impl RedisBrowserTab {
                 },
             },
             None => RedisPreviewState::Empty,
+        };
+        self.value_page = match self.tree.selected_key() {
+            Some(key) => RedisValuePageState::Loading {
+                key: RedisKeyId {
+                    target: self.target.clone(),
+                    key: key.to_vec(),
+                },
+            },
+            None => RedisValuePageState::Empty,
         };
     }
 

@@ -5,7 +5,9 @@ use ratatui::{
     text::Line,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use std::collections::HashMap;
 
+use crate::model::redis_browser::RedisValuePageState;
 use crate::{
     app::App,
     model::{
@@ -48,19 +50,20 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
             .iter()
             .cloned()
             .collect::<std::collections::HashSet<_>>();
+        let rows_by_id = rows
+            .into_iter()
+            .map(|row| (row.id.clone(), row))
+            .collect::<HashMap<_, _>>();
         (
             find.rows
                 .iter()
                 .filter_map(|(id, label)| {
-                    rows.iter()
-                        .find(|row| &row.id == id)
-                        .cloned()
-                        .map(|mut row| {
-                            if matching.contains(id) {
-                                row.label = label.as_bytes().to_vec();
-                            }
-                            row
-                        })
+                    rows_by_id.get(id).cloned().map(|mut row| {
+                        if matching.contains(id) {
+                            row.label = label.as_bytes().to_vec();
+                        }
+                        row
+                    })
                 })
                 .collect::<Vec<_>>(),
             tab.tree.selected.clone(),
@@ -191,20 +194,33 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App, ui: &mut crate::ui::
             });
         }
     }
-    let preview = match &tab.preview {
-        RedisPreviewState::Empty => Paragraph::new(Line::from("Select a key to preview")),
-        RedisPreviewState::Loading { key } => {
+    let preview = match &tab.value_page {
+        RedisValuePageState::Ready(page) => {
+            Paragraph::new(crate::ui::redis_value::page_lines(page))
+        }
+        RedisValuePageState::Loading { key } => {
             Paragraph::new(Line::from(format!("Loading {}", display_bytes(&key.key))))
         }
-        RedisPreviewState::Ready { key, content } => Paragraph::new(vec![
-            Line::from(display_bytes(&key.key)),
-            Line::from(content.as_str()),
-        ]),
-        RedisPreviewState::Failed { key, message } => Paragraph::new(vec![
+        RedisValuePageState::Failed { key, message } => Paragraph::new(vec![
             Line::from(display_bytes(&key.key)),
             Line::from(message.as_str()),
         ])
         .style(Style::default().fg(Color::Red)),
+        RedisValuePageState::Empty => match &tab.preview {
+            RedisPreviewState::Empty => Paragraph::new(Line::from("Select a key to preview")),
+            RedisPreviewState::Loading { key } => {
+                Paragraph::new(Line::from(format!("Loading {}", display_bytes(&key.key))))
+            }
+            RedisPreviewState::Ready { key, content } => Paragraph::new(vec![
+                Line::from(display_bytes(&key.key)),
+                Line::from(content.as_str()),
+            ]),
+            RedisPreviewState::Failed { key, message } => Paragraph::new(vec![
+                Line::from(display_bytes(&key.key)),
+                Line::from(message.as_str()),
+            ])
+            .style(Style::default().fg(Color::Red)),
+        },
     };
     frame.render_widget(preview, preview_area);
 }
