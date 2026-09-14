@@ -1275,6 +1275,43 @@ fn role_editor_uses_catalog_editor_field_keymap() {
 }
 
 #[test]
+fn database_editor_toggle_key_is_routed_to_catalog_toggle() {
+    let mut app = App::new(Vec::new());
+    app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
+        anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
+            profile_id: Uuid::nil(),
+        },
+        object_type: Some(lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
+            lazydb::db::catalog::CatalogKind::Database,
+        )),
+        page: lazydb::model::catalog_editor::CatalogEditorPage::Form,
+        operation: None,
+        catalog_epoch: 0,
+        options: vec![],
+        selected_option: 0,
+        draft: Some(lazydb::model::catalog_editor::CatalogDraft::Database(
+            lazydb::model::catalog_editor::DatabaseDraft::new(""),
+        )),
+        baseline: None,
+        plan: None,
+        error: None,
+        owner_picker: Default::default(),
+        preview_scroll: 0,
+    });
+    app.overlay = Some(Overlay::CatalogEditor);
+    let mut keymap = Keymap::default();
+
+    app.update(Action::CatalogEditorFocusFormField(
+        lazydb::model::catalog_editor::CatalogFormFocus::AllowConnections,
+    ));
+    assert_eq!(
+        keymap.map(key(KeyCode::Char(' ')), &app),
+        Some(Action::CatalogEditorToggleFocused)
+    );
+}
+
+#[test]
 fn data_query_completion_keys_preempt_query_input_navigation() {
     let mut app = App::new(Vec::new());
     let mut tab = RelationTab::new("users");

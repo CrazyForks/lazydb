@@ -7216,6 +7216,17 @@ impl App {
                         }
                         return Vec::new();
                     }
+                    if matches!(
+                        draft,
+                        crate::model::catalog_editor::CatalogDraft::Database(_)
+                            | crate::model::catalog_editor::CatalogDraft::Role(_)
+                    ) {
+                        draft.move_field(1, allow_with_data);
+                        if catalog_owner_field_focused(draft) {
+                            return self.open_catalog_owner_picker();
+                        }
+                        return Vec::new();
+                    }
                 }
                 if let Some(crate::model::catalog_editor::CatalogDraft::View(draft)) = self
                     .catalog_editor
@@ -7266,6 +7277,17 @@ impl App {
                     if matches!(
                         draft,
                         crate::model::catalog_editor::CatalogDraft::MaterializedView(_)
+                    ) {
+                        draft.move_field(-1, allow_with_data);
+                        if catalog_owner_field_focused(draft) {
+                            return self.open_catalog_owner_picker();
+                        }
+                        return Vec::new();
+                    }
+                    if matches!(
+                        draft,
+                        crate::model::catalog_editor::CatalogDraft::Database(_)
+                            | crate::model::catalog_editor::CatalogDraft::Role(_)
                     ) {
                         draft.move_field(-1, allow_with_data);
                         if catalog_owner_field_focused(draft) {
@@ -7330,6 +7352,18 @@ impl App {
                         }
                         crate::model::catalog_editor::CatalogDraft::Sequence(draft) => {
                             draft.focus(focus)
+                        }
+                        crate::model::catalog_editor::CatalogDraft::Database(draft) => {
+                            if draft.focus_enabled(focus) {
+                                draft.focus = focus;
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        crate::model::catalog_editor::CatalogDraft::Role(draft) => {
+                            draft.focus = focus;
+                            true
                         }
                         _ => false,
                     }
@@ -8000,6 +8034,12 @@ impl App {
                                 draft.toggle_focused(create_mode);
                             }
                             crate::model::catalog_editor::CatalogDraft::Sequence(draft) => {
+                                draft.toggle_focused();
+                            }
+                            crate::model::catalog_editor::CatalogDraft::Database(draft) => {
+                                draft.toggle_focused();
+                            }
+                            crate::model::catalog_editor::CatalogDraft::Role(draft) => {
                                 draft.toggle_focused();
                             }
                             _ => {}

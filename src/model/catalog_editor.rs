@@ -27,6 +27,7 @@ pub struct RoleDraft {
     pub memberships: TextInput,
     pub comment: TextInput,
     pub selected_field: usize,
+    pub focus: CatalogFormFocus,
 }
 
 impl RoleDraft {
@@ -46,6 +47,7 @@ impl RoleDraft {
             memberships: TextInput::default(),
             comment: TextInput::default(),
             selected_field: 0,
+            focus: CatalogFormFocus::Name,
         }
     }
     pub fn from_definition(d: &crate::db::catalog_mutation::RoleDefinition) -> Self {
@@ -77,30 +79,45 @@ impl RoleDraft {
     }
 
     pub fn move_field(&mut self, delta: isize) {
-        self.selected_field = (self.selected_field as isize + delta).rem_euclid(11) as usize;
+        self.focus = move_catalog_form_focus(self.focus, delta, ROLE_FOCUS_ORDER, |_| true);
+        self.selected_field = role_focus_index(self.focus);
     }
-    fn input(&mut self) -> Option<&mut TextInput> {
-        match self.selected_field {
-            0 => Some(&mut self.name),
-            8 => Some(&mut self.connection_limit),
-            9 => Some(&mut self.valid_until),
-            10 => Some(&mut self.comment),
+    pub(crate) fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+        match self.focus {
+            CatalogFormFocus::Name => Some(&mut self.name),
+            CatalogFormFocus::ConnectionLimit => Some(&mut self.connection_limit),
+            CatalogFormFocus::ValidUntil => Some(&mut self.valid_until),
+            CatalogFormFocus::Memberships => Some(&mut self.memberships),
+            CatalogFormFocus::Comment => Some(&mut self.comment),
             _ => None,
         }
     }
 
+    pub fn toggle_focused(&mut self) {
+        match self.focus {
+            CatalogFormFocus::Login => self.login = !self.login,
+            CatalogFormFocus::Superuser => self.superuser = !self.superuser,
+            CatalogFormFocus::CreateDb => self.createdb = !self.createdb,
+            CatalogFormFocus::CreateRole => self.createrole = !self.createrole,
+            CatalogFormFocus::Inherit => self.inherit = !self.inherit,
+            CatalogFormFocus::Replication => self.replication = !self.replication,
+            CatalogFormFocus::BypassRls => self.bypass_rls = !self.bypass_rls,
+            _ => {}
+        }
+    }
+
     pub fn insert(&mut self, c: char) {
-        if let Some(i) = self.input() {
+        if let Some(i) = self.selected_input_mut() {
             i.insert(c)
         }
     }
     pub fn backspace(&mut self) {
-        if let Some(i) = self.input() {
+        if let Some(i) = self.selected_input_mut() {
             i.backspace()
         }
     }
     pub fn delete(&mut self) {
-        if let Some(i) = self.input() {
+        if let Some(i) = self.selected_input_mut() {
             i.delete()
         }
     }
@@ -179,6 +196,25 @@ pub enum CatalogFormFocus {
     CheckOption,
     Review,
     Cancel,
+    Template,
+    Encoding,
+    LocaleProvider,
+    Locale,
+    Collation,
+    Ctype,
+    ConnectionLimit,
+    AllowConnections,
+    IsTemplate,
+    Login,
+    Password,
+    ValidUntil,
+    Memberships,
+    Superuser,
+    CreateDb,
+    CreateRole,
+    Inherit,
+    Replication,
+    BypassRls,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +270,114 @@ const SEQUENCE_FOCUS_ORDER: &[CatalogFormFocus] = &[
     CatalogFormFocus::Review,
     CatalogFormFocus::Cancel,
 ];
+
+const DATABASE_FOCUS_ORDER: &[CatalogFormFocus] = &[
+    CatalogFormFocus::Name,
+    CatalogFormFocus::Owner,
+    CatalogFormFocus::Comment,
+    CatalogFormFocus::Template,
+    CatalogFormFocus::Encoding,
+    CatalogFormFocus::LocaleProvider,
+    CatalogFormFocus::Locale,
+    CatalogFormFocus::Collation,
+    CatalogFormFocus::Ctype,
+    CatalogFormFocus::Tablespace,
+    CatalogFormFocus::ConnectionLimit,
+    CatalogFormFocus::AllowConnections,
+    CatalogFormFocus::IsTemplate,
+    CatalogFormFocus::Review,
+    CatalogFormFocus::Cancel,
+];
+
+const ROLE_FOCUS_ORDER: &[CatalogFormFocus] = &[
+    CatalogFormFocus::Name,
+    CatalogFormFocus::Comment,
+    CatalogFormFocus::Login,
+    CatalogFormFocus::Password,
+    CatalogFormFocus::ValidUntil,
+    CatalogFormFocus::ConnectionLimit,
+    CatalogFormFocus::Superuser,
+    CatalogFormFocus::CreateDb,
+    CatalogFormFocus::CreateRole,
+    CatalogFormFocus::Inherit,
+    CatalogFormFocus::Replication,
+    CatalogFormFocus::BypassRls,
+    CatalogFormFocus::Memberships,
+    CatalogFormFocus::Review,
+    CatalogFormFocus::Cancel,
+];
+
+fn role_focus_index(focus: CatalogFormFocus) -> usize {
+    ROLE_FOCUS_ORDER
+        .iter()
+        .position(|item| *item == focus)
+        .unwrap_or(0)
+}
+
+fn database_input(draft: &DatabaseDraft, focus: CatalogFormFocus) -> Option<&TextInput> {
+    if !draft.focus_enabled(focus) {
+        return None;
+    }
+    match focus {
+        CatalogFormFocus::Name => Some(&draft.name),
+        CatalogFormFocus::Owner => Some(&draft.owner),
+        CatalogFormFocus::Comment => Some(&draft.comment),
+        CatalogFormFocus::Template => Some(&draft.template),
+        CatalogFormFocus::Encoding => Some(&draft.encoding),
+        CatalogFormFocus::LocaleProvider => Some(&draft.locale_provider),
+        CatalogFormFocus::Locale => Some(&draft.locale),
+        CatalogFormFocus::Collation => Some(&draft.collation),
+        CatalogFormFocus::Ctype => Some(&draft.ctype),
+        CatalogFormFocus::Tablespace => Some(&draft.tablespace),
+        CatalogFormFocus::ConnectionLimit => Some(&draft.connection_limit),
+        _ => None,
+    }
+}
+
+fn database_input_mut(
+    draft: &mut DatabaseDraft,
+    focus: CatalogFormFocus,
+) -> Option<&mut TextInput> {
+    if !draft.focus_enabled(focus) {
+        return None;
+    }
+    match focus {
+        CatalogFormFocus::Name => Some(&mut draft.name),
+        CatalogFormFocus::Owner => Some(&mut draft.owner),
+        CatalogFormFocus::Comment => Some(&mut draft.comment),
+        CatalogFormFocus::Template => Some(&mut draft.template),
+        CatalogFormFocus::Encoding => Some(&mut draft.encoding),
+        CatalogFormFocus::LocaleProvider => Some(&mut draft.locale_provider),
+        CatalogFormFocus::Locale => Some(&mut draft.locale),
+        CatalogFormFocus::Collation => Some(&mut draft.collation),
+        CatalogFormFocus::Ctype => Some(&mut draft.ctype),
+        CatalogFormFocus::Tablespace => Some(&mut draft.tablespace),
+        CatalogFormFocus::ConnectionLimit => Some(&mut draft.connection_limit),
+        _ => None,
+    }
+}
+
+fn role_input(draft: &RoleDraft, focus: CatalogFormFocus) -> Option<&TextInput> {
+    match focus {
+        CatalogFormFocus::Name => Some(&draft.name),
+        CatalogFormFocus::Comment => Some(&draft.comment),
+        CatalogFormFocus::ValidUntil => Some(&draft.valid_until),
+        CatalogFormFocus::ConnectionLimit => Some(&draft.connection_limit),
+        CatalogFormFocus::Memberships => Some(&draft.memberships),
+        _ => None,
+    }
+}
+
+fn role_input_mut(draft: &mut RoleDraft, focus: CatalogFormFocus) -> Option<&mut TextInput> {
+    match focus {
+        CatalogFormFocus::Name => Some(&mut draft.name),
+        CatalogFormFocus::Comment => Some(&mut draft.comment),
+        CatalogFormFocus::ValidUntil => Some(&mut draft.valid_until),
+        CatalogFormFocus::ConnectionLimit => Some(&mut draft.connection_limit),
+        CatalogFormFocus::Memberships => Some(&mut draft.memberships),
+        _ => None,
+    }
+}
 
 fn move_catalog_form_focus(
     current: CatalogFormFocus,
@@ -364,6 +508,7 @@ pub struct DatabaseDraft {
     pub is_template: bool,
     pub comment: TextInput,
     pub selected_field: usize,
+    pub focus: CatalogFormFocus,
     pub editable_creation_options: bool,
 }
 
@@ -384,6 +529,7 @@ impl DatabaseDraft {
             is_template: definition.is_template,
             comment: optional_text(&definition.comment),
             selected_field: 0,
+            focus: CatalogFormFocus::Name,
             editable_creation_options: false,
         }
     }
@@ -403,6 +549,7 @@ impl DatabaseDraft {
             is_template: false,
             comment: TextInput::default(),
             selected_field: 0,
+            focus: CatalogFormFocus::Name,
             editable_creation_options: true,
         }
     }
@@ -421,36 +568,89 @@ impl DatabaseDraft {
         Ok(())
     }
     pub fn move_field(&mut self, delta: isize) {
-        self.selected_field = (self.selected_field as isize + delta).rem_euclid(13) as usize;
+        self.focus = move_catalog_form_focus(self.focus, delta, DATABASE_FOCUS_ORDER, |focus| {
+            self.focus_enabled(focus)
+        });
+        self.selected_field = self.focus_index();
     }
-    fn selected_input_mut(&mut self) -> &mut TextInput {
-        match self.selected_field {
-            0 => &mut self.name,
-            1 => &mut self.owner,
-            2 => &mut self.template,
-            3 => &mut self.encoding,
-            4 => &mut self.locale_provider,
-            5 => &mut self.locale,
-            6 => &mut self.collation,
-            7 => &mut self.ctype,
-            8 => &mut self.tablespace,
-            9 => &mut self.connection_limit,
-            _ => &mut self.comment,
+    fn focus_index(&self) -> usize {
+        DATABASE_FOCUS_ORDER
+            .iter()
+            .position(|item| *item == self.focus)
+            .unwrap_or(0)
+    }
+    pub fn focus_enabled(&self, focus: CatalogFormFocus) -> bool {
+        self.editable_creation_options
+            || !matches!(
+                focus,
+                CatalogFormFocus::Template
+                    | CatalogFormFocus::Encoding
+                    | CatalogFormFocus::LocaleProvider
+                    | CatalogFormFocus::Locale
+                    | CatalogFormFocus::Collation
+                    | CatalogFormFocus::Ctype
+                    | CatalogFormFocus::Tablespace
+            )
+    }
+    fn selected_input_mut(&mut self) -> Option<&mut TextInput> {
+        if self.selected_field != self.focus_index() {
+            self.focus = match self.selected_field {
+                0 => CatalogFormFocus::Name,
+                1 => CatalogFormFocus::Owner,
+                2 => CatalogFormFocus::Template,
+                3 => CatalogFormFocus::Encoding,
+                4 => CatalogFormFocus::LocaleProvider,
+                5 => CatalogFormFocus::Locale,
+                6 => CatalogFormFocus::Collation,
+                7 => CatalogFormFocus::Ctype,
+                8 => CatalogFormFocus::Tablespace,
+                9 => CatalogFormFocus::ConnectionLimit,
+                _ => CatalogFormFocus::Comment,
+            };
+        }
+        if !self.focus_enabled(self.focus) {
+            return None;
+        }
+        match self.focus {
+            CatalogFormFocus::Name => Some(&mut self.name),
+            CatalogFormFocus::Owner => Some(&mut self.owner),
+            CatalogFormFocus::Template => Some(&mut self.template),
+            CatalogFormFocus::Encoding => Some(&mut self.encoding),
+            CatalogFormFocus::LocaleProvider => Some(&mut self.locale_provider),
+            CatalogFormFocus::Locale => Some(&mut self.locale),
+            CatalogFormFocus::Collation => Some(&mut self.collation),
+            CatalogFormFocus::Ctype => Some(&mut self.ctype),
+            CatalogFormFocus::Tablespace => Some(&mut self.tablespace),
+            CatalogFormFocus::ConnectionLimit => Some(&mut self.connection_limit),
+            CatalogFormFocus::Comment => Some(&mut self.comment),
+            _ => None,
         }
     }
     pub fn insert(&mut self, c: char) {
-        if self.editable_creation_options || !matches!(self.selected_field, 2..=8) {
-            self.selected_input_mut().insert(c);
+        if let Some(input) = self.selected_input_mut() {
+            input.insert(c);
+        }
+    }
+    pub fn paste(&mut self, text: &str) {
+        if let Some(input) = self.selected_input_mut() {
+            input.paste(text);
+        }
+    }
+    pub fn toggle_focused(&mut self) {
+        match self.focus {
+            CatalogFormFocus::AllowConnections => self.allow_connections = !self.allow_connections,
+            CatalogFormFocus::IsTemplate => self.is_template = !self.is_template,
+            _ => {}
         }
     }
     pub fn backspace(&mut self) {
-        if self.editable_creation_options || !matches!(self.selected_field, 2..=8) {
-            self.selected_input_mut().backspace();
+        if let Some(input) = self.selected_input_mut() {
+            input.backspace();
         }
     }
     pub fn delete(&mut self) {
-        if self.editable_creation_options || !matches!(self.selected_field, 2..=8) {
-            self.selected_input_mut().delete();
+        if let Some(input) = self.selected_input_mut() {
+            input.delete();
         }
     }
 }
@@ -2368,6 +2568,12 @@ impl CatalogDraft {
                     _ => None,
                 }
             }
+            (Self::Database(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                database_input(draft, *field)
+            }
+            (Self::Role(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                role_input(draft, *field)
+            }
             (Self::Table(draft), crate::action::CatalogEditorCursorTarget::TableField(field)) => {
                 draft.input_for_target(field)
             }
@@ -2436,6 +2642,12 @@ impl CatalogDraft {
                     _ => None,
                 }
             }
+            (Self::Database(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                database_input_mut(draft, *field)
+            }
+            (Self::Role(draft), crate::action::CatalogEditorCursorTarget::FormField(field)) => {
+                role_input_mut(draft, *field)
+            }
             (Self::Table(draft), crate::action::CatalogEditorCursorTarget::TableField(field)) => {
                 draft.input_for_target_mut(field)
             }
@@ -2484,6 +2696,7 @@ impl CatalogDraft {
     }
     pub fn owner(&self) -> Option<&TextInput> {
         match self {
+            Self::Database(draft) => Some(&draft.owner),
             Self::Schema(draft) => Some(&draft.owner),
             Self::View(draft) => Some(&draft.owner),
             Self::MaterializedView(draft) => Some(&draft.owner),
@@ -2494,6 +2707,7 @@ impl CatalogDraft {
 
     pub fn owner_mut(&mut self) -> Option<&mut TextInput> {
         match self {
+            Self::Database(draft) => Some(&mut draft.owner),
             Self::Schema(draft) => Some(&mut draft.owner),
             Self::View(draft) => Some(&mut draft.owner),
             Self::MaterializedView(draft) => Some(&mut draft.owner),
@@ -2504,6 +2718,30 @@ impl CatalogDraft {
 
     pub fn focus_accepts_text(&self) -> bool {
         match self {
+            Self::Database(draft) => {
+                matches!(
+                    draft.focus,
+                    CatalogFormFocus::Name
+                        | CatalogFormFocus::Owner
+                        | CatalogFormFocus::Comment
+                        | CatalogFormFocus::Template
+                        | CatalogFormFocus::Encoding
+                        | CatalogFormFocus::LocaleProvider
+                        | CatalogFormFocus::Locale
+                        | CatalogFormFocus::Collation
+                        | CatalogFormFocus::Ctype
+                        | CatalogFormFocus::Tablespace
+                        | CatalogFormFocus::ConnectionLimit
+                ) && draft.focus_enabled(draft.focus)
+            }
+            Self::Role(draft) => matches!(
+                draft.focus,
+                CatalogFormFocus::Name
+                    | CatalogFormFocus::Comment
+                    | CatalogFormFocus::ValidUntil
+                    | CatalogFormFocus::ConnectionLimit
+                    | CatalogFormFocus::Memberships
+            ),
             Self::View(draft) => matches!(
                 draft.focus,
                 CatalogFormFocus::Name
@@ -2568,12 +2806,33 @@ impl CatalogDraft {
     }
 
     pub fn focus_is_toggle(&self, create_mode: bool) -> bool {
+        if matches!(
+            self,
+            Self::Database(draft)
+                if matches!(draft.focus, CatalogFormFocus::AllowConnections | CatalogFormFocus::IsTemplate)
+        ) || matches!(
+            self,
+            Self::Role(draft)
+                if matches!(
+                    draft.focus,
+                    CatalogFormFocus::Login
+                        | CatalogFormFocus::Superuser
+                        | CatalogFormFocus::CreateDb
+                        | CatalogFormFocus::CreateRole
+                        | CatalogFormFocus::Inherit
+                        | CatalogFormFocus::Replication
+                        | CatalogFormFocus::BypassRls
+                )
+        ) {
+            return true;
+        }
         matches!(self, Self::Sequence(draft) if draft.focus == CatalogFormFocus::Cycle)
             || matches!(self, Self::MaterializedView(draft) if create_mode && draft.focus == CatalogFormFocus::WithData)
     }
 
     pub fn focused_action(&self) -> Option<CatalogFormFocus> {
         let focus = match self {
+            Self::Database(_) | Self::Role(_) => return Some(CatalogFormFocus::Review),
             Self::View(draft) => draft.focus,
             Self::MaterializedView(draft) => draft.focus,
             Self::Sequence(draft) => draft.focus,
@@ -2609,6 +2868,12 @@ impl CatalogDraft {
     }
     pub fn paste(&mut self, text: &str) {
         match self {
+            Self::Database(draft) => draft.paste(text),
+            Self::Role(draft) => {
+                if let Some(input) = draft.selected_input_mut() {
+                    input.paste(text);
+                }
+            }
             Self::Table(draft) => draft.paste(text),
             Self::View(draft) => draft.paste(text),
             Self::MaterializedView(draft) => draft.paste(text),
@@ -2726,10 +2991,8 @@ impl CatalogDraft {
             Self::View(draft) => draft.selected_input_mut(),
             Self::MaterializedView(draft) => draft.selected_input_mut(),
             Self::Sequence(draft) => draft.selected_input_mut(),
-            Self::Database(draft) => (draft.editable_creation_options
-                || !matches!(draft.selected_field, 2..=8))
-            .then(|| draft.selected_input_mut()),
-            Self::Role(draft) => draft.input(),
+            Self::Database(draft) => draft.selected_input_mut(),
+            Self::Role(draft) => draft.selected_input_mut(),
             Self::Constraint(draft) => draft.selected_input_mut(),
             Self::Index(_) => None,
         }
