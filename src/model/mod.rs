@@ -5,6 +5,7 @@ pub mod dashboard;
 pub mod data_query;
 pub mod database_selector;
 pub mod editor;
+pub mod editor_language;
 pub mod execution_target;
 pub mod explorer;
 pub mod explorer_add;

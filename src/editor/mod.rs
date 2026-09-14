@@ -904,6 +904,23 @@ impl EditorWorkspace {
         self.render_snapshot_with_dialect(id, viewport, SqlDialect::Generic)
     }
 
+    /// Render a read-only document without invoking SQL analysis. This is the
+    /// first shared viewport entry point for non-SQL value previews.
+    pub(crate) fn render_plain_snapshot(
+        &self,
+        id: Uuid,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let mut snapshot = self.render_snapshot_with_dialect(id, viewport, SqlDialect::Generic)?;
+        for line in &mut snapshot.lines {
+            for span in &mut line.spans {
+                span.kind = EditorHighlightKind::Plain;
+            }
+        }
+        snapshot.semantic_diagnostics.clear();
+        Ok(snapshot)
+    }
+
     pub(crate) fn render_snapshot_with_dialect(
         &self,
         id: Uuid,
