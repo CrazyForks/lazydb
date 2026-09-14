@@ -87,6 +87,71 @@ fn redis_keys_routes_before_generic_results_navigation_and_supports_find() {
 }
 
 #[test]
+fn redis_object_actions_open_from_prefix_and_key_and_edit_in_the_overlay() {
+    let target = lazydb::db::redis::types::RedisTarget {
+        profile_id: Uuid::from_u128(21),
+        database: 0,
+    };
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    app.explorer.normalized.selected =
+        Some(lazydb::model::explorer::ExplorerNodeId::RedisDatabase {
+            profile_id: target.profile_id,
+            database: target.database,
+        });
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('a')), &app),
+        Some(Action::OpenRedisObjectCreateAt {
+            profile_id: target.profile_id,
+            database: target.database,
+        })
+    );
+    app.explorer.normalized.selected = None;
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(Uuid::from_u128(20), target.clone()),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] {
+        tab.tree.selected = Some(lazydb::model::redis_key_tree::KeyTreeNodeId::Prefix(
+            b"cache:".to_vec(),
+        ));
+    }
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('a')), &app),
+        Some(Action::OpenRedisObjectCreate)
+    );
+    if let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] {
+        tab.tree.selected = Some(lazydb::model::redis_key_tree::KeyTreeNodeId::Key(
+            b"cache:key".to_vec(),
+        ));
+    }
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('e')), &app),
+        Some(Action::OpenRedisObjectEdit)
+    );
+
+    let editor = lazydb::model::redis_object_editor::RedisObjectEditorState::create(
+        Uuid::from_u128(22),
+        lazydb::identity::ConnectionIdentity {
+            profile_id: target.profile_id,
+            generation: 1,
+        },
+        target,
+    );
+    app.overlay = Some(Overlay::RedisObjectEditor(Box::new(editor)));
+    assert_eq!(
+        keymap.map(key(KeyCode::Tab), &app),
+        Some(Action::RedisObjectEditorFocusNext)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('x')), &app),
+        Some(Action::RedisObjectEditorInsert('x'))
+    );
+}
+
+#[test]
 fn profile_group_delete_navigation_and_enter_follow_selected_button() {
     use lazydb::model::profile_group::ProfileGroupOverlay;
 

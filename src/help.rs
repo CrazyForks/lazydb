@@ -171,6 +171,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                     },
                     None => ShortcutContext::CatalogEditorBusy,
                 },
+                Overlay::RedisObjectEditor(_) => ShortcutContext::Message,
                 Overlay::SqlEditorList(list) => match list.mode {
                     SqlEditorListMode::Browse => ShortcutContext::ConsoleManager,
                     SqlEditorListMode::Search => ShortcutContext::ConsoleManagerSearch,

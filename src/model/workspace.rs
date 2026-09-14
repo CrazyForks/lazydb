@@ -114,6 +114,7 @@ pub enum Overlay {
     SqlHistory(crate::model::sql_history_view::SqlHistoryState),
     ProfileManager,
     CatalogEditor,
+    RedisObjectEditor(Box<crate::model::redis_object_editor::RedisObjectEditorState>),
     ProfileAccess {
         profile_id: Uuid,
         selected: usize,

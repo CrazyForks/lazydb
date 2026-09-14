@@ -35,7 +35,14 @@ for the first mutation slice is:
 | MySQL/MariaDB | Create and edit table/view from the database-is-schema namespace; column/index/constraint edits remain gated |
 | SQL Server | Create and edit table/view from a database/schema object group; column/index/constraint edits remain gated |
 | SQLite | Create and edit table/view; complex table structure edits use a lossless rebuild plan |
-| Redis | No SQL catalog mutation; native Key-Value mutation is a separate planned protocol |
+| Redis | No SQL catalog mutation; native Key-Value mutation supports typed replacement, targeted collection edits, and TTL preservation |
+
+Redis mutations are opened from the Redis browser: `a` creates a key under the
+selected database/prefix and `e` edits a loaded key value. Collection values are
+entered one item per line (or `field<TAB>value` rows); binary fields use the
+explicit `hex:` form. Existing-key edits preserve TTL by default, while create
+operations default to persistent keys. Partial previews are not writable until
+the complete value is loaded.
 
 Until a row's individual object operation is complete, its capability remains
 unavailable with a specific reason (`not implemented`, `not applicable`, or a server-version gate). A

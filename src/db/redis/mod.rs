@@ -3,6 +3,7 @@ pub mod key_index;
 pub mod key_store;
 pub mod metadata_cache;
 pub mod monitor;
+pub mod mutation;
 pub mod preview_scheduler;
 pub mod read;
 pub mod reconnect;
@@ -12,6 +13,9 @@ pub mod types;
 
 use redis::{AsyncConnectionConfig, Client, aio::MultiplexedConnection};
 use secrecy::{ExposeSecret, SecretString};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use uuid::Uuid;
 
 use crate::{
     db::{DatabaseError, ErrorCategory, ServerInfo},
@@ -22,6 +26,8 @@ use crate::{
 pub struct RedisAdapter {
     connection: MultiplexedConnection,
     target_database: u32,
+    connection_id: Uuid,
+    metadata_cache: Arc<Mutex<metadata_cache::MetadataCache>>,
 }
 
 impl RedisAdapter {
@@ -94,6 +100,11 @@ impl RedisAdapter {
         let adapter = Self {
             connection,
             target_database: database,
+            connection_id: profile.id,
+            metadata_cache: Arc::new(Mutex::new(metadata_cache::MetadataCache::new(
+                2_048,
+                Duration::from_secs(1),
+            ))),
         };
         adapter.ping().await?;
         Ok(adapter)
@@ -157,6 +168,45 @@ impl RedisAdapter {
 
     pub(crate) fn connection_clone(&self) -> MultiplexedConnection {
         self.connection.clone()
+    }
+
+    pub(crate) fn invalidate_metadata(&self, key: &[u8]) {
+        if let Ok(mut cache) = self.metadata_cache.lock() {
+            cache.invalidate_key(
+                crate::identity::ConnectionIdentity {
+                    profile_id: self.connection_id,
+                    generation: 0,
+                },
+                key,
+            );
+        }
+    }
+
+    pub(crate) fn metadata_cache_key(&self, key: &[u8]) -> metadata_cache::MetadataCacheKey {
+        metadata_cache::MetadataCacheKey {
+            connection: crate::identity::ConnectionIdentity {
+                profile_id: self.connection_id,
+                generation: 0,
+            },
+            key: key.to_vec(),
+        }
+    }
+
+    pub(crate) fn metadata_cache_get(
+        &self,
+        key: &metadata_cache::MetadataCacheKey,
+    ) -> Option<crate::db::redis::read::RedisKeyMetadata> {
+        self.metadata_cache.lock().ok()?.get(key)
+    }
+
+    pub(crate) fn metadata_cache_insert(
+        &self,
+        key: metadata_cache::MetadataCacheKey,
+        value: crate::db::redis::read::RedisKeyMetadata,
+    ) {
+        if let Ok(mut cache) = self.metadata_cache.lock() {
+            cache.insert(key, value);
+        }
     }
 }
 

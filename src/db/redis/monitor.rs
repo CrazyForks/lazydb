@@ -62,10 +62,10 @@ pub fn parse_info(raw: &str, at_millis: u64) -> (MonitorSnapshot, RedisMonitorDe
             details.keyspace.insert(database, parse_keyspace(&value));
             continue;
         }
-        if let Ok(number) = value.parse::<f64>() {
-            if number.is_finite() {
-                counters.insert(key.clone(), number);
-            }
+        if let Ok(number) = value.parse::<f64>()
+            && number.is_finite()
+        {
+            counters.insert(key.clone(), number);
         }
         match key.as_str() {
             "redis_version" => details.redis_version = Some(value),

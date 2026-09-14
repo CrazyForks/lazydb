@@ -265,6 +265,7 @@ pub struct Runtime {
     catalog_drop_plan_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     catalog_drop_execute_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     catalog_mutation_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
+    redis_mutation_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     relation_tasks: HashMap<crate::model::relation::RelationRequest, JoinHandle<()>>,
     dashboard_metric_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_metadata_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
@@ -386,6 +387,7 @@ impl Runtime {
             catalog_drop_plan_tasks: HashMap::new(),
             catalog_drop_execute_tasks: HashMap::new(),
             catalog_mutation_tasks: HashMap::new(),
+            redis_mutation_tasks: HashMap::new(),
             relation_tasks: HashMap::new(),
             dashboard_metric_tasks: HashMap::new(),
             dashboard_metadata_tasks: HashMap::new(),
@@ -440,6 +442,8 @@ impl Runtime {
         self.catalog_drop_execute_tasks
             .retain(|_, task| !task.is_finished());
         self.catalog_mutation_tasks
+            .retain(|_, task| !task.is_finished());
+        self.redis_mutation_tasks
             .retain(|_, task| !task.is_finished());
         self.relation_tasks.retain(|_, task| !task.is_finished());
         self.dashboard_metric_tasks
@@ -512,6 +516,13 @@ impl Runtime {
                 preview_generation,
                 key,
             } => self.load_redis_value_preview(tab_id, request_connection, preview_generation, key),
+            Command::PlanRedisMutation {
+                request,
+                operation,
+                ttl,
+                baseline,
+            } => self.plan_redis_mutation(request, operation, ttl, baseline),
+            Command::ExecuteRedisMutation(plan) => self.execute_redis_mutation(plan),
             Command::ResolveCatalogRelation {
                 connection,
                 catalog_epoch,
@@ -2403,6 +2414,102 @@ impl Runtime {
             database.close_if_owned().await;
         });
         self.catalog_mutation_tasks.insert(key, task);
+    }
+
+    fn plan_redis_mutation(
+        &mut self,
+        request: crate::db::redis::mutation::RedisMutationRequest,
+        operation: crate::db::redis::mutation::RedisMutationOperation,
+        ttl: crate::db::redis::mutation::RedisTtlMutation,
+        baseline: Option<crate::db::redis::mutation::RedisKeyBaseline>,
+    ) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let task_request = request.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let Some(database) = active_database(connection, request.connection).await else {
+                let _ = sender.send(Action::RedisMutationPlanFailed {
+                    request: task_request,
+                    message: "Active Redis connection is no longer available".into(),
+                });
+                return;
+            };
+            match database.plan_redis_operation(request, operation, ttl, baseline) {
+                Ok(plan) => {
+                    let _ = sender.send(Action::RedisMutationPlanReady(plan));
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisMutationPlanFailed {
+                        request: task_request,
+                        message: sanitize_terminal_text(&error.to_string()),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn execute_redis_mutation(&mut self, plan: crate::db::redis::mutation::RedisMutationPlan) {
+        let key = (plan.request.connection, plan.request.request_id);
+        if self.redis_mutation_tasks.contains_key(&key) {
+            return;
+        }
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let registry = Arc::clone(&self.registry);
+        let task_plan = plan.clone();
+        let task = tokio::spawn(async move {
+            if let Err(error) = task_plan.validate() {
+                let _ = sender.send(Action::RedisMutationFailed {
+                    plan: task_plan,
+                    message: error.to_string(),
+                });
+                return;
+            }
+            let Some(database) =
+                active_database(Arc::clone(&connection), task_plan.request.connection).await
+            else {
+                let _ = sender.send(Action::RedisMutationFailed {
+                    plan: task_plan,
+                    message: "Active Redis connection is no longer available".into(),
+                });
+                return;
+            };
+            let profile = registry
+                .lock()
+                .await
+                .profiles
+                .get(&task_plan.request.connection.profile_id)
+                .cloned();
+            let Some(profile) = profile else {
+                let _ = sender.send(Action::RedisMutationFailed {
+                    plan: task_plan,
+                    message: "Redis mutation profile no longer exists".into(),
+                });
+                return;
+            };
+            if profile.read_only {
+                let _ = sender.send(Action::RedisMutationFailed {
+                    plan: task_plan,
+                    message: "Redis mutation is unavailable on a read-only profile".into(),
+                });
+                return;
+            }
+            match database.execute_redis_mutation(&task_plan).await {
+                Ok(result) => {
+                    let _ = sender.send(Action::RedisMutationSucceeded {
+                        plan: task_plan,
+                        result,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::RedisMutationFailed {
+                        plan: task_plan,
+                        message: sanitize_terminal_text(&error.to_string()),
+                    });
+                }
+            }
+        });
+        self.redis_mutation_tasks.insert(key, task);
     }
 
     fn execute_catalog_drop(&mut self, plan: crate::db::catalog_drop::CatalogDropPlan) {

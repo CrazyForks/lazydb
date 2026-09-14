@@ -553,6 +553,62 @@ impl DatabaseConnection {
         }
     }
 
+    pub fn plan_redis_mutation(
+        &self,
+        request: crate::db::redis::mutation::RedisMutationRequest,
+        draft: crate::db::redis::mutation::RedisValueDraft,
+        ttl_millis: Option<u64>,
+        baseline: Option<crate::db::redis::mutation::RedisKeyBaseline>,
+    ) -> Result<
+        crate::db::redis::mutation::RedisMutationPlan,
+        crate::db::redis::mutation::RedisMutationError,
+    > {
+        match self {
+            Self::Redis(_) => {
+                crate::db::redis::RedisAdapter::plan_mutation(request, draft, ttl_millis, baseline)
+            }
+            _ => Err(
+                crate::db::redis::mutation::RedisMutationError::InvalidRequest {
+                    reason: "Redis mutation requires a Redis connection".into(),
+                },
+            ),
+        }
+    }
+
+    pub fn plan_redis_operation(
+        &self,
+        request: crate::db::redis::mutation::RedisMutationRequest,
+        operation: crate::db::redis::mutation::RedisMutationOperation,
+        ttl: crate::db::redis::mutation::RedisTtlMutation,
+        baseline: Option<crate::db::redis::mutation::RedisKeyBaseline>,
+    ) -> Result<
+        crate::db::redis::mutation::RedisMutationPlan,
+        crate::db::redis::mutation::RedisMutationError,
+    > {
+        match self {
+            Self::Redis(_) => {
+                crate::db::redis::RedisAdapter::plan_operation(request, operation, ttl, baseline)
+            }
+            _ => Err(
+                crate::db::redis::mutation::RedisMutationError::InvalidRequest {
+                    reason: "Redis mutation requires a Redis connection".into(),
+                },
+            ),
+        }
+    }
+
+    pub async fn execute_redis_mutation(
+        &self,
+        plan: &crate::db::redis::mutation::RedisMutationPlan,
+    ) -> Result<crate::db::redis::mutation::RedisMutationResult, DatabaseError> {
+        match self {
+            Self::Redis(adapter) => adapter.execute_mutation(plan).await,
+            _ => Err(DatabaseError::configuration(
+                "Redis mutation requires a Redis connection",
+            )),
+        }
+    }
+
     pub async fn probe(&self) -> Result<ServerInfo, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.probe().await,

@@ -157,6 +157,10 @@ impl RedisAdapter {
                 "Redis key target database mismatch",
             ));
         }
+        let cache_key = self.metadata_cache_key(&key.key);
+        if let Some(metadata) = self.metadata_cache_get(&cache_key) {
+            return Ok(metadata);
+        }
         let mut connection = self.connection_clone();
         let value_type: String = redis::cmd("TYPE")
             .arg(&key.key)
@@ -168,11 +172,13 @@ impl RedisAdapter {
             .query_async(&mut connection)
             .await
             .map_err(|error| redis_error(error, ErrorCategory::Network))?;
-        Ok(RedisKeyMetadata {
+        let metadata = RedisKeyMetadata {
             key: key.clone(),
             value_type: RedisType::parse(&value_type),
             ttl: parse_ttl(ttl),
-        })
+        };
+        self.metadata_cache_insert(cache_key, metadata.clone());
+        Ok(metadata)
     }
 
     pub async fn read_value_page(
@@ -198,10 +204,12 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
-                (
-                    RedisPageValue::String(value),
-                    RedisPagePosition::StringOffset(end.saturating_add(1)),
-                )
+                let position = if value.len() < MAX_STRING_PREVIEW_BYTES {
+                    RedisPagePosition::Complete
+                } else {
+                    RedisPagePosition::StringOffset(end.saturating_add(1))
+                };
+                (RedisPageValue::String(value), position)
             }
             RedisReadRequest::HashScan { cursor, count, .. } => {
                 let (next, values): (u64, Vec<Vec<u8>>) = redis::cmd("HSCAN")
@@ -254,6 +262,7 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = values.len() < MAX_COLLECTION_PREVIEW_ITEMS;
                 (
                     RedisPageValue::List(
                         values
@@ -262,7 +271,11 @@ impl RedisAdapter {
                             .map(|(index, value)| (*start + index as u64, value))
                             .collect(),
                     ),
-                    RedisPagePosition::ListOffset(end.saturating_add(1)),
+                    if complete {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::ListOffset(end.saturating_add(1))
+                    },
                 )
             }
             RedisReadRequest::SortedSetRange { start, end, .. } => {
@@ -274,6 +287,7 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = values.len().saturating_add(1) / 2 < MAX_COLLECTION_PREVIEW_ITEMS;
                 let pairs = values
                     .chunks(2)
                     .filter_map(|pair| {
@@ -284,16 +298,21 @@ impl RedisAdapter {
                     .collect();
                 (
                     RedisPageValue::SortedSet(pairs),
-                    RedisPagePosition::SortedSetOffset(end.saturating_add(1)),
+                    if complete {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::SortedSetOffset(end.saturating_add(1))
+                    },
                 )
             }
         };
         let raw_bytes = value_bytes(&value);
+        let truncated = !matches!(position, RedisPagePosition::Complete);
         Ok(RedisValuePage {
             metadata,
             position,
             value,
-            truncated: false,
+            truncated,
             raw_bytes,
             formatted_bytes: raw_bytes,
         })
