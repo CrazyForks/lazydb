@@ -6649,22 +6649,6 @@ impl App {
                         self.notify_warning("Catalog", "This catalog object cannot be edited");
                         return Vec::new();
                     };
-                    if !matches!(
-                        object.kind,
-                        crate::db::catalog::CatalogKind::Database
-                            | crate::db::catalog::CatalogKind::Schema
-                            | crate::db::catalog::CatalogKind::Table
-                            | crate::db::catalog::CatalogKind::Column
-                            | crate::db::catalog::CatalogKind::PrimaryKey
-                            | crate::db::catalog::CatalogKind::UniqueConstraint
-                            | crate::db::catalog::CatalogKind::ForeignKey
-                            | crate::db::catalog::CatalogKind::CheckConstraint
-                            | crate::db::catalog::CatalogKind::View
-                            | crate::db::catalog::CatalogKind::Sequence
-                    ) {
-                        self.notify_warning("Catalog", "This catalog object cannot be edited yet");
-                        return Vec::new();
-                    }
                     let Some(connection) = self.database_command_identity() else {
                         self.notify_warning(
                             "Catalog",
