@@ -113,6 +113,35 @@ fn redis_keys_use_h_and_l_for_tree_depth_navigation() {
 }
 
 #[test]
+fn redis_keys_route_o_y_and_d_before_generic_results_bindings() {
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(
+            Uuid::from_u128(14),
+            lazydb::db::redis::types::RedisTarget {
+                profile_id: Uuid::from_u128(15),
+                database: 0,
+            },
+        ),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('o')), &app),
+        Some(Action::RedisPrimarySelection)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('y')), &app),
+        Some(Action::RedisCopyKey)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('d')), &app),
+        Some(Action::RedisDeleteKey)
+    );
+}
+
+#[test]
 fn profile_group_delete_navigation_and_enter_follow_selected_button() {
     use lazydb::model::profile_group::ProfileGroupOverlay;
 

@@ -200,6 +200,8 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::TargetSelector { .. } => ShortcutContext::TargetSelector,
                 Overlay::DatabaseSelector(_) => ShortcutContext::DatabaseSelector,
                 Overlay::DeleteConsole { .. } => ShortcutContext::DeleteConsoleConfirmation,
+                Overlay::RedisDeleteConfirm { .. } => ShortcutContext::DeleteConsoleConfirmation,
+                Overlay::RedisDeletePreparing { .. } => ShortcutContext::DeleteConsoleConfirmation,
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
                 Overlay::CatalogEditorDestructiveConfirm { .. } => {

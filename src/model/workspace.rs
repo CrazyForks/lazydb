@@ -177,6 +177,17 @@ pub enum Overlay {
         console_id: Uuid,
         focus: DeleteConsoleFocus,
     },
+    RedisDeleteConfirm {
+        tab_id: Uuid,
+        target: RedisDeleteTarget,
+        count: usize,
+        keys: Option<Vec<Vec<u8>>>,
+        focus: DeleteConsoleFocus,
+    },
+    RedisDeletePreparing {
+        tab_id: Uuid,
+        target: RedisDeleteTarget,
+    },
     SqlEditorList(crate::model::sql_editor_list::SqlEditorListState),
     CatalogDropConfirm {
         plan: Box<crate::db::catalog_drop::CatalogDropPlan>,
@@ -191,6 +202,15 @@ pub enum Overlay {
     },
     CatalogEditorDiscardConfirm {
         focus: CatalogEditorDiscardFocus,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisDeleteTarget {
+    Key(crate::db::redis::types::RedisKeyId),
+    Prefix {
+        target: crate::db::redis::types::RedisTarget,
+        prefix: Vec<u8>,
     },
 }
 

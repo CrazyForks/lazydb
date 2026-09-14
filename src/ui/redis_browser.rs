@@ -515,10 +515,11 @@ fn render_row(
     } else {
         Style::new().bg(background).fg(theme.text)
     };
-    let icon_style =
-        Style::new()
-            .bg(background)
-            .fg(if selected { theme.accent } else { theme.text });
+    let icon_style = Style::new().bg(background).fg(if row.expandable {
+        theme.muted
+    } else {
+        theme.text
+    });
     ui.hit_regions.push(crate::ui::HitRegion {
         area: Rect::new(
             area.x + 2,

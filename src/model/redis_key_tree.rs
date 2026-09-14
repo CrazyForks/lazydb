@@ -172,7 +172,10 @@ impl KeyTreeState {
             parent: Option<&KeyTreeNodeId>,
         ) -> Option<KeyTreeNodeId> {
             for node in nodes {
-                if &node.id == target || node.key_id.as_ref() == Some(target) {
+                if node.key_id.as_ref() == Some(target) {
+                    return Some(node.id.clone());
+                }
+                if &node.id == target {
                     return parent.cloned();
                 }
                 if let Some(parent) = find(&node.children, target, Some(&node.id)) {
@@ -299,6 +302,15 @@ fn insert_node_parts(
             index.insert(node.id.clone());
         }
     } else {
+        if let KeyTreeNodeId::Key(existing_key) = &node.id {
+            let existing_key = existing_key.clone();
+            index.remove(&node.id);
+            node.id = KeyTreeNodeId::Prefix(prefix.clone());
+            node.key_id = Some(KeyTreeNodeId::Key(existing_key.clone()));
+            node.is_key = false;
+            index.insert(node.id.clone());
+            index.insert(KeyTreeNodeId::Key(existing_key));
+        }
         insert_node_parts(
             &mut node.children,
             parts,
@@ -346,6 +358,12 @@ fn insert_parts(
         is_key: is_last,
     });
     entry.is_key |= is_last;
+    if !is_last && let KeyTreeNodeId::Key(existing_key) = &entry.id {
+        let existing_key = existing_key.clone();
+        entry.id = KeyTreeNodeId::Prefix(prefix.clone());
+        entry.key_id = Some(KeyTreeNodeId::Key(existing_key));
+        entry.is_key = false;
+    }
     if is_last && matches!(entry.id, KeyTreeNodeId::Prefix(_)) {
         entry.key_id = Some(KeyTreeNodeId::Key(key.to_vec()));
     }

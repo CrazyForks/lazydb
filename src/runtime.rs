@@ -497,6 +497,18 @@ impl Runtime {
                 connection: request_connection,
                 key,
             } => self.delete_redis_key(tab_id, request_connection, key),
+            Command::DeleteRedisPrefix {
+                tab_id,
+                connection,
+                target,
+                prefix,
+            } => self.delete_redis_prefix(tab_id, connection, target, prefix),
+            Command::DeleteRedisKeys {
+                tab_id,
+                connection,
+                target,
+                keys,
+            } => self.delete_redis_keys(tab_id, connection, target, keys),
             Command::LoadRedisPreview {
                 tab_id,
                 generation,
@@ -1183,6 +1195,112 @@ impl Runtime {
                     });
                 }
             }
+        }));
+    }
+
+    fn delete_redis_prefix(
+        &mut self,
+        tab_id: uuid::Uuid,
+        request_connection: crate::identity::ConnectionIdentity,
+        target: crate::db::redis::types::RedisTarget,
+        prefix: Vec<u8>,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = {
+                let database = connection.lock().await;
+                database
+                    .iter()
+                    .find(|(identity, active)| {
+                        identity.identity == request_connection
+                            && identity.target.database == target.database.to_string()
+                            && identity.target.schema.is_none()
+                            && matches!(active.database, DatabaseConnection::Redis(_))
+                    })
+                    .map(|(_, active)| active.database.clone())
+            };
+            let Some(DatabaseConnection::Redis(adapter)) = database else {
+                return;
+            };
+            let mut cursor = 0;
+            let mut all_keys = Vec::new();
+            loop {
+                let Ok((next, keys)) = adapter.scan_keys(cursor, b"*", 200).await else {
+                    return;
+                };
+                let matches = keys
+                    .into_iter()
+                    .filter(|key| key.starts_with(&prefix))
+                    .collect::<Vec<_>>();
+                all_keys.extend(matches);
+                if next == 0 {
+                    let _ = sender.send(Action::RedisDeletePrepared {
+                        tab_id,
+                        target: crate::model::workspace::RedisDeleteTarget::Prefix {
+                            target: target.clone(),
+                            prefix: prefix.clone(),
+                        },
+                        keys: std::mem::take(&mut all_keys),
+                    });
+                }
+                if next == 0 {
+                    break;
+                }
+                cursor = next;
+            }
+        }));
+    }
+
+    fn delete_redis_keys(
+        &mut self,
+        tab_id: uuid::Uuid,
+        request_connection: crate::identity::ConnectionIdentity,
+        target: crate::db::redis::types::RedisTarget,
+        keys: Vec<Vec<u8>>,
+    ) {
+        let connection = Arc::clone(&self.connection);
+        let sender = self.event_sender.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let database = connection
+                .lock()
+                .await
+                .iter()
+                .find(|(identity, active)| {
+                    identity.identity == request_connection
+                        && identity.target.database == target.database.to_string()
+                        && matches!(active.database, DatabaseConnection::Redis(_))
+                })
+                .map(|(_, active)| active.database.clone());
+            let Some(DatabaseConnection::Redis(adapter)) = database else {
+                return;
+            };
+            let mut deleted = 0;
+            let mut missing = 0;
+            let mut failed = None;
+            for batch in keys.chunks(100) {
+                for key in batch {
+                    match adapter.delete_key(key).await {
+                        Ok(count) if count > 0 => deleted += 1,
+                        Ok(_) => missing += 1,
+                        Err(error) => {
+                            failed = Some(error.to_string());
+                            break;
+                        }
+                    }
+                }
+                if failed.is_some() {
+                    break;
+                }
+            }
+            let _ = sender.send(Action::RedisDeleteBatchCompleted {
+                tab_id,
+                target,
+                keys,
+                deleted,
+                missing,
+                failed,
+            });
         }));
     }
 

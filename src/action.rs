@@ -1151,6 +1151,22 @@ pub enum Action {
     RedisPrimarySelection,
     RedisCopyKey,
     RedisDeleteKey,
+    RedisDeleteConfirm,
+    RedisDeleteCancel,
+    RedisDeleteToggleFocus,
+    RedisDeletePrepared {
+        tab_id: Uuid,
+        target: crate::model::workspace::RedisDeleteTarget,
+        keys: Vec<Vec<u8>>,
+    },
+    RedisDeleteBatchCompleted {
+        tab_id: Uuid,
+        target: crate::db::redis::types::RedisTarget,
+        keys: Vec<Vec<u8>>,
+        deleted: usize,
+        missing: usize,
+        failed: Option<String>,
+    },
     RedisFocusPane(crate::model::redis_browser::RedisBrowserFocus),
     RedisKeysViewportChanged {
         tab_id: Uuid,
@@ -1285,6 +1301,18 @@ pub enum Command {
         tab_id: Uuid,
         connection: ConnectionIdentity,
         key: crate::db::redis::types::RedisKeyId,
+    },
+    DeleteRedisPrefix {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        target: crate::db::redis::types::RedisTarget,
+        prefix: Vec<u8>,
+    },
+    DeleteRedisKeys {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        target: crate::db::redis::types::RedisTarget,
+        keys: Vec<Vec<u8>>,
     },
     LoadRedisPreview {
         tab_id: Uuid,

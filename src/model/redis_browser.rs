@@ -73,6 +73,7 @@ pub struct RedisKeyFindState {
     pub current: usize,
     pub original_selected: Option<super::redis_key_tree::KeyTreeNodeId>,
     pub original_scroll: usize,
+    pub expanded: std::collections::HashSet<KeyTreeNodeId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,7 +270,12 @@ impl RedisBrowserTab {
         {
             return false;
         }
-        if !self.tree.expanded.insert(node.clone()) {
+        if let Some(find) = self.find.as_mut() {
+            if !find.expanded.insert(node.clone()) {
+                find.expanded.remove(node);
+            }
+            self.rebuild_filtered_rows();
+        } else if !self.tree.expanded.insert(node.clone()) {
             self.tree.expanded.remove(node);
         }
         true
@@ -302,6 +308,7 @@ impl RedisBrowserTab {
             current: 0,
             original_selected: self.tree.selected.clone(),
             original_scroll: self.scroll,
+            expanded: projection.expanded.clone(),
         });
         self.refresh_find_rows();
     }
@@ -325,6 +332,39 @@ impl RedisBrowserTab {
         }
         find.rows = projection.visible_rows();
         self.update_find();
+    }
+
+    fn rebuild_filtered_rows(&mut self) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let included: std::collections::HashSet<KeyTreeNodeId> =
+            if find.query.value().trim().is_empty() {
+                find.rows.iter().map(|row| row.id.clone()).collect()
+            } else {
+                find.matches
+                    .iter()
+                    .filter_map(|id| find.rows.iter().find(|row| &row.id == id))
+                    .flat_map(|row| {
+                        std::iter::successors(Some(row), |current| {
+                            current.parent.as_ref().and_then(|parent| {
+                                find.rows.iter().find(|candidate| &candidate.id == parent)
+                            })
+                        })
+                        .map(|row| row.id.clone())
+                    })
+                    .collect()
+            };
+        find.filtered_rows = find
+            .rows
+            .iter()
+            .filter(|row| included.contains(&row.id))
+            .map(|row| {
+                let mut row = row.clone();
+                row.expanded = find.expanded.contains(&row.id);
+                row
+            })
+            .collect();
     }
 
     pub fn update_find(&mut self) {

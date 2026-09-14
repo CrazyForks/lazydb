@@ -242,6 +242,8 @@ pub enum HitTarget {
     ClearTransactionCancel,
     DeleteConsoleConfirm,
     DeleteConsoleCancel,
+    RedisDeleteConfirm,
+    RedisDeleteCancel,
     SqlEditorListDeleteConfirm,
     CatalogDropCancel,
     CatalogDropConfirm,
@@ -1271,6 +1273,8 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::TargetSelector { .. } => animation::OverlayKey::TargetSelector,
         Overlay::DatabaseSelector(_) => animation::OverlayKey::DatabaseSelector,
         Overlay::DeleteConsole { .. } => animation::OverlayKey::DeleteConsole,
+        Overlay::RedisDeleteConfirm { .. } => animation::OverlayKey::DeleteConsole,
+        Overlay::RedisDeletePreparing { .. } => animation::OverlayKey::DeleteConsole,
         Overlay::SqlEditorList(_) => animation::OverlayKey::SqlEditorList,
         Overlay::PageSizeSelector { .. } => animation::OverlayKey::PageSizeSelector,
         Overlay::CatalogDropConfirm { .. } => animation::OverlayKey::CatalogDropConfirm,
@@ -4999,6 +5003,111 @@ fn render_overlay(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc cancel",
+                theme,
+            );
+        }
+        Overlay::RedisDeleteConfirm {
+            target,
+            count,
+            focus,
+            ..
+        } => {
+            let popup = centered(area, 76, 8);
+            let inner = dialog::render_frame(frame, popup, " DELETE REDIS TARGET ", theme);
+            dialog::render_body(
+                frame,
+                Rect::new(
+                    inner.x,
+                    inner.y,
+                    inner.width,
+                    inner.height.saturating_sub(3),
+                ),
+                vec![
+                    Line::from(Span::styled(
+                        match target {
+                            crate::model::workspace::RedisDeleteTarget::Key(_) => {
+                                " DELETE REDIS KEY? "
+                            }
+                            crate::model::workspace::RedisDeleteTarget::Prefix { .. } => {
+                                " DELETE REDIS GROUP? "
+                            }
+                        },
+                        theme.title(true),
+                    )),
+                    Line::raw(format!(
+                        "Permanently delete '{}' from DB {}?",
+                        match target {
+                            crate::model::workspace::RedisDeleteTarget::Key(key) => {
+                                crate::model::redis_key_text::display_bytes(&key.key)
+                            }
+                            crate::model::workspace::RedisDeleteTarget::Prefix {
+                                prefix, ..
+                            } => {
+                                format!(
+                                    "all keys beginning with '{}' ({} keys found)",
+                                    crate::model::redis_key_text::display_bytes(prefix),
+                                    count
+                                )
+                            }
+                        },
+                        match target {
+                            crate::model::workspace::RedisDeleteTarget::Key(key) =>
+                                key.target.database,
+                            crate::model::workspace::RedisDeleteTarget::Prefix {
+                                target, ..
+                            } => target.database,
+                        }
+                    )),
+                ],
+                theme,
+            );
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &[
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Delete key",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                ],
+                usize::from(*focus == crate::model::workspace::DeleteConsoleFocus::Delete),
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::RedisDeleteCancel
+                    } else {
+                        HitTarget::RedisDeleteConfirm
+                    },
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   Esc cancel",
+                theme,
+            );
+        }
+        Overlay::RedisDeletePreparing { target, .. } => {
+            let popup = centered(area, 76, 6);
+            let inner = dialog::render_frame(frame, popup, " PREPARING REDIS DELETE ", theme);
+            dialog::render_body(
+                frame,
+                inner,
+                vec![Line::raw(match target {
+                    crate::model::workspace::RedisDeleteTarget::Key(_) => "Preparing key deletion…",
+                    crate::model::workspace::RedisDeleteTarget::Prefix { .. } => {
+                        "Scanning matching keys…"
+                    }
+                })],
                 theme,
             );
         }
