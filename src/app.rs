@@ -12235,7 +12235,7 @@ impl App {
                     return Vec::new();
                 };
                 if tab.keyspace.apply_batch(batch) {
-                    tab.rebuild_tree();
+                    tab.insert_tree_keys();
                 }
                 Vec::new()
             }

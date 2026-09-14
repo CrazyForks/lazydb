@@ -70,6 +70,10 @@ impl RedisBrowserTab {
         self.tree.rebuild(&self.keyspace.keys);
     }
 
+    pub fn insert_tree_keys(&mut self) {
+        self.tree.insert_keys(&self.keyspace.keys);
+    }
+
     pub fn select(&mut self, node: Option<super::redis_key_tree::KeyTreeNodeId>) {
         self.preview_generation = self.preview_generation.saturating_add(1);
         self.tree.select(node);
