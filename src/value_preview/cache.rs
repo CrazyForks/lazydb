@@ -1,9 +1,13 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use uuid::Uuid;
 
 use super::{PreviewFormat, decode::DecodedValue};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CacheKey {
+    pub source_id: Uuid,
     pub source_revision: u64,
     pub format: PreviewFormat,
 }
@@ -12,7 +16,7 @@ pub struct CacheKey {
 pub struct PreviewCache {
     budget: usize,
     used: usize,
-    values: HashMap<CacheKey, (DecodedValue, usize)>,
+    values: HashMap<CacheKey, (Arc<DecodedValue>, usize)>,
     order: VecDeque<CacheKey>,
 }
 
@@ -26,8 +30,8 @@ impl PreviewCache {
         }
     }
 
-    pub fn get(&mut self, key: &CacheKey) -> Option<DecodedValue> {
-        let value = self.values.get(key)?.0.clone();
+    pub fn get(&mut self, key: &CacheKey) -> Option<Arc<DecodedValue>> {
+        let value = Arc::clone(&self.values.get(key)?.0);
         self.touch(key);
         Some(value)
     }
@@ -54,7 +58,7 @@ impl PreviewCache {
         }
         self.used += size;
         self.order.push_back(key.clone());
-        self.values.insert(key, (value, size));
+        self.values.insert(key, (Arc::new(value), size));
     }
 
     pub fn used(&self) -> usize {
@@ -83,6 +87,7 @@ mod tests {
         let mut cache = PreviewCache::new(3);
         cache.insert(
             CacheKey {
+                source_id: Uuid::from_u128(1),
                 source_revision: 1,
                 format: PreviewFormat::RAW,
             },
@@ -90,6 +95,7 @@ mod tests {
         );
         cache.insert(
             CacheKey {
+                source_id: Uuid::from_u128(1),
                 source_revision: 2,
                 format: PreviewFormat::RAW,
             },
@@ -100,10 +106,47 @@ mod tests {
         assert!(
             cache
                 .get(&CacheKey {
+                    source_id: Uuid::from_u128(1),
                     source_revision: 1,
                     format: PreviewFormat::RAW
                 })
                 .is_none()
         );
+    }
+
+    #[test]
+    fn source_identity_is_part_of_cache_isolation() {
+        let mut cache = PreviewCache::new(16);
+        cache.insert(
+            CacheKey {
+                source_id: Uuid::from_u128(1),
+                source_revision: 1,
+                format: PreviewFormat::RAW,
+            },
+            DecodedValue::Text("first".into()),
+        );
+        assert!(
+            cache
+                .get(&CacheKey {
+                    source_id: Uuid::from_u128(2),
+                    source_revision: 1,
+                    format: PreviewFormat::RAW,
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cache_hits_share_decoded_value_without_copying_payload() {
+        let mut cache = PreviewCache::new(16);
+        let key = CacheKey {
+            source_id: Uuid::from_u128(1),
+            source_revision: 1,
+            format: PreviewFormat::RAW,
+        };
+        cache.insert(key.clone(), DecodedValue::Text("value".into()));
+        let first = cache.get(&key).unwrap();
+        let second = cache.get(&key).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
     }
 }
