@@ -37,7 +37,8 @@ use super::{
         CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
         CatalogMutationError, CatalogMutationExecutionMode, CatalogMutationOption,
         CatalogMutationPlan, CatalogMutationRequest, CatalogMutationTarget,
-        CatalogObjectDefinition, CatalogObjectType, CatalogSelectionHint,
+        CatalogObjectDefinition, CatalogObjectDefinitionRequest, CatalogObjectType,
+        CatalogSelectionHint, ColumnDefinition, TableDefinition, ViewDefinition, ViewOption,
     },
     ddl::{DdlSection, assemble_ddl},
     monitor::{MonitorMetadata, MonitorSnapshot, ProcessSnapshot},
@@ -375,6 +376,13 @@ impl MsSqlAdapter {
                     availability: CatalogMutationAvailability::Available,
                 })
                 .collect(),
+            edit: [CatalogKind::Table, CatalogKind::View]
+                .into_iter()
+                .map(|kind| CatalogMutationOption {
+                    object_type: CatalogObjectType::Catalog(kind),
+                    availability: CatalogMutationAvailability::Available,
+                })
+                .collect(),
             ..CatalogMutationCapabilities::default()
         }
     }
@@ -384,6 +392,158 @@ impl MsSqlAdapter {
         draft: crate::model::catalog_editor::CatalogDraft,
         baseline: Option<CatalogObjectDefinition>,
     ) -> Result<CatalogMutationPlan, CatalogMutationError> {
+        if request.mode == crate::db::catalog_mutation::CatalogMutationMode::Edit {
+            let CatalogMutationAnchor::Catalog(object) = &request.anchor else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "SQL Server edit requires a catalog object anchor",
+                });
+            };
+            let [database, schema, old_name, object_id] = object.native_path.as_slice() else {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "SQL Server relation identity is incomplete",
+                });
+            };
+            let object_id_anchor = object.clone();
+            let database_name = database.clone();
+            let schema_name = schema.clone();
+            let old_name_value = old_name.clone();
+            let object_id_value = object_id.clone();
+            match (object.kind, baseline, draft) {
+                (
+                    CatalogKind::Table,
+                    Some(CatalogObjectDefinition::Table(_)),
+                    crate::model::catalog_editor::CatalogDraft::Table(draft),
+                ) => {
+                    let new_name = draft.name.value().trim();
+                    if new_name.is_empty() {
+                        return Err(CatalogMutationError::InvalidDraft {
+                            reason: "SQL Server table name is required".into(),
+                        });
+                    }
+                    if new_name == old_name {
+                        return Err(CatalogMutationError::NoChanges);
+                    }
+                    let new_object = CatalogId::new(
+                        request.connection.profile_id,
+                        CatalogKind::Table,
+                        [
+                            database_name.clone(),
+                            schema_name.clone(),
+                            new_name.to_owned(),
+                            object_id_value.clone(),
+                        ],
+                    );
+                    let qualified_old = format!(
+                        "{}.{}",
+                        quote_identifier(&schema_name),
+                        quote_identifier(&old_name_value)
+                    );
+                    let sql = format!(
+                        "EXEC sys.sp_rename {}, {}, N'OBJECT'",
+                        quote_literal(&qualified_old),
+                        quote_literal(new_name)
+                    );
+                    return CatalogMutationPlan::new(
+                        request,
+                        CatalogObjectType::Catalog(CatalogKind::Table),
+                        CatalogMutationExecutionMode::Transactional,
+                        CatalogMutationTarget::database_target(
+                            crate::model::execution_target::ExecutionTarget {
+                                profile_id: object_id_anchor.profile_id(),
+                                database: database_name.clone(),
+                                schema: Some(schema_name.clone()),
+                            },
+                        )?,
+                        vec![CatalogTarget::Objects {
+                            schema: CatalogId::new(
+                                object_id_anchor.profile_id(),
+                                CatalogKind::Schema,
+                                [database_name, schema_name],
+                            ),
+                            group: ObjectGroup::Tables,
+                        }],
+                        CatalogSelectionHint::Object(new_object),
+                        None,
+                        Vec::new(),
+                        vec![sql],
+                    );
+                }
+                (
+                    CatalogKind::View,
+                    Some(CatalogObjectDefinition::View(_)),
+                    crate::model::catalog_editor::CatalogDraft::View(draft),
+                ) => {
+                    draft.validate()?;
+                    let new_name = draft.name.value().trim();
+                    if new_name.is_empty() {
+                        return Err(CatalogMutationError::InvalidDraft {
+                            reason: "SQL Server view name is required".into(),
+                        });
+                    }
+                    let new_object = CatalogId::new(
+                        request.connection.profile_id,
+                        CatalogKind::View,
+                        [
+                            database_name.clone(),
+                            schema_name.clone(),
+                            new_name.to_owned(),
+                            object_id_value,
+                        ],
+                    );
+                    let mut statements = Vec::new();
+                    if new_name != old_name {
+                        let qualified_old = format!(
+                            "{}.{}",
+                            quote_identifier(&schema_name),
+                            quote_identifier(&old_name_value)
+                        );
+                        statements.push(format!(
+                            "EXEC sys.sp_rename {}, {}, N'OBJECT'",
+                            quote_literal(&qualified_old),
+                            quote_literal(new_name)
+                        ));
+                    }
+                    statements.push(format!(
+                        "ALTER VIEW {}.{} AS {}",
+                        quote_identifier(&schema_name),
+                        quote_identifier(new_name),
+                        draft.query.value().trim()
+                    ));
+                    return CatalogMutationPlan::new(
+                        request,
+                        CatalogObjectType::Catalog(CatalogKind::View),
+                        CatalogMutationExecutionMode::Transactional,
+                        CatalogMutationTarget::database_target(
+                            crate::model::execution_target::ExecutionTarget {
+                                profile_id: object_id_anchor.profile_id(),
+                                database: database_name.clone(),
+                                schema: Some(schema_name.clone()),
+                            },
+                        )?,
+                        vec![CatalogTarget::Objects {
+                            schema: CatalogId::new(
+                                object_id_anchor.profile_id(),
+                                CatalogKind::Schema,
+                                [database_name, schema_name],
+                            ),
+                            group: ObjectGroup::Views,
+                        }],
+                        CatalogSelectionHint::Object(new_object),
+                        None,
+                        Vec::new(),
+                        statements,
+                    );
+                }
+                (_, None, _) => return Err(CatalogMutationError::StaleState),
+                (_, _, draft) => {
+                    return Err(CatalogMutationError::InvalidDraft {
+                        reason: format!(
+                            "SQL Server draft does not match selected object: {draft:?}"
+                        ),
+                    });
+                }
+            }
+        }
         if request.mode != crate::db::catalog_mutation::CatalogMutationMode::Create {
             return Err(CatalogMutationError::UnsupportedOperation {
                 object_type: request.object_type,
@@ -508,6 +668,172 @@ impl MsSqlAdapter {
         outcome.ok_or_else(|| {
             DatabaseError::configuration("SQL Server mutation plan has no statements")
         })
+    }
+
+    pub async fn load_catalog_object_definition(
+        &self,
+        request: &CatalogObjectDefinitionRequest,
+    ) -> Result<CatalogObjectDefinition, DatabaseError> {
+        request
+            .validate()
+            .map_err(|error| DatabaseError::configuration(error.to_string()))?;
+        let [database, schema, name, object_id] = request.object.native_path.as_slice() else {
+            return Err(DatabaseError::configuration(
+                "SQL Server relation identity is incomplete",
+            ));
+        };
+        let object_id = object_id.parse::<i32>().map_err(|_| {
+            DatabaseError::configuration("SQL Server relation object id is invalid")
+        })?;
+        let pool = self.pool_for_database(database).await?;
+        let q = quote_identifier(database);
+        let comment_sql = format!(
+            "SELECT CAST(ep.[value] AS nvarchar(4000)) AS [comment] FROM {q}.sys.extended_properties ep WHERE ep.[class] = 1 AND ep.[major_id] = {object_id} AND ep.[minor_id] = 0 AND ep.[name] = N'MS_Description'"
+        );
+        let comment = query_rows(&pool, &comment_sql)
+            .await?
+            .first()
+            .map(|row| optional_string(row, "comment"))
+            .transpose()?
+            .flatten();
+
+        match request.object.kind {
+            CatalogKind::Table => {
+                let column_sql = format!(
+                    "SELECT c.[column_id], c.[name], t.[name] AS [type_name], CONVERT(bit, c.[is_nullable]) AS [is_nullable], CONVERT(bit, c.[is_identity]) AS [is_identity], CONVERT(bit, c.[is_computed]) AS [is_computed], dc.[definition] AS [default_expression], cc.[definition] AS [computed_expression], (SELECT CAST(ep.[value] AS nvarchar(4000)) FROM {q}.sys.extended_properties ep WHERE ep.[class] = 1 AND ep.[major_id] = c.[object_id] AND ep.[minor_id] = c.[column_id] AND ep.[name] = N'MS_Description') AS [column_comment] FROM {q}.sys.columns c JOIN {q}.sys.types t ON t.[user_type_id] = c.[user_type_id] LEFT JOIN {q}.sys.default_constraints dc ON dc.[parent_object_id] = c.[object_id] AND dc.[parent_column_id] = c.[column_id] LEFT JOIN {q}.sys.computed_columns cc ON cc.[object_id] = c.[object_id] AND cc.[column_id] = c.[column_id] WHERE c.[object_id] = {object_id} ORDER BY c.[column_id]"
+                );
+                let mut columns = Vec::new();
+                for row in query_rows(&pool, &column_sql).await? {
+                    let ordinal = row
+                        .try_get::<i32, _>("column_id")
+                        .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                        .ok_or_else(|| decode_error("NULL column_id"))?;
+                    let name = required_string(&row, "name")?;
+                    let computed = row
+                        .try_get::<bool, _>("is_computed")
+                        .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                        .unwrap_or(false);
+                    columns.push(ColumnDefinition {
+                        name,
+                        ordinal_position: u32::try_from(ordinal)
+                            .map_err(|_| decode_error("negative SQL Server column ordinal"))?,
+                        native_type: required_string(&row, "type_name")?,
+                        nullable: row
+                            .try_get::<bool, _>("is_nullable")
+                            .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                            .unwrap_or(false),
+                        default_expression: OptionalMetadata::Supported(if computed {
+                            None
+                        } else {
+                            optional_string(&row, "default_expression")?
+                        }),
+                        identity: OptionalMetadata::Supported(Some(
+                            row.try_get::<bool, _>("is_identity")
+                                .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                                .unwrap_or(false),
+                        )),
+                        generated_expression: OptionalMetadata::Supported(if computed {
+                            optional_string(&row, "computed_expression")?
+                        } else {
+                            None
+                        }),
+                        collation: OptionalMetadata::Unsupported,
+                        comment: OptionalMetadata::Supported(optional_string(
+                            &row,
+                            "column_comment",
+                        )?),
+                    });
+                }
+                if columns.is_empty() {
+                    return Err(DatabaseError::configuration(
+                        "SQL Server table has no visible columns",
+                    ));
+                }
+                let index_sql = format!(
+                    "SELECT [name] FROM {q}.sys.indexes WHERE [object_id] = {object_id} AND [index_id] > 0 AND [is_hypothetical] = 0 ORDER BY [index_id]"
+                );
+                let indexes = query_rows(&pool, &index_sql)
+                    .await?
+                    .iter()
+                    .map(|row| required_string(row, "name"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let constraint_sql = format!(
+                    "SELECT [name] FROM {q}.sys.key_constraints WHERE [parent_object_id] = {object_id} UNION ALL SELECT [name] FROM {q}.sys.foreign_keys WHERE [parent_object_id] = {object_id} UNION ALL SELECT [name] FROM {q}.sys.check_constraints WHERE [parent_object_id] = {object_id} ORDER BY [name]"
+                );
+                let constraints = query_rows(&pool, &constraint_sql)
+                    .await?
+                    .iter()
+                    .map(|row| required_string(row, "name"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let baseline_fingerprint = format!(
+                    "mssql:table:{database}:{schema}:{name}:{object_id}:{comment:?}:{columns:?}:{indexes:?}:{constraints:?}"
+                );
+                Ok(CatalogObjectDefinition::Table(TableDefinition {
+                    database: database.clone(),
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    owner: schema.clone(),
+                    comment: OptionalMetadata::Supported(comment),
+                    columns,
+                    indexes,
+                    constraints,
+                    baseline_fingerprint,
+                }))
+            }
+            CatalogKind::View => {
+                let definition_sql = format!(
+                    "SELECT sm.[definition] AS [definition] FROM {q}.sys.sql_modules sm WHERE sm.[object_id] = {object_id}"
+                );
+                let definition = query_rows(&pool, &definition_sql)
+                    .await?
+                    .first()
+                    .map(|row| required_string(row, "definition"))
+                    .transpose()?
+                    .ok_or_else(|| {
+                        DatabaseError::configuration("SQL Server view definition is unavailable")
+                    })?;
+                let uppercase = definition.to_ascii_uppercase();
+                let Some(as_index) = uppercase.find(" AS ") else {
+                    return Err(DatabaseError::configuration(
+                        "SQL Server view definition has no query body",
+                    ));
+                };
+                let query = definition[as_index + 4..].trim().to_owned();
+                let column_sql = format!(
+                    "SELECT [name] FROM {q}.sys.columns WHERE [object_id] = {object_id} ORDER BY [column_id]"
+                );
+                let output_columns = query_rows(&pool, &column_sql)
+                    .await?
+                    .iter()
+                    .map(|row| required_string(row, "name"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let baseline_fingerprint = format!(
+                    "mssql:view:{database}:{schema}:{name}:{object_id}:{comment:?}:{query}"
+                );
+                Ok(CatalogObjectDefinition::View(ViewDefinition {
+                    database: database.clone(),
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    owner: schema.clone(),
+                    comment: OptionalMetadata::Supported(comment),
+                    query,
+                    output_columns,
+                    security_barrier: ViewOption::unavailable(
+                        "SQL Server does not expose PostgreSQL security_barrier",
+                    ),
+                    security_invoker: ViewOption::unavailable(
+                        "SQL Server does not expose PostgreSQL security_invoker",
+                    ),
+                    check_option: ViewOption::unavailable(
+                        "SQL Server view check option mapping is not implemented",
+                    ),
+                    baseline_fingerprint,
+                }))
+            }
+            _ => Err(DatabaseError::configuration(
+                "SQL Server definition loading currently supports tables and views only",
+            )),
+        }
     }
 
     pub async fn transaction_backend(&self) -> Result<MsSqlTransactionBackend, DatabaseError> {

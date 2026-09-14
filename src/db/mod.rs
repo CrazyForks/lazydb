@@ -671,9 +671,10 @@ impl DatabaseConnection {
             Self::MySql(adapter) | Self::MariaDb(adapter) => {
                 adapter.load_catalog_object_definition(request).await
             }
-            Self::Sqlite(_) | Self::SqlServer(_) => Err(DatabaseError::configuration(
+            Self::Sqlite(_) => Err(DatabaseError::configuration(
                 "catalog object definition loading is not supported for this database",
             )),
+            Self::SqlServer(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Oracle(adapter) => adapter.load_catalog_object_definition(request).await,
             Self::Redis(_) => Err(DatabaseError::configuration(
                 "Redis does not support SQL catalog object definitions",

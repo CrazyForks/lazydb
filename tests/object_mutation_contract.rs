@@ -485,7 +485,7 @@ fn sqlite_exposes_only_native_table_and_view_creation() {
 }
 
 #[test]
-fn sql_server_exposes_only_native_table_and_view_creation() {
+fn sql_server_exposes_native_table_and_view_creation_and_editing() {
     let capabilities = MsSqlAdapter::catalog_mutation_capabilities();
     assert!(
         capabilities
@@ -499,7 +499,122 @@ fn sql_server_exposes_only_native_table_and_view_creation() {
             .iter()
             .any(|option| { option.object_type == CatalogObjectType::Catalog(CatalogKind::View) })
     );
-    assert!(capabilities.edit.is_empty());
+    assert_eq!(capabilities.edit.len(), 2);
+}
+
+#[test]
+fn sql_server_table_edit_plan_uses_sp_rename() {
+    let profile_id = Uuid::from_u128(13);
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::Table,
+        ["app", "dbo", "old_table", "42"],
+    );
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 3,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("app".to_owned()),
+    };
+    let mut table = TableDraft::new("dbo");
+    table.name.set("new_table");
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(
+        lazydb::db::catalog_mutation::TableDefinition {
+            database: "app".into(),
+            schema: "dbo".into(),
+            name: "old_table".into(),
+            owner: "dbo".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            columns: vec![],
+            indexes: vec![],
+            constraints: vec![],
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        MsSqlAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), Some(baseline))
+            .expect("SQL Server table edit plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &["EXEC sys.sp_rename N'[dbo].[old_table]', N'new_table', N'OBJECT'"]
+    );
+}
+
+#[test]
+fn sql_server_view_edit_plan_renames_and_alters_the_definition() {
+    let profile_id = Uuid::from_u128(14);
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::View,
+        ["app", "dbo", "old_view", "43"],
+    );
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 4,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::View),
+        current_database: Some("app".to_owned()),
+    };
+    let view = ViewDraft {
+        name: "new_view".into(),
+        schema: "dbo".into(),
+        owner: "dbo".into(),
+        comment: "".into(),
+        query: "SELECT 2".into(),
+        output_columns: "".into(),
+        security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable(
+            "not applicable to SQL Server",
+        ),
+        security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable(
+            "not applicable to SQL Server",
+        ),
+        check_option: lazydb::db::catalog_mutation::ViewOption::unavailable(
+            "not mapped for SQL Server",
+        ),
+        focus: lazydb::model::catalog_editor::CatalogFormFocus::Name,
+    };
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::View(
+        lazydb::db::catalog_mutation::ViewDefinition {
+            database: "app".into(),
+            schema: "dbo".into(),
+            name: "old_view".into(),
+            owner: "dbo".into(),
+            comment: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            query: "SELECT 1".into(),
+            output_columns: vec!["value".into()],
+            security_barrier: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable to SQL Server",
+            ),
+            security_invoker: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not applicable to SQL Server",
+            ),
+            check_option: lazydb::db::catalog_mutation::ViewOption::unavailable(
+                "not mapped for SQL Server",
+            ),
+            baseline_fingerprint: "old".into(),
+        },
+    );
+    let plan =
+        MsSqlAdapter::plan_catalog_mutation(request, CatalogDraft::View(view), Some(baseline))
+            .expect("SQL Server view edit plan should be valid");
+    assert_eq!(
+        plan.statements(),
+        &[
+            "EXEC sys.sp_rename N'[dbo].[old_view]', N'new_view', N'OBJECT'",
+            "ALTER VIEW [dbo].[new_view] AS SELECT 2"
+        ]
+    );
 }
 
 #[test]
