@@ -6,6 +6,42 @@ machine.
 
 ## Driver Matrix
 
+## Catalog Mutation Matrix
+
+Catalog browsing and catalog mutation are separate contracts. A database is
+only advertised as mutation-capable after the adapter implements the complete
+definition-loading, draft/planning, execution, and catalog-refresh path. The
+matrix below records the target contract for the multi-database mutation
+rollout; entries marked `planned` must not be exposed by the Explorer until
+their adapter tests pass.
+
+| Driver | Namespace target | Planned create targets | Planned edit targets | Important native boundary |
+| --- | --- | --- | --- | --- |
+| PostgreSQL | Database + schema | Database, schema, table, view, materialized view, sequence, role | Existing PostgreSQL mutation set | Preserve current behavior while moving to the shared contract |
+| Oracle | Service + owner/schema | Schema/user, table, view, sequence, index, constraint | Table, view, sequence, index, constraint, user/schema properties | A user/schema is not the same operation as creating an Oracle instance or PDB |
+| MySQL | Database is schema | Database, table, view, index, constraint, user/role | Database properties, table, view, index, constraint, user/role | User identity includes host; no independent CREATE SCHEMA layer |
+| MariaDB | Database is schema | MySQL core targets plus version-supported objects | MySQL core targets plus version-supported objects | Share safe implementation pieces, but gate MariaDB syntax independently |
+| SQL Server | Database + schema | Database, schema, table, view, sequence, principal | Database/schema/table/view/sequence/index/constraint/principal | Login, database user, and role have different scopes; batches matter |
+| SQLite | File database + attached aliases | File database, table, view, index, trigger | Table, view, index, trigger | No users/roles; complex table edits require a lossless rebuild plan |
+| Redis | Logical database + key namespace | Key and supported collection elements | Values, collection elements, and TTL where native semantics permit | Database number is not a creatable SQL catalog; streams are not freely editable |
+
+The implementation is deliberately staged. Until a row's individual object
+operation is complete, its capability remains unavailable with a specific
+reason (`not implemented`, `not applicable`, or a server-version gate). A
+read-only profile, missing active connection, permission failure, stale
+catalog epoch, and unknown commit outcome are runtime conditions rather than
+static driver capabilities.
+
+The minimum integration proof for every advertised operation is:
+
+```text
+create → load authoritative definition → edit one property → load again
+```
+
+The proof must also cover an invalid permission/baseline case and refresh the
+Explorer identity after a rename or rebuild. SQLite and Redis use their native
+mutation protocols even though they share the same Explorer action contract.
+
 ## Monitoring Dashboard
 
 The connection dashboard is available for PostgreSQL, MySQL, and MariaDB. It
