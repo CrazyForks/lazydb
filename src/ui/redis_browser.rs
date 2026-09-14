@@ -257,18 +257,67 @@ pub fn render(
         },
     };
     let preview_session = tab.preview_editor_id;
+    let (value_area, header_area) = if preview_area.height >= 3 {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .split(preview_area);
+        (chunks[1], chunks[0])
+    } else {
+        (preview_area, Rect::default())
+    };
+    if header_area.height > 0 {
+        let metadata = match &tab.value_page {
+            RedisValuePageState::Ready(page) => Some(&page.metadata),
+            _ => None,
+        };
+        let key = metadata.map_or_else(
+            || {
+                tab.tree
+                    .selected_key()
+                    .map(display_bytes)
+                    .unwrap_or_else(|| "No key selected".into())
+            },
+            |metadata| display_bytes(&metadata.key.key),
+        );
+        let (kind, size, ttl) =
+            metadata.map_or(("—".into(), "—".into(), "—".into()), |metadata| {
+                (
+                    format!("{:?}", metadata.value_type),
+                    crate::ui::redis_value::format_bytes(metadata.memory_usage_bytes),
+                    crate::ui::redis_value::format_ttl(&metadata.ttl),
+                )
+            });
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    key,
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(vec![
+                    Span::styled(
+                        format!("[ {kind} ] "),
+                        Style::new().fg(theme.action).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("[ Size {size} ] "), Style::new().fg(theme.warning)),
+                    Span::styled(format!("[ TTL {ttl} ]"), Style::new().fg(theme.muted)),
+                ]),
+            ]),
+            header_area,
+        );
+    }
     if let Ok(snapshot) = app.redis_preview_snapshot(
         tab.id,
         crate::model::editor::EditorViewport {
-            width: preview_area.width.saturating_sub(1) as usize,
-            height: preview_area.height as usize,
+            width: value_area.width.saturating_sub(1) as usize,
+            height: value_area.height as usize,
         },
     ) {
-        super::register_text_selection_target(ui, preview_session, preview_area, &snapshot);
+        super::register_text_selection_target(ui, preview_session, value_area, &snapshot);
         for (row, line) in snapshot
             .lines
             .iter()
-            .take(preview_area.height as usize)
+            .take(value_area.height as usize)
             .enumerate()
         {
             frame.render_widget(
@@ -282,19 +331,14 @@ pub fn render(
                     None,
                 )))
                 .style(Style::new().bg(theme.surface)),
-                Rect::new(
-                    preview_area.x,
-                    preview_area.y + row as u16,
-                    preview_area.width,
-                    1,
-                ),
+                Rect::new(value_area.x, value_area.y + row as u16, value_area.width, 1),
             );
         }
         ui.redis_preview_viewport_rows =
             Some((tab.id, snapshot.viewport.height, snapshot.total_lines));
         super::render_editor_scrollbars(
             frame,
-            preview_area,
+            value_area,
             Some(preview_session),
             &snapshot,
             theme,
@@ -307,7 +351,7 @@ pub fn render(
             Paragraph::new(preview_lines)
                 .style(Style::new().bg(theme.surface))
                 .scroll((tab.preview_scroll.min(u16::MAX as usize) as u16, 0)),
-            preview_area,
+            value_area,
         );
         ui.redis_preview_viewport_rows =
             Some((tab.id, preview_area.height as usize, preview_content_rows));
