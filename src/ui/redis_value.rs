@@ -123,26 +123,15 @@ pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
     }
 }
 
-pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
+pub fn format_page(
+    page: &RedisValuePage,
+    format: crate::value_preview::PreviewFormat,
+) -> Result<String, String> {
     let raw = page_text(page);
-    match view {
-        ValueView::Raw | ValueView::Table => Ok(raw),
-        ValueView::Hex => Ok(page_bytes(page, &raw)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()),
-        ValueView::Json => {
-            let bytes = page_bytes(page, &raw);
-            let value: serde_json::Value = serde_json::from_slice(bytes)
-                .map_err(|error| format!("JSON parse error: {error}"))?;
-            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
-        }
-        ValueView::Yaml => {
-            let value: serde_yaml::Value = serde_yaml::from_slice(page_bytes(page, &raw))
-                .map_err(|error| format!("YAML parse error: {error}"))?;
-            serde_yaml::to_string(&value).map_err(|error| error.to_string())
-        }
+    if matches!(format.view, ValueView::Table) {
+        return Ok(raw);
     }
+    format_bytes_value(page_bytes(page, &raw), format)
 }
 
 fn page_bytes<'a>(page: &'a RedisValuePage, raw: &'a str) -> &'a [u8] {
@@ -158,33 +147,50 @@ pub fn format_bytes_value(
     bytes: &[u8],
     format: crate::value_preview::PreviewFormat,
 ) -> Result<String, String> {
-    use crate::value_preview::ValueEncoding;
-    if !matches!(
-        format.encoding,
-        ValueEncoding::Text | ValueEncoding::Unknown
-    ) {
-        return match crate::value_preview::decode::decode(bytes, format) {
-            Ok(crate::value_preview::decode::DecodedValue::Text(text)) => Ok(text),
-            Ok(crate::value_preview::decode::DecodedValue::Bytes(value)) => {
-                Ok(display_bytes(&value))
-            }
-            Err(error) => Err(error.to_string()),
+    if matches!(format.view, ValueView::Raw | ValueView::Hex) {
+        return match format.view {
+            ValueView::Raw | ValueView::Table => Ok(display_bytes(bytes)),
+            ValueView::Hex => Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+            _ => unreachable!("raw byte views are exhaustive"),
         };
     }
-    match format.view {
-        ValueView::Raw => Ok(display_bytes(bytes)),
-        ValueView::Hex => Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
-        ValueView::Json => {
-            let value: serde_json::Value = serde_json::from_slice(bytes)
-                .map_err(|error| format!("JSON parse error: {error}"))?;
-            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+    if matches!(
+        format.encoding,
+        crate::value_preview::ValueEncoding::Text | crate::value_preview::ValueEncoding::Unknown
+    ) {
+        return match format.view {
+            ValueView::Json => {
+                let value: serde_json::Value = serde_json::from_slice(bytes)
+                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+            }
+            ValueView::Yaml => {
+                let value: serde_yaml::Value = serde_yaml::from_slice(bytes)
+                    .map_err(|error| format!("YAML parse error: {error}"))?;
+                serde_yaml::to_string(&value).map_err(|error| error.to_string())
+            }
+            ValueView::Table => Ok(display_bytes(bytes)),
+            _ => unreachable!("raw byte views handled above"),
+        };
+    }
+    let decoded =
+        crate::value_preview::decode::decode(bytes, format).map_err(|error| error.to_string())?;
+    match (format.view, decoded) {
+        (ValueView::Raw, crate::value_preview::decode::DecodedValue::Bytes(value)) => {
+            Ok(display_bytes(&value))
         }
-        ValueView::Yaml => {
-            let value: serde_yaml::Value = serde_yaml::from_slice(bytes)
-                .map_err(|error| format!("YAML parse error: {error}"))?;
+        (ValueView::Hex, crate::value_preview::decode::DecodedValue::Bytes(value)) => {
+            Ok(value.iter().map(|byte| format!("{byte:02x}")).collect())
+        }
+        (ValueView::Json, crate::value_preview::decode::DecodedValue::Text(text)) => Ok(text),
+        (ValueView::Yaml, crate::value_preview::decode::DecodedValue::Text(text)) => {
+            let value: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|error| format!("decoded JSON parse error: {error}"))?;
             serde_yaml::to_string(&value).map_err(|error| error.to_string())
         }
-        ValueView::Table => Ok(display_bytes(bytes)),
+        (ValueView::Table, _) => Ok(display_bytes(bytes)),
+        (_, crate::value_preview::decode::DecodedValue::Text(text)) => Ok(text),
+        (_, crate::value_preview::decode::DecodedValue::Bytes(value)) => Ok(display_bytes(&value)),
     }
 }
 
@@ -212,6 +218,10 @@ fn display_bytes(value: &[u8]) -> String {
         }
         Err(_) => value.iter().map(|byte| format!("\\x{byte:02x}")).collect(),
     }
+}
+
+pub fn display_bytes_lossless(value: &[u8]) -> String {
+    display_bytes(value)
 }
 
 #[cfg(test)]

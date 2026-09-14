@@ -12757,7 +12757,7 @@ impl App {
                                 page: page.clone(),
                             }];
                         }
-                        let text = crate::ui::redis_value::format_page(page, format.view)
+                        let text = crate::ui::redis_value::format_page(page, format)
                             .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
                         self.editor.open_read_only(tab.preview_editor_id, &text);
                     }
@@ -12789,17 +12789,16 @@ impl App {
                     tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
                     self.focus = Focus::Results;
                     self.overlay = Some(Overlay::RedisPreviewFormat {
-                        selected: crate::model::redis_preview::FORMATS
-                            .iter()
-                            .position(|format| *format == tab.format.selected)
-                            .unwrap_or(0),
+                        selected: tab.format.menu_index(),
                     });
                 }
                 Vec::new()
             }
             Action::RedisPreviewFormatMove(delta) => {
                 if let Some(Overlay::RedisPreviewFormat { selected }) = self.overlay.as_mut() {
-                    *selected = (*selected as isize + delta).rem_euclid(5) as usize;
+                    *selected = (*selected as isize + delta)
+                        .rem_euclid(crate::model::redis_preview::format_choices() as isize)
+                        as usize;
                 }
                 Vec::new()
             }
@@ -12824,15 +12823,20 @@ impl App {
                 let editor_update = if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.get_mut(self.active_tab)
                 {
-                    tab.format
-                        .select(crate::model::redis_preview::FORMATS[selected]);
+                    if selected == 0 {
+                        tab.format.reset_auto();
+                    } else if let Some(format) =
+                        crate::model::redis_preview::FORMATS.get(selected - 1)
+                    {
+                        tab.format.select(*format);
+                    }
                     tab.preview_scroll = 0;
                     crate::ui::redis_value::format_page(
                         match &tab.value_page {
                             crate::model::redis_browser::RedisValuePageState::Ready(page) => page,
                             _ => return Vec::new(),
                         },
-                        tab.format.view(),
+                        tab.format.selected,
                     )
                     .or_else(|_| match &tab.value_page {
                         crate::model::redis_browser::RedisValuePageState::Ready(page) => {
@@ -19031,7 +19035,7 @@ impl App {
             tab.preview_editor_id,
             self.editor_revision(tab.preview_editor_id),
             display,
-            String::from_utf8_lossy(source).into_owned(),
+            crate::ui::redis_value::display_bytes_lossless(source),
             None,
         );
         self.update(Action::OpenTextDetail(request))

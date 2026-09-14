@@ -50,6 +50,7 @@ fn preview_controls_open_picker_and_apply_only_on_enter() {
         tab.format.selected,
         lazydb::value_preview::PreviewFormat::RAW
     );
+    assert!(tab.format.automatic);
     assert!(tab.preview_wrap);
     assert_eq!(tab.focus, RedisBrowserFocus::Preview);
     app.update(Action::RedisPreviewFormatAccept);
@@ -60,7 +61,7 @@ fn preview_controls_open_picker_and_apply_only_on_enter() {
     };
     assert_eq!(
         tab.format.selected,
-        lazydb::value_preview::PreviewFormat::JSON
+        lazydb::value_preview::PreviewFormat::RAW
     );
     assert!(!tab.preview_wrap);
 }

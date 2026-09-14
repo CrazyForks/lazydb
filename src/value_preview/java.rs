@@ -10,6 +10,12 @@ pub fn is_java_serialization(data: &[u8]) -> bool {
 }
 
 pub fn parse_java_to_json(data: &[u8]) -> Result<String, DecodeError> {
+    if data.len() > super::MAX_PREVIEW_INPUT_BYTES {
+        return Err(DecodeError::new(
+            DecodeStatus::Unsupported,
+            "Java value exceeds preview input budget",
+        ));
+    }
     if !is_java_serialization(data) {
         return Err(DecodeError::new(
             DecodeStatus::Invalid,
@@ -30,8 +36,15 @@ pub fn parse_java_to_json(data: &[u8]) -> Result<String, DecodeError> {
             "data": bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
         }),
     };
-    serde_json::to_string_pretty(&extract_inner_value(value))
-        .map_err(|error| DecodeError::new(DecodeStatus::Invalid, error.to_string()))
+    let output = serde_json::to_string_pretty(&extract_inner_value(value))
+        .map_err(|error| DecodeError::new(DecodeStatus::Invalid, error.to_string()))?;
+    if output.len() > super::MAX_PREVIEW_OUTPUT_BYTES {
+        return Err(DecodeError::new(
+            DecodeStatus::Unsupported,
+            "Java preview exceeds output budget",
+        ));
+    }
+    Ok(output)
 }
 
 fn extract_inner_value(value: Value) -> Value {

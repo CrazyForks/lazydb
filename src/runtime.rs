@@ -1568,7 +1568,7 @@ impl Runtime {
         let sender = self.event_sender.clone();
         self.background_tasks
             .push(tokio::task::spawn_blocking(move || {
-                let result = crate::ui::redis_value::format_page(&page, format.view);
+                let result = crate::ui::redis_value::format_page(&page, format);
                 let _ = sender.send(Action::RedisValuePageFormatted {
                     tab_id,
                     connection,

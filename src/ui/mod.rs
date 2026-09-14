@@ -4968,10 +4968,21 @@ fn render_overlay(
             );
         }
         Overlay::RedisPreviewFormat { selected } => {
-            let popup = centered(area, 40, 9);
+            let popup = centered(area, 42, 13);
             frame.render_widget(Clear, popup);
             let mut lines = vec![];
-            for (index, label) in ["RAW", "JSON", "YAML", "Table", "Hex"].iter().enumerate() {
+            let labels = [
+                "Auto",
+                "RAW",
+                "JSON",
+                "YAML",
+                "Table",
+                "Hex",
+                "Java Serialization",
+                "PHP Serialization",
+                "Python Pickle",
+            ];
+            for (index, label) in labels.iter().enumerate() {
                 lines.push(Line::styled(
                     format!(" {} {label}", if index == *selected { ">" } else { " " }),
                     if index == *selected {
