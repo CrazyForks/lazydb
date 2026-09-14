@@ -6676,10 +6676,10 @@ impl App {
                         self.notify_warning("Catalog", "The active connection profile is missing");
                         return Vec::new();
                     };
-                    if profile.kind != DatabaseKind::Postgres || profile.read_only {
+                    if profile.read_only {
                         self.notify_warning(
                             "Catalog",
-                            "Schema editing requires a writable PostgreSQL profile",
+                            "Catalog editing requires a writable profile",
                         );
                         return Vec::new();
                     }
@@ -6698,6 +6698,18 @@ impl App {
                     };
                     if entry.id != *object || entry.kind != object.kind {
                         self.notify_warning("Catalog", "The selected catalog entry is invalid");
+                        return Vec::new();
+                    }
+                    if !self
+                        .connection
+                        .mutation_capabilities
+                        .can_edit(&anchor, Some(entry))
+                        .unwrap_or(false)
+                    {
+                        self.notify_warning(
+                            "Catalog",
+                            "This catalog object is not editable by the active adapter",
+                        );
                         return Vec::new();
                     }
                     let Some(database) = object.native_path.first() else {
@@ -13144,14 +13156,14 @@ impl App {
                 DatabaseKind::MariaDb => {
                     crate::db::mysql::MySqlAdapter::catalog_mutation_capabilities()
                 }
-                DatabaseKind::Oracle => return None,
+                DatabaseKind::Oracle => Default::default(),
                 DatabaseKind::Sqlite => {
                     crate::db::sqlite::SqliteAdapter::catalog_mutation_capabilities()
                 }
                 DatabaseKind::SqlServer => {
                     crate::db::mssql::MsSqlAdapter::catalog_mutation_capabilities()
                 }
-                DatabaseKind::Redis => return None,
+                DatabaseKind::Redis => Default::default(),
             };
             let options = capabilities.create_options(&anchor, None).ok()?;
             return (!options.is_empty()).then_some(CatalogCreateSelection {
@@ -17557,9 +17569,7 @@ impl App {
             .iter()
             .find(|profile| profile.id == profile_id)
             .map_or(Some("Connection is unavailable"), |profile| {
-                if profile.kind != DatabaseKind::Postgres {
-                    Some("PostgreSQL only")
-                } else if profile.read_only {
+                if profile.read_only {
                     Some("Read-only connection")
                 } else if self.connection.active_identity().is_none() {
                     Some("Connect this connection first")
@@ -17645,8 +17655,7 @@ impl App {
         else {
             return Vec::new();
         };
-        if profile.kind != DatabaseKind::Postgres
-            || profile.read_only
+        if profile.read_only
             || self
                 .connection
                 .active_identity()
