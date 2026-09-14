@@ -3,6 +3,7 @@ pub mod key_index;
 pub mod key_store;
 pub mod read;
 pub mod reply;
+pub mod scan_scheduler;
 pub mod types;
 
 use redis::{AsyncConnectionConfig, Client, aio::MultiplexedConnection};
