@@ -58,6 +58,10 @@ impl IconSet {
         Self { mode }
     }
 
+    pub(crate) const fn mode(self) -> IconMode {
+        self.mode
+    }
+
     pub const fn activity_frames(self) -> &'static [&'static str] {
         match self.mode {
             IconMode::Ascii => &["|", "/", "-", "\\"],

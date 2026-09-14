@@ -4,8 +4,9 @@ use lazydb::{
         DatabaseConnection, ErrorCategory,
         catalog::{
             CatalogCompleteness, CatalogCount, CatalogEntry, CatalogId, CatalogKind,
-            CatalogMetadata, CatalogRequest, CatalogRequestKey, CatalogSearchRequest,
-            CatalogTarget, DdlProvenance, IndexMetadata, OptionalMetadata, QualifiedName,
+            CatalogMetadata, CatalogRequest, CatalogRequestKey, CatalogSearchObjectScope,
+            CatalogSearchRequest, CatalogTarget, DdlProvenance, IndexMetadata, OptionalMetadata,
+            QualifiedName,
         },
         catalog_drop::CatalogDropRequest,
         mssql::{self, MsSqlAdapter},
@@ -431,6 +432,7 @@ async fn sql_server_catalog_search_matches_scoped_objects_when_configured() {
         generation: 1,
         query: table.clone(),
         scope: sqlserver_selected_scope(&database_name, &["dbo"]),
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit: 10,
     };
     let result = database.search_catalog(&request).await.unwrap();

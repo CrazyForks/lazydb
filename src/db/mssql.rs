@@ -1241,9 +1241,10 @@ impl MsSqlAdapter {
         let escaped_query = search_like_pattern(&request.query);
         let mut candidates = Vec::new();
         for database in databases {
-            if database
-                .to_ascii_lowercase()
-                .contains(&request.query.to_ascii_lowercase())
+            if request.object_scope == crate::db::catalog::CatalogSearchObjectScope::AllObjects
+                && database
+                    .to_ascii_lowercase()
+                    .contains(&request.query.to_ascii_lowercase())
             {
                 candidates.push(MsSqlSearchCandidate::database(&database, &request.query));
             }
@@ -1251,6 +1252,9 @@ impl MsSqlAdapter {
             let sql = format_search_candidates(&database, &escaped_query, &request.query);
             for row in query_rows(&pool, &sql).await? {
                 let candidate = MsSqlSearchCandidate::decode(&row, &database, &request.query)?;
+                if !request.object_scope.includes(candidate.kind) {
+                    continue;
+                }
                 if request
                     .scope
                     .allows_schema(&candidate.database, &candidate.schema)
@@ -1277,7 +1281,9 @@ impl MsSqlAdapter {
         let relation_ids = candidates
             .iter()
             .filter(|candidate| {
-                candidate.kind.is_relation_child() || candidate.kind == CatalogKind::Trigger
+                request.object_scope == crate::db::catalog::CatalogSearchObjectScope::AllObjects
+                    && (candidate.kind.is_relation_child()
+                        || candidate.kind == CatalogKind::Trigger)
             })
             .map(|candidate| {
                 (

@@ -1,7 +1,7 @@
 use lazydb::{
     action::{Action, CatalogSearchOwner, Command},
     app::App,
-    db::catalog::{CatalogSearchPage, CatalogSearchRequest},
+    db::catalog::{CatalogSearchObjectScope, CatalogSearchPage, CatalogSearchRequest},
     model::{text_input::TextInputEdit, workspace::ConnectionIdentity},
     profile::import_connection_url,
 };
@@ -94,6 +94,7 @@ fn search_result_carries_owner_and_the_catalog_protocol_identity() {
             ":memory:",
             None,
         ),
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit: 10,
     };
     assert_eq!(request.connection.profile_id, profile_id);

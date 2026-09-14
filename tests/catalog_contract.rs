@@ -4,10 +4,11 @@ use lazydb::{
         catalog::{
             CatalogCapabilities, CatalogCompleteness, CatalogCount, CatalogCursor, CatalogEntry,
             CatalogGroupSummary, CatalogId, CatalogKind, CatalogMetadata, CatalogPage,
-            CatalogRequest, CatalogRequestKey, CatalogSearchHit, CatalogSearchPage,
-            CatalogSearchRequest, CatalogTarget, ColumnMetadata, ColumnMetadataCapabilities,
-            ConstraintMembership, ConstraintMetadata, IndexMetadata, MAX_CATALOG_PAGE_SIZE,
-            NamespaceModel, ObjectGroup, OptionalMetadata, QualifiedName, finalize_keyset_page,
+            CatalogRequest, CatalogRequestKey, CatalogSearchHit, CatalogSearchObjectScope,
+            CatalogSearchPage, CatalogSearchRequest, CatalogTarget, ColumnMetadata,
+            ColumnMetadataCapabilities, ConstraintMembership, ConstraintMetadata, IndexMetadata,
+            MAX_CATALOG_PAGE_SIZE, NamespaceModel, ObjectGroup, OptionalMetadata, QualifiedName,
+            finalize_keyset_page,
         },
     },
     identity::ConnectionIdentity,
@@ -68,6 +69,7 @@ fn catalog_search_contract_validates_identity_limits_and_ancestors() {
         generation: 3,
         query: "users".into(),
         scope: scope.clone(),
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit: 100,
     };
     assert!(request.validate().is_ok());
@@ -142,6 +144,7 @@ fn catalog_search_page_rejects_duplicate_ids_and_inconsistent_counts() {
         generation: 1,
         query: "users".into(),
         scope: CatalogScope::for_profile(DatabaseKind::Sqlite, "app", Some("main")),
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit: 10,
     };
     let database = CatalogEntry::database(

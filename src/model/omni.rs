@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use uuid::Uuid;
 
 use crate::{
@@ -49,6 +51,13 @@ pub enum OmniItemAction {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OmniLocation {
+    pub profile_id: Uuid,
+    pub database: Option<String>,
+    pub schema: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OmniItem {
     pub id: OmniItemId,
     pub kind: OmniItemKind,
@@ -60,6 +69,7 @@ pub struct OmniItem {
     pub context: CommandContext,
     pub availability: crate::commands::CommandAvailability,
     pub opened: bool,
+    pub location: Option<OmniLocation>,
 }
 
 impl OmniItem {
@@ -82,6 +92,7 @@ impl OmniItem {
             context: CommandContext::default(),
             availability: crate::commands::CommandAvailability::Ready,
             opened: false,
+            location: None,
         }
     }
 
@@ -218,7 +229,11 @@ impl OmniState {
     }
 
     pub fn set_items(&mut self, items: Vec<OmniItem>) {
-        self.items = items;
+        let mut seen = HashSet::with_capacity(items.len());
+        self.items = items
+            .into_iter()
+            .filter(|item| seen.insert(item.id.clone()))
+            .collect();
         self.reconcile_selection(true);
     }
 
@@ -395,6 +410,8 @@ fn parse_query(query: &str) -> (OmniFilter, Option<Uuid>, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::catalog::CatalogKind;
+    use crate::model::relation::RelationView;
 
     fn command_item(id: CommandId, title: &str) -> OmniItem {
         let mut item = OmniItem::new(
@@ -457,6 +474,41 @@ mod tests {
 
         state.set_items(vec![command_item(CommandId::OpenDashboard, "Other")]);
         assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn set_items_keeps_catalog_ids_unique() {
+        let mut state = OmniState::new(5, CommandContext::default());
+        let id = OmniItemId::Catalog(CatalogId::new(
+            Uuid::nil(),
+            CatalogKind::Table,
+            ["db", "public", "users"],
+        ));
+        let first = OmniItem::new(
+            id.clone(),
+            "users",
+            "first",
+            "Table",
+            OmniItemAction::OpenRelation {
+                id: match &id {
+                    OmniItemId::Catalog(id) => id.clone(),
+                    _ => unreachable!(),
+                },
+                view: RelationView::Data,
+            },
+        );
+        let second = OmniItem::new(
+            id,
+            "users",
+            "second",
+            "Table",
+            OmniItemAction::Command(CommandId::OpenRelation),
+        );
+
+        state.set_items(vec![first, second]);
+
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.visible_items().len(), 1);
     }
 
     #[test]

@@ -148,6 +148,7 @@ SELECT kind, database_name, object_name, relation_name, relation_type, native_id
 FROM searchable
 WHERE {scope_predicate}
   AND database_name NOT IN ('information_schema','mysql','performance_schema','sys')
+  AND (? OR kind IN ('table','view'))
   AND (LOCATE(?, search_name) > 0 OR LOCATE(?, search_path) > 0)
 ORDER BY CASE
     WHEN search_name=? THEN 0
@@ -767,6 +768,8 @@ impl MySqlAdapter {
                 query = query.bind(database);
             }
         }
+        query = query
+            .bind(request.object_scope == crate::db::catalog::CatalogSearchObjectScope::AllObjects);
         for _ in 0..5 {
             query = query.bind(&search_query);
         }

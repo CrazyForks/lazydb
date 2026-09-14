@@ -875,7 +875,39 @@ pub struct CatalogSearchRequest {
     pub generation: u64,
     pub query: String,
     pub scope: CatalogScope,
+    pub object_scope: CatalogSearchObjectScope,
     pub limit: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CatalogSearchObjectScope {
+    #[default]
+    AllObjects,
+    RelationsOnly,
+}
+
+impl CatalogSearchObjectScope {
+    pub const fn includes(self, kind: CatalogKind) -> bool {
+        match self {
+            Self::AllObjects => true,
+            Self::RelationsOnly => kind.is_relation(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_scope_tests {
+    use super::{CatalogKind, CatalogSearchObjectScope};
+
+    #[test]
+    fn relation_scope_only_includes_openable_relations() {
+        assert!(CatalogSearchObjectScope::RelationsOnly.includes(CatalogKind::Table));
+        assert!(CatalogSearchObjectScope::RelationsOnly.includes(CatalogKind::View));
+        assert!(CatalogSearchObjectScope::RelationsOnly.includes(CatalogKind::MaterializedView));
+        assert!(!CatalogSearchObjectScope::RelationsOnly.includes(CatalogKind::Column));
+        assert!(!CatalogSearchObjectScope::RelationsOnly.includes(CatalogKind::PrimaryKey));
+        assert!(CatalogSearchObjectScope::AllObjects.includes(CatalogKind::Column));
+    }
 }
 
 impl CatalogSearchRequest {

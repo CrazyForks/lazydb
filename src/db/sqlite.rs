@@ -683,6 +683,7 @@ impl SqliteAdapter {
                     ignore_separators,
                     &database,
                     &schema,
+                    request.object_scope,
                     &mut hits,
                 )
                 .await?;
@@ -691,6 +692,7 @@ impl SqliteAdapter {
 
         let mut ranked = hits
             .into_iter()
+            .filter(|hit| request.object_scope.includes(hit.entry.kind))
             .filter_map(|hit| search_rank(&hit, &query, ignore_separators).map(|rank| (rank, hit)))
             .collect::<Vec<_>>();
         ranked.sort_by(|(left_rank, left), (right_rank, right)| {
@@ -715,6 +717,7 @@ impl SqliteAdapter {
             .map_err(DatabaseError::invalid_catalog_request)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn search_schema(
         &self,
         connection: &mut SqliteConnection,
@@ -722,6 +725,7 @@ impl SqliteAdapter {
         ignore_separators: bool,
         database: &CatalogEntry,
         schema: &CatalogEntry,
+        object_scope: crate::db::catalog::CatalogSearchObjectScope,
         hits: &mut Vec<CatalogSearchHit>,
     ) -> Result<(), DatabaseError> {
         let schema_name = &schema.qualified_name.object;
@@ -785,6 +789,9 @@ impl SqliteAdapter {
             .map_err(|error| DatabaseError::from_sqlx(error, ErrorCategory::Sql))?;
         for row in rows {
             let entry = self.object_search_entry(schema, &row)?;
+            if !object_scope.includes(entry.kind) {
+                continue;
+            }
             let mut ancestors = vec![database.clone(), schema.clone()];
             if let Some(owner) = entry
                 .relation_id
@@ -794,6 +801,10 @@ impl SqliteAdapter {
                 ancestors.push(self.relation_entry(schema, owner)?);
             }
             hits.push(CatalogSearchHit { entry, ancestors });
+        }
+
+        if object_scope != crate::db::catalog::CatalogSearchObjectScope::AllObjects {
+            return Ok(());
         }
 
         let owners_sql = format!(
