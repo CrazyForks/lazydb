@@ -5412,6 +5412,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         sync_record_view_fields(&mut app, &mut runtime, &ui_state);
         sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
         sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
+        sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
         sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
 
         while !app.should_quit {
@@ -5596,6 +5597,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
                 sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
                 sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
+                sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
                 sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
                 }
         }
@@ -5903,6 +5905,31 @@ fn sync_redis_keys_viewport(app: &mut App, runtime: &mut Runtime, state: &UiStat
         matches!(tab, crate::model::tab::WorkspaceTab::RedisBrowser(tab) if tab.viewport_rows != rows)
     }) {
         apply_action(app, runtime, Action::RedisKeysViewportChanged { tab_id, rows });
+    }
+}
+
+fn sync_redis_preview_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    let Some((tab_id, rows, content_rows)) = state.redis_preview_viewport_rows else {
+        return;
+    };
+    if app
+        .tabs
+        .iter()
+        .find(|tab| tab.id() == tab_id)
+        .is_some_and(|tab| {
+            matches!(tab, crate::model::tab::WorkspaceTab::RedisBrowser(tab)
+            if tab.preview_viewport_rows != rows || tab.preview_content_rows != content_rows)
+        })
+    {
+        apply_action(
+            app,
+            runtime,
+            Action::RedisPreviewViewportChanged {
+                tab_id,
+                rows,
+                content_rows,
+            },
+        );
     }
 }
 

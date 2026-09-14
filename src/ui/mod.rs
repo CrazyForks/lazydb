@@ -297,6 +297,7 @@ pub struct UiState {
     pub record_view_fields: Option<(Uuid, usize)>,
     pub explorer_viewport_rows: Option<usize>,
     pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
+    pub redis_preview_viewport_rows: Option<(Uuid, usize, usize)>,
     pub ddl_viewport: Option<DdlViewportMetrics>,
     pub cursor: Option<CursorSpec>,
     pub terminal_selection_mode: bool,
@@ -434,6 +435,7 @@ impl UiState {
             record_view_fields: None,
             explorer_viewport_rows: None,
             redis_keys_viewport_rows: None,
+            redis_preview_viewport_rows: None,
             ddl_viewport: None,
             cursor: None,
             terminal_selection_mode: false,
@@ -857,6 +859,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     state.record_view_fields = None;
     state.explorer_viewport_rows = None;
     state.redis_keys_viewport_rows = None;
+    state.redis_preview_viewport_rows = None;
     state.ddl_viewport = None;
     state.cursor = None;
     state.text_selection_targets.clear();
@@ -893,7 +896,7 @@ pub fn render_with_state_using_icons_sequence_and_theme(
             render_explorer(frame, area, app, theme, state, icons);
         }
         if let Some(area) = layout.relation {
-            redis_browser::render(frame, area, app, state);
+            redis_browser::render(frame, area, app, state, theme, icons);
         }
         render_footer(frame, layout.footer, app, theme, sequence, state);
     } else if is_dashboard {
@@ -2106,7 +2109,12 @@ fn render_tabs(
                         .unwrap_or_else(|| "未绑定".to_owned()),
                     WorkspaceTab::Sql(_) => unreachable!(),
                     WorkspaceTab::History(_) => "全部连接".to_owned(),
-                    WorkspaceTab::RedisBrowser(_) => "Redis".to_owned(),
+                    WorkspaceTab::RedisBrowser(redis) => app
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == redis.target.profile_id)
+                        .map(|profile| profile.name.clone())
+                        .unwrap_or_else(|| "失效目标".to_owned()),
                 };
                 format!("{} @{connection_name}", tab.title())
             };
@@ -3532,29 +3540,12 @@ pub(crate) fn render_editor_scrollbars(
         );
         if let Some(geometry) = rail {
             let thumb_area = geometry.thumb_area();
-            let mut lines = Vec::with_capacity(track.height as usize);
-            lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
-            lines.extend(
-                (0..geometry.thumb_start)
-                    .map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
-            );
-            lines.extend(
-                (0..geometry.thumb_length)
-                    .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
-            );
+            crate::ui::scrollbar::render_vertical(frame, track, geometry, theme);
             let after = geometry
                 .rail
                 .height
                 .saturating_sub(geometry.thumb_start)
                 .saturating_sub(geometry.thumb_length);
-            lines.extend(
-                (0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
-            );
-            lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
-            frame.render_widget(
-                Paragraph::new(lines).style(Style::new().bg(theme.surface)),
-                track,
-            );
             let offset = geometry.thumb_start;
             state.hit_regions.push(HitRegion {
                 area: Rect::new(track.x, track.y.saturating_add(1), 1, offset),
@@ -3606,24 +3597,7 @@ pub(crate) fn render_editor_scrollbars(
         };
         let thumb = geometry.thumb_length;
         let offset = geometry.thumb_start;
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("‹", Style::new().fg(theme.muted)),
-                Span::styled("─".repeat(offset as usize), Style::new().fg(theme.muted)),
-                Span::styled("━".repeat(thumb as usize), Style::new().fg(theme.accent)),
-                Span::styled(
-                    "─".repeat(geometry.rail.width.saturating_sub(offset + thumb) as usize),
-                    Style::new().fg(theme.muted),
-                ),
-                Span::styled("›", Style::new().fg(theme.muted)),
-            ]))
-            .style(Style::new().bg(theme.surface)),
-            track,
-        );
-        frame.render_widget(
-            Paragraph::new("━".repeat(thumb as usize)).style(Style::new().fg(theme.accent)),
-            Rect::new(track.x.saturating_add(offset), track.y, thumb, 1),
-        );
+        crate::ui::scrollbar::render_horizontal(frame, track, geometry, theme);
         state.hit_regions.push(HitRegion {
             area: Rect::new(track.x, track.y, offset, 1),
             target: HitTarget::EditorScrollbarPage {

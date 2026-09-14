@@ -926,6 +926,24 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }),
                 Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, 3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, 3, 0),
+                Focus::Results
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    ) =>
+                {
+                    Some(Action::RedisPreviewScroll(3))
+                }
+                Focus::Results
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+                    ) =>
+                {
+                    Some(Action::RedisKeysScroll(3))
+                }
                 Focus::Results => Some(Action::GridScrollRows {
                     direction: 1,
                     amount: GridScrollAmount::Lines(3),
@@ -960,6 +978,24 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }),
                 Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, -3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, -3, 0),
+                Focus::Results
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    ) =>
+                {
+                    Some(Action::RedisPreviewScroll(-3))
+                }
+                Focus::Results
+                    if matches!(
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+                    ) =>
+                {
+                    Some(Action::RedisKeysScroll(-3))
+                }
                 Focus::Results => Some(Action::GridScrollRows {
                     direction: -1,
                     amount: GridScrollAmount::Lines(3),

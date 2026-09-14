@@ -59,6 +59,75 @@ fn opening_a_database_creates_one_empty_redis_browser_tab() {
 }
 
 #[test]
+fn redis_browser_selects_first_root_after_initial_tree_population() {
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(201),
+        RedisTarget {
+            profile_id: Uuid::from_u128(202),
+            database: 0,
+        },
+    );
+    tab.keyspace.keys = vec![
+        RedisKeyId {
+            target: tab.target.clone(),
+            key: b"user:2".to_vec(),
+        },
+        RedisKeyId {
+            target: tab.target.clone(),
+            key: b"app:config".to_vec(),
+        },
+    ];
+    tab.insert_tree_keys();
+
+    assert_eq!(
+        tab.select_first_root_if_empty(),
+        Some(KeyTreeNodeId::Prefix(b"app:".to_vec()))
+    );
+    assert_eq!(
+        tab.tree.selected,
+        Some(KeyTreeNodeId::Prefix(b"app:".to_vec()))
+    );
+    assert_eq!(tab.select_first_root_if_empty(), None);
+}
+
+#[test]
+fn redis_browser_pane_viewports_are_independent_and_clamped() {
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(203),
+        RedisTarget {
+            profile_id: Uuid::from_u128(204),
+            database: 0,
+        },
+    );
+    tab.set_pane_viewport(lazydb::model::redis_browser::RedisBrowserPane::Keys, 3, 10);
+    tab.set_pane_viewport(
+        lazydb::model::redis_browser::RedisBrowserPane::Preview,
+        2,
+        6,
+    );
+    tab.scroll_pane(
+        lazydb::model::redis_browser::RedisBrowserPane::Keys,
+        100,
+        10,
+    );
+    tab.scroll_pane(
+        lazydb::model::redis_browser::RedisBrowserPane::Preview,
+        100,
+        6,
+    );
+
+    assert_eq!(tab.scroll, 7);
+    assert_eq!(tab.preview_scroll, 4);
+
+    tab.set_pane_viewport(
+        lazydb::model::redis_browser::RedisBrowserPane::Preview,
+        10,
+        6,
+    );
+    assert_eq!(tab.preview_scroll, 0);
+}
+
+#[test]
 fn reopening_an_existing_not_loaded_tab_dispatches_its_first_scan() {
     let profile_id = Uuid::from_u128(101);
     let mut app = App::new(Vec::new());
