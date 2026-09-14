@@ -127,6 +127,7 @@ pub enum Overlay {
     WorkspaceSaveFailed {
         revision: u64,
         message: String,
+        retryable: bool,
     },
     SubstituteConfirm {
         remaining: usize,

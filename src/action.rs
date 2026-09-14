@@ -1181,6 +1181,7 @@ pub enum Action {
     WorkspaceSaveFailed {
         revision: u64,
         message: String,
+        retryable: bool,
     },
     WorkspaceSaveFlushed {
         revision: u64,

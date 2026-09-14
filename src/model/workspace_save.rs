@@ -56,6 +56,7 @@ pub enum QuitSaveState {
     Failed {
         revision: u64,
         message: String,
+        retryable: bool,
     },
 }
 

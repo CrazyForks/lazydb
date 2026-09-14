@@ -176,10 +176,24 @@ impl Keymap {
             }
             return None;
         }
-        if matches!(app.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
+        if matches!(
+            app.overlay,
+            Some(Overlay::WorkspaceSaveFailed {
+                retryable: true,
+                ..
+            })
+        ) {
             self.pending = None;
             return match event.code {
                 KeyCode::Char('r') => Some(Action::RetryWorkspaceQuitSave),
+                KeyCode::Char('d') => Some(Action::DiscardWorkspaceQuitSave),
+                KeyCode::Esc => Some(Action::DismissOverlay),
+                _ => None,
+            };
+        }
+        if matches!(app.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
+            self.pending = None;
+            return match event.code {
                 KeyCode::Char('d') => Some(Action::DiscardWorkspaceQuitSave),
                 KeyCode::Esc => Some(Action::DismissOverlay),
                 _ => None,

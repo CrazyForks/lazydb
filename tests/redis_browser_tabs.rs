@@ -1,5 +1,5 @@
 use lazydb::{
-    action::Action,
+    action::{Action, Command},
     app::App,
     db::redis::types::{RedisKeyId, RedisTarget},
     model::execution_target::ExecutionTarget,
@@ -9,8 +9,35 @@ use lazydb::{
         redis_browser::{RedisPreviewState, RedisValuePageState},
         tab::WorkspaceTab,
     },
+    persistence::workspace::{PersistedTab, WorkspaceStore},
+    profile::{DatabaseKind, import_connection_url},
 };
+use tempfile::TempDir;
 use uuid::Uuid;
+
+fn redis_profile(name: &str) -> lazydb::profile::ConnectionProfile {
+    import_connection_url("redis://localhost:6379", Some(name))
+        .unwrap()
+        .profile
+}
+
+fn connect_redis(app: &mut App, profile_id: Uuid, database: &str) {
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: lazydb::db::ServerInfo {
+            kind: DatabaseKind::Redis,
+            version: "7.2".into(),
+            database: database.into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+}
 
 #[test]
 fn opening_a_database_creates_one_empty_redis_browser_tab() {
@@ -56,6 +83,67 @@ fn opening_a_database_creates_one_empty_redis_browser_tab() {
     });
     assert_eq!(app.tabs.len(), 2);
     assert!(app.tabs.iter().any(|tab| tab.id() == first_id));
+}
+
+#[test]
+fn opening_redis_on_second_profile_produces_a_valid_snapshot() {
+    let first = redis_profile("first");
+    let second = redis_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    connect_redis(&mut app, first_id, "0");
+    let commands = app.update(Action::OpenRedisDatabase {
+        profile_id: second_id,
+        database: 0,
+    });
+    let generation = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Connect { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .expect("opening the second profile should request its connection");
+    app.update(Action::ConnectionSucceeded {
+        profile_id: second_id,
+        generation,
+        server: lazydb::db::ServerInfo {
+            kind: DatabaseKind::Redis,
+            version: "7.2".into(),
+            database: "0".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+    app.update(Action::OpenRedisDatabase {
+        profile_id: second_id,
+        database: 0,
+    });
+
+    let redis_tabs = app
+        .tabs
+        .iter()
+        .filter_map(|tab| match tab {
+            WorkspaceTab::RedisBrowser(tab) => Some(tab),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(redis_tabs.len(), 1);
+    assert_eq!(redis_tabs[0].target.profile_id, second_id);
+
+    let snapshot = app.workspace_snapshot();
+    let tab_count = snapshot
+        .profiles
+        .iter()
+        .flat_map(|profile| profile.tabs.iter())
+        .filter(|tab| matches!(tab, PersistedTab::RedisBrowser { .. }))
+        .count();
+    assert_eq!(tab_count, 1);
+
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    store.save(&snapshot).unwrap();
 }
 
 #[test]
