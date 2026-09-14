@@ -27,6 +27,7 @@ pub mod relation_review;
 pub mod session;
 pub mod sql_editor_list;
 pub mod sql_history;
+pub mod sql_history_view;
 pub mod tab;
 pub mod text_detail;
 pub mod text_input;
