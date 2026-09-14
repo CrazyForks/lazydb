@@ -196,3 +196,39 @@ fn cell_values_use_the_same_auto_json_pipeline_and_keep_binary_copy() {
     let hex = lazydb::ui::redis_value::format_bytes_value(&binary, PreviewFormat::HEX).unwrap();
     assert_eq!(hex, "ff00");
 }
+
+#[test]
+fn unicode_json_preview_keeps_original_text_for_detection_and_formatting() {
+    let json = r#"{"name":"界面配置","enabled":true}"#.as_bytes();
+
+    assert_eq!(
+        lazydb::value_preview::detect::default_format(json, false),
+        PreviewFormat::JSON
+    );
+    let page = lazydb::db::redis::read::RedisValuePage {
+        metadata: lazydb::db::redis::read::RedisKeyMetadata {
+            key: lazydb::db::redis::types::RedisKeyId {
+                target: lazydb::db::redis::types::RedisTarget {
+                    profile_id: uuid::Uuid::nil(),
+                    database: 0,
+                },
+                key: b"unicode-json".to_vec(),
+            },
+            value_type: lazydb::db::redis::read::RedisType::String,
+            ttl: lazydb::db::redis::read::TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: Some(json.len() as u64),
+        },
+        position: lazydb::db::redis::read::RedisPagePosition::Complete,
+        value: lazydb::db::redis::read::RedisPageValue::String(json.to_vec()),
+        truncated: false,
+        complete: true,
+        raw_bytes: json.len(),
+        formatted_bytes: json.len(),
+    };
+
+    let formatted = lazydb::ui::redis_value::format_page(&page, ValueView::Json)
+        .expect("Unicode JSON must be formatted from original bytes");
+    assert!(formatted.contains("界面配置"));
+    assert!(!formatted.contains("\\xE7"));
+}
