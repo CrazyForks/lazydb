@@ -7,9 +7,9 @@ use lazydb::{
         catalog::{
             CatalogCapabilities, CatalogCompleteness, CatalogCount, CatalogCursor, CatalogEntry,
             CatalogId, CatalogKind, CatalogMetadata, CatalogRequest, CatalogRequestKey,
-            CatalogSearchRequest, CatalogTarget, ColumnMetadata, ColumnMetadataCapabilities,
-            ConstraintMembership, ConstraintMetadata, DdlProvenance, IndexMetadata, NamespaceModel,
-            ObjectGroup, OptionalMetadata,
+            CatalogSearchObjectScope, CatalogSearchRequest, CatalogTarget, ColumnMetadata,
+            ColumnMetadataCapabilities, ConstraintMembership, ConstraintMetadata, DdlProvenance,
+            IndexMetadata, NamespaceModel, ObjectGroup, OptionalMetadata,
         },
         value::CellValue,
     },
@@ -478,6 +478,7 @@ impl CatalogFixture {
                 generation: 12,
                 query: query.into(),
                 scope: self.scope(schemas),
+                object_scope: CatalogSearchObjectScope::AllObjects,
                 limit,
             })
             .await
@@ -500,6 +501,7 @@ async fn catalog_search_finds_unloaded_objects_children_paths_scope_and_limit() 
             generation: 4,
             query: "CHILD.LABEL".into(),
             scope: fixture.scope(&["main"]),
+            object_scope: CatalogSearchObjectScope::AllObjects,
             limit: 100,
         })
         .await
@@ -526,6 +528,7 @@ async fn catalog_search_finds_unloaded_objects_children_paths_scope_and_limit() 
             generation: 5,
             query: "a".into(),
             scope: fixture.scope(&["main"]),
+            object_scope: CatalogSearchObjectScope::AllObjects,
             limit: 1,
         })
         .await
@@ -737,6 +740,7 @@ async fn catalog_search_rejects_wrong_profile_and_skips_unrelated_relation_hydra
             generation: 1,
             query: "child".into(),
             scope: fixture.scope(&["main"]),
+            object_scope: CatalogSearchObjectScope::AllObjects,
             limit: 100,
         })
         .await

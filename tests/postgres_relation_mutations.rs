@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 use lazydb::{
     db::{
         DatabaseConnection,
-        catalog::{CatalogKind, CatalogSearchRequest},
+        catalog::{CatalogKind, CatalogSearchObjectScope, CatalogSearchRequest},
         mutation::{
             DeleteRowMutation, InputValue, InsertRowMutation, RelationMutation,
             RelationMutationRequest, RowLocator, RowVersion, UpdateCellMutation,
@@ -48,6 +48,7 @@ async fn find_relation(
             generation: 1,
             query: name.to_owned(),
             scope: scope.clone(),
+            object_scope: CatalogSearchObjectScope::AllObjects,
             limit: 20,
         })
         .await
@@ -321,6 +322,7 @@ async fn delete_two_all_types_rows() {
                 generation: 1,
                 query: table.clone(),
                 scope: scope.clone(),
+                object_scope: CatalogSearchObjectScope::AllObjects,
                 limit: 10,
             })
             .await

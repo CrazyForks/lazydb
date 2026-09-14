@@ -7,9 +7,9 @@ use lazydb::{
         catalog::{
             CatalogCapabilities, CatalogCompleteness, CatalogCount, CatalogCursor, CatalogEntry,
             CatalogId, CatalogKind, CatalogMetadata, CatalogRequest, CatalogRequestKey,
-            CatalogSearchRequest, CatalogTarget, ColumnMetadata, ColumnMetadataCapabilities,
-            ConstraintMembership, ConstraintMetadata, IndexMetadata, NamespaceModel, ObjectGroup,
-            OptionalMetadata,
+            CatalogSearchObjectScope, CatalogSearchRequest, CatalogTarget, ColumnMetadata,
+            ColumnMetadataCapabilities, ConstraintMembership, ConstraintMetadata, IndexMetadata,
+            NamespaceModel, ObjectGroup, OptionalMetadata,
         },
         catalog_mutation::{
             CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationMode,
@@ -1523,6 +1523,7 @@ fn catalog_search_request(
         generation: 13,
         query: query.into(),
         scope,
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit,
     }
 }

@@ -2777,7 +2777,12 @@ impl App {
                         );
                         item.kind = crate::model::omni::OmniItemKind::Catalog(entry.kind);
                         item.context.profile_id = Some(id.profile_id());
-                        item.context.catalog_id = Some(id);
+                        item.context.catalog_id = Some(id.clone());
+                        item.location = Some(crate::model::omni::OmniLocation {
+                            profile_id: id.profile_id(),
+                            database: entry.qualified_name.database.clone(),
+                            schema: entry.qualified_name.schema.clone(),
+                        });
                         items.push(item);
                     }
                 }
@@ -2847,6 +2852,7 @@ impl App {
             generation: omni.query_generation,
             query: omni.parsed_query(),
             scope: profile.catalog_scope.clone(),
+            object_scope: crate::db::catalog::CatalogSearchObjectScope::RelationsOnly,
             limit: crate::db::catalog::MAX_CATALOG_SEARCH_RESULTS,
         };
         request.validate().ok()?;
@@ -2985,13 +2991,10 @@ impl App {
                 .cloned(),
         );
         for hit in page.hits {
-            let relation = hit
-                .entry
-                .kind
-                .is_relation()
-                .then(|| hit.entry.id.clone())
-                .or_else(|| hit.entry.relation_id.clone());
-            let Some(id) = relation else { continue };
+            if !hit.entry.kind.is_relation() {
+                continue;
+            }
+            let id = hit.entry.id.clone();
             let mut item = crate::model::omni::OmniItem::new(
                 crate::model::omni::OmniItemId::Catalog(id.clone()),
                 hit.entry.qualified_name.object.clone(),
@@ -3005,6 +3008,11 @@ impl App {
             item.kind = crate::model::omni::OmniItemKind::Catalog(hit.entry.kind);
             item.context.profile_id = Some(id.profile_id());
             item.context.catalog_id = Some(id.clone());
+            item.location = Some(crate::model::omni::OmniLocation {
+                profile_id: id.profile_id(),
+                database: hit.entry.qualified_name.database.clone(),
+                schema: hit.entry.qualified_name.schema.clone(),
+            });
             item.keywords.extend(
                 hit.ancestors
                     .iter()

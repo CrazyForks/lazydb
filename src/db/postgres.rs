@@ -246,6 +246,7 @@ WITH candidates AS (
     FROM normalized
     WHERE $3
       AND (strpos(search_name, $1) > 0 OR strpos(search_path, $1) > 0)
+      AND ($6 OR kind IN ('table', 'view', 'materialized_view'))
 )
 SELECT kind, database_name, schema_name, object_name, object_oid,
        relation_kind, relation_name, relation_oid, comment, relation_comment,
@@ -4110,6 +4111,7 @@ LIMIT 2001
             .bind(database_allowed)
             .bind(sql_limit)
             .bind(ignore_separators)
+            .bind(request.object_scope == crate::db::catalog::CatalogSearchObjectScope::AllObjects)
             .fetch_all(&mut *connection)
             .await
             .map_err(sql_error)?;

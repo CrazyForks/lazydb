@@ -3,7 +3,9 @@ use serde::Serialize;
 use crate::{
     db::{
         DatabaseConnection,
-        catalog::{CatalogSearchPage, CatalogSearchRequest, OptionalMetadata},
+        catalog::{
+            CatalogSearchObjectScope, CatalogSearchPage, CatalogSearchRequest, OptionalMetadata,
+        },
     },
     identity::ConnectionIdentity,
     profile::ConnectionProfile,
@@ -47,6 +49,7 @@ pub async fn search_schema(
         generation: 1,
         query,
         scope: profile.catalog_scope.clone(),
+        object_scope: CatalogSearchObjectScope::AllObjects,
         limit,
     };
     let page: CatalogSearchPage =

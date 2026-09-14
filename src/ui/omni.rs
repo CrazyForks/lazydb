@@ -141,11 +141,8 @@ pub(super) fn render(
             } else {
                 base_style
             };
-            let subtitle_style = base_style.fg(theme.muted);
-            let opened_style = base_style.fg(theme.success);
             let opened = if item.opened { " [open]" } else { "" };
             let opened_width = usize::from(opened.cell_width());
-            let subtitle_width = usize::from(subtitle.cell_width());
             let icon = match item.kind {
                 crate::model::omni::OmniItemKind::Command
                 | crate::model::omni::OmniItemKind::Action => icons.omni_command(),
@@ -157,15 +154,60 @@ pub(super) fn render(
             };
             let icon_width = usize::from(icon.cell_width());
             let available = width.saturating_sub(marker_width + icon_width + 1);
-            let (title_width, subtitle_width) = if subtitle.is_empty() {
-                (available.saturating_sub(opened_width), 0)
-            } else {
-                let subtitle_budget = subtitle_width.min(available / 3);
-                (
-                    available.saturating_sub(subtitle_budget + 2 + opened_width),
-                    subtitle_budget,
-                )
-            };
+            let (location_icon, location_name, location_path) = item
+                .location
+                .as_ref()
+                .and_then(|location| {
+                    app.profiles
+                        .iter()
+                        .find(|profile| profile.id == location.profile_id)
+                        .map(|profile| {
+                            let icon = icons.database(profile.kind).to_owned();
+                            let name = sanitize_terminal_text(&profile.name);
+                            let mut path = Vec::new();
+                            if let Some(database) =
+                                location.database.as_deref().filter(|v| !v.is_empty())
+                            {
+                                path.push(sanitize_terminal_text(database));
+                            }
+                            if let Some(schema) =
+                                location.schema.as_deref().filter(|v| !v.is_empty())
+                            {
+                                path.push(sanitize_terminal_text(schema));
+                            }
+                            (Some(icon), name, path.join(" / "))
+                        })
+                })
+                .unwrap_or((None, subtitle.clone(), String::new()));
+            let right_text_width = usize::from(location_name.cell_width())
+                + usize::from(location_path.cell_width())
+                + opened_width
+                + if location_path.is_empty() { 0 } else { 3 };
+            let right_icon_width = location_icon
+                .as_deref()
+                .map_or(0, |value| usize::from(value.cell_width()) + 1);
+            let right_width = right_text_width + right_icon_width;
+            let title_width = available
+                .saturating_sub(right_width.saturating_add(2))
+                .max(1);
+            let title = truncate_cells_ellipsis(&title, title_width, icons);
+            let left_width = icon_width + 1 + usize::from(title.cell_width());
+            let right_budget = available.saturating_sub(left_width + 2).min(right_width);
+            let metadata_budget = right_budget.saturating_sub(right_icon_width);
+            let opened_budget = opened_width.min(metadata_budget);
+            let metadata = truncate_cells_ellipsis(
+                &format!(
+                    "{}{}{}",
+                    location_name,
+                    if location_path.is_empty() { "" } else { " / " },
+                    location_path
+                ),
+                metadata_budget.saturating_sub(opened_budget),
+                icons,
+            );
+            let gap = available.saturating_sub(
+                left_width + right_icon_width + usize::from(metadata.cell_width()) + opened_budget,
+            );
             let mut spans = vec![Span::styled(
                 marker,
                 if selected {
@@ -176,19 +218,15 @@ pub(super) fn render(
             )];
             spans.push(Span::styled(icon, base_style.fg(theme.accent)));
             spans.push(Span::styled(" ", base_style));
-            spans.push(Span::styled(
-                truncate_cells(&title, title_width),
-                title_style,
-            ));
-            if subtitle_width > 0 {
-                spans.push(Span::styled("  ", base_style));
-                spans.push(Span::styled(
-                    truncate_cells(&subtitle, subtitle_width),
-                    subtitle_style,
-                ));
+            spans.push(Span::styled(title, title_style));
+            spans.push(Span::styled(" ".repeat(gap.max(2)), base_style));
+            if let Some(location_icon) = location_icon {
+                spans.push(Span::styled(location_icon, base_style.fg(theme.accent)));
+                spans.push(Span::styled(" ", base_style));
             }
+            spans.push(Span::styled(metadata, base_style.fg(theme.muted)));
             if !opened.is_empty() {
-                spans.push(Span::styled(opened, opened_style));
+                spans.push(Span::styled(opened, base_style.fg(theme.success)));
             }
             let line = Line::from(spans);
             let row = inner.y.saturating_add(2).saturating_add(offset as u16);
@@ -249,6 +287,19 @@ fn truncate_cells(value: &str, width: usize) -> String {
             }
         })
         .collect()
+}
+
+fn truncate_cells_ellipsis(value: &str, width: usize, icons: IconSet) -> String {
+    if usize::from(value.cell_width()) <= width {
+        return value.to_owned();
+    }
+    let ellipsis = if matches!(icons.mode(), super::icons::IconMode::Ascii) {
+        "..."
+    } else {
+        "…"
+    };
+    let ellipsis_width = usize::from(ellipsis.cell_width());
+    truncate_cells(value, width.saturating_sub(ellipsis_width)) + ellipsis
 }
 
 #[cfg(test)]

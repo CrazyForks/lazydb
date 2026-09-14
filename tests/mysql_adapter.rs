@@ -7,9 +7,9 @@ use lazydb::{
         catalog::{
             CatalogCapabilities, CatalogCompleteness, CatalogCount, CatalogCursor, CatalogEntry,
             CatalogId, CatalogKind, CatalogMetadata, CatalogRequest, CatalogRequestKey,
-            CatalogSearchRequest, CatalogTarget, ColumnMetadata, ColumnMetadataCapabilities,
-            ConstraintMembership, ConstraintMetadata, DdlProvenance, IndexMetadata, NamespaceModel,
-            ObjectGroup, OptionalMetadata,
+            CatalogSearchObjectScope, CatalogSearchRequest, CatalogTarget, ColumnMetadata,
+            ColumnMetadataCapabilities, ConstraintMembership, ConstraintMetadata, DdlProvenance,
+            IndexMetadata, NamespaceModel, ObjectGroup, OptionalMetadata,
         },
         mysql::{self, MySqlAdapter},
         value::CellValue,
@@ -702,6 +702,7 @@ async fn catalog_page_exposes_scoped_mysql_objects_and_rich_metadata_when_config
             generation: 13,
             query: prefix.clone(),
             scope: scope.clone(),
+            object_scope: CatalogSearchObjectScope::AllObjects,
             limit: 100,
         };
         let search = database.search_catalog(&search_request).await.unwrap();
