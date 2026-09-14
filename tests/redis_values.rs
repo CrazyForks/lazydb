@@ -98,3 +98,23 @@ fn ttl_states_distinguish_missing_persistent_and_expiring_keys() {
         TtlState::ExpiresIn { millis: 1000 }
     );
 }
+
+#[test]
+fn metadata_size_metrics_are_distinct_from_page_bytes() {
+    let metadata = lazydb::db::redis::read::RedisKeyMetadata {
+        key: lazydb::db::redis::types::RedisKeyId {
+            target: lazydb::db::redis::types::RedisTarget {
+                profile_id: uuid::Uuid::nil(),
+                database: 0,
+            },
+            key: b"key".to_vec(),
+        },
+        value_type: RedisType::String,
+        ttl: TtlState::Persistent,
+        memory_usage_bytes: Some(4096),
+        value_size: Some(3),
+    };
+    assert_eq!(metadata.memory_usage_bytes, Some(4096));
+    assert_eq!(metadata.value_size, Some(3));
+    assert_ne!(metadata.memory_usage_bytes, metadata.value_size);
+}
