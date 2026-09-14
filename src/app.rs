@@ -12512,6 +12512,12 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::RedisPreviewCycleFormat => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.format.cycle();
+                }
+                Vec::new()
+            }
             Action::RedisValuePageFailed {
                 tab_id,
                 connection,

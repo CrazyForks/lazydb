@@ -305,6 +305,23 @@ pub fn render(
             ]),
             header_area,
         );
+        let format_label = format!(" {} ▾ ", preview_format_label(tab.format.selected));
+        let format_area = Rect::new(
+            preview_area
+                .right()
+                .saturating_sub(format_label.len() as u16),
+            header_area.y + 1,
+            format_label.len() as u16,
+            1,
+        );
+        ui.hit_regions.push(crate::ui::HitRegion {
+            area: format_area,
+            target: crate::ui::HitTarget::RedisPreviewFormat(tab.id),
+        });
+        frame.render_widget(
+            Paragraph::new(format_label).style(Style::new().fg(theme.action)),
+            format_area,
+        );
     }
     if let Ok(snapshot) = app.redis_preview_snapshot(
         tab.id,
@@ -355,6 +372,16 @@ pub fn render(
         );
         ui.redis_preview_viewport_rows =
             Some((tab.id, preview_area.height as usize, preview_content_rows));
+    }
+}
+
+fn preview_format_label(format: crate::value_preview::PreviewFormat) -> &'static str {
+    match format.view {
+        crate::value_preview::ValueView::Raw => "RAW",
+        crate::value_preview::ValueView::Json => "JSON",
+        crate::value_preview::ValueView::Yaml => "YAML",
+        crate::value_preview::ValueView::Table => "Table",
+        crate::value_preview::ValueView::Hex => "Hex",
     }
 }
 

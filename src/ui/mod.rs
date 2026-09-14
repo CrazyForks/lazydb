@@ -114,6 +114,7 @@ pub enum HitTarget {
         node: crate::model::redis_key_tree::KeyTreeNodeId,
     },
     RedisFindInput(Uuid),
+    RedisPreviewFormat(Uuid),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,

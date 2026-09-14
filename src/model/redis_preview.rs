@@ -18,6 +18,21 @@ impl Default for RedisPreviewFormatState {
 }
 
 impl RedisPreviewFormatState {
+    pub fn cycle(&mut self) {
+        const FORMATS: [PreviewFormat; 5] = [
+            PreviewFormat::RAW,
+            PreviewFormat::JSON,
+            PreviewFormat::YAML,
+            PreviewFormat::TABLE,
+            PreviewFormat::HEX,
+        ];
+        let index = FORMATS
+            .iter()
+            .position(|format| *format == self.selected)
+            .map_or(0, |index| (index + 1) % FORMATS.len());
+        self.select(FORMATS[index]);
+    }
+
     pub fn select(&mut self, format: PreviewFormat) {
         self.selected = format;
         self.automatic = false;

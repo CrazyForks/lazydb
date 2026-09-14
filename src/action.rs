@@ -1136,6 +1136,7 @@ pub enum Action {
     },
     RedisKeysScroll(isize),
     RedisPreviewScroll(isize),
+    RedisPreviewCycleFormat,
     RedisPreviewViewportChanged {
         tab_id: Uuid,
         rows: usize,

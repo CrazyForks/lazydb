@@ -629,6 +629,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::RedisFindInput(_) => Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                 )),
+                HitTarget::RedisPreviewFormat(_) => Some(Action::RedisPreviewCycleFormat),
                 HitTarget::ResultCell { row, column } => Some(Action::GridSelect { row, column }),
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::Omni => None,
@@ -1092,6 +1093,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::RedisKeyNode { .. } => Some(Focus::Results),
         HitTarget::RedisKeyToggle { .. } => Some(Focus::Results),
         HitTarget::RedisFindInput(_) => Some(Focus::Results),
+        HitTarget::RedisPreviewFormat(_) => Some(Focus::Results),
         HitTarget::ResultCell { .. }
         | HitTarget::ToggleResultView
         | HitTarget::ResultView(_)
