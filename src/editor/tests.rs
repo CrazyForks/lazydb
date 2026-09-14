@@ -69,6 +69,30 @@ fn rendering_replaces_old_revision_highlights() {
 }
 
 #[test]
+fn preview_rendering_does_not_populate_sql_analysis_cache() {
+    let (workspace, id) = fixture(r#"{"message":"数据","ok":true}"#);
+    let snapshot = workspace
+        .render_preview_snapshot(
+            id,
+            EditorViewport {
+                width: 80,
+                height: 10,
+            },
+            crate::model::editor_language::EditorLanguage::Json,
+        )
+        .unwrap();
+
+    assert!(workspace.analysis_cache.borrow().is_empty());
+    assert!(
+        snapshot
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .any(|span| span.kind == EditorHighlightKind::String)
+    );
+}
+
+#[test]
 fn ddl_preview_and_sql_editor_share_highlight_kinds() {
     let text = r#"CREATE TABLE users (id bigint, name text);
 SELECT id, name FROM users;"#;

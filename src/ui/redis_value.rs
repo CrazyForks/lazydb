@@ -198,7 +198,17 @@ fn ttl_text(ttl: &crate::db::redis::read::TtlState) -> String {
 
 fn display_bytes(value: &[u8]) -> String {
     match std::str::from_utf8(value) {
-        Ok(text) => text.to_owned(),
+        Ok(text) => {
+            let mut output = String::with_capacity(text.len());
+            for character in text.chars() {
+                if character.is_control() {
+                    output.push_str(&format!("\\x{:02x}", character as u32));
+                } else {
+                    output.push(character);
+                }
+            }
+            output
+        }
         Err(_) => value.iter().map(|byte| format!("\\x{byte:02x}")).collect(),
     }
 }
