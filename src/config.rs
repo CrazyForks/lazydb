@@ -14,6 +14,20 @@ pub const DEFAULT_CONFIG_TOML: &str = include_str!("../config/default.toml");
 const MIN_DASHBOARD_REFRESH_INTERVAL_SECONDS: u64 = 1;
 const MIN_KEY_SEQUENCE_TIMEOUT_MS: u64 = 1;
 const MIN_UPDATE_CHECK_INTERVAL_HOURS: u64 = 1;
+const MIN_REDIS_SCAN_COUNT_HINT: u32 = 1;
+const MIN_REDIS_PAGE_SIZE: usize = 1;
+const MIN_REDIS_STRING_PAGE_BYTES: usize = 1;
+const MIN_REDIS_KEY_LIMIT: usize = 1;
+const MIN_REDIS_KEY_BYTES: usize = 1;
+const MIN_REDIS_VALUE_PAGE_BYTES: usize = 1;
+const MIN_REDIS_VALUE_FORMAT_BYTES: usize = 1;
+const MIN_REDIS_PREVIEW_DEBOUNCE_MS: u64 = 1;
+const MIN_REDIS_READ_CONCURRENCY: usize = 1;
+const MIN_REDIS_AUTO_FILL_REQUESTS: usize = 1;
+const MIN_REDIS_AUTO_FILL_BUDGET_MS: u64 = 1;
+const MIN_REDIS_INDEX_DISK_BYTES: u64 = 1;
+const MIN_REDIS_METADATA_CACHE_CAPACITY: usize = 1;
+const MIN_REDIS_METADATA_CACHE_TTL_SECONDS: u64 = 1;
 const SUPPORTED_COMMANDS: &[&str] = &[
     "help",
     "omni",
@@ -90,6 +104,8 @@ pub enum ConfigError {
     InvalidKeySequenceTimeout,
     #[error("updates.check_interval_hours must be at least 1")]
     InvalidUpdateCheckInterval,
+    #[error("redis settings must all be greater than zero")]
+    InvalidRedisSettings,
     #[error("invalid keybinding for `{command}`: `{key}`")]
     InvalidKeybinding { command: String, key: String },
     #[error("keybinding `{key}` is assigned to both `{first}` and `{second}`")]
@@ -110,6 +126,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub connections: ConnectionsConfig,
     pub dashboard: DashboardConfig,
+    #[serde(default)]
+    pub redis: RedisConfig,
     #[serde(default)]
     pub updates: UpdateConfig,
     pub keybindings: KeybindingConfig,
@@ -180,6 +198,46 @@ pub enum ConnectionAccessDefault {
 #[serde(deny_unknown_fields)]
 pub struct DashboardConfig {
     pub refresh_interval_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RedisConfig {
+    pub scan_count_hint: u32,
+    pub page_size: usize,
+    pub string_page_bytes: usize,
+    pub memory_key_limit: usize,
+    pub memory_key_bytes: usize,
+    pub value_page_bytes: usize,
+    pub value_format_bytes: usize,
+    pub preview_debounce_ms: u64,
+    pub max_read_concurrency: usize,
+    pub auto_fill_request_limit: usize,
+    pub auto_fill_budget_ms: u64,
+    pub index_disk_limit_bytes: u64,
+    pub metadata_cache_capacity: usize,
+    pub metadata_cache_ttl_seconds: u64,
+}
+
+impl Default for RedisConfig {
+    fn default() -> Self {
+        Self {
+            scan_count_hint: 200,
+            page_size: 200,
+            string_page_bytes: 64 * 1024,
+            memory_key_limit: 10_000,
+            memory_key_bytes: 16 * 1024 * 1024,
+            value_page_bytes: 1024 * 1024,
+            value_format_bytes: 1024 * 1024,
+            preview_debounce_ms: 100,
+            max_read_concurrency: 4,
+            auto_fill_request_limit: 8,
+            auto_fill_budget_ms: 100,
+            index_disk_limit_bytes: 1024 * 1024 * 1024,
+            metadata_cache_capacity: 2_000,
+            metadata_cache_ttl_seconds: 5,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -474,6 +532,23 @@ impl AppConfig {
         if self.updates.check_interval_hours < MIN_UPDATE_CHECK_INTERVAL_HOURS {
             return Err(ConfigError::InvalidUpdateCheckInterval);
         }
+        if self.redis.scan_count_hint < MIN_REDIS_SCAN_COUNT_HINT
+            || self.redis.page_size < MIN_REDIS_PAGE_SIZE
+            || self.redis.string_page_bytes < MIN_REDIS_STRING_PAGE_BYTES
+            || self.redis.memory_key_limit < MIN_REDIS_KEY_LIMIT
+            || self.redis.memory_key_bytes < MIN_REDIS_KEY_BYTES
+            || self.redis.value_page_bytes < MIN_REDIS_VALUE_PAGE_BYTES
+            || self.redis.value_format_bytes < MIN_REDIS_VALUE_FORMAT_BYTES
+            || self.redis.preview_debounce_ms < MIN_REDIS_PREVIEW_DEBOUNCE_MS
+            || self.redis.max_read_concurrency < MIN_REDIS_READ_CONCURRENCY
+            || self.redis.auto_fill_request_limit < MIN_REDIS_AUTO_FILL_REQUESTS
+            || self.redis.auto_fill_budget_ms < MIN_REDIS_AUTO_FILL_BUDGET_MS
+            || self.redis.index_disk_limit_bytes < MIN_REDIS_INDEX_DISK_BYTES
+            || self.redis.metadata_cache_capacity < MIN_REDIS_METADATA_CACHE_CAPACITY
+            || self.redis.metadata_cache_ttl_seconds < MIN_REDIS_METADATA_CACHE_TTL_SECONDS
+        {
+            return Err(ConfigError::InvalidRedisSettings);
+        }
         self.keybindings.key_bindings()?;
         Ok(())
     }
@@ -570,6 +645,10 @@ mod tests {
             ConnectionAccessDefault::Global
         );
         assert_eq!(config.terminal.clipboard.backend, ClipboardBackend::System);
+        assert_eq!(config.redis.scan_count_hint, 200);
+        assert_eq!(config.redis.page_size, 200);
+        assert_eq!(config.redis.memory_key_limit, 10_000);
+        assert_eq!(config.redis.preview_debounce_ms, 100);
     }
 
     #[test]
@@ -580,6 +659,24 @@ mod tests {
             AppConfig::load(temp.path().join("settings.toml")).unwrap(),
             AppConfig::default()
         );
+    }
+
+    #[test]
+    fn missing_redis_section_uses_redis_defaults() {
+        let (before, after) = DEFAULT_CONFIG_TOML.split_once("\n[redis]\n").unwrap();
+        let after = after.split_once("\n[updates]\n").unwrap().1;
+        let contents = format!("{before}\n[updates]\n{after}");
+        let config = AppConfig::from_toml(&contents).unwrap();
+        assert_eq!(config.redis, super::RedisConfig::default());
+    }
+
+    #[test]
+    fn redis_settings_reject_zero_values() {
+        let contents = DEFAULT_CONFIG_TOML.replace("scan_count_hint = 200", "scan_count_hint = 0");
+        assert!(matches!(
+            AppConfig::from_toml(&contents),
+            Err(ConfigError::InvalidRedisSettings)
+        ));
     }
 
     #[test]

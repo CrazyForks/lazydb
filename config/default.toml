@@ -28,6 +28,28 @@ default_access = "global"
 [dashboard]
 refresh_interval_seconds = 5
 
+[redis]
+# SCAN COUNT is a server-side hint, not a hard result limit.
+scan_count_hint = 200
+# Number of values requested by one collection page.
+page_size = 200
+string_page_bytes = 65536
+# In-memory key-store conversion thresholds.
+memory_key_limit = 10000
+memory_key_bytes = 16777216
+# Raw and formatted value-page budgets.
+value_page_bytes = 1048576
+value_format_bytes = 1048576
+# Delay and concurrency controls for interactive previews.
+preview_debounce_ms = 100
+max_read_concurrency = 4
+auto_fill_request_limit = 8
+auto_fill_budget_ms = 100
+# Temporary SQLite index and visible-key metadata cache limits.
+index_disk_limit_bytes = 1073741824
+metadata_cache_capacity = 2000
+metadata_cache_ttl_seconds = 5
+
 [updates]
 check_on_startup = true
 check_interval_hours = 24
