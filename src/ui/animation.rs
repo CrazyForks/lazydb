@@ -31,6 +31,38 @@ pub(crate) enum EffectKind {
     Result,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum OverlayKey {
+    Help,
+    Update,
+    NotificationHistory,
+    NotificationDetail,
+    RecordView,
+    TextDetail,
+    ProfileManager,
+    CatalogEditor,
+    ProfileAccess,
+    ProfileGroup,
+    ExplorerAdd,
+    Message,
+    WorkspaceSaveFailed,
+    SubstituteConfirm,
+    ExecutionConfirm,
+    ManualCancelConfirm,
+    TransactionExitConfirm,
+    RelationTransactionConfirm,
+    ClearTransactionOutcome,
+    TransactionMenu,
+    TargetSelector,
+    DatabaseSelector,
+    DeleteConsole,
+    SqlEditorList,
+    PageSizeSelector,
+    CatalogDropConfirm,
+    CatalogEditorDestructiveConfirm,
+    CatalogEditorDiscardConfirm,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct AnimationObservation {
     pub active_loads: HashSet<LoadIdentity>,
@@ -66,7 +98,7 @@ pub(crate) struct AnimationState {
     effect_area: Option<Rect>,
     effect_kind: Option<EffectKind>,
     last_effect_at: Instant,
-    overlay_key: Option<u8>,
+    overlay_key: Option<OverlayKey>,
 }
 
 impl AnimationState {
@@ -204,7 +236,7 @@ impl AnimationState {
         }
     }
 
-    pub(crate) fn prepare_overlay(&mut self, key: u8, area: Rect) {
+    pub(crate) fn prepare_overlay(&mut self, key: OverlayKey, area: Rect) {
         if self.overlay_key != Some(key) {
             self.overlay_key = Some(key);
             self.start_effect(EffectKind::Overlay, area);

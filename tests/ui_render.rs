@@ -3353,6 +3353,16 @@ fn render_with_icons(app: &App, width: u16, height: u16, icons: IconSet) -> (Str
     (output, state)
 }
 
+fn render_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = UiState::new();
+    terminal
+        .draw(|frame| ui::render_with_state_using_icons(frame, app, &mut state, IconSet::default()))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
 #[test]
 fn other_profiles_group_is_rendered_as_muted_secondary_content_without_an_icon() {
     let current = import_connection_url("sqlite::memory:", Some("current"))
@@ -7590,6 +7600,23 @@ fn omni_renders_above_underlying_overlay_with_its_own_cursor_and_hit_barrier() {
     assert!(state.cursor.is_some());
     assert_eq!(state.target_at(0, 0), Some(&HitTarget::Omni));
     assert!(output.contains("Format SQL"));
+}
+
+#[test]
+fn omni_keeps_result_text_and_bottom_border_colored() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenOmni);
+    for character in "> format".chars() {
+        app.update(Action::OmniEdit(
+            lazydb::model::text_input::TextInputEdit::Insert(character),
+        ));
+    }
+
+    let (output, _) = render_with_state(&app, 80, 24);
+    assert!(output.contains("Format SQL"));
+    let buffer = render_buffer(&app, 80, 24);
+    let (x, y) = find_text_cell(&buffer, "Format SQL").expect("omni result");
+    assert_ne!(buffer[(x, y)].fg, Color::Black);
 }
 
 #[test]

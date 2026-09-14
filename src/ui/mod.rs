@@ -810,9 +810,21 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     sequence: Option<&crate::input::keymap::KeySequenceState>,
     theme: Theme,
 ) {
+    render_with_state_at(frame, app, state, icons, sequence, theme, Instant::now());
+}
+
+fn render_with_state_at(
+    frame: &mut Frame<'_>,
+    app: &App,
+    state: &mut UiState,
+    icons: icons::IconSet,
+    sequence: Option<&crate::input::keymap::KeySequenceState>,
+    theme: Theme,
+    now: Instant,
+) {
     let area = frame.area();
     state.activity_icons = icons;
-    state.observe_animations(app, Instant::now());
+    state.observe_animations(app, now);
     frame.render_widget(Block::new().style(theme.base()), area);
     let is_relation = matches!(
         app.tabs.get(app.active_tab),
@@ -1041,33 +1053,49 @@ pub fn render_with_state_using_icons_sequence_and_theme(
     if let Some(overlay) = &app.overlay {
         // Only the visible overlay may own the terminal cursor.
         state.cursor = None;
-        state
-            .animations
-            .prepare_overlay(overlay_key(overlay), centered(area, 80, 20));
+        // Omni is rendered above this overlay and owns the modal layer while
+        // open, so the underlying overlay must not start or restart an effect.
+        if app.omni.is_none() {
+            state
+                .animations
+                .prepare_overlay(overlay_key(overlay), centered(area, 80, 20));
+        }
         dim_background(frame, area, theme);
         render_overlay(frame, area, overlay, app, state, theme, icons);
-        state.animations.render_effect(frame, Instant::now());
+        if app.omni.is_none() {
+            state.animations.render_effect(frame, now);
+        }
     } else {
-        state.animations.clear_overlay();
+        if app.omni.is_none() {
+            state.animations.clear_overlay();
+        }
         if state.animations.take_result_ready().is_some()
+            && app.omni.is_none()
             && let Some(result_area) = state.result_area
         {
             state
                 .animations
                 .start_effect(animation::EffectKind::Result, result_area);
         }
-        state.animations.render_effect(frame, Instant::now());
+        if app.omni.is_none() {
+            state.animations.render_effect(frame, now);
+        }
     }
     if app.omni.is_some() {
         state.cursor = None;
-        state.animations.prepare_overlay(26, centered(area, 88, 22));
+        // Omni content is rendered at its final foreground colors. A black
+        // foreground fade makes lower rows unreadable on a dark theme.
+        state.animations.clear_overlay();
+        // The result transition belongs to the workspace underneath Omni.
+        // Consume it while the modal is open so it cannot replay after Omni
+        // closes and animate stale content over the newly visible workspace.
+        state.animations.take_result_ready();
         dim_background(frame, area, theme);
         state.hit_regions.push(HitRegion {
             area,
             target: HitTarget::Omni,
         });
         omni::render(frame, app, state, theme, icons);
-        state.animations.render_effect(frame, Instant::now());
     }
     if let Some(sequence) = sequence {
         render_key_sequence_popup(frame, area, app, theme, sequence);
@@ -1226,35 +1254,42 @@ fn render_key_sequence_popup(
     );
 }
 
-fn overlay_key(overlay: &Overlay) -> u8 {
+fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
     match overlay {
-        Overlay::Help(_) => 1,
-        Overlay::Update(_) => 21,
-        Overlay::NotificationHistory(_) => 17,
-        Overlay::NotificationDetail(_) => 18,
-        Overlay::RecordView(_) => 2,
-        Overlay::TextDetail(_) => 23,
-        Overlay::ProfileManager => 3,
-        Overlay::CatalogEditor => 18,
-        Overlay::ProfileAccess { .. } => 4,
-        Overlay::ProfileGroup(_) => 19,
-        Overlay::ExplorerAdd(_) => 20,
-        Overlay::Message { .. } => 5,
-        Overlay::WorkspaceSaveFailed { .. } => 24,
-        Overlay::SubstituteConfirm { .. } => 6,
-        Overlay::ExecutionConfirm { .. } => 7,
-        Overlay::ManualCancelConfirm { .. } => 8,
-        Overlay::TransactionExitConfirm { .. } => 9,
-        Overlay::RelationTransactionConfirm { .. } => 10,
-        Overlay::ClearTransactionOutcome { .. } => 11,
-        Overlay::TransactionMenu { .. } => 22,
-        Overlay::TargetSelector { .. } => 12,
-        Overlay::DatabaseSelector(_) => 25,
-        Overlay::DeleteConsole { .. } => 13,
-        Overlay::SqlEditorList(_) => 14,
-        Overlay::PageSizeSelector { .. } => 15,
-        Overlay::CatalogDropConfirm { .. } | Overlay::CatalogEditorDestructiveConfirm { .. } => 16,
-        Overlay::CatalogEditorDiscardConfirm { .. } => 17,
+        Overlay::Help(_) => animation::OverlayKey::Help,
+        Overlay::Update(_) => animation::OverlayKey::Update,
+        Overlay::NotificationHistory(_) => animation::OverlayKey::NotificationHistory,
+        Overlay::NotificationDetail(_) => animation::OverlayKey::NotificationDetail,
+        Overlay::RecordView(_) => animation::OverlayKey::RecordView,
+        Overlay::TextDetail(_) => animation::OverlayKey::TextDetail,
+        Overlay::ProfileManager => animation::OverlayKey::ProfileManager,
+        Overlay::CatalogEditor => animation::OverlayKey::CatalogEditor,
+        Overlay::ProfileAccess { .. } => animation::OverlayKey::ProfileAccess,
+        Overlay::ProfileGroup(_) => animation::OverlayKey::ProfileGroup,
+        Overlay::ExplorerAdd(_) => animation::OverlayKey::ExplorerAdd,
+        Overlay::Message { .. } => animation::OverlayKey::Message,
+        Overlay::WorkspaceSaveFailed { .. } => animation::OverlayKey::WorkspaceSaveFailed,
+        Overlay::SubstituteConfirm { .. } => animation::OverlayKey::SubstituteConfirm,
+        Overlay::ExecutionConfirm { .. } => animation::OverlayKey::ExecutionConfirm,
+        Overlay::ManualCancelConfirm { .. } => animation::OverlayKey::ManualCancelConfirm,
+        Overlay::TransactionExitConfirm { .. } => animation::OverlayKey::TransactionExitConfirm,
+        Overlay::RelationTransactionConfirm { .. } => {
+            animation::OverlayKey::RelationTransactionConfirm
+        }
+        Overlay::ClearTransactionOutcome { .. } => animation::OverlayKey::ClearTransactionOutcome,
+        Overlay::TransactionMenu { .. } => animation::OverlayKey::TransactionMenu,
+        Overlay::TargetSelector { .. } => animation::OverlayKey::TargetSelector,
+        Overlay::DatabaseSelector(_) => animation::OverlayKey::DatabaseSelector,
+        Overlay::DeleteConsole { .. } => animation::OverlayKey::DeleteConsole,
+        Overlay::SqlEditorList(_) => animation::OverlayKey::SqlEditorList,
+        Overlay::PageSizeSelector { .. } => animation::OverlayKey::PageSizeSelector,
+        Overlay::CatalogDropConfirm { .. } => animation::OverlayKey::CatalogDropConfirm,
+        Overlay::CatalogEditorDestructiveConfirm { .. } => {
+            animation::OverlayKey::CatalogEditorDestructiveConfirm
+        }
+        Overlay::CatalogEditorDiscardConfirm { .. } => {
+            animation::OverlayKey::CatalogEditorDiscardConfirm
+        }
     }
 }
 
