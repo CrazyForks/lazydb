@@ -630,9 +630,15 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                 )),
                 HitTarget::RedisPreviewFormat(_) => Some(Action::RedisPreviewCycleFormat),
-                HitTarget::RedisPreviewTableCell { .. } => Some(Action::RedisFocusPane(
-                    crate::model::redis_browser::RedisBrowserFocus::Preview,
-                )),
+                HitTarget::RedisPreviewTableCell {
+                    tab_id,
+                    row,
+                    column,
+                } => Some(Action::RedisPreviewCellDetail {
+                    tab_id,
+                    row,
+                    column,
+                }),
                 HitTarget::ResultCell { row, column } => Some(Action::GridSelect { row, column }),
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::Omni => None,

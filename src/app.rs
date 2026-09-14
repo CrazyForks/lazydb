@@ -12554,6 +12554,11 @@ impl App {
                 Vec::new()
             }
             Action::RedisPreviewLoadNext => self.load_next_redis_page(),
+            Action::RedisPreviewCellDetail {
+                tab_id,
+                row,
+                column,
+            } => self.redis_preview_cell_detail(tab_id, row, column),
             Action::RedisValuePageFailed {
                 tab_id,
                 connection,
@@ -18255,6 +18260,40 @@ impl App {
             preview_generation: tab.preview_generation,
             request,
         }]
+    }
+
+    fn redis_preview_cell_detail(
+        &mut self,
+        tab_id: Uuid,
+        row: usize,
+        column: usize,
+    ) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Vec::new();
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            return Vec::new();
+        };
+        let table = crate::value_preview::table::from_page(&page.value);
+        let Some(source) = table.rows.get(row).and_then(|row| row.identity.get(column)) else {
+            return Vec::new();
+        };
+        let display = String::from_utf8(source.clone())
+            .unwrap_or_else(|_| source.iter().map(|byte| format!("\\x{byte:02x}")).collect());
+        let title = table
+            .columns
+            .get(column)
+            .map_or("Redis value", String::as_str);
+        let request = crate::model::text_detail::TextDetailRequest::new(
+            title,
+            tab.preview_editor_id,
+            self.editor_revision(tab.preview_editor_id),
+            display,
+            String::from_utf8_lossy(source).into_owned(),
+            None,
+        );
+        self.update(Action::OpenTextDetail(request))
     }
 
     fn move_redis_selection(&mut self, delta: isize) -> Vec<Command> {
