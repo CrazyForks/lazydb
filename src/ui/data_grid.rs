@@ -620,6 +620,7 @@ fn row_number_width(row_count: usize) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
+#[cfg(test)]
 fn selected_data_cell(visible_position: usize) -> usize {
     2usize.saturating_add(visible_position.saturating_mul(2))
 }

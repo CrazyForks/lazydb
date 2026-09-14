@@ -1224,24 +1224,22 @@ impl Keymap {
                 Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
                     if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
             )
-        {
-            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+            && let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)
+        {
+            if event.modifiers.is_empty()
+                && event.code == KeyCode::Char(' ')
+                && app
+                    .active_read_only_editor_mode()
+                    .is_none_or(|mode| mode == EditorMode::Normal)
             {
-                if event.modifiers.is_empty()
-                    && event.code == KeyCode::Char(' ')
-                    && app
-                        .active_read_only_editor_mode()
-                        .is_none_or(|mode| mode == EditorMode::Normal)
-                {
-                    self.set_pending(Pending::RedisPreviewLeader, app);
-                    return None;
-                }
-                return Some(Action::ReadOnlyEditorKey {
-                    session_id: tab.preview_editor_id,
-                    event,
-                });
+                self.set_pending(Pending::RedisPreviewLeader, app);
+                return None;
             }
+            return Some(Action::ReadOnlyEditorKey {
+                session_id: tab.preview_editor_id,
+                event,
+            });
         }
 
         if app.focus != Focus::Editor
