@@ -1772,6 +1772,9 @@ impl Keymap {
             if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
                 return Some(Action::RedisPreviewCycleFormat);
             }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char(']') {
+                return Some(Action::RedisPreviewLoadNext);
+            }
             if event.code == KeyCode::Char('h') || event.code == KeyCode::Left {
                 return Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Keys,

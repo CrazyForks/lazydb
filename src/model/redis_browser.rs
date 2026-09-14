@@ -184,6 +184,53 @@ impl RedisBrowserTab {
         *scroll = scroll.saturating_add_signed(delta).min(max);
     }
 
+    pub fn append_value_page(&mut self, next: RedisValuePage) {
+        let RedisValuePageState::Ready(current) = &mut self.value_page else {
+            self.value_page = RedisValuePageState::Ready(next);
+            return;
+        };
+        if current.metadata.key != next.metadata.key {
+            return;
+        }
+        match (&mut current.value, next.value) {
+            (
+                crate::db::redis::read::RedisPageValue::String(left),
+                crate::db::redis::read::RedisPageValue::String(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Hash(left),
+                crate::db::redis::read::RedisPageValue::Hash(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::List(left),
+                crate::db::redis::read::RedisPageValue::List(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Set(left),
+                crate::db::redis::read::RedisPageValue::Set(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::SortedSet(left),
+                crate::db::redis::read::RedisPageValue::SortedSet(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Stream(left),
+                crate::db::redis::read::RedisPageValue::Stream(right),
+            ) => left.extend(right),
+            _ => return,
+        }
+        current.position = next.position;
+        current.complete = next.complete;
+        current.truncated = next.truncated;
+        current.raw_bytes = current.raw_bytes.saturating_add(next.raw_bytes);
+        current.formatted_bytes = current.formatted_bytes.saturating_add(next.formatted_bytes);
+        self.content = RedisPreviewContentState::Ready {
+            key: current.metadata.key.clone(),
+            page: current.clone(),
+            format: self.format.selected,
+        };
+    }
+
     pub fn set_pane_viewport(
         &mut self,
         pane: RedisBrowserPane,

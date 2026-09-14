@@ -12505,7 +12505,7 @@ impl App {
                     && self.connection.active_identity() == Some(connection)
                     && preview_generation == tab.preview_generation
                 {
-                    tab.value_page = crate::model::redis_browser::RedisValuePageState::Ready(page);
+                    tab.append_value_page(page);
                     if let crate::model::redis_browser::RedisValuePageState::Ready(page) =
                         &tab.value_page
                     {
@@ -12553,6 +12553,7 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::RedisPreviewLoadNext => self.load_next_redis_page(),
             Action::RedisValuePageFailed {
                 tab_id,
                 connection,
@@ -18182,6 +18183,69 @@ impl App {
             connection,
             preview_generation: tab.preview_generation,
             key: key.clone(),
+        }]
+    }
+
+    fn load_next_redis_page(&self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            return Vec::new();
+        };
+        let request = match &page.position {
+            crate::db::redis::read::RedisPagePosition::StringOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::StringRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_STRING_PREVIEW_BYTES as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::HashCursor(cursor) => {
+                crate::db::redis::read::RedisReadRequest::HashScan {
+                    key: page.metadata.key.clone(),
+                    cursor: *cursor,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::ListOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::ListRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::SetCursor(cursor) => {
+                crate::db::redis::read::RedisReadRequest::SetScan {
+                    key: page.metadata.key.clone(),
+                    cursor: *cursor,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::SortedSetOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::SortedSetRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::Complete
+            | crate::db::redis::read::RedisPagePosition::StreamId(_) => return Vec::new(),
+        };
+        let Some(connection) = self.connection.active_identity() else {
+            return Vec::new();
+        };
+        vec![Command::LoadRedisValuePage {
+            tab_id: tab.id,
+            connection,
+            preview_generation: tab.preview_generation,
+            request,
         }]
     }
 
