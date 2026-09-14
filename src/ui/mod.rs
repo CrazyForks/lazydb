@@ -12,6 +12,7 @@ mod omni;
 pub mod pagination;
 pub mod profiles;
 pub mod query_bar;
+pub(crate) mod read_only_sql;
 pub mod record_view;
 pub mod redis_browser;
 pub mod redis_value;

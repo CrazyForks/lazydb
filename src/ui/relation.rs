@@ -1124,61 +1124,13 @@ fn render_ddl_editor(
     } else {
         None
     };
-    frame.render_widget(block, area);
-    for (row, line) in snapshot.lines.iter().take(viewport.height).enumerate() {
-        let y = inner.y.saturating_add(row as u16);
-        let spans = super::editor_line_spans(
-            line,
-            snapshot,
-            theme,
-            true,
-            None,
-            &super::mouse_selection_cells(
-                state,
-                ddl_session_id.unwrap_or_default(),
-                snapshot,
-                line,
-            ),
-            None,
-        );
-        let selected = snapshot
-            .selection_cells
-            .iter()
-            .any(|(selected_line, _, _)| *selected_line == line.line);
-        frame.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(Style::new().bg(if selected {
-                    theme.selection
-                } else {
-                    theme.surface
-                }))
-                .scroll((0, snapshot.horizontal_offset.min(u16::MAX as usize) as u16)),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-    }
-    super::render_editor_scrollbars(
-        frame,
-        area,
-        ddl_session_id,
+    crate::ui::read_only_sql::ReadOnlySqlEditor {
+        session_id: ddl_session_id.unwrap_or_default(),
         snapshot,
-        theme,
-        state,
-        Some(Rect::new(
-            area.x.saturating_add(1),
-            area.bottom().saturating_sub(1),
-            area.width.saturating_sub(2),
-            1,
-        )),
-    );
-    if app.focus == Focus::Results
-        && app.overlay.is_none()
-        && let Some((x, y)) = snapshot.cursor_screen_cell
-    {
-        state.cursor = Some(super::CursorSpec {
-            position: Position::new(inner.x.saturating_add(x), inner.y.saturating_add(y)),
-            style: super::CursorStyle::Block,
-        });
+        block,
+        focused: app.focus == Focus::Results && app.overlay.is_none(),
     }
+    .render(frame, area, theme, state);
 }
 
 #[cfg(test)]
