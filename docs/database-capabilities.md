@@ -25,9 +25,20 @@ their adapter tests pass.
 | SQLite | File database + attached aliases | File database, table, view, index, trigger | Table, view, index, trigger | No users/roles; complex table edits require a lossless rebuild plan |
 | Redis | Logical database + key namespace | Key and supported collection elements | Values, collection elements, and TTL where native semantics permit | Database number is not a creatable SQL catalog; streams are not freely editable |
 
-The implementation is deliberately staged. Until a row's individual object
-operation is complete, its capability remains unavailable with a specific
-reason (`not implemented`, `not applicable`, or a server-version gate). A
+The implementation is deliberately staged. The current implementation status
+for the first mutation slice is:
+
+| Driver | Currently advertised catalog mutation |
+| --- | --- |
+| PostgreSQL | Existing PostgreSQL create/edit contract |
+| Oracle | Create table/view/sequence from schema object groups; edit remains gated until authoritative definition loading is implemented |
+| MySQL/MariaDB | Create table/view from the database-is-schema namespace; edit remains gated |
+| SQL Server | Create table/view from a database/schema object group; edit remains gated |
+| SQLite | Create table/view; edit and lossless table rebuild remain gated |
+| Redis | No SQL catalog mutation; native Key-Value mutation is a separate planned protocol |
+
+Until a row's individual object operation is complete, its capability remains
+unavailable with a specific reason (`not implemented`, `not applicable`, or a server-version gate). A
 read-only profile, missing active connection, permission failure, stale
 catalog epoch, and unknown commit outcome are runtime conditions rather than
 static driver capabilities.
