@@ -111,6 +111,7 @@ pub enum Overlay {
     NotificationDetail(crate::model::notification::NotificationDetailState),
     RecordView(crate::model::record_view::RecordViewState),
     TextDetail(crate::model::text_detail::TextDetailState),
+    SqlHistory(crate::model::sql_history_view::SqlHistoryState),
     ProfileManager,
     CatalogEditor,
     ProfileAccess {

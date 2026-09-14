@@ -133,6 +133,23 @@ impl Keymap {
                 _ => None,
             };
         }
+        if matches!(app.overlay, Some(Overlay::SqlHistory(_))) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Esc => Some(Action::DismissOverlay),
+                KeyCode::Char('y') => Some(Action::SqlHistoryCopy),
+                KeyCode::Enter => Some(Action::SqlHistoryOpenDetail),
+                KeyCode::Char('f') => Some(Action::SqlHistoryCycleStatus),
+                KeyCode::Char('t') => Some(Action::SqlHistoryCycleTransaction),
+                KeyCode::Char('j') | KeyCode::Down => Some(Action::SqlHistoryMove(1)),
+                KeyCode::Char('k') | KeyCode::Up => Some(Action::SqlHistoryMove(-1)),
+                KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
+                KeyCode::Char(character) if event.modifiers.is_empty() => {
+                    Some(Action::SqlHistorySearchInsert(character))
+                }
+                _ => None,
+            };
+        }
         if self.pending.is_some()
             && (event.code == KeyCode::Esc
                 || event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c'))

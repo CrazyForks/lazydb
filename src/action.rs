@@ -944,10 +944,12 @@ pub enum Action {
         message: String,
     },
     SqlHistoryLoaded {
+        overlay_id: Uuid,
         generation: u64,
         page: crate::persistence::sql_history::HistoryPage,
     },
     SqlHistoryLoadFailed {
+        overlay_id: Uuid,
         generation: u64,
         message: String,
     },
@@ -1207,6 +1209,7 @@ pub enum CatalogEditorCursorTarget {
 #[derive(Clone, Debug)]
 pub enum Command {
     LoadSqlHistory {
+        overlay_id: Uuid,
         generation: u64,
         request: crate::persistence::sql_history::HistoryPageRequest,
     },

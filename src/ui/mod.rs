@@ -19,6 +19,7 @@ pub mod relation;
 pub(crate) mod scrollbar;
 mod shortcut_hints;
 pub(crate) mod sql_history;
+pub(crate) mod sql_history_modal;
 pub(crate) mod sql_preview;
 pub mod text_detail;
 pub mod text_selection;
@@ -1218,6 +1219,7 @@ fn overlay_key(overlay: &Overlay) -> u8 {
         Overlay::NotificationDetail(_) => 18,
         Overlay::RecordView(_) => 2,
         Overlay::TextDetail(_) => 23,
+        Overlay::SqlHistory(_) => 26,
         Overlay::ProfileManager => 3,
         Overlay::CatalogEditor => 18,
         Overlay::ProfileAccess { .. } => 4,
@@ -4381,6 +4383,9 @@ fn render_overlay(
         }
         Overlay::RecordView(view) => record_view::render(frame, area, app, view, theme, state),
         Overlay::TextDetail(view) => text_detail::render(frame, area, app, view, theme, state),
+        Overlay::SqlHistory(view) => {
+            sql_history_modal::render(frame, area, app, view, theme, state)
+        }
         Overlay::ProfileManager => {
             profiles::render_profile_manager(frame, area, app, state, theme, icons)
         }

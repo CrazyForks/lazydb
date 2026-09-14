@@ -30,8 +30,7 @@ pub struct SqlHistoryState {
     pub list_offset: usize,
     pub search: TextInput,
     pub status_filter: Option<crate::model::sql_history::HistoryExecutionStatus>,
-    pub transaction_filter:
-        Option<crate::model::sql_history::HistoryTransactionOutcome>,
+    pub transaction_filter: Option<crate::model::sql_history::HistoryTransactionOutcome>,
     pub database_filter: Option<String>,
     pub query_generation: u64,
     pub items: Vec<ExecutionHistory>,
@@ -141,7 +140,10 @@ impl SqlHistoryState {
         self.query_generation
     }
 
-    pub fn request(&mut self, cursor: Option<crate::persistence::sql_history::HistoryCursor>) -> SqlHistoryRequest {
+    pub fn request(
+        &mut self,
+        cursor: Option<crate::persistence::sql_history::HistoryCursor>,
+    ) -> SqlHistoryRequest {
         let request = SqlHistoryRequest {
             overlay_id: self.overlay_id,
             generation: self.query_generation,
@@ -158,14 +160,23 @@ impl SqlHistoryState {
             && self.in_flight.as_ref() == Some(request)
     }
 
-    pub fn complete(&mut self, request: &SqlHistoryRequest, items: Vec<ExecutionHistory>, next_cursor: Option<crate::persistence::sql_history::HistoryCursor>) -> bool {
+    pub fn complete(
+        &mut self,
+        request: &SqlHistoryRequest,
+        items: Vec<ExecutionHistory>,
+        next_cursor: Option<crate::persistence::sql_history::HistoryCursor>,
+    ) -> bool {
         if !self.accepts(request) {
             return false;
         }
         let append = request.cursor.is_some();
         if append {
             for item in items {
-                if !self.items.iter().any(|existing| existing.execution_id == item.execution_id) {
+                if !self
+                    .items
+                    .iter()
+                    .any(|existing| existing.execution_id == item.execution_id)
+                {
                     self.items.push(item);
                 }
             }
@@ -246,7 +257,10 @@ mod tests {
         assert!(!state.complete(&old, vec![item(id, "old")], None));
         assert!(state.items.is_empty());
         assert!(state.complete(&current, vec![item(id, "current")], None));
-        assert_eq!(state.selected_item().map(|item| item.sql.as_str()), Some("current"));
+        assert_eq!(
+            state.selected_item().map(|item| item.sql.as_str()),
+            Some("current")
+        );
     }
 
     #[test]
@@ -256,7 +270,14 @@ mod tests {
         let mut state = SqlHistoryState::new();
         state.begin_query();
         let initial = state.request(None);
-        state.complete(&initial, vec![item(first, "one")], Some(crate::persistence::sql_history::HistoryCursor { requested_at: 1, execution_id: first }));
+        state.complete(
+            &initial,
+            vec![item(first, "one")],
+            Some(crate::persistence::sql_history::HistoryCursor {
+                requested_at: 1,
+                execution_id: first,
+            }),
+        );
         state.select_index(0);
         let page = state.request(state.next_cursor.clone());
         assert!(state.complete(&page, vec![item(first, "one"), item(second, "two")], None));
