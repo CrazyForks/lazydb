@@ -4,6 +4,7 @@
 //! structured projection.  This keeps format detection independent from the
 //! way a value happens to be rendered in the TUI.
 
+pub mod cache;
 pub mod decode;
 pub mod detect;
 pub mod java;
