@@ -831,7 +831,7 @@ fn relation_insert_text(
     let database = entry.qualified_name.database.as_deref();
     let schema = entry.qualified_name.schema.as_deref();
     let parts = match dialect {
-        SqlDialect::MySql => {
+        SqlDialect::MySql | SqlDialect::MariaDb => {
             if database.is_some_and(|value| context.database == Some(value)) {
                 vec![object]
             } else {
@@ -1803,21 +1803,21 @@ fn keywords_for_completion(
                 | SqlDialect::Sqlite
                 | SqlDialect::Generic
                 | SqlDialect::Oracle => &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"],
-                SqlDialect::MySql | SqlDialect::SqlServer => &["ASC", "DESC"],
+                SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::SqlServer => &["ASC", "DESC"],
             },
             OrderingStage::AfterDirection => match dialect {
                 SqlDialect::Postgres
                 | SqlDialect::Sqlite
                 | SqlDialect::Generic
                 | SqlDialect::Oracle => &["NULLS FIRST", "NULLS LAST"],
-                SqlDialect::MySql | SqlDialect::SqlServer => &[],
+                SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::SqlServer => &[],
             },
             OrderingStage::NullPlacement => match dialect {
                 SqlDialect::Postgres
                 | SqlDialect::Sqlite
                 | SqlDialect::Generic
                 | SqlDialect::Oracle => &["FIRST", "LAST"],
-                SqlDialect::MySql | SqlDialect::SqlServer => &[],
+                SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::SqlServer => &[],
             },
             OrderingStage::Complete => &[],
         };
@@ -2880,7 +2880,7 @@ fn keywords(
 ) -> &'static [&'static str] {
     match context {
         Context::Statement => match dialect {
-            SqlDialect::MySql => &[
+            SqlDialect::MySql | SqlDialect::MariaDb => &[
                 "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE",
             ],
             _ => &[
@@ -2915,7 +2915,7 @@ fn keywords(
                 "DEFAULT",
             ],
             SqlDialect::SqlServer => &["NULL", "NOT NULL"],
-            SqlDialect::MySql | SqlDialect::Generic => &[
+            SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::Generic => &[
                 "NULL",
                 "NOT NULL",
                 "DEFAULT",
@@ -2967,7 +2967,7 @@ fn keywords(
         ],
         Context::Expression(ExpressionContext::Grouping) => &["HAVING", "CASE", "NULL"],
         Context::Expression(ExpressionContext::Ordering) => match dialect {
-            SqlDialect::MySql | SqlDialect::SqlServer => &["ASC", "DESC"],
+            SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::SqlServer => &["ASC", "DESC"],
             _ => &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"],
         },
         Context::Expression(ExpressionContext::Returning) => &["CASE", "NULL", "TRUE", "FALSE"],
@@ -2991,7 +2991,7 @@ fn ddl_object_keywords(dialect: SqlDialect, _create: bool) -> &'static [&'static
             "PROCEDURE",
             "TRIGGER",
         ],
-        SqlDialect::MySql | SqlDialect::SqlServer => &[
+        SqlDialect::MySql | SqlDialect::MariaDb | SqlDialect::SqlServer => &[
             "TABLE",
             "VIEW",
             "INDEX",
@@ -3040,7 +3040,7 @@ fn alter_table_action_continuation(
 
 fn alter_table_action_keywords(dialect: SqlDialect) -> &'static [&'static str] {
     match dialect {
-        SqlDialect::MySql => &[
+        SqlDialect::MySql | SqlDialect::MariaDb => &[
             "ADD COLUMN",
             "MODIFY COLUMN",
             "CHANGE COLUMN",
@@ -3102,7 +3102,7 @@ fn data_types_for_context(context: Context, dialect: SqlDialect) -> &'static [&'
             "UUID",
             "VARCHAR",
         ],
-        SqlDialect::MySql => &[
+        SqlDialect::MySql | SqlDialect::MariaDb => &[
             "BIGINT",
             "BOOLEAN",
             "DATETIME",
