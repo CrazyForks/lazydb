@@ -486,6 +486,27 @@ fn deleting_sql_file_is_exact_and_missing_files_are_allowed() {
 }
 
 #[test]
+fn loading_a_missing_sql_file_returns_an_error_instead_of_empty_text() {
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    let snapshot = valid_snapshot();
+
+    store.save(&snapshot).unwrap();
+    std::fs::remove_file(
+        temp.path()
+            .join("sql")
+            .join(format!("{}.sql", snapshot.profiles[0].consoles[0].id)),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        store.load(),
+        Err(WorkspaceError::Invalid(message))
+            if message.contains("failed to read SQL for console")
+    ));
+}
+
+#[test]
 fn workspace_lock_allows_one_writer_and_releases_on_drop() {
     let temp = TempDir::new().unwrap();
     let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));

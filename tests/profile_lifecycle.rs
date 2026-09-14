@@ -473,7 +473,11 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
     }
     assert!(app.profiles.is_empty());
     assert!(app.connection.profile_id.is_none());
-    assert!(app.workspace_snapshot().profiles.is_empty());
+    assert!(
+        app.workspace_snapshot().profiles.is_empty(),
+        "unexpected workspace snapshot: {:?}",
+        app.workspace_snapshot()
+    );
     assert!(
         ProfileStore::new(store_path.clone())
             .load()

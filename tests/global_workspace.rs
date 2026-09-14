@@ -1,0 +1,129 @@
+use lazydb::{
+    action::{Action, Command},
+    app::App,
+    db::ServerInfo,
+    persistence::workspace::WorkspaceStore,
+    profile::{DatabaseKind, import_connection_url},
+};
+use tempfile::TempDir;
+
+fn memory_profile(name: &str) -> lazydb::profile::ConnectionProfile {
+    import_connection_url(":memory:", Some(name))
+        .unwrap()
+        .profile
+}
+
+fn server(database: &str) -> ServerInfo {
+    ServerInfo {
+        kind: DatabaseKind::Sqlite,
+        version: "3.50".into(),
+        database: database.into(),
+        current_user: None,
+    }
+}
+
+fn connect(app: &mut App, profile_id: uuid::Uuid, database: &str) {
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: server(database),
+        mutation_capabilities: Default::default(),
+    });
+}
+
+#[test]
+fn saving_after_opening_two_profiles_does_not_duplicate_console_ids() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    connect(&mut app, first_id, "first");
+    app.update(Action::ReplaceEditor("SELECT first".into()));
+    let first_console_id = app.active_console().id;
+
+    connect(&mut app, second_id, "second");
+    app.update(Action::ReplaceEditor("SELECT second".into()));
+
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    let result = store.save(&app.workspace_snapshot());
+
+    let snapshot = app.workspace_snapshot();
+    assert!(
+        snapshot
+            .profiles
+            .iter()
+            .flat_map(|profile| profile.consoles.iter())
+            .filter(|console| console.id == first_console_id)
+            .count()
+            .gt(&0)
+    );
+    let console_ids = snapshot
+        .profiles
+        .iter()
+        .flat_map(|profile| profile.consoles.iter().map(|console| console.id))
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(console_ids.len(), 2);
+    assert_eq!(snapshot.profiles.len(), 2);
+    assert!(
+        snapshot
+            .profiles
+            .iter()
+            .all(|profile| profile.consoles.len() == 1)
+    );
+    assert!(snapshot.profiles.iter().all(|profile| {
+        profile.active_tab.is_none_or(|active| {
+            profile.tabs.iter().any(|tab| match tab {
+                lazydb::persistence::workspace::PersistedTab::Console { console_id } => {
+                    *console_id == active
+                }
+                _ => false,
+            })
+        })
+    }));
+    assert!(snapshot.sql.iter().any(|(_, text)| text == "SELECT first"));
+    assert!(snapshot.sql.iter().any(|(_, text)| text == "SELECT second"));
+    assert!(
+        result.is_ok(),
+        "two-profile workspace should save: {result:?}"
+    );
+}
+
+#[test]
+fn restoring_a_saved_two_profile_workspace_keeps_both_console_documents_visible() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first.clone(), second.clone()]);
+
+    connect(&mut app, first_id, "first");
+    app.update(Action::ReplaceEditor("SELECT first".into()));
+    connect(&mut app, second_id, "second");
+    app.update(Action::ReplaceEditor("SELECT second".into()));
+
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    store.save(&app.workspace_snapshot()).unwrap();
+    let snapshot = store.load().unwrap().unwrap();
+
+    let mut restored = App::new(vec![first, second]);
+    restored.connection.profile_id = Some(second_id);
+    restored.restore_workspace(snapshot, Some(second_id));
+
+    assert_eq!(restored.sql_editors.len(), 2);
+    assert_eq!(restored.tabs.len(), 2);
+    let texts = restored
+        .sql_editors
+        .iter()
+        .map(|record| restored.editor_text(record.id).unwrap())
+        .collect::<Vec<_>>();
+    assert!(texts.iter().any(|text| text == "SELECT first"));
+    assert!(texts.iter().any(|text| text == "SELECT second"));
+}

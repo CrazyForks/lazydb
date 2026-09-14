@@ -873,8 +873,6 @@ impl App {
 
     fn snapshot_active_workspace(&mut self) -> Option<(Uuid, ConnectionWorkspace)> {
         let profile_id = self.active_workspace_profile?;
-        self.workspace_editors
-            .insert(profile_id, std::mem::take(&mut self.editor));
         self.workspace_focus.insert(profile_id, self.focus);
         for record in &mut self.sql_editors {
             if let Some(tab) = self
@@ -888,16 +886,19 @@ impl App {
                 record.transaction_mode = tab.transaction_mode;
             }
         }
+        let sql = self
+            .sql_editors
+            .iter()
+            .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default()))
+            .collect();
+        self.workspace_editors
+            .insert(profile_id, std::mem::take(&mut self.editor));
         Some((
             profile_id,
             ConnectionWorkspace {
                 tabs: self.tabs.clone(),
                 sql_editors: self.sql_editors.clone(),
-                sql: self
-                    .sql_editors
-                    .iter()
-                    .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default()))
-                    .collect(),
+                sql,
                 active_tab_id: self.active_tab_id(),
             },
         ))
@@ -1647,16 +1648,50 @@ impl App {
         let mut sql = Vec::new();
         for profile_id in workspace_ids {
             if active_profile == Some(profile_id) {
+                let profile_console_ids = self
+                    .sql_editors
+                    .iter()
+                    .filter(|record| {
+                        record
+                            .execution_target
+                            .as_ref()
+                            .is_some_and(|target| target.profile_id == profile_id)
+                            || (record.execution_target.is_none()
+                                && active_profile == Some(profile_id))
+                    })
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                let profile_tabs = self
+                    .tabs
+                    .iter()
+                    .filter(|tab| match tab {
+                        WorkspaceTab::Sql(tab) => profile_console_ids.contains(&tab.id),
+                        WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
+                        WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
+                        WorkspaceTab::History(_) => false,
+                        WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let active_tab_id = self.active_tab_id().filter(|active_tab_id| {
+                    profile_tabs.iter().any(|tab| tab.id() == *active_tab_id)
+                });
+                let profile_editors = self
+                    .sql_editors
+                    .iter()
+                    .filter(|record| profile_console_ids.contains(&record.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
                 sql.extend(
-                    self.sql_editors
+                    profile_editors
                         .iter()
                         .map(|record| (record.id, self.editor_text(record.id).unwrap_or_default())),
                 );
                 profiles.push(self.persisted_workspace_from_parts(
                     profile_id,
-                    &self.tabs,
-                    &self.sql_editors,
-                    self.active_tab_id(),
+                    &profile_tabs,
+                    &profile_editors,
+                    active_tab_id,
                 ));
             } else if let Some(workspace) = self.workspaces.get(&profile_id) {
                 sql.extend(workspace.sql.iter().cloned());
@@ -1823,9 +1858,27 @@ impl App {
         }
         if let Some(profile_id) = selected_profile_id
             && self.profiles.iter().any(|profile| profile.id == profile_id)
-            && let Some(workspace) = self.workspaces.get(&profile_id).cloned()
+            && !snapshot.profiles.is_empty()
         {
-            self.install_workspace(profile_id, workspace);
+            self.tabs.clear();
+            self.sql_editors.clear();
+            self.editor = EditorWorkspace::new();
+            self.active_workspace_profile = Some(profile_id);
+            self.active_tab = 0;
+            let workspaces = self.workspaces.values().cloned().collect::<Vec<_>>();
+            for workspace in workspaces {
+                self.append_workspace(profile_id, workspace);
+            }
+            if let Some(active_tab_id) = snapshot
+                .profiles
+                .iter()
+                .find(|profile| profile.profile_id == profile_id)
+                .and_then(|profile| profile.active_tab)
+                && let Some(index) = self.tabs.iter().position(|tab| tab.id() == active_tab_id)
+            {
+                self.active_tab = index;
+            }
+            self.normalize_focus();
             return;
         }
         let persisted_profile = selected_profile_id.and_then(|profile_id| {
@@ -14216,26 +14269,74 @@ impl App {
     }
 
     fn remove_profile_workspace(&mut self, profile_id: Uuid) -> Vec<Uuid> {
-        let mut console_ids = self
-            .workspaces
-            .remove(&profile_id)
-            .map(|workspace| {
-                workspace
-                    .sql_editors
-                    .into_iter()
-                    .map(|record| record.id)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        if self.active_workspace_profile == Some(profile_id) {
-            console_ids.extend(self.sql_editors.iter().map(|record| record.id));
-            self.tabs.clear();
-            self.sql_editors.clear();
-            self.active_workspace_profile = None;
-            self.active_tab = 0;
+        let mut console_ids = Vec::new();
+        if let Some(workspace) = self.workspaces.remove(&profile_id) {
+            console_ids.extend(workspace.sql_editors.into_iter().map(|record| record.id));
+        }
+        for workspace in self.workspaces.values_mut() {
+            let removed = workspace
+                .sql_editors
+                .iter()
+                .filter(|record| {
+                    record
+                        .execution_target
+                        .as_ref()
+                        .is_some_and(|target| target.profile_id == profile_id)
+                })
+                .map(|record| record.id)
+                .collect::<HashSet<_>>();
+            console_ids.extend(removed.iter().copied());
+            workspace
+                .sql_editors
+                .retain(|record| !removed.contains(&record.id));
+            workspace.tabs.retain(|tab| !removed.contains(&tab.id()));
+            workspace.sql.retain(|(id, _)| !removed.contains(id));
         }
 
+        if self.active_workspace_profile == Some(profile_id)
+            || self.sql_editors.iter().any(|record| {
+                record
+                    .execution_target
+                    .as_ref()
+                    .is_some_and(|target| target.profile_id == profile_id)
+            })
+        {
+            let removed_ids = self
+                .sql_editors
+                .iter()
+                .filter(|record| {
+                    record
+                        .execution_target
+                        .as_ref()
+                        .is_some_and(|target| target.profile_id == profile_id)
+                })
+                .map(|record| record.id)
+                .collect::<HashSet<_>>();
+            console_ids.extend(removed_ids.iter().copied());
+            self.sql_editors
+                .retain(|record| !removed_ids.contains(&record.id));
+            self.tabs.retain(|tab| match tab {
+                WorkspaceTab::Sql(tab) => !removed_ids.contains(&tab.id),
+                WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id != profile_id,
+                WorkspaceTab::Dashboard(tab) => tab.profile_id != Some(profile_id),
+                WorkspaceTab::History(_) => true,
+                WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id != profile_id,
+            });
+            self.active_workspace_profile = self.sql_editors.iter().find_map(|record| {
+                record
+                    .execution_target
+                    .as_ref()
+                    .map(|target| target.profile_id)
+            });
+            self.active_tab = self
+                .active_tab_id()
+                .and_then(|id| self.tabs.iter().position(|tab| tab.id() == id))
+                .unwrap_or(0)
+                .min(self.tabs.len().saturating_sub(1));
+        }
+
+        console_ids.sort_unstable();
+        console_ids.dedup();
         for id in &console_ids {
             self.editor.close_console(*id);
         }
