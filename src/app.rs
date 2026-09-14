@@ -1724,6 +1724,28 @@ impl App {
         self.editor.revision(view.editor_session_id).ok()
     }
 
+    pub(crate) fn redis_preview_snapshot(
+        &self,
+        tab_id: Uuid,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Err(EditorError::MissingSession(tab_id));
+        };
+        let language = match tab.format.view() {
+            crate::value_preview::ValueView::Json => {
+                crate::model::editor_language::EditorLanguage::Json
+            }
+            crate::value_preview::ValueView::Yaml => {
+                crate::model::editor_language::EditorLanguage::Yaml
+            }
+            _ => crate::model::editor_language::EditorLanguage::Plain,
+        };
+        self.editor
+            .render_preview_snapshot(tab.preview_editor_id, viewport, language)
+    }
+
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
         let profile_id = self.connection.profile_id?;
         self.profiles
@@ -12568,10 +12590,60 @@ impl App {
                     && self.connection.active_identity() == Some(connection)
                     && preview_generation == tab.preview_generation
                 {
-                    tab.value_page = crate::model::redis_browser::RedisValuePageState::Ready(page);
+                    tab.append_value_page(page);
+                    if let crate::model::redis_browser::RedisValuePageState::Ready(page) =
+                        &tab.value_page
+                    {
+                        let is_collection = !matches!(
+                            page.value,
+                            crate::db::redis::read::RedisPageValue::String(_)
+                        );
+                        if tab.format.automatic {
+                            let bytes = crate::ui::redis_value::page_text(page).into_bytes();
+                            tab.format.selected =
+                                crate::value_preview::detect::default_format(&bytes, is_collection);
+                        }
+                        tab.content =
+                            crate::model::redis_browser::RedisPreviewContentState::Ready {
+                                key: page.metadata.key.clone(),
+                                page: page.clone(),
+                                format: tab.format.selected,
+                            };
+                        let text = crate::ui::redis_value::format_page(page, tab.format.view())
+                            .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
+                        self.editor.open_read_only(tab.preview_editor_id, &text);
+                    }
                 }
                 Vec::new()
             }
+            Action::RedisPreviewCycleFormat => {
+                let editor_update = if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.get_mut(self.active_tab)
+                {
+                    tab.format.cycle();
+                    crate::ui::redis_value::format_page(
+                        match &tab.value_page {
+                            crate::model::redis_browser::RedisValuePageState::Ready(page) => page,
+                            _ => return Vec::new(),
+                        },
+                        tab.format.view(),
+                    )
+                    .ok()
+                    .map(|text| (tab.preview_editor_id, text))
+                } else {
+                    None
+                };
+                if let Some((session_id, text)) = editor_update {
+                    let _ = self.editor.set_read_only_text(session_id, &text, false);
+                }
+                Vec::new()
+            }
+            Action::RedisPreviewLoadNext => self.load_next_redis_page(),
+            Action::RedisPreviewCellDetail {
+                tab_id,
+                row,
+                column,
+            } => self.redis_preview_cell_detail(tab_id, row, column),
             Action::RedisValuePageFailed {
                 tab_id,
                 connection,
@@ -12586,6 +12658,17 @@ impl App {
                 {
                     tab.value_page =
                         crate::model::redis_browser::RedisValuePageState::Failed { key, message };
+                    if let crate::model::redis_browser::RedisValuePageState::Failed {
+                        key,
+                        message,
+                    } = &tab.value_page
+                    {
+                        tab.content =
+                            crate::model::redis_browser::RedisPreviewContentState::Failed {
+                                key: key.clone(),
+                                message: message.clone(),
+                            };
+                    }
                 }
                 Vec::new()
             }
@@ -18291,6 +18374,116 @@ impl App {
                 key,
             },
         }]
+    }
+
+    fn load_next_redis_page(&self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            return Vec::new();
+        };
+        let request = match &page.position {
+            crate::db::redis::read::RedisPagePosition::StringOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::StringRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_STRING_PREVIEW_BYTES as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::HashCursor(cursor) => {
+                crate::db::redis::read::RedisReadRequest::HashScan {
+                    key: page.metadata.key.clone(),
+                    cursor: *cursor,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::ListOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::ListRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::SetCursor(cursor) => {
+                crate::db::redis::read::RedisReadRequest::SetScan {
+                    key: page.metadata.key.clone(),
+                    cursor: *cursor,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::SortedSetOffset(start) => {
+                crate::db::redis::read::RedisReadRequest::SortedSetRange {
+                    key: page.metadata.key.clone(),
+                    start: *start,
+                    end: start.saturating_add(
+                        crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u64 - 1,
+                    ),
+                }
+            }
+            crate::db::redis::read::RedisPagePosition::Complete => return Vec::new(),
+            crate::db::redis::read::RedisPagePosition::StreamId(start) => {
+                let mut next = start.clone();
+                next.push(0);
+                crate::db::redis::read::RedisReadRequest::StreamRange {
+                    key: page.metadata.key.clone(),
+                    start: next,
+                    count: crate::db::redis::read::MAX_COLLECTION_PREVIEW_ITEMS as u32,
+                }
+            }
+        };
+        let Some(connection) = self.connection.active_identity() else {
+            return Vec::new();
+        };
+        vec![Command::LoadRedisValuePage {
+            tab_id: tab.id,
+            connection,
+            preview_generation: tab.preview_generation,
+            request,
+        }]
+    }
+
+    fn redis_preview_cell_detail(
+        &mut self,
+        tab_id: Uuid,
+        row: usize,
+        column: usize,
+    ) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Vec::new();
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            return Vec::new();
+        };
+        let table = crate::value_preview::table::from_page(&page.value);
+        let Some(source) = table.rows.get(row).and_then(|row| row.identity.get(column)) else {
+            return Vec::new();
+        };
+        let automatic = crate::value_preview::detect::default_format(source, false);
+        let display =
+            crate::ui::redis_value::format_bytes_value(source, automatic).unwrap_or_else(|_| {
+                String::from_utf8(source.clone()).unwrap_or_else(|_| {
+                    source.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+                })
+            });
+        let title = table
+            .columns
+            .get(column)
+            .map_or("Redis value", String::as_str);
+        let request = crate::model::text_detail::TextDetailRequest::new(
+            title,
+            tab.preview_editor_id,
+            self.editor_revision(tab.preview_editor_id),
+            display,
+            String::from_utf8_lossy(source).into_owned(),
+            None,
+        );
+        self.update(Action::OpenTextDetail(request))
     }
 
     fn move_redis_selection(&mut self, delta: isize) -> Vec<Command> {

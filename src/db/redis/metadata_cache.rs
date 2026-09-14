@@ -84,6 +84,8 @@ mod tests {
             },
             value_type: RedisType::String,
             ttl: TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: None,
         }
     }
 

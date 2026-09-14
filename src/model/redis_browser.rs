@@ -7,6 +7,8 @@ use crate::db::redis::types::{RedisKeyId, RedisTarget};
 use super::redis_key_tree::{KeyTreeNodeId, VisibleKeyTreeRow};
 use super::{keyspace::KeyspaceState, redis_key_tree::KeyTreeState};
 
+use crate::value_preview::PreviewFormat;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RedisPreviewState {
     Empty,
@@ -21,6 +23,26 @@ pub enum RedisValuePageState {
     Loading { key: RedisKeyId },
     Ready(RedisValuePage),
     Failed { key: RedisKeyId, message: String },
+}
+
+/// Unified value state used by the Redis preview renderer. The legacy
+/// `preview` field remains during migration so older runtime events can be
+/// accepted without allowing them to replace a newer typed page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RedisPreviewContentState {
+    Empty,
+    Loading {
+        key: RedisKeyId,
+    },
+    Ready {
+        key: RedisKeyId,
+        page: RedisValuePage,
+        format: PreviewFormat,
+    },
+    Failed {
+        key: RedisKeyId,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,11 +78,14 @@ pub struct RedisKeyFindState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedisBrowserTab {
     pub id: Uuid,
+    pub preview_editor_id: Uuid,
     pub target: RedisTarget,
     pub keyspace: KeyspaceState,
     pub tree: KeyTreeState,
     pub preview: RedisPreviewState,
     pub value_page: RedisValuePageState,
+    pub content: RedisPreviewContentState,
+    pub format: crate::model::redis_preview::RedisPreviewFormatState,
     pub preview_generation: u64,
     pub focus: RedisBrowserFocus,
     pub find: Option<RedisKeyFindState>,
@@ -75,11 +100,14 @@ impl RedisBrowserTab {
     pub fn new(id: Uuid, target: RedisTarget) -> Self {
         Self {
             id,
+            preview_editor_id: Uuid::new_v4(),
             keyspace: KeyspaceState::new(id, target.clone(), b"*".to_vec()),
             target,
             tree: KeyTreeState::default(),
             preview: RedisPreviewState::Empty,
             value_page: RedisValuePageState::Empty,
+            content: RedisPreviewContentState::Empty,
+            format: Default::default(),
             preview_generation: 0,
             focus: RedisBrowserFocus::Keys,
             find: None,
@@ -147,6 +175,15 @@ impl RedisBrowserTab {
             },
             None => RedisValuePageState::Empty,
         };
+        self.content = match self.tree.selected_key() {
+            Some(key) => RedisPreviewContentState::Loading {
+                key: RedisKeyId {
+                    target: self.target.clone(),
+                    key: key.to_vec(),
+                },
+            },
+            None => RedisPreviewContentState::Empty,
+        };
         self.preview_scroll = 0;
     }
 
@@ -161,6 +198,53 @@ impl RedisBrowserTab {
         };
         let max = content_rows.saturating_sub(viewport.max(1));
         *scroll = scroll.saturating_add_signed(delta).min(max);
+    }
+
+    pub fn append_value_page(&mut self, next: RedisValuePage) {
+        let RedisValuePageState::Ready(current) = &mut self.value_page else {
+            self.value_page = RedisValuePageState::Ready(next);
+            return;
+        };
+        if current.metadata.key != next.metadata.key {
+            return;
+        }
+        match (&mut current.value, next.value) {
+            (
+                crate::db::redis::read::RedisPageValue::String(left),
+                crate::db::redis::read::RedisPageValue::String(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Hash(left),
+                crate::db::redis::read::RedisPageValue::Hash(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::List(left),
+                crate::db::redis::read::RedisPageValue::List(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Set(left),
+                crate::db::redis::read::RedisPageValue::Set(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::SortedSet(left),
+                crate::db::redis::read::RedisPageValue::SortedSet(right),
+            ) => left.extend(right),
+            (
+                crate::db::redis::read::RedisPageValue::Stream(left),
+                crate::db::redis::read::RedisPageValue::Stream(right),
+            ) => left.extend(right),
+            _ => return,
+        }
+        current.position = next.position;
+        current.complete = next.complete;
+        current.truncated = next.truncated;
+        current.raw_bytes = current.raw_bytes.saturating_add(next.raw_bytes);
+        current.formatted_bytes = current.formatted_bytes.saturating_add(next.formatted_bytes);
+        self.content = RedisPreviewContentState::Ready {
+            key: current.metadata.key.clone(),
+            page: current.clone(),
+            format: self.format.selected,
+        };
     }
 
     pub fn set_pane_viewport(

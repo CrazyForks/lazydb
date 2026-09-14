@@ -1826,6 +1826,22 @@ impl Keymap {
             if event.modifiers.is_empty() && event.code == KeyCode::Char('/') {
                 return Some(Action::RedisFindOpen);
             }
+            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+                && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                && is_read_only_editor_key(event)
+            {
+                return Some(Action::ReadOnlyEditorKey {
+                    session_id: tab.preview_editor_id,
+                    event,
+                });
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
+                return Some(Action::RedisPreviewCycleFormat);
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char(']') {
+                return Some(Action::RedisPreviewLoadNext);
+            }
             if event.code == KeyCode::Char('h') || event.code == KeyCode::Left {
                 return Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Keys,

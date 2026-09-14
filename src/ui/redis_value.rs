@@ -1,6 +1,7 @@
 use ratatui::text::Line;
 
 use crate::db::redis::read::{RedisPageValue, RedisValuePage};
+use crate::value_preview::ValueView;
 
 pub fn page_lines(page: &RedisValuePage) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!(
@@ -41,6 +42,138 @@ pub fn page_lines(page: &RedisValuePage) -> Vec<Line<'static>> {
         lines.push(Line::from("<page truncated>"));
     }
     lines
+}
+
+pub fn page_text(page: &RedisValuePage) -> String {
+    let lines = match &page.value {
+        RedisPageValue::String(value) => vec![display_bytes(value)],
+        RedisPageValue::Hash(values) => values
+            .iter()
+            .map(|(field, value)| format!("{}\t{}", display_bytes(field), display_bytes(value)))
+            .collect(),
+        RedisPageValue::List(values) => values
+            .iter()
+            .map(|(index, value)| format!("{index}\t{}", display_bytes(value)))
+            .collect(),
+        RedisPageValue::Set(values) => values.iter().map(|value| display_bytes(value)).collect(),
+        RedisPageValue::SortedSet(values) => values
+            .iter()
+            .map(|(member, score)| format!("{}\t{}", display_bytes(member), display_bytes(score)))
+            .collect(),
+        RedisPageValue::Stream(values) => values
+            .iter()
+            .map(|(id, fields)| format!("{}\t{} fields", display_bytes(id), fields.len()))
+            .collect(),
+    };
+    lines.join("\n")
+}
+
+pub fn format_bytes(bytes: Option<u64>) -> String {
+    let Some(bytes) = bytes else {
+        return "—".into();
+    };
+    let value = bytes as f64;
+    let (value, suffix) = if value >= 1024.0 * 1024.0 * 1024.0 {
+        (value / (1024.0 * 1024.0 * 1024.0), "GB")
+    } else if value >= 1024.0 * 1024.0 {
+        (value / (1024.0 * 1024.0), "MB")
+    } else if value >= 1024.0 {
+        (value / 1024.0, "KB")
+    } else {
+        (value, "B")
+    };
+    if suffix == "B" {
+        format!("{value:.0} {suffix}")
+    } else {
+        format!("{value:.2} {suffix}")
+    }
+}
+
+pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
+    match ttl {
+        crate::db::redis::read::TtlState::Missing => "Missing".into(),
+        crate::db::redis::read::TtlState::Persistent => "∞".into(),
+        crate::db::redis::read::TtlState::Unavailable => "—".into(),
+        crate::db::redis::read::TtlState::ExpiresIn { millis } => {
+            if *millis < 1000 {
+                return format!("{millis}ms");
+            }
+            let mut seconds = millis / 1000;
+            let days = seconds / 86_400;
+            seconds %= 86_400;
+            let hours = seconds / 3_600;
+            seconds %= 3_600;
+            let minutes = seconds / 60;
+            seconds %= 60;
+            let mut result = String::new();
+            if days > 0 {
+                result.push_str(&format!("{days}d"));
+            }
+            if hours > 0 {
+                result.push_str(&format!("{hours}h"));
+            }
+            if minutes > 0 {
+                result.push_str(&format!("{minutes}m"));
+            }
+            if seconds > 0 || result.is_empty() {
+                result.push_str(&format!("{seconds}s"));
+            }
+            result
+        }
+    }
+}
+
+pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
+    let raw = page_text(page);
+    match view {
+        ValueView::Raw | ValueView::Hex | ValueView::Table => Ok(raw),
+        ValueView::Json => {
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|error| format!("JSON parse error: {error}"))?;
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+        }
+        ValueView::Yaml => {
+            let value: serde_yaml::Value =
+                serde_yaml::from_str(&raw).map_err(|error| format!("YAML parse error: {error}"))?;
+            serde_yaml::to_string(&value).map_err(|error| error.to_string())
+        }
+    }
+}
+
+/// Format an individual Redis collection cell using the same byte-preserving
+/// pipeline as a top-level value preview.
+pub fn format_bytes_value(
+    bytes: &[u8],
+    format: crate::value_preview::PreviewFormat,
+) -> Result<String, String> {
+    use crate::value_preview::ValueEncoding;
+    if !matches!(
+        format.encoding,
+        ValueEncoding::Text | ValueEncoding::Unknown
+    ) {
+        return match crate::value_preview::decode::decode(bytes, format) {
+            Ok(crate::value_preview::decode::DecodedValue::Text(text)) => Ok(text),
+            Ok(crate::value_preview::decode::DecodedValue::Bytes(value)) => {
+                Ok(display_bytes(&value))
+            }
+            Err(error) => Err(error.to_string()),
+        };
+    }
+    match format.view {
+        ValueView::Raw => Ok(display_bytes(bytes)),
+        ValueView::Hex => Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect()),
+        ValueView::Json => {
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| format!("JSON parse error: {error}"))?;
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+        }
+        ValueView::Yaml => {
+            let value: serde_yaml::Value = serde_yaml::from_slice(bytes)
+                .map_err(|error| format!("YAML parse error: {error}"))?;
+            serde_yaml::to_string(&value).map_err(|error| error.to_string())
+        }
+        ValueView::Table => Ok(display_bytes(bytes)),
+    }
 }
 
 fn ttl_text(ttl: &crate::db::redis::read::TtlState) -> String {
@@ -84,10 +217,13 @@ mod tests {
                 },
                 value_type: RedisType::Hash,
                 ttl: TtlState::Unavailable,
+                memory_usage_bytes: None,
+                value_size: None,
             },
             position: RedisPagePosition::Complete,
             value,
             truncated: false,
+            complete: true,
             raw_bytes: 5,
             formatted_bytes: 5,
         }

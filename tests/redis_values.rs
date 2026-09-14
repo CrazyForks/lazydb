@@ -98,3 +98,50 @@ fn ttl_states_distinguish_missing_persistent_and_expiring_keys() {
         TtlState::ExpiresIn { millis: 1000 }
     );
 }
+
+#[test]
+fn metadata_size_metrics_are_distinct_from_page_bytes() {
+    let metadata = lazydb::db::redis::read::RedisKeyMetadata {
+        key: lazydb::db::redis::types::RedisKeyId {
+            target: lazydb::db::redis::types::RedisTarget {
+                profile_id: uuid::Uuid::nil(),
+                database: 0,
+            },
+            key: b"key".to_vec(),
+        },
+        value_type: RedisType::String,
+        ttl: TtlState::Persistent,
+        memory_usage_bytes: Some(4096),
+        value_size: Some(3),
+    };
+    assert_eq!(metadata.memory_usage_bytes, Some(4096));
+    assert_eq!(metadata.value_size, Some(3));
+    assert_ne!(metadata.memory_usage_bytes, metadata.value_size);
+}
+
+#[test]
+fn stream_reply_parser_preserves_ids_and_fields() {
+    let reply = redis::Value::Array(vec![redis::Value::Array(vec![
+        redis::Value::BulkString(b"1-0".to_vec()),
+        redis::Value::Array(vec![
+            redis::Value::BulkString(b"event".to_vec()),
+            redis::Value::BulkString(b"created".to_vec()),
+        ]),
+    ])]);
+    let entries = lazydb::db::redis::read::parse_stream_entries(reply).unwrap();
+    assert_eq!(
+        entries,
+        vec![(
+            b"1-0".to_vec(),
+            vec![(b"event".to_vec(), b"created".to_vec())]
+        )]
+    );
+}
+
+#[test]
+fn stream_reply_parser_rejects_malformed_entry_shapes() {
+    let reply = redis::Value::Array(vec![redis::Value::Array(vec![redis::Value::BulkString(
+        b"1-0".to_vec(),
+    )])]);
+    assert!(lazydb::db::redis::read::parse_stream_entries(reply).is_err());
+}

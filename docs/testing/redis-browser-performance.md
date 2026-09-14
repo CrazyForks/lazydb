@@ -23,6 +23,20 @@ Record wall time and peak RSS for 10,000, 100,000, and 1,000,000 keys. The
 important measurements are first page latency, keyset page latency, retained
 bytes, and whether the process stays responsive while the index is built.
 
+## Preview decoder checks
+
+The preview cache is measured separately from Redis key-index memory. Run the
+deterministic format and cache checks with:
+
+```bash
+cargo test --test value_preview
+```
+
+Record source-page and derived-text sizes when repeatedly switching RAW/JSON/
+YAML. Decoder output remains subject to preview/page limits; complete-value
+background decoding and explicit full loading are follow-up work and must not
+be inferred from the ordinary page-scroll benchmark.
+
 ## Real Redis fixture
 
 Use an isolated Redis server and load binary-safe keys, deep prefixes, large

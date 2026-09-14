@@ -1254,7 +1254,8 @@ impl Runtime {
                 | crate::db::redis::read::RedisReadRequest::HashScan { key, .. }
                 | crate::db::redis::read::RedisReadRequest::ListRange { key, .. }
                 | crate::db::redis::read::RedisReadRequest::SetScan { key, .. }
-                | crate::db::redis::read::RedisReadRequest::SortedSetRange { key, .. } => key,
+                | crate::db::redis::read::RedisReadRequest::SortedSetRange { key, .. }
+                | crate::db::redis::read::RedisReadRequest::StreamRange { key, .. } => key,
             };
             let database = {
                 let database = connection.lock().await;
@@ -1370,6 +1371,13 @@ impl Runtime {
                                 key: key.clone(),
                                 start: 0,
                                 end: 199,
+                            }
+                        }
+                        crate::db::redis::read::RedisType::Stream => {
+                            crate::db::redis::read::RedisReadRequest::StreamRange {
+                                key: key.clone(),
+                                start: b"-".to_vec(),
+                                count: 200,
                             }
                         }
                         _ => return,

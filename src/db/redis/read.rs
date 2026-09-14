@@ -30,6 +30,10 @@ pub struct RedisKeyMetadata {
     pub key: RedisKeyId,
     pub value_type: RedisType,
     pub ttl: TtlState,
+    /// Redis's allocator estimate for the complete key, not the loaded page.
+    pub memory_usage_bytes: Option<u64>,
+    /// String byte length or collection element count, according to type.
+    pub value_size: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +65,9 @@ pub struct RedisValuePage {
     pub position: RedisPagePosition,
     pub value: RedisPageValue,
     pub truncated: bool,
+    /// Whether this page represents the complete value under the current
+    /// pagination contract. `truncated` instead describes a client budget.
+    pub complete: bool,
     pub raw_bytes: usize,
     pub formatted_bytes: usize,
 }
@@ -92,6 +99,11 @@ pub enum RedisReadRequest {
         start: u64,
         end: u64,
     },
+    StreamRange {
+        key: RedisKeyId,
+        start: Vec<u8>,
+        count: u32,
+    },
 }
 
 impl RedisReadRequest {
@@ -117,6 +129,9 @@ impl RedisReadRequest {
                     Some(length) if length <= MAX_COLLECTION_PREVIEW_ITEMS as u64 => Ok(()),
                     Some(_) | None => Err("collection range exceeds preview budget"),
                 }
+            }
+            Self::StreamRange { count, .. } if *count as usize > MAX_COLLECTION_PREVIEW_ITEMS => {
+                Err("stream count exceeds preview budget")
             }
             _ => Ok(()),
         }
@@ -168,10 +183,56 @@ impl RedisAdapter {
             .query_async(&mut connection)
             .await
             .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+        let value_type = RedisType::parse(&value_type);
+        let memory_usage_bytes = best_effort_u64(&mut connection, "MEMORY", |command| {
+            command.arg("USAGE").arg(&key.key);
+        })
+        .await?;
+        let value_size = match value_type {
+            RedisType::String => {
+                best_effort_u64(&mut connection, "STRLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Hash => {
+                best_effort_u64(&mut connection, "HLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::List => {
+                best_effort_u64(&mut connection, "LLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Set => {
+                best_effort_u64(&mut connection, "SCARD", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::SortedSet => {
+                best_effort_u64(&mut connection, "ZCARD", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Stream => {
+                best_effort_u64(&mut connection, "XLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Module | RedisType::Missing | RedisType::Unknown => None,
+        };
         Ok(RedisKeyMetadata {
             key: key.clone(),
-            value_type: RedisType::parse(&value_type),
+            value_type,
             ttl: parse_ttl(ttl),
+            memory_usage_bytes,
+            value_size,
         })
     }
 
@@ -185,7 +246,8 @@ impl RedisAdapter {
             | RedisReadRequest::HashScan { key, .. }
             | RedisReadRequest::ListRange { key, .. }
             | RedisReadRequest::SetScan { key, .. }
-            | RedisReadRequest::SortedSetRange { key, .. } => key,
+            | RedisReadRequest::SortedSetRange { key, .. }
+            | RedisReadRequest::StreamRange { key, .. } => key,
         };
         let metadata = self.key_metadata(key).await?;
         let mut connection = self.connection_clone();
@@ -198,9 +260,17 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = metadata
+                    .value_size
+                    .is_some_and(|size| *end >= size.saturating_sub(1))
+                    || value.len() < end.saturating_sub(*start).saturating_add(1) as usize;
                 (
                     RedisPageValue::String(value),
-                    RedisPagePosition::StringOffset(end.saturating_add(1)),
+                    if complete {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::StringOffset(end.saturating_add(1))
+                    },
                 )
             }
             RedisReadRequest::HashScan { cursor, count, .. } => {
@@ -262,7 +332,14 @@ impl RedisAdapter {
                             .map(|(index, value)| (*start + index as u64, value))
                             .collect(),
                     ),
-                    RedisPagePosition::ListOffset(end.saturating_add(1)),
+                    if metadata
+                        .value_size
+                        .is_some_and(|size| *end >= size.saturating_sub(1))
+                    {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::ListOffset(end.saturating_add(1))
+                    },
                 )
             }
             RedisReadRequest::SortedSetRange { start, end, .. } => {
@@ -284,16 +361,42 @@ impl RedisAdapter {
                     .collect();
                 (
                     RedisPageValue::SortedSet(pairs),
-                    RedisPagePosition::SortedSetOffset(end.saturating_add(1)),
+                    if metadata
+                        .value_size
+                        .is_some_and(|size| *end >= size.saturating_sub(1))
+                    {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::SortedSetOffset(end.saturating_add(1))
+                    },
                 )
+            }
+            RedisReadRequest::StreamRange { start, count, .. } => {
+                let values: redis::Value = redis::cmd("XRANGE")
+                    .arg(&key.key)
+                    .arg(start)
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(*count)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let entries = parse_stream_entries(values)?;
+                let position = entries
+                    .last()
+                    .map(|(id, _)| RedisPagePosition::StreamId(id.clone()))
+                    .unwrap_or_else(|| RedisPagePosition::Complete);
+                (RedisPageValue::Stream(entries), position)
             }
         };
         let raw_bytes = value_bytes(&value);
+        let complete = matches!(position, RedisPagePosition::Complete);
         Ok(RedisValuePage {
             metadata,
             position,
             value,
             truncated: false,
+            complete,
             raw_bytes,
             formatted_bytes: raw_bytes,
         })
@@ -388,6 +491,66 @@ fn value_bytes(value: &RedisPageValue) -> usize {
                 id.len() + fields.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
             })
             .sum(),
+    }
+}
+
+pub fn parse_stream_entries(value: redis::Value) -> Result<Vec<RedisStreamEntry>, DatabaseError> {
+    let redis::Value::Array(entries) = value else {
+        return Err(DatabaseError::configuration(
+            "invalid Redis stream response",
+        ));
+    };
+    entries
+        .into_iter()
+        .map(|entry| {
+            let redis::Value::Array(mut parts) = entry else {
+                return Err(DatabaseError::configuration("invalid Redis stream entry"));
+            };
+            if parts.len() != 2 {
+                return Err(DatabaseError::configuration(
+                    "invalid Redis stream entry shape",
+                ));
+            }
+            let id = stream_bytes_value(parts.remove(0))?;
+            let redis::Value::Array(fields) = parts.remove(0) else {
+                return Err(DatabaseError::configuration("invalid Redis stream fields"));
+            };
+            let mut pairs = Vec::new();
+            for pair in fields.chunks(2) {
+                pairs.push((stream_bytes(pair.first())?, stream_bytes(pair.get(1))?));
+            }
+            Ok((id, pairs))
+        })
+        .collect()
+}
+
+fn stream_bytes_value(value: redis::Value) -> Result<Vec<u8>, DatabaseError> {
+    match value {
+        redis::Value::BulkString(value) => Ok(value),
+        redis::Value::SimpleString(value) => Ok(value.into_bytes()),
+        _ => Err(DatabaseError::configuration("invalid Redis stream value")),
+    }
+}
+
+fn stream_bytes(value: Option<&redis::Value>) -> Result<Vec<u8>, DatabaseError> {
+    stream_bytes_value(
+        value
+            .cloned()
+            .ok_or_else(|| DatabaseError::configuration("missing Redis stream field"))?,
+    )
+}
+
+async fn best_effort_u64(
+    connection: &mut redis::aio::MultiplexedConnection,
+    command_name: &str,
+    configure: impl FnOnce(&mut redis::Cmd),
+) -> Result<Option<u64>, DatabaseError> {
+    let mut command = redis::cmd(command_name);
+    configure(&mut command);
+    match command.query_async::<Option<u64>>(connection).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.code().is_some() => Ok(None),
+        Err(error) => Err(redis_error(error, ErrorCategory::Network)),
     }
 }
 
