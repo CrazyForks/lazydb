@@ -43,6 +43,14 @@ pub fn page_lines(page: &RedisValuePage) -> Vec<Line<'static>> {
     lines
 }
 
+pub fn page_text(page: &RedisValuePage) -> String {
+    page_lines(page)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn ttl_text(ttl: &crate::db::redis::read::TtlState) -> String {
     match ttl {
         crate::db::redis::read::TtlState::Missing => "missing".into(),

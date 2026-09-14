@@ -256,37 +256,61 @@ pub fn render(
             ],
         },
     };
-    let preview_content_rows = preview_lines.len();
-    frame.render_widget(
-        Paragraph::new(preview_lines)
-            .style(Style::new().bg(theme.surface))
-            .scroll((tab.preview_scroll.min(u16::MAX as usize) as u16, 0)),
-        preview_area,
-    );
-    ui.redis_preview_viewport_rows =
-        Some((tab.id, preview_area.height as usize, preview_content_rows));
-    if let Some(geometry) = crate::ui::scrollbar::geometry(
-        Rect::new(
-            columns[1].right().saturating_sub(1),
-            preview_area.y,
-            1,
-            preview_area.height,
-        ),
-        preview_area.height as usize,
-        preview_content_rows,
-        tab.preview_scroll,
+    let preview_session = tab.preview_editor_id;
+    if let Ok(snapshot) = app.redis_preview_snapshot(
+        tab.id,
+        crate::model::editor::EditorViewport {
+            width: preview_area.width.saturating_sub(1) as usize,
+            height: preview_area.height as usize,
+        },
     ) {
-        crate::ui::scrollbar::render_vertical(
+        super::register_text_selection_target(ui, preview_session, preview_area, &snapshot);
+        for (row, line) in snapshot
+            .lines
+            .iter()
+            .take(preview_area.height as usize)
+            .enumerate()
+        {
+            frame.render_widget(
+                Paragraph::new(Line::from(crate::ui::editor_line_spans(
+                    line,
+                    &snapshot,
+                    theme,
+                    false,
+                    None,
+                    &super::mouse_selection_cells(ui, preview_session, &snapshot, line),
+                    None,
+                )))
+                .style(Style::new().bg(theme.surface)),
+                Rect::new(
+                    preview_area.x,
+                    preview_area.y + row as u16,
+                    preview_area.width,
+                    1,
+                ),
+            );
+        }
+        ui.redis_preview_viewport_rows =
+            Some((tab.id, snapshot.viewport.height, snapshot.total_lines));
+        super::render_editor_scrollbars(
             frame,
-            Rect::new(
-                columns[1].right().saturating_sub(1),
-                preview_area.y,
-                1,
-                preview_area.height,
-            ),
-            geometry,
+            preview_area,
+            Some(preview_session),
+            &snapshot,
             theme,
+            ui,
+            None,
         );
+    } else {
+        let preview_content_rows = preview_lines.len();
+        frame.render_widget(
+            Paragraph::new(preview_lines)
+                .style(Style::new().bg(theme.surface))
+                .scroll((tab.preview_scroll.min(u16::MAX as usize) as u16, 0)),
+            preview_area,
+        );
+        ui.redis_preview_viewport_rows =
+            Some((tab.id, preview_area.height as usize, preview_content_rows));
     }
 }
 

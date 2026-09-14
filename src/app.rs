@@ -1641,6 +1641,19 @@ impl App {
         )
     }
 
+    pub(crate) fn redis_preview_snapshot(
+        &self,
+        tab_id: Uuid,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Err(EditorError::MissingSession(tab_id));
+        };
+        self.editor
+            .render_plain_snapshot(tab.preview_editor_id, viewport)
+    }
+
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
         let profile_id = self.connection.profile_id?;
         self.profiles
@@ -12493,6 +12506,8 @@ impl App {
                                 page: page.clone(),
                                 format: crate::value_preview::PreviewFormat::RAW,
                             };
+                        let text = crate::ui::redis_value::page_text(page);
+                        self.editor.open_read_only(tab.preview_editor_id, &text);
                     }
                 }
                 Vec::new()

@@ -76,6 +76,7 @@ pub struct RedisKeyFindState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedisBrowserTab {
     pub id: Uuid,
+    pub preview_editor_id: Uuid,
     pub target: RedisTarget,
     pub keyspace: KeyspaceState,
     pub tree: KeyTreeState,
@@ -96,6 +97,7 @@ impl RedisBrowserTab {
     pub fn new(id: Uuid, target: RedisTarget) -> Self {
         Self {
             id,
+            preview_editor_id: Uuid::new_v4(),
             keyspace: KeyspaceState::new(id, target.clone(), b"*".to_vec()),
             target,
             tree: KeyTreeState::default(),
