@@ -31,3 +31,35 @@ fn raw_and_hex_are_byte_views() {
     );
     assert_eq!(DecodeStatus::NeedsMoreData, DecodeStatus::NeedsMoreData);
 }
+
+#[test]
+fn json_and_yaml_views_format_valid_structured_text() {
+    use lazydb::db::redis::read::{RedisKeyMetadata, RedisPagePosition, RedisType, TtlState};
+    use lazydb::db::redis::types::{RedisKeyId, RedisTarget};
+    let json = br#"{"name":"\u5f20\u4e09","enabled":true}"#.to_vec();
+    let page = lazydb::db::redis::read::RedisValuePage {
+        metadata: RedisKeyMetadata {
+            key: RedisKeyId {
+                target: RedisTarget {
+                    profile_id: uuid::Uuid::nil(),
+                    database: 0,
+                },
+                key: b"key".to_vec(),
+            },
+            value_type: RedisType::String,
+            ttl: TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: None,
+        },
+        position: RedisPagePosition::Complete,
+        value: lazydb::db::redis::read::RedisPageValue::String(json),
+        truncated: false,
+        complete: true,
+        raw_bytes: 0,
+        formatted_bytes: 0,
+    };
+    let formatted = lazydb::ui::redis_value::format_page(&page, ValueView::Json).unwrap();
+    assert!(formatted.contains("\n") && formatted.contains("name"));
+    let yaml = lazydb::ui::redis_value::format_page(&page, ValueView::Yaml).unwrap();
+    assert!(yaml.contains("name:"));
+}

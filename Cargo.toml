@@ -57,6 +57,7 @@ url = "2.5"
 uuid = { version = "1.18", features = ["serde", "v4"] }
 xz2 = { version = "0.1", features = ["static"] }
 zip = "6.0"
+serde_yaml = "0.9"
 
 [dev-dependencies]
 pretty_assertions = "1.4"

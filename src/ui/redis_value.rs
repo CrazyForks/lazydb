@@ -1,6 +1,7 @@
 use ratatui::text::Line;
 
 use crate::db::redis::read::{RedisPageValue, RedisValuePage};
+use crate::value_preview::ValueView;
 
 pub fn page_lines(page: &RedisValuePage) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!(
@@ -118,6 +119,23 @@ pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
                 result.push_str(&format!("{seconds}s"));
             }
             result
+        }
+    }
+}
+
+pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
+    let raw = page_text(page);
+    match view {
+        ValueView::Raw | ValueView::Hex | ValueView::Table => Ok(raw),
+        ValueView::Json => {
+            let value: serde_json::Value =
+                serde_json::from_str(&raw).map_err(|error| format!("JSON parse error: {error}"))?;
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+        }
+        ValueView::Yaml => {
+            let value: serde_yaml::Value =
+                serde_yaml::from_str(&raw).map_err(|error| format!("YAML parse error: {error}"))?;
+            serde_yaml::to_string(&value).map_err(|error| error.to_string())
         }
     }
 }

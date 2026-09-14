@@ -12513,8 +12513,24 @@ impl App {
                 Vec::new()
             }
             Action::RedisPreviewCycleFormat => {
-                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                let editor_update = if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.get_mut(self.active_tab)
+                {
                     tab.format.cycle();
+                    crate::ui::redis_value::format_page(
+                        match &tab.value_page {
+                            crate::model::redis_browser::RedisValuePageState::Ready(page) => page,
+                            _ => return Vec::new(),
+                        },
+                        tab.format.view(),
+                    )
+                    .ok()
+                    .map(|text| (tab.preview_editor_id, text))
+                } else {
+                    None
+                };
+                if let Some((session_id, text)) = editor_update {
+                    let _ = self.editor.set_read_only_text(session_id, &text, false);
                 }
                 Vec::new()
             }
