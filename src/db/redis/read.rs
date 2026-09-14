@@ -50,8 +50,10 @@ pub enum RedisPageValue {
     List(Vec<(u64, Vec<u8>)>),
     Set(Vec<Vec<u8>>),
     SortedSet(Vec<(Vec<u8>, Vec<u8>)>),
-    Stream(Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>),
+    Stream(Vec<RedisStreamEntry>),
 }
+
+pub type RedisStreamEntry = (Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedisValuePage {
@@ -121,7 +123,182 @@ impl RedisReadRequest {
     }
 }
 
+impl RedisType {
+    fn parse(value: &str) -> Self {
+        match value {
+            "string" => Self::String,
+            "hash" => Self::Hash,
+            "list" => Self::List,
+            "set" => Self::Set,
+            "zset" => Self::SortedSet,
+            "stream" => Self::Stream,
+            "none" => Self::Missing,
+            value if value.starts_with("module") => Self::Module,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+fn parse_ttl(value: i64) -> TtlState {
+    match value {
+        -2 => TtlState::Missing,
+        -1 => TtlState::Persistent,
+        value if value >= 0 => TtlState::ExpiresIn {
+            millis: value as u64,
+        },
+        _ => TtlState::Unavailable,
+    }
+}
+
 impl RedisAdapter {
+    pub async fn key_metadata(&self, key: &RedisKeyId) -> Result<RedisKeyMetadata, DatabaseError> {
+        if key.target.database != self.database() {
+            return Err(DatabaseError::configuration(
+                "Redis key target database mismatch",
+            ));
+        }
+        let mut connection = self.connection_clone();
+        let value_type: String = redis::cmd("TYPE")
+            .arg(&key.key)
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+        let ttl: i64 = redis::cmd("PTTL")
+            .arg(&key.key)
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+        Ok(RedisKeyMetadata {
+            key: key.clone(),
+            value_type: RedisType::parse(&value_type),
+            ttl: parse_ttl(ttl),
+        })
+    }
+
+    pub async fn read_value_page(
+        &self,
+        request: &RedisReadRequest,
+    ) -> Result<RedisValuePage, DatabaseError> {
+        request.validate().map_err(DatabaseError::configuration)?;
+        let key = match request {
+            RedisReadRequest::StringRange { key, .. }
+            | RedisReadRequest::HashScan { key, .. }
+            | RedisReadRequest::ListRange { key, .. }
+            | RedisReadRequest::SetScan { key, .. }
+            | RedisReadRequest::SortedSetRange { key, .. } => key,
+        };
+        let metadata = self.key_metadata(key).await?;
+        let mut connection = self.connection_clone();
+        let (value, position) = match request {
+            RedisReadRequest::StringRange { start, end, .. } => {
+                let value: Vec<u8> = redis::cmd("GETRANGE")
+                    .arg(&key.key)
+                    .arg(*start)
+                    .arg(*end)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                (
+                    RedisPageValue::String(value),
+                    RedisPagePosition::StringOffset(end.saturating_add(1)),
+                )
+            }
+            RedisReadRequest::HashScan { cursor, count, .. } => {
+                let (next, values): (u64, Vec<Vec<u8>>) = redis::cmd("HSCAN")
+                    .arg(&key.key)
+                    .arg(*cursor)
+                    .arg("COUNT")
+                    .arg(*count)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let pairs = values
+                    .chunks(2)
+                    .filter_map(|pair| {
+                        pair.first()
+                            .map(|field| (field.clone(), pair.get(1).cloned().unwrap_or_default()))
+                    })
+                    .collect();
+                (
+                    RedisPageValue::Hash(pairs),
+                    if next == 0 {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::HashCursor(next)
+                    },
+                )
+            }
+            RedisReadRequest::SetScan { cursor, count, .. } => {
+                let (next, values): (u64, Vec<Vec<u8>>) = redis::cmd("SSCAN")
+                    .arg(&key.key)
+                    .arg(*cursor)
+                    .arg("COUNT")
+                    .arg(*count)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                (
+                    RedisPageValue::Set(values),
+                    if next == 0 {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::SetCursor(next)
+                    },
+                )
+            }
+            RedisReadRequest::ListRange { start, end, .. } => {
+                let values: Vec<Vec<u8>> = redis::cmd("LRANGE")
+                    .arg(&key.key)
+                    .arg(*start)
+                    .arg(*end)
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                (
+                    RedisPageValue::List(
+                        values
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, value)| (*start + index as u64, value))
+                            .collect(),
+                    ),
+                    RedisPagePosition::ListOffset(end.saturating_add(1)),
+                )
+            }
+            RedisReadRequest::SortedSetRange { start, end, .. } => {
+                let values: Vec<Vec<u8>> = redis::cmd("ZRANGE")
+                    .arg(&key.key)
+                    .arg(*start)
+                    .arg(*end)
+                    .arg("WITHSCORES")
+                    .query_async(&mut connection)
+                    .await
+                    .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let pairs = values
+                    .chunks(2)
+                    .filter_map(|pair| {
+                        pair.first().map(|member| {
+                            (member.clone(), pair.get(1).cloned().unwrap_or_default())
+                        })
+                    })
+                    .collect();
+                (
+                    RedisPageValue::SortedSet(pairs),
+                    RedisPagePosition::SortedSetOffset(end.saturating_add(1)),
+                )
+            }
+        };
+        let raw_bytes = value_bytes(&value);
+        Ok(RedisValuePage {
+            metadata,
+            position,
+            value,
+            truncated: false,
+            raw_bytes,
+            formatted_bytes: raw_bytes,
+        })
+    }
+
     pub async fn preview_key(&self, key: &RedisKeyId) -> Result<String, DatabaseError> {
         if key.target.database != self.database() {
             return Err(DatabaseError::configuration(
@@ -196,6 +373,24 @@ impl RedisAdapter {
     }
 }
 
+fn value_bytes(value: &RedisPageValue) -> usize {
+    match value {
+        RedisPageValue::String(value) => value.len(),
+        RedisPageValue::Hash(values) | RedisPageValue::SortedSet(values) => values
+            .iter()
+            .map(|(left, right)| left.len() + right.len())
+            .sum(),
+        RedisPageValue::List(values) => values.iter().map(|(_, value)| value.len()).sum(),
+        RedisPageValue::Set(values) => values.iter().map(Vec::len).sum(),
+        RedisPageValue::Stream(values) => values
+            .iter()
+            .map(|(id, fields)| {
+                id.len() + fields.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+            })
+            .sum(),
+    }
+}
+
 async fn scan_values(
     connection: &mut redis::aio::MultiplexedConnection,
     command_name: &str,
@@ -255,5 +450,27 @@ fn redis_error(error: redis::RedisError, category: ErrorCategory) -> DatabaseErr
         code: error.code().map(str::to_owned),
         message: crate::security::sanitize_terminal_text(&error.to_string()),
         diagnostic: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_redis_types_and_ttl_states() {
+        assert_eq!(RedisType::parse("string"), RedisType::String);
+        assert_eq!(RedisType::parse("module.foo"), RedisType::Module);
+        assert_eq!(RedisType::parse("future"), RedisType::Unknown);
+        assert_eq!(parse_ttl(-2), TtlState::Missing);
+        assert_eq!(parse_ttl(-1), TtlState::Persistent);
+        assert_eq!(parse_ttl(42), TtlState::ExpiresIn { millis: 42 });
+        assert_eq!(parse_ttl(-3), TtlState::Unavailable);
+    }
+
+    #[test]
+    fn value_page_byte_accounting_keeps_binary_lengths() {
+        let value = RedisPageValue::Hash(vec![(vec![0, 1], vec![2, 3, 4])]);
+        assert_eq!(value_bytes(&value), 5);
     }
 }
