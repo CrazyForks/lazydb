@@ -1,3 +1,5 @@
+mod support;
+
 use lazydb::{
     db::mysql::supports_catalog_version_for_kind,
     model::profile_manager::DRIVER_ORDER,
@@ -55,7 +57,7 @@ fn catalog_version_gate_distinguishes_mysql_and_mariadb() {
 
 #[tokio::test]
 async fn connects_to_configured_mariadb_when_test_service_is_available() {
-    let Ok(url) = std::env::var("LAZYDB_TEST_MARIADB_URL") else {
+    let Some(url) = support::mariadb_test_url() else {
         return;
     };
     let imported = lazydb::profile::import_connection_url(&url, Some("MariaDB test")).unwrap();
