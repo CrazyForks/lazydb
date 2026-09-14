@@ -185,3 +185,14 @@ fn serialization_candidates_are_validated_before_selection() {
             .all(|candidate| candidate.status != DecodeStatus::Complete)
     );
 }
+
+#[test]
+fn cell_values_use_the_same_auto_json_pipeline_and_keep_binary_copy() {
+    let bytes = br#"{"nested":true}"#;
+    let formatted =
+        lazydb::ui::redis_value::format_bytes_value(bytes, PreviewFormat::JSON).unwrap();
+    assert!(formatted.contains("nested") && formatted.contains('\n'));
+    let binary = [0xff, 0x00];
+    let hex = lazydb::ui::redis_value::format_bytes_value(&binary, PreviewFormat::HEX).unwrap();
+    assert_eq!(hex, "ff00");
+}

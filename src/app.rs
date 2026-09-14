@@ -18279,8 +18279,13 @@ impl App {
         let Some(source) = table.rows.get(row).and_then(|row| row.identity.get(column)) else {
             return Vec::new();
         };
-        let display = String::from_utf8(source.clone())
-            .unwrap_or_else(|_| source.iter().map(|byte| format!("\\x{byte:02x}")).collect());
+        let automatic = crate::value_preview::detect::default_format(source, false);
+        let display =
+            crate::ui::redis_value::format_bytes_value(source, automatic).unwrap_or_else(|_| {
+                String::from_utf8(source.clone()).unwrap_or_else(|_| {
+                    source.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+                })
+            });
         let title = table
             .columns
             .get(column)
