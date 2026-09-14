@@ -416,6 +416,11 @@ impl MySqlAdapter {
             CatalogKind::Trigger => format!("DROP TRIGGER {}", mysql_trigger_name(entry)?),
             CatalogKind::Function => format!("DROP FUNCTION {}", mysql_routine_name(entry)?),
             CatalogKind::Procedure => format!("DROP PROCEDURE {}", mysql_routine_name(entry)?),
+            CatalogKind::Sequence if entry.id.native_path.len() == 3 => format!(
+                "DROP SEQUENCE {}.{}",
+                quote_identifier(&entry.id.native_path[1]),
+                quote_identifier(&entry.id.native_path[2])
+            ),
             kind => {
                 return Err(CatalogDropError::Unsupported {
                     kind,

@@ -133,6 +133,15 @@ fn mariadb_catalog_search_includes_sequence_candidates() {
 }
 
 #[test]
+fn mysql_mutation_capabilities_do_not_advertise_unloaded_sequence_editing() {
+    let capabilities = MySqlAdapter::catalog_mutation_capabilities();
+    assert!(!capabilities.create.iter().any(|option| {
+        option.object_type
+            == lazydb::db::catalog_mutation::CatalogObjectType::Catalog(CatalogKind::Sequence)
+    }));
+}
+
+#[test]
 fn quotes_mysql_identifiers_and_uses_information_schema() {
     assert_eq!(mysql::quote_identifier("odd`name"), "`odd``name`");
     assert!(mysql::CATALOG_TABLES_SQL.contains("information_schema.tables"));
