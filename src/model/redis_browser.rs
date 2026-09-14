@@ -126,7 +126,11 @@ impl RedisBrowserTab {
 
     pub fn insert_tree_keys(&mut self) {
         self.tree.insert_keys(&self.keyspace.keys);
-        if self.find.is_some() {
+        if self
+            .find
+            .as_ref()
+            .is_some_and(|find| find.phase == RedisFindPhase::Confirmed)
+        {
             self.refresh_find_rows();
         }
     }
@@ -134,7 +138,10 @@ impl RedisBrowserTab {
     pub fn visible_rows(&self) -> Vec<VisibleKeyTreeRow> {
         self.find.as_ref().map_or_else(
             || self.tree.visible_rows(),
-            |find| find.filtered_rows.clone(),
+            |find| match find.phase {
+                RedisFindPhase::Editing => self.tree.visible_rows(),
+                RedisFindPhase::Confirmed => find.filtered_rows.clone(),
+            },
         )
     }
 
@@ -285,38 +292,27 @@ impl RedisBrowserTab {
         if self.find.is_some() {
             return;
         }
-        let mut projection = KeyTreeState::default();
-        projection.rebuild(&self.keyspace.keys);
-        for key in &self.keyspace.keys {
-            let mut prefix = Vec::new();
-            let parts = key.key.split(|byte| *byte == b':').collect::<Vec<_>>();
-            for part in parts.iter().take(parts.len().saturating_sub(1)) {
-                prefix.extend_from_slice(part);
-                prefix.push(b':');
-                projection
-                    .expanded
-                    .insert(KeyTreeNodeId::Prefix(prefix.clone()));
-            }
-        }
-        let rows = projection.visible_rows();
+        let rows = self.tree.visible_rows();
         self.find = Some(RedisKeyFindState {
             phase: RedisFindPhase::Editing,
             query: TextInput::default(),
-            rows: rows.clone(),
-            filtered_rows: rows.clone(),
+            rows,
+            filtered_rows: Vec::new(),
             matches: Vec::new(),
             current: 0,
             original_selected: self.tree.selected.clone(),
             original_scroll: self.scroll,
-            expanded: projection.expanded.clone(),
+            expanded: self.tree.expanded.clone(),
         });
-        self.refresh_find_rows();
     }
 
-    fn refresh_find_rows(&mut self) {
+    pub fn refresh_find_rows(&mut self) {
         let Some(find) = self.find.as_mut() else {
             return;
         };
+        if find.phase != RedisFindPhase::Confirmed {
+            return;
+        }
         let mut projection = KeyTreeState::default();
         projection.rebuild(&self.keyspace.keys);
         for key in &self.keyspace.keys {
@@ -330,7 +326,11 @@ impl RedisBrowserTab {
                     .insert(KeyTreeNodeId::Prefix(prefix.clone()));
             }
         }
-        find.rows = projection.visible_rows();
+        if find.filtered_rows.is_empty() {
+            find.expanded = projection.expanded.clone();
+        }
+        let rows = projection.visible_rows();
+        find.rows = rows;
         self.update_find();
     }
 
@@ -355,68 +355,62 @@ impl RedisBrowserTab {
                     })
                     .collect()
             };
+        let mut visible = std::collections::HashSet::new();
         find.filtered_rows = find
             .rows
             .iter()
-            .filter(|row| included.contains(&row.id))
-            .map(|row| {
+            .filter_map(|row| {
+                if !included.contains(&row.id)
+                    || row.parent.as_ref().is_some_and(|parent| {
+                        !visible.contains(parent) || !find.expanded.contains(parent)
+                    })
+                {
+                    return None;
+                }
                 let mut row = row.clone();
                 row.expanded = find.expanded.contains(&row.id);
-                row
+                visible.insert(row.id.clone());
+                Some(row)
             })
             .collect();
     }
 
     pub fn update_find(&mut self) {
-        let Some(find) = self.find.as_mut() else {
-            return;
-        };
-        let query = find.query.value().trim();
-        find.matches = if query.is_empty() {
-            Vec::new()
-        } else {
-            find.rows
-                .iter()
-                .filter(|row| {
-                    matches!(&row.id, KeyTreeNodeId::Key(_))
-                        && crate::db::catalog::search_text_matches(
-                            &match &row.id {
-                                KeyTreeNodeId::Key(bytes) => {
-                                    crate::model::redis_key_text::display_bytes(bytes)
-                                }
-                                KeyTreeNodeId::Prefix(_) => String::new(),
-                            },
-                            query,
-                        )
-                })
-                .map(|row| row.id.clone())
-                .collect()
-        };
-        if query.is_empty() {
-            find.filtered_rows = find.rows.clone();
-        } else {
-            let included = find
-                .matches
-                .iter()
-                .filter_map(|id| find.rows.iter().find(|row| &row.id == id))
-                .flat_map(|row| {
-                    std::iter::successors(Some(row), |current| {
-                        current.parent.as_ref().and_then(|parent| {
-                            find.rows.iter().find(|candidate| &candidate.id == parent)
-                        })
+        let first_match = {
+            let Some(find) = self.find.as_mut() else {
+                return;
+            };
+            if find.phase != RedisFindPhase::Confirmed {
+                return;
+            }
+            let query = find.query.value().trim();
+            find.matches = if query.is_empty() {
+                Vec::new()
+            } else {
+                find.rows
+                    .iter()
+                    .filter(|row| {
+                        matches!(&row.id, KeyTreeNodeId::Key(_))
+                            && crate::db::catalog::search_text_matches(
+                                &match &row.id {
+                                    KeyTreeNodeId::Key(bytes) => {
+                                        crate::model::redis_key_text::display_bytes(bytes)
+                                    }
+                                    KeyTreeNodeId::Prefix(_) => String::new(),
+                                },
+                                query,
+                            )
                     })
                     .map(|row| row.id.clone())
-                })
-                .collect::<std::collections::HashSet<_>>();
-            find.filtered_rows = find
-                .rows
-                .iter()
-                .filter(|row| included.contains(&row.id))
-                .cloned()
-                .collect();
+                    .collect()
+            };
+            find.matches.first().cloned()
+        };
+        self.rebuild_filtered_rows();
+        if let Some(find) = self.find.as_mut() {
+            find.current = 0;
         }
-        find.current = 0;
-        if let Some(id) = find.matches.first().cloned() {
+        if let Some(id) = first_match {
             self.tree.select(Some(id));
         }
     }
@@ -443,9 +437,15 @@ impl RedisBrowserTab {
     }
 
     pub fn confirm_find(&mut self) {
-        if let Some(find) = self.find.as_mut() {
-            find.phase = RedisFindPhase::Confirmed;
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        if find.query.value().trim().is_empty() {
+            return;
         }
+        find.phase = RedisFindPhase::Confirmed;
+        self.refresh_find_rows();
+        self.update_find();
     }
 
     pub fn close_find(&mut self, cancel: bool) {
