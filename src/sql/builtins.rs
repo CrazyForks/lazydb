@@ -140,7 +140,7 @@ pub(super) fn default_value_builtins(dialect: SqlDialect) -> impl Iterator<Item 
 fn dialect_builtins(dialect: SqlDialect) -> &'static [Builtin] {
     match dialect {
         SqlDialect::Postgres => POSTGRES,
-        SqlDialect::MySql => MYSQL,
+        SqlDialect::MySql | SqlDialect::MariaDb => MYSQL,
         SqlDialect::SqlServer => SQL_SERVER,
         SqlDialect::Sqlite => SQLITE,
         SqlDialect::Generic | SqlDialect::Oracle => &[],
@@ -166,6 +166,10 @@ fn default_value_dialect_builtins(dialect: SqlDialect) -> &'static [Builtin] {
                 detail: "SYSDATETIME()",
             },
         ],
-        SqlDialect::MySql | SqlDialect::Sqlite | SqlDialect::Generic | SqlDialect::Oracle => &[],
+        SqlDialect::MySql
+        | SqlDialect::MariaDb
+        | SqlDialect::Sqlite
+        | SqlDialect::Generic
+        | SqlDialect::Oracle => &[],
     }
 }

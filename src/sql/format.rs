@@ -32,7 +32,7 @@ pub fn format_sql(sql: &str, dialect: SqlDialect) -> Result<String, FormatError>
     let formatted = sqlformat::format(sql, &sqlformat::QueryParams::None, &options);
     let parser_dialect: &dyn ParserDialect = match dialect {
         SqlDialect::Postgres => &PostgreSqlDialect {},
-        SqlDialect::MySql => &MySqlDialect {},
+        SqlDialect::MySql | SqlDialect::MariaDb => &MySqlDialect {},
         SqlDialect::SqlServer => &MsSqlDialect {},
         SqlDialect::Sqlite => &SQLiteDialect {},
         SqlDialect::Generic | SqlDialect::Oracle => &GenericDialect {},

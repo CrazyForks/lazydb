@@ -160,6 +160,7 @@ impl From<crate::profile::DatabaseKind> for LspDialect {
         match crate::sql::SqlDialect::for_database_kind(kind) {
             crate::sql::SqlDialect::Postgres => Self::Postgres,
             crate::sql::SqlDialect::MySql => Self::MySql,
+            crate::sql::SqlDialect::MariaDb => Self::MySql,
             crate::sql::SqlDialect::SqlServer => Self::SqlServer,
             crate::sql::SqlDialect::Sqlite
             | crate::sql::SqlDialect::Generic

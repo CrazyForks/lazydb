@@ -4,7 +4,7 @@ use sqlparser::{parser::Parser, tokenizer::Tokenizer};
 fn dialect(dialect: SqlDialect) -> &'static dyn sqlparser::dialect::Dialect {
     match dialect {
         SqlDialect::Postgres => &sqlparser::dialect::PostgreSqlDialect {},
-        SqlDialect::MySql => &sqlparser::dialect::MySqlDialect {},
+        SqlDialect::MySql | SqlDialect::MariaDb => &sqlparser::dialect::MySqlDialect {},
         SqlDialect::SqlServer => &sqlparser::dialect::MsSqlDialect {},
         SqlDialect::Sqlite => &sqlparser::dialect::SQLiteDialect {},
         SqlDialect::Generic | SqlDialect::Oracle => &sqlparser::dialect::GenericDialect {},

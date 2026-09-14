@@ -165,6 +165,11 @@ ORDER BY CASE
 LIMIT 101
 "#;
 
+const MARIADB_CATALOG_SEARCH_SEQUENCE_SQL: &str = " UNION ALL \
+    SELECT 'sequence', sequence_schema, sequence_name, NULL, NULL, sequence_name, \
+           CONCAT(sequence_schema,'.',sequence_name), NULL \
+    FROM information_schema.sequences";
+
 pub const CATALOG_DATABASES_SQL: &str = r#"
 SELECT schema_name
 FROM information_schema.schemata
@@ -178,6 +183,26 @@ pub struct MySqlAdapter {
     kind: DatabaseKind,
     connection_id: Uuid,
     catalog_scope: CatalogScope,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServerCapabilities {
+    pub catalog: bool,
+    pub sequences: bool,
+    pub relation_edit: bool,
+}
+
+impl ServerCapabilities {
+    pub fn for_kind(kind: DatabaseKind, version: &str) -> Self {
+        let catalog = supports_catalog_version_for_kind(kind, version);
+        Self {
+            catalog,
+            sequences: matches!(kind, DatabaseKind::MariaDb) && catalog,
+            // Data-grid editing is not advertised until the complete mutation
+            // round trip has passed the MariaDB integration suite.
+            relation_edit: false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -391,6 +416,11 @@ impl MySqlAdapter {
             CatalogKind::Trigger => format!("DROP TRIGGER {}", mysql_trigger_name(entry)?),
             CatalogKind::Function => format!("DROP FUNCTION {}", mysql_routine_name(entry)?),
             CatalogKind::Procedure => format!("DROP PROCEDURE {}", mysql_routine_name(entry)?),
+            CatalogKind::Sequence if entry.id.native_path.len() == 3 => format!(
+                "DROP SEQUENCE {}.{}",
+                quote_identifier(&entry.id.native_path[1]),
+                quote_identifier(&entry.id.native_path[2])
+            ),
             kind => {
                 return Err(CatalogDropError::Unsupported {
                     kind,
@@ -426,6 +456,12 @@ impl MySqlAdapter {
             },
             supports_lazy_children: true,
         }
+    }
+
+    pub fn mariadb_catalog_capabilities() -> CatalogCapabilities {
+        let mut capabilities = Self::catalog_capabilities();
+        capabilities.top_level_groups.push(ObjectGroup::Sequences);
+        capabilities
     }
 
     pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
@@ -785,7 +821,7 @@ impl MySqlAdapter {
             ));
         }
         let rows = sqlx::query(
-            "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
+            "SELECT ordinal_position, column_name, column_type, is_nullable, column_default, generation_expression, collation_name, column_comment, extra FROM information_schema.columns WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ? ORDER BY ordinal_position",
         )
         .bind(schema)
         .bind(name)
@@ -795,13 +831,16 @@ impl MySqlAdapter {
         let mut columns = Vec::new();
         for row in rows {
             let default = row.try_get::<Option<String>, _>(4).map_err(decode_error)?;
+            let extra: String = row.try_get(8).map_err(decode_error)?;
             columns.push(ColumnDefinition {
                 name: row.try_get(1).map_err(decode_error)?,
                 ordinal_position: row.try_get(0).map_err(decode_error)?,
                 native_type: row.try_get(2).map_err(decode_error)?,
                 nullable: row.try_get::<String, _>(3).map_err(decode_error)? == "YES",
                 default_expression: OptionalMetadata::Supported(default),
-                identity: OptionalMetadata::Unsupported,
+                identity: OptionalMetadata::Supported(Some(
+                    extra.to_ascii_uppercase().contains("AUTO_INCREMENT"),
+                )),
                 generated_expression: OptionalMetadata::Supported(
                     row.try_get(5).map_err(decode_error)?,
                 ),
@@ -814,6 +853,7 @@ impl MySqlAdapter {
                 "MySQL table has no visible columns",
             ));
         }
+        let baseline_fingerprint = format!("mysql:table:{database}:{schema}:{name}:{columns:?}");
         Ok(CatalogObjectDefinition::Table(TableDefinition {
             database: database.clone(),
             schema: schema.clone(),
@@ -823,7 +863,7 @@ impl MySqlAdapter {
             columns: columns.clone(),
             indexes: Vec::new(),
             constraints: Vec::new(),
-            baseline_fingerprint: format!("mysql:table:{database}:{schema}:{name}:{columns:?}"),
+            baseline_fingerprint,
         }))
     }
 
@@ -1160,7 +1200,15 @@ impl MySqlAdapter {
                 }
             })
             .unwrap_or_else(|| "TRUE".to_owned());
-        let sql = CATALOG_SEARCH_CANDIDATES_SQL.replace("{scope_predicate}", &scope_predicate);
+        let candidates = if self.kind == DatabaseKind::MariaDb {
+            CATALOG_SEARCH_CANDIDATES_SQL.replace(
+                "), normalized AS (",
+                &format!("{}), normalized AS (", MARIADB_CATALOG_SEARCH_SEQUENCE_SQL),
+            )
+        } else {
+            CATALOG_SEARCH_CANDIDATES_SQL.to_owned()
+        };
+        let sql = candidates.replace("{scope_predicate}", &scope_predicate);
         let mut query = sqlx::query(AssertSqlSafe(sql));
         let (search_query, ignore_separators) = crate::db::catalog::search_query(&request.query);
         query = query.bind(ignore_separators).bind(ignore_separators);
@@ -1508,22 +1556,32 @@ impl MySqlAdapter {
                 lower_case_table_names,
             )
             .await?;
-        let row = sqlx::query(
+        let count_sql = if self.kind == DatabaseKind::MariaDb {
             "SELECT \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='BASE TABLE') AS tables, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='VIEW') AS views, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='FUNCTION') AS functions, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='PROCEDURE') AS procedures, \
-             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers",
-        )
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .bind(&database)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(sql_error)?;
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.sequences WHERE BINARY sequence_schema=BINARY ?) AS sequences"
+        } else {
+            "SELECT \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='BASE TABLE') AS tables, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='VIEW') AS views, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='FUNCTION') AS functions, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='PROCEDURE') AS procedures, \
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers"
+        };
+        let mut query = sqlx::query(AssertSqlSafe(count_sql))
+            .bind(&database)
+            .bind(&database)
+            .bind(&database)
+            .bind(&database)
+            .bind(&database);
+        if self.kind == DatabaseKind::MariaDb {
+            query = query.bind(&database);
+        }
+        let row = query.fetch_one(&mut *connection).await.map_err(sql_error)?;
         let mut summaries = Vec::new();
         for (group, column) in [
             (ObjectGroup::Tables, "tables"),
@@ -1539,6 +1597,19 @@ impl MySqlAdapter {
                         .map_err(decode_error)?
                         .parse::<u64>()
                         .map_err(|_| catalog_internal("MySQL returned an invalid catalog count"))?,
+                ),
+            });
+        }
+        if self.kind == DatabaseKind::MariaDb {
+            summaries.push(CatalogGroupSummary {
+                group: ObjectGroup::Sequences,
+                object_count: CatalogCount::Exact(
+                    row.try_get::<String, _>("sequences")
+                        .map_err(decode_error)?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            catalog_internal("MariaDB returned an invalid sequence count")
+                        })?,
                 ),
             });
         }
@@ -1614,6 +1685,15 @@ impl MySqlAdapter {
                     CatalogKind::Trigger,
                     "trigger",
                     "trigger_name",
+                ),
+                ObjectGroup::Sequences if self.kind == DatabaseKind::MariaDb => (
+                    "information_schema.sequences",
+                    "sequence_schema",
+                    "sequence_name",
+                    "TRUE",
+                    CatalogKind::Sequence,
+                    "sequence",
+                    "sequence_name",
                 ),
                 _ => {
                     return Err(DatabaseError::unsupported_catalog_target(
@@ -1763,6 +1843,9 @@ impl MySqlAdapter {
         let constraints = self
             .load_constraint_metadata(connection, database, relation_name)
             .await?;
+        let checks = self
+            .load_check_metadata(connection, database, relation_name)
+            .await?;
         let mut memberships: HashMap<String, Vec<ConstraintMembership>> = HashMap::new();
         let mut entries = Vec::new();
 
@@ -1822,6 +1905,21 @@ impl MySqlAdapter {
                     "constraint",
                     OptionalMetadata::Unsupported,
                     metadata,
+                )
+                .map_err(catalog_invariant)?,
+            );
+        }
+        for check in checks {
+            entries.push(
+                CatalogEntry::relation_child(
+                    relation_child_id(relation, CatalogKind::CheckConstraint, &check.name),
+                    relation.clone(),
+                    qualified_object(database, &check.name),
+                    "check_constraint",
+                    OptionalMetadata::Unsupported,
+                    CatalogMetadata::Constraint(ConstraintMetadata::Check {
+                        expression: check.expression,
+                    }),
                 )
                 .map_err(catalog_invariant)?,
             );
@@ -2427,6 +2525,38 @@ impl MySqlAdapter {
         group_constraint_parts(parts)
     }
 
+    async fn load_check_metadata(
+        &self,
+        connection: &mut MySqlConnection,
+        database: &str,
+        relation: &str,
+    ) -> Result<Vec<MySqlCheckInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT tc.constraint_name, cc.check_clause \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.check_constraints cc \
+               ON BINARY cc.constraint_schema=BINARY tc.constraint_schema \
+              AND BINARY cc.constraint_name=BINARY tc.constraint_name \
+             WHERE BINARY tc.table_schema=BINARY ? \
+               AND BINARY tc.table_name=BINARY ? \
+               AND tc.constraint_type='CHECK' \
+             ORDER BY BINARY tc.constraint_name",
+        )
+        .bind(database)
+        .bind(relation)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(sql_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(MySqlCheckInfo {
+                    name: row.try_get(0).map_err(decode_error)?,
+                    expression: row.try_get(1).map_err(decode_error)?,
+                })
+            })
+            .collect()
+    }
+
     pub async fn object_ddl(
         &self,
         kind: CatalogKind,
@@ -2929,6 +3059,12 @@ struct MySqlConstraintInfo {
 }
 
 #[derive(Debug)]
+struct MySqlCheckInfo {
+    name: String,
+    expression: String,
+}
+
+#[derive(Debug)]
 struct MySqlConstraintPart {
     catalog: String,
     schema: String,
@@ -3170,6 +3306,7 @@ fn search_catalog_kind(native_kind: &str) -> Result<CatalogKind, DatabaseError> 
         "primary_key" => Ok(CatalogKind::PrimaryKey),
         "unique_constraint" => Ok(CatalogKind::UniqueConstraint),
         "foreign_key" => Ok(CatalogKind::ForeignKey),
+        "sequence" => Ok(CatalogKind::Sequence),
         _ => Err(catalog_internal(format!(
             "unexpected MySQL search catalog kind `{native_kind}`"
         ))),
@@ -3625,7 +3762,8 @@ pub fn supports_catalog_version_for_kind(kind: DatabaseKind, version: &str) -> b
         }
         DatabaseKind::MariaDb => {
             version.to_ascii_lowercase().contains("mariadb")
-                && parse_version_triplet(version).is_some_and(|version| version >= (10, 5, 0))
+                && parse_mariadb_version_triplet(version)
+                    .is_some_and(|version| version >= (10, 5, 0))
         }
         _ => false,
     }
@@ -3657,6 +3795,18 @@ fn parse_version_triplet(version: &str) -> Option<(u32, u32, u32)> {
         .parse()
         .ok()?;
     Some((major, minor, patch))
+}
+
+fn parse_mariadb_version_triplet(version: &str) -> Option<(u32, u32, u32)> {
+    let version = version.to_ascii_lowercase();
+    if !version.contains("mariadb") {
+        return None;
+    }
+    version
+        .split('-')
+        .rev()
+        .filter_map(parse_version_triplet)
+        .find(|version| *version >= (10, 0, 0))
 }
 
 pub fn quote_identifier(value: &str) -> String {
@@ -3716,7 +3866,15 @@ fn decode_cell(row: &MySqlRow, index: usize) -> CellValue {
             .map(CellValue::Date),
         "TIME" => row
             .try_get_unchecked::<NaiveTime, _>(index)
-            .map(CellValue::Time),
+            .map(CellValue::Time)
+            .or_else(|_| {
+                // MariaDB TIME is a duration, not only a wall-clock time:
+                // it may be negative or exceed 24 hours. chrono::NaiveTime
+                // cannot represent those values, so preserve the server's
+                // textual form instead of failing or wrapping it.
+                row.try_get_unchecked::<String, _>(index)
+                    .map(CellValue::Text)
+            }),
         "DATETIME" | "TIMESTAMP" => row
             .try_get_unchecked::<NaiveDateTime, _>(index)
             .map(CellValue::DateTime),
@@ -3793,10 +3951,11 @@ mod tests {
             "primary_key",
             "unique_constraint",
             "foreign_key",
+            "sequence",
         ] {
             assert!(search_catalog_kind(native).is_ok(), "missing {native}");
         }
-        for unsupported in ["materialized_view", "sequence", "check_constraint", "type"] {
+        for unsupported in ["materialized_view", "check_constraint", "type"] {
             assert!(search_catalog_kind(unsupported).is_err());
         }
         assert_eq!(

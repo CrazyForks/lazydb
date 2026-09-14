@@ -1,5 +1,7 @@
+mod support;
+
 use lazydb::{
-    db::mysql::supports_catalog_version_for_kind,
+    db::mysql::{ServerCapabilities, supports_catalog_version_for_kind},
     model::profile_manager::DRIVER_ORDER,
     profile::{ConnectionUrlFormat, DatabaseKind, parse_connection_url},
 };
@@ -51,11 +53,27 @@ fn catalog_version_gate_distinguishes_mysql_and_mariadb() {
         DatabaseKind::MariaDb,
         "8.0.36"
     ));
+    assert!(supports_catalog_version_for_kind(
+        DatabaseKind::MariaDb,
+        "5.5.5-10.11.8-MariaDB"
+    ));
+    assert!(!supports_catalog_version_for_kind(
+        DatabaseKind::MySql,
+        "5.5.5-10.11.8-MariaDB"
+    ));
+}
+
+#[test]
+fn mariadb_server_capabilities_keep_unverified_mutations_gated() {
+    let capabilities = ServerCapabilities::for_kind(DatabaseKind::MariaDb, "11.4.2-MariaDB");
+    assert!(capabilities.catalog);
+    assert!(capabilities.sequences);
+    assert!(!capabilities.relation_edit);
 }
 
 #[tokio::test]
 async fn connects_to_configured_mariadb_when_test_service_is_available() {
-    let Ok(url) = std::env::var("LAZYDB_TEST_MARIADB_URL") else {
+    let Some(url) = support::mariadb_test_url() else {
         return;
     };
     let imported = lazydb::profile::import_connection_url(&url, Some("MariaDB test")).unwrap();

@@ -32,7 +32,7 @@ for the first mutation slice is:
 | --- | --- |
 | PostgreSQL | Existing PostgreSQL create/edit contract |
 | Oracle | Create and edit table/view/sequence from schema object groups; complex column/index/constraint edits remain gated |
-| MySQL/MariaDB | Create and edit table/view from the database-is-schema namespace; column/index/constraint edits remain gated |
+| MySQL/MariaDB | Create and edit table/view from the database-is-schema namespace; data-grid, column/index/constraint, sequence, principal, and event edits remain gated until their round-trip suites pass |
 | SQL Server | Create and edit table/view from a database/schema object group; column/index/constraint edits remain gated |
 | SQLite | Create and edit table/view; complex table structure edits use a lossless rebuild plan |
 | Redis | No SQL catalog mutation; native Key-Value mutation supports typed replacement, targeted collection edits, and TTL preservation |
@@ -78,7 +78,7 @@ queries or terminate sessions.
 | --- | --- | --- | --- | --- |
 | PostgreSQL | PostgreSQL 12 or newer | Database + schema | Tables, views, materialized views, sequences, functions, procedures, types | Type family, defaults, identity, generated expressions, character length, collation, comments; numeric precision/scale is not advertised |
 | MySQL | Oracle MySQL 8.0.13 or newer | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
-| MariaDB | MariaDB 10.5 or newer; uses the MySQL-compatible transport and catalog contract | Database is schema | Tables, views, functions, procedures, triggers | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments |
+| MariaDB | MariaDB 10.5 or newer; product-specific version gate and MySQL-compatible transport | Database is schema | Tables, views, functions, procedures, triggers, sequences | Type family, defaults, auto-increment, generated expressions, numeric precision/scale, character length, collation, character set, comments; CHECK expressions are structured relation children; extended TIME values currently fall back to text |
 | Oracle | Profile/URL recognition, native connect/probe, basic query, catalog, preview, DDL, and generated result pagination implemented for Oracle 12c+; advanced contract pending | Service + owner/schema | Tables, views, sequences, columns, indexes, primary/unique/check constraints | Type family, defaults, numeric precision/scale, character length; advanced LOB metadata pending |
 | SQL Server | SQL Server 2012 or newer | Database + schema | Tables, views, functions, procedures, sequences, triggers; relation children include columns, indexes, keys, and foreign keys | Type family, defaults, identity, computed/generated expressions, numeric precision/scale, character length, collation, comments, and rowversion metadata |
 | SQLite | SQLite metadata support through native schema tables; no server-version gate | Database + attached schema aliases | Tables, views, triggers | Default expressions and hidden-column metadata; unsupported fields are represented as unsupported |
@@ -210,10 +210,10 @@ Driver-specific DDL behavior is:
   It does not require database or role creation privileges. A dropped object,
   an OID reused for another relation kind, or an object hidden by permissions
   is not treated as a rename.
- - Oracle MySQL and MariaDB read the main table/view and each trigger through `SHOW CREATE`,
-  discovers triggers through `information_schema`, and assembles the native
-  object statement with sorted trigger statements. MariaDB follows the same
-  contract, with its version-specific catalog gate.
+- Oracle MySQL and MariaDB read the main table/view and each trigger through `SHOW CREATE`,
+  discover triggers and CHECK expressions through `information_schema`, and assemble the native
+  object statement with sorted trigger statements. MariaDB additionally discovers sequences
+  from `information_schema.sequences`; sequence mutation is not advertised yet.
 - SQLite reads the main table/view and related indexes/triggers from each
   schema's `sqlite_schema` table. The complete read runs on the single SQLite
   connection inside a transaction that is rolled back afterward. A relation

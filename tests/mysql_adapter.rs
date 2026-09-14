@@ -97,6 +97,51 @@ fn mysql_mutation_capabilities_expose_safe_table_and_view_creation() {
 }
 
 #[test]
+fn mysql_definition_queries_include_auto_increment_metadata() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("column_comment, extra FROM information_schema.columns"));
+    assert!(source.contains("AUTO_INCREMENT"));
+}
+
+#[test]
+fn mysql_relation_children_read_check_constraints_structurally() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("information_schema.check_constraints"));
+    assert!(source.contains("CatalogKind::CheckConstraint"));
+    assert!(source.contains("ConstraintMetadata::Check"));
+}
+
+#[test]
+fn mariadb_catalog_capabilities_add_sequences_without_changing_mysql() {
+    assert!(
+        !MySqlAdapter::catalog_capabilities()
+            .top_level_groups
+            .contains(&ObjectGroup::Sequences)
+    );
+    assert!(
+        MySqlAdapter::mariadb_catalog_capabilities()
+            .top_level_groups
+            .contains(&ObjectGroup::Sequences)
+    );
+}
+
+#[test]
+fn mariadb_catalog_search_includes_sequence_candidates() {
+    let source = include_str!("../src/db/mysql.rs");
+    assert!(source.contains("MARIADB_CATALOG_SEARCH_SEQUENCE_SQL"));
+    assert!(source.contains("FROM information_schema.sequences"));
+}
+
+#[test]
+fn mysql_mutation_capabilities_do_not_advertise_unloaded_sequence_editing() {
+    let capabilities = MySqlAdapter::catalog_mutation_capabilities();
+    assert!(!capabilities.create.iter().any(|option| {
+        option.object_type
+            == lazydb::db::catalog_mutation::CatalogObjectType::Catalog(CatalogKind::Sequence)
+    }));
+}
+
+#[test]
 fn quotes_mysql_identifiers_and_uses_information_schema() {
     assert_eq!(mysql::quote_identifier("odd`name"), "`odd``name`");
     assert!(mysql::CATALOG_TABLES_SQL.contains("information_schema.tables"));

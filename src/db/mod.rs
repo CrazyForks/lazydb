@@ -443,7 +443,7 @@ impl DatabaseConnection {
         match self {
             Self::Postgres(_) => PostgresAdapter::catalog_capabilities(),
             Self::MySql(_) => MySqlAdapter::catalog_capabilities(),
-            Self::MariaDb(_) => MySqlAdapter::catalog_capabilities(),
+            Self::MariaDb(_) => MySqlAdapter::mariadb_catalog_capabilities(),
             Self::Oracle(_) => catalog::CatalogCapabilities {
                 namespace_model: catalog::NamespaceModel::DatabaseAndSchema,
                 top_level_groups: vec![

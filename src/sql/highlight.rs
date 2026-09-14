@@ -842,7 +842,7 @@ fn span_for(
 fn dialect_ref(dialect: SqlDialect) -> &'static dyn Dialect {
     match dialect {
         SqlDialect::Postgres => &PostgreSqlDialect {},
-        SqlDialect::MySql => &MySqlDialect {},
+        SqlDialect::MySql | SqlDialect::MariaDb => &MySqlDialect {},
         SqlDialect::SqlServer => &MsSqlDialect {},
         SqlDialect::Sqlite => &SQLiteDialect {},
         SqlDialect::Generic | SqlDialect::Oracle => &GenericDialect {},
