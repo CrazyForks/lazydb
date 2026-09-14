@@ -12620,9 +12620,16 @@ impl App {
                         let fallback = tab.tree.visible_ids().into_iter().find(|id| {
                             !matches!(id, crate::model::redis_key_tree::KeyTreeNodeId::Key(bytes) if bytes == &key.key)
                         });
+                        let keep_find = tab.find.as_ref().is_some_and(|find| {
+                            find.phase == crate::model::redis_browser::RedisFindPhase::Confirmed
+                        });
                         tab.rebuild_tree();
-                        tab.find = None;
-                        tab.select(fallback);
+                        if keep_find {
+                            tab.refresh_find_rows();
+                        } else {
+                            tab.find = None;
+                            tab.select(fallback);
+                        }
                     }
                 }
                 Vec::new()
@@ -13130,7 +13137,6 @@ impl App {
                     })
                 {
                     find.query.insert(character);
-                    tab.update_find();
                 }
                 Vec::new()
             }
@@ -13141,7 +13147,6 @@ impl App {
                     })
                 {
                     find.query.backspace();
-                    tab.update_find();
                 }
                 Vec::new()
             }
@@ -13152,12 +13157,19 @@ impl App {
                     })
                 {
                     find.query.delete();
-                    tab.update_find();
                 }
                 Vec::new()
             }
             Action::RedisFindConfirm => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+                    let empty_query = tab
+                        .find
+                        .as_ref()
+                        .is_some_and(|find| find.query.value().trim().is_empty());
+                    if empty_query {
+                        tab.close_find(true);
+                        return Vec::new();
+                    }
                     tab.confirm_find();
                     tab.tree
                         .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);

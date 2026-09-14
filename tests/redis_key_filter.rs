@@ -25,7 +25,16 @@ fn tab() -> RedisBrowserTab {
 fn filter_matches_loaded_keys_inside_collapsed_folders_and_keeps_ancestors() {
     let mut tab = tab();
     tab.open_find();
+    assert_eq!(
+        tab.visible_ids(),
+        vec![
+            KeyTreeNodeId::Prefix(b"cache:".to_vec()),
+            KeyTreeNodeId::Prefix(b"user:".to_vec())
+        ]
+    );
     tab.find.as_mut().unwrap().query.insert('1');
+    assert!(tab.find.as_ref().unwrap().matches.is_empty());
+    tab.confirm_find();
     tab.update_find();
 
     let find = tab.find.as_ref().unwrap();
@@ -37,13 +46,52 @@ fn filter_matches_loaded_keys_inside_collapsed_folders_and_keeps_ancestors() {
         ]
     );
     assert!(
-        find.filtered_rows
+        tab.visible_rows()
             .iter()
             .any(|row| row.id == KeyTreeNodeId::Prefix(b"cache:".to_vec()))
     );
     assert!(
-        find.filtered_rows
+        tab.visible_rows()
             .iter()
             .any(|row| row.id == KeyTreeNodeId::Prefix(b"user:".to_vec()))
+    );
+}
+
+#[test]
+fn confirmed_results_can_be_collapsed_without_affecting_the_browsing_tree() {
+    let mut tab = tab();
+    tab.open_find();
+    tab.find.as_mut().unwrap().query.insert('1');
+    let original_expanded = tab.tree.expanded.clone();
+    tab.confirm_find();
+
+    let folder = KeyTreeNodeId::Prefix(b"cache:".to_vec());
+    assert!(
+        tab.visible_ids()
+            .contains(&KeyTreeNodeId::Key(b"cache:1".to_vec()))
+    );
+    assert!(tab.toggle_prefix(&folder));
+    assert!(
+        !tab.visible_ids()
+            .contains(&KeyTreeNodeId::Key(b"cache:1".to_vec()))
+    );
+    assert_eq!(tab.tree.expanded, original_expanded);
+}
+
+#[test]
+fn editing_does_not_change_selection_or_expand_collapsed_prefixes() {
+    let mut tab = tab();
+    let folder = KeyTreeNodeId::Prefix(b"cache:".to_vec());
+    tab.tree.select(Some(folder.clone()));
+    let original_selected = tab.tree.selected.clone();
+    let original_expanded = tab.tree.expanded.clone();
+    tab.open_find();
+    tab.find.as_mut().unwrap().query.insert('1');
+
+    assert_eq!(tab.tree.selected, original_selected);
+    assert_eq!(tab.tree.expanded, original_expanded);
+    assert_eq!(
+        tab.visible_ids(),
+        vec![folder, KeyTreeNodeId::Prefix(b"user:".to_vec())]
     );
 }

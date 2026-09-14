@@ -1,9 +1,10 @@
 use ratatui::{
     Frame,
+    buffer::CellWidth,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::model::redis_browser::RedisValuePageState;
@@ -37,10 +38,7 @@ pub fn render(
     let keys_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Keys;
     let preview_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Preview;
     let keys_block = super::panel_block("", keys_focused, theme);
-    let mut keys_area = keys_block.inner(columns[0]);
-    if tab.find.is_some() {
-        keys_area.height = keys_area.height.saturating_sub(1);
-    }
+    let keys_area = keys_block.inner(columns[0]);
     let inner_preview = super::panel_block("Preview", preview_focused, theme);
     let preview_area = inner_preview.inner(columns[1]);
     frame.render_widget(
@@ -64,7 +62,7 @@ pub fn render(
     let rows = tab.visible_rows();
     let (rows, selected_id, query, phase, matches) = if let Some(find) = tab.find.as_ref() {
         (
-            find.filtered_rows.to_vec(),
+            rows,
             tab.tree.selected.clone(),
             Some(find.query.value().to_owned()),
             Some(find.phase),
@@ -73,7 +71,12 @@ pub fn render(
     } else {
         (rows, tab.tree.selected.clone(), None, None, None)
     };
-    let status = if rows.is_empty() {
+    let status = if query.is_some()
+        && phase == Some(crate::model::redis_browser::RedisFindPhase::Confirmed)
+        && matches == Some(0)
+    {
+        Some("No matching loaded keys".into())
+    } else if rows.is_empty() {
         Some(keyspace_empty_text(&tab.keyspace.status))
     } else {
         match &tab.keyspace.status {
@@ -100,13 +103,12 @@ pub fn render(
     } else {
         u16::from(status.is_some())
     };
+    let search_rows = u16::from(query.is_some());
     let row_area = Rect::new(
         keys_area.x,
-        keys_area.y,
+        keys_area.y.saturating_add(search_rows),
         keys_area.width,
-        keys_area
-            .height
-            .saturating_sub(status_rows + u16::from(query.is_some())),
+        keys_area.height.saturating_sub(status_rows + search_rows),
     );
     ui.redis_keys_viewport_rows = Some((tab.id, row_area.height as usize));
     let visible_rows = rows
@@ -116,9 +118,9 @@ pub fn render(
         .collect::<Vec<_>>();
     let keys_scroll_track = Rect::new(
         keys_area.right().saturating_sub(1),
-        keys_area.y,
+        row_area.y,
         1,
-        keys_area.height,
+        row_area.height,
     );
     let keys = visible_rows
         .iter()
@@ -136,7 +138,7 @@ pub fn render(
             )
         })
         .collect::<Vec<_>>();
-    let key_body = if let Some(status) = status {
+    if let Some(status) = status {
         let footer = Rect::new(
             keys_area.x,
             keys_area.bottom().saturating_sub(status_rows),
@@ -150,56 +152,36 @@ pub fn render(
                 .wrap(Wrap { trim: true }),
             footer,
         );
-        row_area
     } else {
-        frame.render_widget(Paragraph::new(keys), keys_area);
-        keys_area
-    };
+        frame.render_widget(Paragraph::new(keys), row_area);
+    }
     if let Some(query) = query {
-        let search_area = Rect::new(
-            columns[0].x + 1,
-            key_body.bottom().saturating_sub(1),
-            columns[0].width.saturating_sub(2),
-            1,
-        );
+        let search_area = Rect::new(keys_area.x, keys_area.y, keys_area.width, 1);
         ui.hit_regions.push(crate::ui::HitRegion {
             area: search_area,
             target: crate::ui::HitTarget::RedisFindInput(tab.id),
         });
-        let phase = if phase == Some(crate::model::redis_browser::RedisFindPhase::Editing) {
-            "/"
+        let prefix = if phase == Some(crate::model::redis_browser::RedisFindPhase::Editing) {
+            "/ "
         } else {
-            "?"
+            "? "
         };
+        let input = format!("{prefix}{query}");
         frame.render_widget(
-            Paragraph::new(format!("{phase}{query}  {} matches", matches.unwrap_or(0))).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::new().fg(
-                        if tab.find.as_ref().is_some_and(|find| {
-                            find.phase == crate::model::redis_browser::RedisFindPhase::Editing
-                        }) {
-                            theme.accent
-                        } else {
-                            theme.border
-                        },
-                    )),
-            ),
+            Paragraph::new(input).style(Style::new().fg(theme.action).bg(theme.surface)),
             search_area,
         );
-        if tab
-            .find
-            .as_ref()
-            .is_some_and(|find| find.phase == crate::model::redis_browser::RedisFindPhase::Editing)
-        {
-            let cursor_x = search_area.x.saturating_add(1).saturating_add(
-                query
-                    .chars()
-                    .count()
-                    .min(search_area.width.saturating_sub(2) as usize) as u16,
+        if phase == Some(crate::model::redis_browser::RedisFindPhase::Editing) {
+            let prefix_width = prefix.cell_width();
+            let query_width = query.cell_width();
+            let cursor_x = search_area.x.saturating_add(
+                prefix_width + query_width.min(search_area.width.saturating_sub(prefix_width)),
             );
             ui.cursor = Some(crate::ui::CursorSpec {
-                position: ratatui::layout::Position::new(cursor_x, search_area.y),
+                position: ratatui::layout::Position::new(
+                    cursor_x.min(search_area.right().saturating_sub(1)),
+                    search_area.y,
+                ),
                 style: crate::ui::CursorStyle::Bar,
             });
         }
