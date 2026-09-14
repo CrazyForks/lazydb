@@ -529,6 +529,19 @@ impl Runtime {
                 preview_generation,
                 key,
             } => self.load_redis_value_preview(tab_id, request_connection, preview_generation, key),
+            Command::FormatLargeRedisValuePage {
+                tab_id,
+                connection,
+                preview_generation,
+                format,
+                page,
+            } => self.format_large_redis_value_page(
+                tab_id,
+                connection,
+                preview_generation,
+                format,
+                page,
+            ),
             Command::ResolveCatalogRelation {
                 connection,
                 catalog_epoch,
@@ -1531,6 +1544,29 @@ impl Runtime {
                 }
             }
         }));
+    }
+
+    fn format_large_redis_value_page(
+        &mut self,
+        tab_id: Uuid,
+        connection: crate::identity::ConnectionIdentity,
+        preview_generation: u64,
+        format: crate::value_preview::PreviewFormat,
+        page: crate::db::redis::read::RedisValuePage,
+    ) {
+        let sender = self.event_sender.clone();
+        self.background_tasks
+            .push(tokio::task::spawn_blocking(move || {
+                let result = crate::ui::redis_value::format_page(&page, format.view);
+                let _ = sender.send(Action::RedisValuePageFormatted {
+                    tab_id,
+                    connection,
+                    preview_generation,
+                    format,
+                    page,
+                    result,
+                });
+            }));
     }
 
     fn check_secret_store_availability(&mut self) {

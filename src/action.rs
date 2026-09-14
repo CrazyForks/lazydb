@@ -888,6 +888,14 @@ pub enum Action {
         key: crate::db::redis::types::RedisKeyId,
         message: String,
     },
+    RedisValuePageFormatted {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        preview_generation: u64,
+        format: crate::value_preview::PreviewFormat,
+        page: crate::db::redis::read::RedisValuePage,
+        result: Result<String, String>,
+    },
     CatalogRelationResolved {
         connection: ConnectionIdentity,
         catalog_epoch: u64,
@@ -1332,6 +1340,13 @@ pub enum Command {
         connection: ConnectionIdentity,
         preview_generation: u64,
         key: crate::db::redis::types::RedisKeyId,
+    },
+    FormatLargeRedisValuePage {
+        tab_id: Uuid,
+        connection: ConnectionIdentity,
+        preview_generation: u64,
+        format: crate::value_preview::PreviewFormat,
+        page: crate::db::redis::read::RedisValuePage,
     },
     ResolveCatalogRelation {
         connection: ConnectionIdentity,

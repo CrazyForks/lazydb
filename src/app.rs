@@ -12689,11 +12689,46 @@ impl App {
                                 page: page.clone(),
                                 format: tab.format.selected,
                             };
-                        let text = crate::ui::redis_value::format_page(page, tab.format.view())
+                        let format = tab.format.selected;
+                        let should_prepare_off_thread = matches!(
+                            &page.value,
+                            crate::db::redis::read::RedisPageValue::String(bytes)
+                                if bytes.len() > 32 * 1024
+                        );
+                        if should_prepare_off_thread {
+                            return vec![Command::FormatLargeRedisValuePage {
+                                tab_id,
+                                connection,
+                                preview_generation,
+                                format,
+                                page: page.clone(),
+                            }];
+                        }
+                        let text = crate::ui::redis_value::format_page(page, format.view)
                             .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
                         self.editor.open_read_only(tab.preview_editor_id, &text);
                     }
                 }
+                Vec::new()
+            }
+            Action::RedisValuePageFormatted {
+                tab_id,
+                connection,
+                preview_generation,
+                format,
+                page,
+                result,
+            } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                    && tab.format.selected == format
+                    && let Ok(text) = result
+                {
+                    self.editor.open_read_only(tab.preview_editor_id, &text);
+                }
+                let _ = page;
                 Vec::new()
             }
             Action::RedisPreviewCycleFormat => {
