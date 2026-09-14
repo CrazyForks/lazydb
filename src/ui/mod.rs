@@ -3751,16 +3751,25 @@ pub(crate) fn editor_line_spans(
         .map(|(_, start, end)| (*start, *end))
         .collect::<Vec<_>>();
     let mut display_cell = 0usize;
+    let mut source_span_index = 0usize;
     let mut result: Vec<Span<'static>> = Vec::new();
     let source_boundaries = &line.source_byte_boundaries;
     for boundary in 0..source_boundaries.len().saturating_sub(1) {
         let source_start = line.source_start + source_boundaries[boundary];
         let source_end = line.source_start + source_boundaries[boundary + 1];
-        let source_span = line
-            .spans
-            .iter()
-            .find(|span| span.source_start <= source_start && span.source_end >= source_end);
-        let kind = source_span.map_or(EditorHighlightKind::Plain, |span| span.kind);
+        while source_span_index + 1 < line.spans.len()
+            && line.spans[source_span_index].source_end <= source_start
+        {
+            source_span_index += 1;
+        }
+        let kind = if syntax {
+            line.spans
+                .get(source_span_index)
+                .filter(|span| span.source_start <= source_start && span.source_end >= source_end)
+                .map_or(EditorHighlightKind::Plain, |span| span.kind)
+        } else {
+            EditorHighlightKind::Plain
+        };
         let has_semantic_error =
             diagnostic_covers_source(&snapshot.semantic_diagnostics, source_start, source_end);
         let default_foreground = if has_semantic_error {

@@ -924,7 +924,14 @@ impl EditorWorkspace {
         viewport: EditorViewport,
         language: crate::model::editor_language::EditorLanguage,
     ) -> Result<EditorRenderSnapshot, EditorError> {
-        let mut snapshot = self.render_snapshot_with_dialect(id, viewport, SqlDialect::Generic)?;
+        let mut snapshot = self.render_snapshot_with_options(
+            id,
+            viewport,
+            SqlDialect::Generic,
+            None,
+            None,
+            false,
+        )?;
         for line in &mut snapshot.lines {
             line.spans = match language {
                 crate::model::editor_language::EditorLanguage::Json
@@ -1073,6 +1080,18 @@ impl EditorWorkspace {
         statement: Option<sql::TextRange>,
         sql_ranges: Option<&[sql::TextRange]>,
     ) -> Result<EditorRenderSnapshot, EditorError> {
+        self.render_snapshot_with_options(id, viewport, dialect, statement, sql_ranges, true)
+    }
+
+    fn render_snapshot_with_options(
+        &self,
+        id: Uuid,
+        viewport: EditorViewport,
+        dialect: SqlDialect,
+        statement: Option<sql::TextRange>,
+        sql_ranges: Option<&[sql::TextRange]>,
+        analyze_sql: bool,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
         let session = self
             .sessions
             .get(&id)
@@ -1098,33 +1117,41 @@ impl EditorWorkspace {
             session.viewport.corner.get_x()
         };
         let overscan = 2;
-        let key = sql::AnalysisKey {
-            console_id: id,
-            document_revision: session.revision,
-            dialect,
-            highlight_ranges: sql_ranges.map(<[sql::TextRange]>::to_vec),
+        let highlights = if analyze_sql {
+            let key = sql::AnalysisKey {
+                console_id: id,
+                document_revision: session.revision,
+                dialect,
+                highlight_ranges: sql_ranges.map(<[sql::TextRange]>::to_vec),
+            };
+            self.analysis_cache
+                .borrow_mut()
+                .retain(|cached, _| cached.console_id != id || *cached == key);
+            self.analysis_cache
+                .borrow_mut()
+                .entry(key)
+                .or_insert_with(|| {
+                    if full_text.chars().any(|character| {
+                        character.is_control() && character != '\n' && character != '\t'
+                    }) {
+                        Vec::new()
+                    } else {
+                        sql_ranges.map_or_else(
+                            || sql::highlight_sql(&full_text, dialect),
+                            |ranges| sql::highlight_sql_ranges(&full_text, ranges, dialect),
+                        )
+                    }
+                })
+                .clone()
+        } else {
+            Vec::new()
         };
-        self.analysis_cache
-            .borrow_mut()
-            .retain(|cached, _| cached.console_id != id || *cached == key);
-        let highlights = self
-            .analysis_cache
-            .borrow_mut()
-            .entry(key)
-            .or_insert_with(|| {
-                if full_text.chars().any(|character| {
-                    character.is_control() && character != '\n' && character != '\t'
-                }) {
-                    Vec::new()
-                } else {
-                    sql_ranges.map_or_else(
-                        || sql::highlight_sql(&full_text, dialect),
-                        |ranges| sql::highlight_sql_ranges(&full_text, ranges, dialect),
-                    )
-                }
-            })
-            .clone();
         let statements = statement.map(|_| sql::scan_statements(&full_text, dialect));
+        let mut line_start = full_text
+            .split_inclusive('\n')
+            .take(first_line)
+            .map(str::len)
+            .sum::<usize>();
         let mut lines = buffer
             .lines(first_line)
             .take(viewport.height.saturating_add(overscan))
@@ -1132,17 +1159,13 @@ impl EditorWorkspace {
             .map(|(offset, line)| {
                 let source = line.to_string();
                 let projection = project_editor_line(&source);
-                let line_start = full_text
-                    .split_inclusive('\n')
-                    .take(first_line + offset)
-                    .map(str::len)
-                    .sum::<usize>();
-                let line_end = line_start + source.len();
+                let current_line_start = line_start;
+                let line_end = current_line_start + source.len();
                 let current_statement =
                     statement.is_some_and(|range| range.start < line_end && range.end > line_start);
                 let statement_background_cells = statement_background_cells(
                     &source,
-                    line_start,
+                    current_line_start,
                     line_end,
                     statement,
                     statements.as_deref().unwrap_or_default(),
@@ -1162,7 +1185,7 @@ impl EditorWorkspace {
                             start,
                             EditorHighlightKind::Plain,
                             statement,
-                            line_start,
+                            current_line_start,
                             &projection,
                         ));
                     }
@@ -1172,7 +1195,7 @@ impl EditorWorkspace {
                             end,
                             map_highlight(highlight.kind),
                             statement,
-                            line_start,
+                            current_line_start,
                             &projection,
                         ));
                     }
@@ -1184,17 +1207,17 @@ impl EditorWorkspace {
                         source.len(),
                         EditorHighlightKind::Plain,
                         statement,
-                        line_start,
+                        current_line_start,
                         &projection,
                     ));
                 }
-                EditorRenderLine {
+                let rendered = EditorRenderLine {
                     line: first_line + offset,
                     display_text: projection.text.clone(),
                     spans: if spans.is_empty() {
                         vec![EditorRenderSpan {
                             text: projection.text,
-                            source_start: line_start,
+                            source_start: current_line_start,
                             source_end: line_end,
                             kind: EditorHighlightKind::Plain,
                             current_statement: statement.is_some_and(|range| {
@@ -1204,7 +1227,7 @@ impl EditorWorkspace {
                     } else {
                         spans
                     },
-                    source_start: line_start,
+                    source_start: current_line_start,
                     source_end: line_end,
                     source_byte_boundaries: projection.source_byte_boundaries,
                     source_to_display_bytes: projection.source_to_display_bytes,
@@ -1212,7 +1235,9 @@ impl EditorWorkspace {
                     current_statement,
                     statement_background_cells,
                     selection_newline: false,
-                }
+                };
+                line_start = line_end + usize::from(line_end < full_text.len());
+                rendered
             })
             .collect::<Vec<_>>();
         let selection =

@@ -250,6 +250,31 @@ impl RedisAdapter {
             | RedisReadRequest::StreamRange { key, .. } => key,
         };
         let metadata = self.key_metadata(key).await?;
+        self.read_value_page_with_metadata(request, metadata).await
+    }
+
+    pub async fn read_value_page_with_metadata(
+        &self,
+        request: &RedisReadRequest,
+        metadata: RedisKeyMetadata,
+    ) -> Result<RedisValuePage, DatabaseError> {
+        request.validate().map_err(DatabaseError::configuration)?;
+        let key = match request {
+            RedisReadRequest::StringRange { key, .. }
+            | RedisReadRequest::HashScan { key, .. }
+            | RedisReadRequest::ListRange { key, .. }
+            | RedisReadRequest::SetScan { key, .. }
+            | RedisReadRequest::SortedSetRange { key, .. }
+            | RedisReadRequest::StreamRange { key, .. } => key,
+        };
+        if metadata.value_type == RedisType::Missing {
+            return Err(DatabaseError::configuration("Redis key is missing"));
+        }
+        if metadata.key != *key {
+            return Err(DatabaseError::configuration(
+                "Redis metadata key does not match the requested key",
+            ));
+        }
         let mut connection = self.connection_clone();
         let (value, position) = match request {
             RedisReadRequest::StringRange { start, end, .. } => {

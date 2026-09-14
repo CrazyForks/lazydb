@@ -126,17 +126,29 @@ pub fn format_ttl(ttl: &crate::db::redis::read::TtlState) -> String {
 pub fn format_page(page: &RedisValuePage, view: ValueView) -> Result<String, String> {
     let raw = page_text(page);
     match view {
-        ValueView::Raw | ValueView::Hex | ValueView::Table => Ok(raw),
+        ValueView::Raw | ValueView::Table => Ok(raw),
+        ValueView::Hex => Ok(page_bytes(page, &raw)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()),
         ValueView::Json => {
-            let value: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|error| format!("JSON parse error: {error}"))?;
+            let bytes = page_bytes(page, &raw);
+            let value: serde_json::Value = serde_json::from_slice(bytes)
+                .map_err(|error| format!("JSON parse error: {error}"))?;
             serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
         }
         ValueView::Yaml => {
-            let value: serde_yaml::Value =
-                serde_yaml::from_str(&raw).map_err(|error| format!("YAML parse error: {error}"))?;
+            let value: serde_yaml::Value = serde_yaml::from_slice(page_bytes(page, &raw))
+                .map_err(|error| format!("YAML parse error: {error}"))?;
             serde_yaml::to_string(&value).map_err(|error| error.to_string())
         }
+    }
+}
+
+fn page_bytes<'a>(page: &'a RedisValuePage, raw: &'a str) -> &'a [u8] {
+    match &page.value {
+        RedisPageValue::String(value) => value,
+        _ => raw.as_bytes(),
     }
 }
 
@@ -186,13 +198,19 @@ fn ttl_text(ttl: &crate::db::redis::read::TtlState) -> String {
 }
 
 fn display_bytes(value: &[u8]) -> String {
-    if value
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
-    {
-        String::from_utf8_lossy(value).into_owned()
-    } else {
-        value.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+    match std::str::from_utf8(value) {
+        Ok(text) => {
+            let mut output = String::with_capacity(text.len());
+            for character in text.chars() {
+                if character.is_control() {
+                    output.push_str(&format!("\\x{:02x}", character as u32));
+                } else {
+                    output.push(character);
+                }
+            }
+            output
+        }
+        Err(_) => value.iter().map(|byte| format!("\\x{byte:02x}")).collect(),
     }
 }
 
