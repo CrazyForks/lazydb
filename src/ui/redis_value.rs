@@ -84,10 +84,13 @@ mod tests {
                 },
                 value_type: RedisType::Hash,
                 ttl: TtlState::Unavailable,
+                memory_usage_bytes: None,
+                value_size: None,
             },
             position: RedisPagePosition::Complete,
             value,
             truncated: false,
+            complete: true,
             raw_bytes: 5,
             formatted_bytes: 5,
         }

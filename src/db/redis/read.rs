@@ -30,6 +30,10 @@ pub struct RedisKeyMetadata {
     pub key: RedisKeyId,
     pub value_type: RedisType,
     pub ttl: TtlState,
+    /// Redis's allocator estimate for the complete key, not the loaded page.
+    pub memory_usage_bytes: Option<u64>,
+    /// String byte length or collection element count, according to type.
+    pub value_size: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +65,9 @@ pub struct RedisValuePage {
     pub position: RedisPagePosition,
     pub value: RedisPageValue,
     pub truncated: bool,
+    /// Whether this page represents the complete value under the current
+    /// pagination contract. `truncated` instead describes a client budget.
+    pub complete: bool,
     pub raw_bytes: usize,
     pub formatted_bytes: usize,
 }
@@ -168,10 +175,56 @@ impl RedisAdapter {
             .query_async(&mut connection)
             .await
             .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+        let value_type = RedisType::parse(&value_type);
+        let memory_usage_bytes = best_effort_u64(&mut connection, "MEMORY", |command| {
+            command.arg("USAGE").arg(&key.key);
+        })
+        .await?;
+        let value_size = match value_type {
+            RedisType::String => {
+                best_effort_u64(&mut connection, "STRLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Hash => {
+                best_effort_u64(&mut connection, "HLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::List => {
+                best_effort_u64(&mut connection, "LLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Set => {
+                best_effort_u64(&mut connection, "SCARD", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::SortedSet => {
+                best_effort_u64(&mut connection, "ZCARD", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Stream => {
+                best_effort_u64(&mut connection, "XLEN", |command| {
+                    command.arg(&key.key);
+                })
+                .await?
+            }
+            RedisType::Module | RedisType::Missing | RedisType::Unknown => None,
+        };
         Ok(RedisKeyMetadata {
             key: key.clone(),
-            value_type: RedisType::parse(&value_type),
+            value_type,
             ttl: parse_ttl(ttl),
+            memory_usage_bytes,
+            value_size,
         })
     }
 
@@ -198,9 +251,17 @@ impl RedisAdapter {
                     .query_async(&mut connection)
                     .await
                     .map_err(|error| redis_error(error, ErrorCategory::Network))?;
+                let complete = metadata
+                    .value_size
+                    .is_some_and(|size| *end >= size.saturating_sub(1))
+                    || value.len() < end.saturating_sub(*start).saturating_add(1) as usize;
                 (
                     RedisPageValue::String(value),
-                    RedisPagePosition::StringOffset(end.saturating_add(1)),
+                    if complete {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::StringOffset(end.saturating_add(1))
+                    },
                 )
             }
             RedisReadRequest::HashScan { cursor, count, .. } => {
@@ -262,7 +323,14 @@ impl RedisAdapter {
                             .map(|(index, value)| (*start + index as u64, value))
                             .collect(),
                     ),
-                    RedisPagePosition::ListOffset(end.saturating_add(1)),
+                    if metadata
+                        .value_size
+                        .is_some_and(|size| *end >= size.saturating_sub(1))
+                    {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::ListOffset(end.saturating_add(1))
+                    },
                 )
             }
             RedisReadRequest::SortedSetRange { start, end, .. } => {
@@ -284,16 +352,25 @@ impl RedisAdapter {
                     .collect();
                 (
                     RedisPageValue::SortedSet(pairs),
-                    RedisPagePosition::SortedSetOffset(end.saturating_add(1)),
+                    if metadata
+                        .value_size
+                        .is_some_and(|size| *end >= size.saturating_sub(1))
+                    {
+                        RedisPagePosition::Complete
+                    } else {
+                        RedisPagePosition::SortedSetOffset(end.saturating_add(1))
+                    },
                 )
             }
         };
         let raw_bytes = value_bytes(&value);
+        let complete = matches!(position, RedisPagePosition::Complete);
         Ok(RedisValuePage {
             metadata,
             position,
             value,
             truncated: false,
+            complete,
             raw_bytes,
             formatted_bytes: raw_bytes,
         })
@@ -388,6 +465,20 @@ fn value_bytes(value: &RedisPageValue) -> usize {
                 id.len() + fields.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
             })
             .sum(),
+    }
+}
+
+async fn best_effort_u64(
+    connection: &mut redis::aio::MultiplexedConnection,
+    command_name: &str,
+    configure: impl FnOnce(&mut redis::Cmd),
+) -> Result<Option<u64>, DatabaseError> {
+    let mut command = redis::cmd(command_name);
+    configure(&mut command);
+    match command.query_async::<Option<u64>>(connection).await {
+        Ok(value) => Ok(value),
+        Err(error) if error.code().is_some() => Ok(None),
+        Err(error) => Err(redis_error(error, ErrorCategory::Network)),
     }
 }
 
