@@ -475,6 +475,38 @@ enum CompletionAfterEdit {
 }
 
 impl App {
+    fn load_sql_history_overlay(&mut self, append: bool) -> Vec<Command> {
+        let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() else {
+            return Vec::new();
+        };
+        if append && view.next_cursor.is_none() {
+            return Vec::new();
+        }
+        if view.loading {
+            return Vec::new();
+        }
+        let cursor = append.then(|| view.next_cursor.clone()).flatten();
+        let generation = if append {
+            view.query_generation
+        } else {
+            view.begin_query()
+        };
+        let overlay_id = view.overlay_id;
+        view.request(cursor.clone());
+        vec![Command::LoadSqlHistory {
+            overlay_id,
+            generation,
+            request: crate::persistence::sql_history::HistoryPageRequest {
+                limit: 100,
+                cursor,
+                search: (!view.search.value().is_empty()).then(|| view.search.value().to_owned()),
+                status: view.status_filter,
+                transaction_outcome: view.transaction_filter,
+                database: view.database_filter.clone(),
+            },
+        }]
+    }
+
     pub fn is_editor_target_switch_pending(&self) -> bool {
         self.pending_editor_target_switch.is_some()
     }
@@ -4609,6 +4641,11 @@ impl App {
                 Vec::new()
             }
             Action::SqlHistorySearchInsert(character) => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Search;
+                    view.search.insert(character);
+                    return self.load_sql_history_overlay(false);
+                }
                 if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.search.push(character);
                     tab.query_generation = tab.query_generation.saturating_add(1);
@@ -4629,6 +4666,10 @@ impl App {
                 Vec::new()
             }
             Action::SqlHistorySearchClear => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.search.clear();
+                    return self.load_sql_history_overlay(false);
+                }
                 if let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.search.clear();
                     tab.query_generation = tab.query_generation.saturating_add(1);
@@ -4645,6 +4686,12 @@ impl App {
                             database: tab.database_filter.clone(),
                         },
                     }];
+                }
+                Vec::new()
+            }
+            Action::SqlHistorySearchConfirm | Action::SqlHistorySearchCancel => {
+                if let Some(Overlay::SqlHistory(view)) = self.overlay.as_mut() {
+                    view.mode = crate::model::sql_history_view::SqlHistoryMode::Browse;
                 }
                 Vec::new()
             }
@@ -4690,7 +4737,7 @@ impl App {
                             Some(_) => None,
                         };
                     }
-                    return Vec::new();
+                    return self.load_sql_history_overlay(false);
                 }
                 let Some(WorkspaceTab::History(tab)) = self.tabs.get_mut(self.active_tab) else {
                     return Vec::new();
@@ -4734,6 +4781,8 @@ impl App {
                 .into_iter()
                 .collect()
             }
+            Action::SqlHistoryRefresh => self.load_sql_history_overlay(false),
+            Action::SqlHistoryLoadNext => self.load_sql_history_overlay(true),
             Action::DashboardSetPage(page) => {
                 let Some(WorkspaceTab::Dashboard(tab)) = self.tabs.get_mut(self.active_tab) else {
                     return Vec::new();

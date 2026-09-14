@@ -147,12 +147,27 @@ impl Keymap {
                     }),
                 };
             }
+            if let Some(crate::model::workspace::Overlay::SqlHistory(view)) = app.overlay.as_ref()
+                && view.mode == crate::model::sql_history_view::SqlHistoryMode::Search
+            {
+                return match event.code {
+                    KeyCode::Esc => Some(Action::SqlHistorySearchCancel),
+                    KeyCode::Enter => Some(Action::SqlHistorySearchConfirm),
+                    KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
+                    KeyCode::Char(character) if event.modifiers.is_empty() => {
+                        Some(Action::SqlHistorySearchInsert(character))
+                    }
+                    _ => None,
+                };
+            }
             return match event.code {
                 KeyCode::Esc => Some(Action::DismissOverlay),
                 KeyCode::Char('y') => Some(Action::SqlHistoryCopy),
                 KeyCode::Enter => Some(Action::SqlHistoryOpenDetail),
                 KeyCode::Char('f') => Some(Action::SqlHistoryCycleStatus),
                 KeyCode::Char('t') => Some(Action::SqlHistoryCycleTransaction),
+                KeyCode::Char('r') => Some(Action::SqlHistoryRefresh),
+                KeyCode::PageDown => Some(Action::SqlHistoryLoadNext),
                 KeyCode::Char('j') | KeyCode::Down => Some(Action::SqlHistoryMove(1)),
                 KeyCode::Char('k') | KeyCode::Up => Some(Action::SqlHistoryMove(-1)),
                 KeyCode::Backspace => Some(Action::SqlHistorySearchClear),
