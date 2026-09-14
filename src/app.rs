@@ -15746,6 +15746,25 @@ impl App {
         }
     }
 
+    pub(crate) fn sql_history_dialect(&self, profile_id: Option<Uuid>) -> SqlDialect {
+        let Some(profile_id) = profile_id else {
+            return SqlDialect::Generic;
+        };
+        match self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.kind)
+        {
+            Some(DatabaseKind::Postgres) => SqlDialect::Postgres,
+            Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => SqlDialect::MySql,
+            Some(DatabaseKind::Oracle) => SqlDialect::Oracle,
+            Some(DatabaseKind::Sqlite) => SqlDialect::Sqlite,
+            Some(DatabaseKind::SqlServer) => SqlDialect::SqlServer,
+            Some(DatabaseKind::Redis) | None => SqlDialect::Generic,
+        }
+    }
+
     fn format_current(&mut self) {
         let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
             return;

@@ -112,13 +112,14 @@ fn render_content(
     } else {
         Layout::vertical([Constraint::Percentage(48), Constraint::Percentage(52)]).split(area)
     };
-    render_list(frame, split[0], view, theme, state);
+    render_list(frame, split[0], app, view, theme, state);
     render_detail(frame, split[1], app, view, theme, state);
 }
 
 fn render_list(
     frame: &mut Frame<'_>,
     area: Rect,
+    app: &App,
     view: &SqlHistoryState,
     theme: Theme,
     state: &mut super::UiState,
@@ -138,7 +139,7 @@ fn render_list(
         let preview_height = (inner.bottom().saturating_sub(y)).min(3);
         let lines = sql_preview::lines(
             &item.sql,
-            crate::sql::SqlDialect::Generic,
+            app.sql_history_dialect(item.profile_id),
             inner.width.saturating_sub(2) as usize,
             theme,
         );
