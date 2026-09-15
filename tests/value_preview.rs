@@ -109,6 +109,8 @@ fn redis_table_projection_preserves_all_display_rows_and_source_bytes() {
     assert_eq!(table.rows[1].cells[1], r#"\xff\x00"#);
     assert_eq!(table.rows[1].identity[0], "中文".as_bytes());
     assert_eq!(table.rows[1].identity[1], &[0xff, 0x00]);
+    assert_eq!(table.rows[1].row_key, "中文".as_bytes());
+    assert_eq!(table.rows[1].source_cell(1), Some(&[0xff, 0x00][..]));
 }
 
 #[test]
