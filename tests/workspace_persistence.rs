@@ -250,6 +250,53 @@ fn workspace_v4_load_migrates_missing_global_fields_to_empty() {
 }
 
 #[test]
+fn loading_a_workspace_with_duplicate_console_ids_reports_the_id() {
+    let temp = TempDir::new().unwrap();
+    let manifest = temp.path().join("workspace.toml");
+    let id = Uuid::new_v4();
+    let store = WorkspaceStore::new(manifest.clone(), temp.path().join("sql"));
+    std::fs::write(
+        &manifest,
+        format!(
+            "version = 5\n\n[[consoles]]\nid = \"{id}\"\nname = \"first\"\nsql_file = \"{id}.sql\"\ntransaction_mode = \"auto\"\n\n[[consoles]]\nid = \"{id}\"\nname = \"second\"\nsql_file = \"{id}.sql\"\ntransaction_mode = \"auto\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(temp.path().join("sql")).unwrap();
+    std::fs::write(
+        temp.path().join("sql").join(format!("{id}.sql")),
+        "select 1",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        store.load(),
+        Err(WorkspaceError::Invalid(message))
+            if message.contains("duplicate console ID") && message.contains(&id.to_string())
+    ));
+}
+
+#[test]
+fn loading_a_workspace_with_a_path_traversal_sql_file_is_rejected() {
+    let temp = TempDir::new().unwrap();
+    let manifest = temp.path().join("workspace.toml");
+    let id = Uuid::new_v4();
+    let store = WorkspaceStore::new(manifest.clone(), temp.path().join("sql"));
+    std::fs::write(
+        &manifest,
+        format!(
+            "version = 5\n\n[[consoles]]\nid = \"{id}\"\nname = \"unsafe\"\nsql_file = \"../outside.sql\"\ntransaction_mode = \"auto\"\n"
+        ),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        store.load(),
+        Err(WorkspaceError::Invalid(message)) if message.contains("invalid SQL file")
+    ));
+}
+
+#[test]
 fn deleting_a_sql_file_is_idempotent_and_only_removes_that_console() {
     let temp = TempDir::new().unwrap();
     let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
@@ -381,6 +428,21 @@ fn workspace_v3_validation_rejects_duplicate_and_cross_profile_references() {
     assert!(matches!(
         store.save(&duplicate_profiles),
         Err(WorkspaceError::Invalid(_))
+    ));
+
+    let mut duplicate_consoles = valid_snapshot();
+    duplicate_consoles.profiles[0].consoles[0].name = "same display name".into();
+    duplicate_consoles.profiles.push(PersistedProfileWorkspace {
+        profile_id: Uuid::new_v4(),
+        active_tab: None,
+        consoles: vec![duplicate_consoles.profiles[0].consoles[0].clone()],
+        tabs: Vec::new(),
+    });
+    assert!(matches!(
+        store.save(&duplicate_consoles),
+        Err(WorkspaceError::Invalid(message))
+            if message.contains("duplicate console ID")
+                && message.contains(&duplicate_consoles.profiles[0].consoles[0].id.to_string())
     ));
 
     let mut missing_console = valid_snapshot();

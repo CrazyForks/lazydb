@@ -276,9 +276,9 @@ pub struct App {
     pub sql_editor_list: crate::model::sql_editor_list::SqlEditorListState,
     console_manager_origin_target: Option<ExecutionTarget>,
     workspaces: HashMap<Uuid, ConnectionWorkspace>,
-    workspace_editors: HashMap<Uuid, EditorWorkspace>,
     workspace_focus: HashMap<Uuid, Focus>,
     workspace_save: crate::model::workspace_save::SaveState,
+    pending_sql_deletions: HashMap<u64, Vec<Uuid>>,
     workspace_save_closing: bool,
     workspace_quit_save: crate::model::workspace_save::QuitSaveState,
     pub notifications: NotificationCenter,
@@ -834,9 +834,9 @@ impl App {
             sql_editor_list: Default::default(),
             console_manager_origin_target: None,
             workspaces: HashMap::new(),
-            workspace_editors: HashMap::new(),
             workspace_focus: HashMap::new(),
             workspace_save: Default::default(),
+            pending_sql_deletions: HashMap::new(),
             workspace_save_closing: false,
             workspace_quit_save: Default::default(),
             notifications: NotificationCenter::default(),
@@ -1056,10 +1056,7 @@ impl App {
     /// Merge a restored profile workspace into the shared document surface.
     /// Existing editor sessions are deliberately left untouched so switching
     /// connections cannot discard another Console's text or history.
-    fn append_workspace(&mut self, profile_id: Uuid, workspace: ConnectionWorkspace) {
-        if let Some(editor) = self.workspace_editors.remove(&profile_id) {
-            self.editor.merge_sessions_from(editor);
-        }
+    fn append_workspace(&mut self, _profile_id: Uuid, workspace: ConnectionWorkspace) {
         let existing_ids = self
             .tabs
             .iter()
@@ -1899,19 +1896,44 @@ impl App {
                     .filter(|record| self.console_belongs_to_profile(record, profile_id))
                     .map(|record| record.id)
                     .collect::<HashSet<_>>();
-                let profile_editors = workspace
+                // Cached workspaces are compatibility projections.  The
+                // shared document records and editor sessions are authoritative
+                // for names, targets, and SQL text even for inactive profiles.
+                let mut profile_editors = self
                     .sql_editors
                     .iter()
-                    .filter(|record| profile_console_ids.contains(&record.id))
+                    .filter(|record| {
+                        profile_console_ids.contains(&record.id)
+                            && self.console_belongs_to_profile(record, profile_id)
+                    })
                     .cloned()
                     .collect::<Vec<_>>();
-                sql.extend(
+                let live_ids = profile_editors
+                    .iter()
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                profile_editors.extend(
                     workspace
-                        .sql
+                        .sql_editors
                         .iter()
-                        .filter(|(id, _)| profile_console_ids.contains(id))
+                        .filter(|record| {
+                            profile_console_ids.contains(&record.id)
+                                && !live_ids.contains(&record.id)
+                        })
                         .cloned(),
                 );
+                sql.extend(profile_editors.iter().filter_map(|record| {
+                    self.editor_text(record.id)
+                        .ok()
+                        .or_else(|| {
+                            workspace
+                                .sql
+                                .iter()
+                                .find(|(id, _)| *id == record.id)
+                                .map(|(_, text)| text.clone())
+                        })
+                        .map(|text| (record.id, text))
+                }));
                 profiles.push(self.persisted_workspace_from_parts(
                     profile_id,
                     &profile_tabs,
@@ -1937,7 +1959,7 @@ impl App {
         {
             self.sql_editors
                 .iter()
-                .map(|record| self.persisted_console(record, None))
+                .map(|record| self.persisted_console(record))
                 .collect()
         } else {
             Vec::new()
@@ -1969,7 +1991,7 @@ impl App {
         } else {
             (legacy_consoles, Vec::new())
         };
-        WorkspaceSnapshot {
+        let mut snapshot = WorkspaceSnapshot {
             active_profile: self.active_workspace_profile,
             profiles,
             active_console: self.active_tab_id().unwrap_or(Uuid::nil()),
@@ -1977,7 +1999,78 @@ impl App {
             tabs: global_tabs,
             sql,
             recent_targets: self.recent_targets.clone(),
+        };
+        self.normalize_workspace_snapshot(&mut snapshot);
+        snapshot
+    }
+
+    /// Keep a malformed legacy/cache combination from making the whole save
+    /// fail.  The first record is authoritative; later copies are stale
+    /// projections of the same UUID and their references are discarded.
+    fn normalize_workspace_snapshot(&self, snapshot: &mut WorkspaceSnapshot) {
+        let live = self
+            .sql_editors
+            .iter()
+            .map(|record| (record.id, record))
+            .collect::<HashMap<_, _>>();
+        let mut seen = HashSet::new();
+        for profile in &mut snapshot.profiles {
+            let mut removed = HashSet::new();
+            profile.consoles.retain_mut(|console| {
+                if let Some(record) = live.get(&console.id) {
+                    let owner = record
+                        .execution_target
+                        .as_ref()
+                        .map(|target| target.profile_id)
+                        .or(self.active_workspace_profile)
+                        .unwrap_or(Uuid::nil());
+                    if profile.profile_id != owner {
+                        removed.insert(console.id);
+                        return false;
+                    }
+                    console.name = record.name.clone();
+                    console.target = record.execution_target.clone();
+                    console.transaction_mode = record.transaction_mode;
+                    console.open = record.open;
+                }
+                if seen.insert(console.id) {
+                    true
+                } else {
+                    removed.insert(console.id);
+                    false
+                }
+            });
+            if !removed.is_empty() {
+                profile.tabs.retain(|tab| {
+                    !matches!(tab, PersistedTab::Console { console_id } if removed.contains(console_id))
+                });
+            }
         }
+        let mut removed = HashSet::new();
+        snapshot.consoles.retain_mut(|console| {
+            if let Some(record) = live.get(&console.id) {
+                console.name = record.name.clone();
+                console.target = record.execution_target.clone();
+                console.transaction_mode = record.transaction_mode;
+                console.open = record.open;
+            }
+            if seen.insert(console.id) {
+                true
+            } else {
+                removed.insert(console.id);
+                false
+            }
+        });
+        if !removed.is_empty() {
+            snapshot.tabs.retain(|tab| {
+                !matches!(tab, PersistedTab::Console { console_id } if removed.contains(console_id))
+            });
+        }
+        let valid_ids = seen;
+        let mut sql_ids = HashSet::new();
+        snapshot
+            .sql
+            .retain(|(id, _)| valid_ids.contains(id) && sql_ids.insert(*id));
     }
 
     fn console_belongs_to_profile(&self, record: &ConsoleRecord, profile_id: Uuid) -> bool {
@@ -1999,19 +2092,15 @@ impl App {
         }
     }
 
-    fn persisted_console(
-        &self,
-        record: &ConsoleRecord,
-        open_tab: Option<&ConsoleTab>,
-    ) -> PersistedConsole {
+    fn persisted_console(&self, record: &ConsoleRecord) -> PersistedConsole {
         PersistedConsole {
             id: record.id,
-            name: open_tab.map_or_else(|| record.name.clone(), |tab| tab.name.clone()),
+            // ConsoleRecord is the document-level source of truth.  A tab is
+            // a view of that document and may be a stale cached projection.
+            name: record.name.clone(),
             sql_file: format!("{}.sql", record.id).into(),
-            target: open_tab
-                .and_then(|tab| tab.execution_target.clone())
-                .or_else(|| record.execution_target.clone()),
-            transaction_mode: open_tab.map_or(record.transaction_mode, |tab| tab.transaction_mode),
+            target: record.execution_target.clone(),
+            transaction_mode: record.transaction_mode,
             open: record.open,
         }
     }
@@ -2025,13 +2114,7 @@ impl App {
     ) -> PersistedProfileWorkspace {
         let consoles = sql_editors
             .iter()
-            .map(|record| {
-                let tab = tabs
-                    .iter()
-                    .find(|tab| tab.id() == record.id)
-                    .and_then(WorkspaceTab::as_console);
-                self.persisted_console(record, tab)
-            })
+            .map(|record| self.persisted_console(record))
             .collect();
         let tabs = tabs
             .iter()
@@ -2274,18 +2357,8 @@ impl App {
             .iter()
             .find(|item| item.id == profile.profile_id);
         let mut records = profile.consoles.clone();
-        if let Some(default) = records.first_mut() {
-            default.open = true;
-        }
         let mut tabs = Vec::new();
-        let mut persisted_tabs = profile.tabs.clone();
-        if let Some(default) = records.first()
-            && !persisted_tabs.iter().any(|tab| {
-                matches!(tab, PersistedTab::Console { console_id } if *console_id == default.id)
-            })
-        {
-            persisted_tabs.insert(0, PersistedTab::Console { console_id: default.id });
-        }
+        let persisted_tabs = profile.tabs.clone();
         for persisted in &persisted_tabs {
             match persisted {
                 PersistedTab::Console { console_id } => {
@@ -2296,13 +2369,7 @@ impl App {
                         let mut tab = ConsoleTab::new(console.name.clone());
                         tab.id = console.id;
                         tab.transaction_mode = console.transaction_mode;
-                        tab.execution_target = console.target.clone().filter(|target| {
-                            target.profile_id == profile.profile_id
-                                && selected.is_some_and(|item| target.is_valid(item))
-                        });
-                        if tab.execution_target.is_none() {
-                            tab.execution_target = selected.map(ExecutionTarget::from_profile);
-                        }
+                        tab.execution_target = console.target.clone();
                         tabs.push(WorkspaceTab::Sql(tab));
                     }
                 }
@@ -2377,10 +2444,7 @@ impl App {
                 .map(|console| ConsoleRecord {
                     id: console.id,
                     name: console.name,
-                    execution_target: console.target.filter(|target| {
-                        target.profile_id == profile.profile_id
-                            && selected.is_some_and(|item| target.is_valid(item))
-                    }),
+                    execution_target: console.target,
                     transaction_mode: console.transaction_mode,
                     open: console.open,
                 })
@@ -2391,10 +2455,17 @@ impl App {
     }
 
     fn persist_workspace_command(&mut self) -> Command {
+        self.persist_workspace_command_with_deletions(Vec::new())
+    }
+
+    fn persist_workspace_command_with_deletions(&mut self, deletions: Vec<Uuid>) -> Command {
         let revision = self.workspace_save.offered().unwrap_or_else(|| {
             self.notify_error("Workspace", "Workspace save revision exhausted");
             self.workspace_save.current_revision
         });
+        if !deletions.is_empty() {
+            self.pending_sql_deletions.insert(revision, deletions);
+        }
         Command::PersistWorkspace {
             revision,
             snapshot: self.workspace_snapshot(),
@@ -4544,10 +4615,24 @@ impl App {
             Action::WorkspaceSaveSucceeded { revision } => {
                 self.notify_info("Workspace", format!("Saved workspace revision {revision}"));
                 self.workspace_save.succeeded(revision);
-                vec![Command::CompleteWorkspaceSave {
+                let live_ids = self
+                    .sql_editors
+                    .iter()
+                    .map(|record| record.id)
+                    .collect::<HashSet<_>>();
+                let mut commands = self
+                    .pending_sql_deletions
+                    .remove(&revision)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|id| !live_ids.contains(id))
+                    .map(Command::DeleteSqlFile)
+                    .collect::<Vec<_>>();
+                commands.push(Command::CompleteWorkspaceSave {
                     revision,
                     succeeded: true,
-                }]
+                });
+                commands
             }
             Action::WorkspaceSaveFailed {
                 revision,
@@ -5483,6 +5568,17 @@ impl App {
                 else {
                     return Vec::new();
                 };
+                if let Err(error) = crate::model::console_document::validate_name(&name) {
+                    if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
+                        && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
+                            error: rename_error,
+                            ..
+                        } = &mut list.mode
+                    {
+                        *rename_error = Some(error.to_string());
+                    }
+                    return Vec::new();
+                }
                 if name.is_empty() {
                     if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
                         && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
@@ -5495,7 +5591,7 @@ impl App {
                     return Vec::new();
                 }
                 if self.sql_editors.iter().any(|record| {
-                    record.id != console_id && record.name.eq_ignore_ascii_case(&name)
+                    record.id != console_id && record.name.trim().eq_ignore_ascii_case(name.trim())
                 }) {
                     if let Some(Overlay::SqlEditorList(list)) = self.overlay.as_mut()
                         && let crate::model::sql_editor_list::SqlEditorListMode::Rename {
@@ -5503,7 +5599,7 @@ impl App {
                             ..
                         } = &mut list.mode
                     {
-                        *error = Some("Name already exists".into());
+                        *error = Some(format!("console name already exists: {name}"));
                     }
                     return Vec::new();
                 }
@@ -5512,8 +5608,10 @@ impl App {
                     .iter_mut()
                     .find(|record| record.id == console_id)
                 {
-                    record.name = name.clone();
+                    record.name = crate::model::console_document::normalize_name(name.clone());
                 }
+                let name = crate::model::console_document::normalize_name(name);
+                self.sync_cached_console_name(console_id, &name);
                 if let Some(tab) = self
                     .tabs
                     .iter_mut()
@@ -14536,6 +14634,9 @@ impl App {
         {
             record.open = false;
         }
+        if was_console {
+            self.sync_cached_console_state(id);
+        }
         if index < self.active_tab || (index == self.active_tab && self.active_tab > 0) {
             self.active_tab = self.active_tab.saturating_sub(1);
         }
@@ -14559,6 +14660,19 @@ impl App {
     }
 
     fn create_and_activate_sql_editor_named(&mut self, name: String) -> Vec<Command> {
+        let name = crate::model::console_document::normalize_name(name);
+        if let Err(error) = crate::model::console_document::validate_name(&name) {
+            self.notify_warning("Console", error.to_string());
+            return Vec::new();
+        }
+        if self
+            .sql_editors
+            .iter()
+            .any(|record| record.name.trim().eq_ignore_ascii_case(&name))
+        {
+            self.notify_warning("Console", format!("console name already exists: {name}"));
+            return Vec::new();
+        }
         let origin_target = self.console_manager_origin_target.take();
         if self.active_workspace_profile.is_none()
             && let Some(target) = origin_target
@@ -14692,8 +14806,13 @@ impl App {
         self.tabs.retain(|tab| tab.id() != id);
         self.editor.close_console(id);
         self.sql_editors.retain(|record| record.id != id);
+        for workspace in self.workspaces.values_mut() {
+            workspace.sql_editors.retain(|record| record.id != id);
+            workspace.tabs.retain(|tab| tab.id() != id);
+            workspace.sql.retain(|(sql_id, _)| *sql_id != id);
+        }
         self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
-        vec![self.persist_workspace_command(), Command::DeleteSqlFile(id)]
+        vec![self.persist_workspace_command_with_deletions(vec![id])]
     }
 
     fn activate_sql_editor(&mut self, id: Uuid) -> Vec<Command> {
@@ -15186,16 +15305,26 @@ impl App {
         self.profile_manager = None;
         self.overlay = None;
         let mut commands = self.retire_profile_connections(profile_id, active_connection);
-        commands.extend(deleted_console_ids.into_iter().map(Command::DeleteSqlFile));
-        commands.push(self.persist_workspace_command());
+        commands.push(self.persist_workspace_command_with_deletions(deleted_console_ids));
         commands
     }
 
     fn remove_profile_workspace(&mut self, profile_id: Uuid) -> Vec<Uuid> {
-        let mut console_ids = Vec::new();
-        if let Some(workspace) = self.workspaces.remove(&profile_id) {
-            console_ids.extend(workspace.sql_editors.into_iter().map(|record| record.id));
-        }
+        let mut console_ids = self
+            .sql_editors
+            .iter()
+            .filter(|record| {
+                record
+                    .execution_target
+                    .as_ref()
+                    .is_some_and(|target| target.profile_id == profile_id)
+            })
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        // Cached workspaces only contribute references to remove.  They do not
+        // own documents and therefore must not introduce SQL files that are
+        // absent from the live document registry into the deletion set.
+        self.workspaces.remove(&profile_id);
         for workspace in self.workspaces.values_mut() {
             let removed = workspace
                 .sql_editors
@@ -15208,7 +15337,6 @@ impl App {
                 })
                 .map(|record| record.id)
                 .collect::<HashSet<_>>();
-            console_ids.extend(removed.iter().copied());
             workspace
                 .sql_editors
                 .retain(|record| !removed.contains(&record.id));
@@ -15235,7 +15363,6 @@ impl App {
                 })
                 .map(|record| record.id)
                 .collect::<HashSet<_>>();
-            console_ids.extend(removed_ids.iter().copied());
             self.sql_editors
                 .retain(|record| !removed_ids.contains(&record.id));
             self.tabs.retain(|tab| match tab {
@@ -15608,8 +15735,70 @@ impl App {
         {
             record.execution_target = Some(target.clone());
         }
+        self.sync_cached_console_target(console_id, &target);
         self.remember_target(&target);
         vec![self.persist_workspace_command()]
+    }
+
+    fn sync_cached_console_name(&mut self, console_id: Uuid, name: &str) {
+        for workspace in self.workspaces.values_mut() {
+            if let Some(record) = workspace
+                .sql_editors
+                .iter_mut()
+                .find(|record| record.id == console_id)
+            {
+                record.name = name.to_owned();
+            }
+            for tab in &mut workspace.tabs {
+                if let Some(tab) = tab.as_console_mut().filter(|tab| tab.id == console_id) {
+                    tab.name = name.to_owned();
+                }
+            }
+        }
+    }
+
+    fn sync_cached_console_target(&mut self, console_id: Uuid, target: &ExecutionTarget) {
+        for workspace in self.workspaces.values_mut() {
+            if let Some(record) = workspace
+                .sql_editors
+                .iter_mut()
+                .find(|record| record.id == console_id)
+            {
+                record.execution_target = Some(target.clone());
+            }
+            for tab in &mut workspace.tabs {
+                if let Some(tab) = tab.as_console_mut().filter(|tab| tab.id == console_id) {
+                    tab.execution_target = Some(target.clone());
+                }
+            }
+        }
+    }
+
+    fn sync_cached_console_state(&mut self, console_id: Uuid) {
+        let Some(record) = self
+            .sql_editors
+            .iter()
+            .find(|record| record.id == console_id)
+            .cloned()
+        else {
+            return;
+        };
+        for workspace in self.workspaces.values_mut() {
+            if let Some(cached) = workspace
+                .sql_editors
+                .iter_mut()
+                .find(|cached| cached.id == console_id)
+            {
+                *cached = record.clone();
+            }
+            for tab in &mut workspace.tabs {
+                if let Some(tab) = tab.as_console_mut().filter(|tab| tab.id == console_id) {
+                    tab.name = record.name.clone();
+                    tab.execution_target = record.execution_target.clone();
+                    tab.transaction_mode = record.transaction_mode;
+                }
+            }
+        }
     }
 
     fn database_selector_candidates(&self, profile: &ConnectionProfile) -> Vec<ExecutionTarget> {
@@ -22696,9 +22885,11 @@ mod tests {
             relation::RelationKey,
             relation_edit::{EditableRowState, RelationEditSession},
         },
+        persistence::workspace::WorkspaceStore,
         profile::import_connection_url,
         profile::{CatalogScope, DatabaseKind},
     };
+    use tempfile::TempDir;
 
     #[test]
     fn relation_failure_message_hides_internal_catalog_snapshot_wording() {
@@ -22711,6 +22902,327 @@ mod tests {
         );
         assert!(!message.contains("active catalog snapshot"));
         assert!(!message.contains("relation-children"));
+    }
+
+    #[test]
+    fn rebinding_a_cached_console_to_another_profile_does_not_duplicate_its_id_on_save() {
+        let first = import_connection_url(":memory:", Some("first"))
+            .unwrap()
+            .profile;
+        let second = import_connection_url(":memory:", Some("second"))
+            .unwrap()
+            .profile;
+        let first_id = first.id;
+        let second_id = second.id;
+        let mut app = App::new(vec![first, second]);
+
+        let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: first_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "first".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let console_id = app.active_console().id;
+
+        let generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: second_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "second".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        assert_eq!(app.active_workspace_profile, Some(second_id));
+        assert!(app.sql_editors.iter().any(|record| record.id == console_id));
+        assert!(app.tabs.iter().any(|tab| tab.id() == console_id));
+        app.update(Action::ActivateSqlEditor(console_id));
+
+        let target = ExecutionTarget::from_profile(
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == first_id)
+                .expect("second profile should exist"),
+        );
+        let current_target = app
+            .tabs
+            .iter()
+            .find(|tab| tab.id() == console_id)
+            .and_then(WorkspaceTab::as_console)
+            .and_then(|tab| tab.execution_target.clone());
+        assert_eq!(
+            current_target.as_ref().map(|target| target.profile_id),
+            Some(second_id)
+        );
+        assert_eq!(target.profile_id, first_id);
+        let commands = app.bind_console_target(console_id, target.clone());
+        assert!(!commands.is_empty(), "the cached console should be rebound");
+        assert_eq!(
+            app.tabs
+                .iter()
+                .find(|tab| tab.id() == console_id)
+                .and_then(WorkspaceTab::as_console)
+                .and_then(|tab| tab.execution_target.as_ref()),
+            Some(&target)
+        );
+
+        let temp = TempDir::new().unwrap();
+        let store =
+            WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+        let result = store.save(&app.workspace_snapshot());
+
+        assert!(
+            result.is_ok(),
+            "rebound console should save once: {result:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_snapshot_drops_stale_duplicate_console_references() {
+        let profile = import_connection_url(":memory:", Some("profile"))
+            .unwrap()
+            .profile;
+        let profile_id = profile.id;
+        let mut app = App::new(vec![profile]);
+        let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "profile".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let id = app.active_console().id;
+        let cached = app
+            .snapshot_active_workspace()
+            .expect("placeholder workspace should be active")
+            .1;
+        app.workspaces.insert(profile_id, cached);
+        app.active_workspace_profile = Some(profile_id);
+
+        let snapshot = app.workspace_snapshot();
+        let consoles = snapshot
+            .profiles
+            .iter()
+            .flat_map(|profile| profile.consoles.iter())
+            .chain(snapshot.consoles.iter())
+            .filter(|console| console.id == id)
+            .count();
+        assert_eq!(consoles, 1);
+        assert_eq!(
+            snapshot
+                .sql
+                .iter()
+                .filter(|(sql_id, _)| *sql_id == id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn inactive_profile_snapshot_uses_live_document_over_stale_cached_copy() {
+        let first = import_connection_url(":memory:", Some("first"))
+            .unwrap()
+            .profile;
+        let second = import_connection_url(":memory:", Some("second"))
+            .unwrap()
+            .profile;
+        let first_id = first.id;
+        let second_id = second.id;
+        let mut app = App::new(vec![first, second]);
+
+        let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: first_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "first".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let console_id = app.active_console().id;
+
+        let generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: second_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "second".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let first_target = ExecutionTarget::from_profile(
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == first_id)
+                .expect("first profile should exist"),
+        );
+        app.bind_console_target(console_id, first_target);
+
+        let cached = app
+            .workspaces
+            .get_mut(&first_id)
+            .expect("first profile should be cached after switching");
+        cached.sql_editors[0].name = "stale name".into();
+        cached.sql[0].1 = "select stale".into();
+        app.sql_editors
+            .iter_mut()
+            .find(|record| record.id == console_id)
+            .expect("live console should remain registered")
+            .name = "live name".into();
+        app.tabs
+            .iter_mut()
+            .find(|tab| tab.id() == console_id)
+            .and_then(WorkspaceTab::as_console_mut)
+            .expect("live console tab should remain open")
+            .name = "live name".into();
+        app.editor.set_text(console_id, "select live").unwrap();
+
+        let snapshot = app.workspace_snapshot();
+        let profile = snapshot
+            .profiles
+            .iter()
+            .find(|profile| {
+                profile
+                    .consoles
+                    .iter()
+                    .any(|console| console.id == console_id)
+            })
+            .expect("live console should be persisted");
+        assert_eq!(
+            profile
+                .consoles
+                .iter()
+                .find(|console| console.id == console_id)
+                .unwrap()
+                .name,
+            "live name"
+        );
+        assert_eq!(
+            snapshot
+                .sql
+                .iter()
+                .find(|(id, _)| *id == console_id)
+                .map(|(_, text)| text.as_str()),
+            Some("select live")
+        );
+    }
+
+    #[test]
+    fn rebound_console_is_serialized_under_its_live_target_profile_only() {
+        let first = import_connection_url(":memory:", Some("first"))
+            .unwrap()
+            .profile;
+        let second = import_connection_url(":memory:", Some("second"))
+            .unwrap()
+            .profile;
+        let first_id = first.id;
+        let second_id = second.id;
+        let mut app = App::new(vec![first, second]);
+
+        let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: first_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "first".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        let console_id = app.active_console().id;
+        let generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: second_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: "second".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
+        app.update(Action::ActivateSqlEditor(console_id));
+        let target = ExecutionTarget::from_profile(
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == first_id)
+                .unwrap(),
+        );
+        assert_ne!(
+            app.active_console_opt()
+                .and_then(|tab| tab.execution_target.as_ref()),
+            Some(&target)
+        );
+        let commands = app.bind_console_target(console_id, target.clone());
+        assert!(!commands.is_empty(), "console target should be rebound");
+        assert_eq!(
+            app.tabs
+                .iter()
+                .find(|tab| tab.id() == console_id)
+                .and_then(WorkspaceTab::as_console)
+                .and_then(|tab| tab.execution_target.as_ref()),
+            Some(&target)
+        );
+
+        let snapshot = app.workspace_snapshot();
+        assert_eq!(
+            snapshot
+                .profiles
+                .iter()
+                .filter(|profile| {
+                    profile
+                        .consoles
+                        .iter()
+                        .any(|console| console.id == console_id)
+                })
+                .map(|profile| profile.profile_id)
+                .collect::<Vec<_>>(),
+            vec![first_id]
+        );
     }
 
     #[test]
@@ -25092,6 +25604,28 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_console_with_an_existing_name_is_rejected_without_mutating_workspace() {
+        let mut app = App::new(Vec::new());
+        let existing_id = app.active_console().id;
+        let before_tabs = app.tabs.len();
+        let before_records = app.sql_editors.len();
+
+        let commands = app.update(Action::NewConsoleNamed(" CONSOLE ".into()));
+
+        assert!(commands.is_empty());
+        assert_eq!(app.tabs.len(), before_tabs);
+        assert_eq!(app.sql_editors.len(), before_records);
+        assert_eq!(app.active_console().id, existing_id);
+        let notification = app
+            .notifications
+            .history()
+            .next()
+            .expect("duplicate console name should be reported");
+        assert_eq!(notification.title, "Console");
+        assert_eq!(notification.body, "console name already exists: CONSOLE");
+    }
+
+    #[test]
     fn console_manager_reopens_closed_console_with_existing_sql() {
         let mut app = App::new(Vec::new());
         app.update(Action::NewConsole);
@@ -25477,6 +26011,14 @@ mod tests {
         let commands = app.update(Action::SqlEditorListDeleteActivate);
 
         assert!(!app.sql_editors.iter().any(|record| record.id == id));
+        let revision = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::PersistWorkspace { revision, .. } => Some(*revision),
+                _ => None,
+            })
+            .expect("delete should persist before deleting its SQL file");
+        let commands = app.update(Action::WorkspaceSaveSucceeded { revision });
         assert!(commands.iter().any(
             |command| matches!(command, Command::DeleteSqlFile(console_id) if *console_id == id)
         ));
@@ -25722,7 +26264,7 @@ mod tests {
             Some(Overlay::SqlEditorList(crate::model::sql_editor_list::SqlEditorListState {
                 mode: crate::model::sql_editor_list::SqlEditorListMode::Rename { error: Some(ref error), .. },
                 ..
-            })) if error == "Name is required"
+            })) if error == "console name is required"
         ));
 
         app.update(Action::SqlEditorListInputDeleteToStart);
@@ -25735,7 +26277,7 @@ mod tests {
             Some(Overlay::SqlEditorList(crate::model::sql_editor_list::SqlEditorListState {
                 mode: crate::model::sql_editor_list::SqlEditorListMode::Rename { console_id, error: Some(error), .. },
                 ..
-            })) if console_id == id && error == "Name already exists"
+            })) if console_id == id && error == "console name already exists: CONSOLE"
         ));
     }
 

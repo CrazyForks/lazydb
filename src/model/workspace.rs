@@ -357,6 +357,10 @@ pub struct ConnectionState {
     pub error: Option<String>,
 }
 
+/// Compatibility cache for profile-scoped tabs while the persisted v1-v5
+/// representation is being converted to the global document surface.
+/// ConsoleRecord and SQL text are restoration inputs only; App's shared
+/// collections remain authoritative after installation.
 #[derive(Clone, Debug)]
 pub struct ConnectionWorkspace {
     pub tabs: Vec<WorkspaceTab>,

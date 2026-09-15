@@ -310,6 +310,19 @@ fn final_console_can_be_closed_and_deleted() {
     assert!(!app.sql_editors.iter().any(|record| record.id == id));
     assert!(app.tabs.is_empty());
     assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+    );
+    let revision = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::PersistWorkspace { revision, .. } => Some(*revision),
+            _ => None,
+        })
+        .unwrap();
+    let commands = app.update(Action::WorkspaceSaveSucceeded { revision });
+    assert!(
         commands.iter().any(
             |command| matches!(command, Command::DeleteSqlFile(console_id) if *console_id == id)
         )
@@ -341,6 +354,19 @@ fn non_default_console_can_still_be_closed_and_deleted() {
     app.update(Action::ToggleDeleteConsoleFocus);
     let commands = app.update(Action::ConfirmDeleteConsole);
     assert!(!app.sql_editors.iter().any(|record| record.id == id));
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+    );
+    let revision = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::PersistWorkspace { revision, .. } => Some(*revision),
+            _ => None,
+        })
+        .unwrap();
+    let commands = app.update(Action::WorkspaceSaveSucceeded { revision });
     assert!(
         commands.iter().any(
             |command| matches!(command, Command::DeleteSqlFile(console_id) if *console_id == id)
@@ -473,7 +499,7 @@ fn workspace_snapshot_restores_open_and_closed_consoles_with_sql_and_names() {
 }
 
 #[test]
-fn workspace_restore_reopens_a_persisted_console_with_its_original_identity() {
+fn workspace_restore_keeps_a_closed_console_closed_with_its_original_identity() {
     let profile = import_connection_url(":memory:", Some("saved"))
         .unwrap()
         .profile;
@@ -519,9 +545,9 @@ fn workspace_restore_reopens_a_persisted_console_with_its_original_identity() {
     app.connection.profile_id = Some(profile.id);
     app.restore_workspace(snapshot, Some(profile.id));
 
-    assert!(app.tabs.iter().any(|tab| tab.id() == default_id));
+    assert!(!app.tabs.iter().any(|tab| tab.id() == default_id));
     assert!(
-        app.sql_editors
+        !app.sql_editors
             .iter()
             .find(|record| record.id == default_id)
             .unwrap()
@@ -909,7 +935,7 @@ fn workspace_restore_assigns_targetless_consoles_to_startup_then_first_profile()
     assert!(app.tabs.is_empty());
     assert!(app.sql_editors.is_empty());
 
-    let mut app = App::new(vec![first.clone(), second]);
+    let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot, None);
     assert!(app.tabs.is_empty());
     assert!(app.sql_editors.is_empty());
@@ -969,7 +995,7 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
             (other_console_id, "select second".into()),
         ],
     };
-    let mut app = App::new(vec![first.clone(), second]);
+    let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot.clone(), Some(first.id));
 
     assert!(app.tabs.is_empty());
@@ -1546,14 +1572,14 @@ fn restored_console_target_cannot_cross_profile_boundaries() {
         consoles: Vec::new(),
         sql: vec![(console_id, "select 1".into())],
     };
-    let mut app = App::new(vec![first.clone(), second]);
+    let mut app = App::new(vec![first.clone(), second.clone()]);
     app.connection.profile_id = Some(first.id);
     app.restore_workspace(snapshot, Some(first.id));
 
     assert_eq!(app.active_workspace_profile, Some(first.id));
     assert_eq!(
         app.active_console().execution_target,
-        Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&first))
+        Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second))
     );
 }
 
