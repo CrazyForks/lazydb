@@ -165,6 +165,19 @@ impl OutputEntry {
         }
     }
 
+    /// Creates a regular output entry whose timestamp prefix is styled as muted
+    /// on every physical line.
+    pub fn timestamped(kind: OutputKind, timestamp: &str, message: impl AsRef<str>) -> Self {
+        let prefix = format!("[{timestamp}] ");
+        let message = message
+            .as_ref()
+            .lines()
+            .map(|line| format!("{prefix}{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self::plain(kind, message).with_timestamp(timestamp)
+    }
+
     pub fn sql(kind: OutputKind, prefix: impl Into<String>, sql: impl AsRef<str>) -> Self {
         let mut message = prefix.into();
         let start = message.len();
@@ -568,6 +581,21 @@ mod tests {
             entry.timestamp_ranges[1].get(&entry.message),
             Some("[2026-09-08 11:08:17:413]")
         );
+    }
+
+    #[test]
+    fn timestamped_entry_adds_and_records_prefix_for_each_line() {
+        let entry = OutputEntry::timestamped(
+            OutputKind::Success,
+            "2026-09-15 07:21:53:574",
+            "first\nsecond",
+        );
+
+        assert_eq!(
+            entry.message,
+            "[2026-09-15 07:21:53:574] first\n[2026-09-15 07:21:53:574] second"
+        );
+        assert_eq!(entry.timestamp_ranges.len(), 2);
     }
 
     #[test]

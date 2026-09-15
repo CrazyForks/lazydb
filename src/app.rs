@@ -22723,15 +22723,10 @@ fn append_failed_execution_output(
         );
     }
     let timestamp = now_timestamp();
-    let message = message
-        .lines()
-        .map(|line| format!("[{timestamp}] {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
     append_console_output_to_editor(
         editor,
         tab,
-        OutputEntry::plain(OutputKind::Error, message).with_timestamp(&timestamp),
+        OutputEntry::timestamped(OutputKind::Error, &timestamp, message),
     );
 }
 
@@ -22756,7 +22751,7 @@ fn format_execution_log(
         && last.draft.risks[0] == sql::SqlRisk::ReadOnly
     {
         format!(
-            "[{timestamp}] {} rows retrieved starting from 1 in {total_ms} ms (execution: {} ms, fetching: {} ms){truncation}",
+            "{} rows retrieved starting from 1 in {total_ms} ms (execution: {} ms, fetching: {} ms){truncation}",
             stats.row_count,
             stats.execution.as_millis(),
             stats.fetch.as_millis(),
@@ -22768,12 +22763,15 @@ fn format_execution_log(
             .map(|result| result.affected_rows)
             .sum::<u64>();
         format!(
-            "[{timestamp}] {affected_rows} row(s) affected in {total_ms} ms (execution: {} ms, fetching: {} ms){truncation}",
+            "{affected_rows} row(s) affected in {total_ms} ms (execution: {} ms, fetching: {} ms){truncation}",
             stats.execution.as_millis(),
             stats.fetch.as_millis(),
         )
     };
-    Some((context, OutputEntry::plain(OutputKind::Success, summary)))
+    Some((
+        context,
+        OutputEntry::timestamped(OutputKind::Success, &timestamp, summary),
+    ))
 }
 
 fn format_execution_target(target: &ExecutionTarget) -> String {
@@ -22805,13 +22803,6 @@ fn target_switch_statement(target: &ExecutionTarget) -> String {
     }
 }
 
-fn format_completed_line(timestamp: &str, elapsed: Option<std::time::Duration>) -> String {
-    match elapsed {
-        Some(duration) => format!("[{timestamp}] completed in {} ms", duration.as_millis()),
-        None => format!("[{timestamp}] completed"),
-    }
-}
-
 fn append_target_switch_log(
     editor: &mut EditorWorkspace,
     tab: &mut ConsoleTab,
@@ -22832,9 +22823,13 @@ fn append_target_switch_log(
     append_console_output_to_editor(
         editor,
         tab,
-        OutputEntry::plain(
+        OutputEntry::timestamped(
             OutputKind::Success,
-            format_completed_line(&timestamp, elapsed),
+            &timestamp,
+            match elapsed {
+                Some(duration) => format!("completed in {} ms", duration.as_millis()),
+                None => "completed".to_owned(),
+            },
         ),
     );
 }
@@ -22848,11 +22843,10 @@ fn append_transaction_mode_notice(
         TransactionMode::Manual => "manual transaction mode ON",
         TransactionMode::Auto => "auto transaction mode ON",
     };
-    append_console_output_to_editor(
-        editor,
-        tab,
-        OutputEntry::plain(OutputKind::Info, format!("[{}] {message}", now_timestamp())),
-    );
+    append_console_output_to_editor(editor, tab, {
+        let timestamp = now_timestamp();
+        OutputEntry::timestamped(OutputKind::Info, &timestamp, message)
+    });
 }
 
 fn append_transaction_status(
@@ -22863,13 +22857,13 @@ fn append_transaction_status(
 ) {
     let timestamp = now_timestamp();
     let message = match elapsed {
-        Some(duration) => format!("[{timestamp}] {status} in {} ms", duration.as_millis()),
-        None => format!("[{timestamp}] {status}"),
+        Some(duration) => format!("{status} in {} ms", duration.as_millis()),
+        None => status.to_owned(),
     };
     append_console_output_to_editor(
         editor,
         tab,
-        OutputEntry::plain(OutputKind::Success, message),
+        OutputEntry::timestamped(OutputKind::Success, &timestamp, message),
     );
 }
 
