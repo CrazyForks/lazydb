@@ -38,6 +38,7 @@ use crate::{
 pub enum Action {
     NewConsole,
     NewConsoleNamed(String),
+    PrepareActiveConsole,
     OpenDashboard,
     OpenSqlHistory,
     SqlHistoryOpenDetail,

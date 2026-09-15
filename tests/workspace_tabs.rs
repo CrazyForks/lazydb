@@ -105,6 +105,52 @@ fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
 }
 
 #[test]
+fn restored_active_console_can_prepare_its_target_without_explicit_startup_selection() {
+    let profile = import_connection_url(":memory:", Some("restored"))
+        .unwrap()
+        .profile;
+    let console_id = Uuid::new_v4();
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(console_id),
+            consoles: vec![PersistedConsole {
+                id: console_id,
+                name: "restored".into(),
+                sql_file: format!("{console_id}.sql").into(),
+                target: Some(
+                    lazydb::model::execution_target::ExecutionTarget::from_profile(&profile),
+                ),
+                transaction_mode: TransactionMode::Auto,
+                open: true,
+            }],
+            tabs: vec![PersistedTab::Console { console_id }],
+        }],
+        active_console: Uuid::nil(),
+        consoles: Vec::new(),
+        tabs: Vec::new(),
+        sql: vec![(console_id, "select 42".into())],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile.clone()]);
+    app.restore_workspace(snapshot, None);
+
+    lazydb::runtime::apply_startup_action(&mut app, None);
+
+    assert_eq!(app.active_console().id, console_id);
+    assert_eq!(
+        app.connection.status,
+        lazydb::model::workspace::ConnectionStatus::Connecting
+    );
+    assert_eq!(
+        app.connection.pending_target.as_ref().unwrap().profile_id,
+        profile.id
+    );
+    assert_eq!(app.active_editor_text().unwrap(), "select 42");
+}
+
+#[test]
 fn console_tab_title_remains_the_persisted_name() {
     let console = ConsoleTab::new("analysis");
     let tab = WorkspaceTab::Sql(console);

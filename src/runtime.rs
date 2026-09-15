@@ -6031,15 +6031,24 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
 }
 
 pub fn apply_startup_action(app: &mut App, selected: Option<Uuid>) {
-    if let Some(profile_id) = selected {
-        app.update(Action::RequestProfileConnect { profile_id });
+    if let Some(action) = startup_action(app, selected) {
+        app.update(action);
     }
 }
 
 fn apply_startup_action_with_runtime(app: &mut App, runtime: &mut Runtime, selected: Option<Uuid>) {
-    if let Some(profile_id) = selected {
-        apply_action(app, runtime, Action::RequestProfileConnect { profile_id });
+    if let Some(action) = startup_action(app, selected) {
+        apply_action(app, runtime, action);
     }
+}
+
+fn startup_action(app: &App, selected: Option<Uuid>) -> Option<Action> {
+    selected
+        .map(|profile_id| Action::RequestProfileConnect { profile_id })
+        .or_else(|| {
+            app.active_console_opt()
+                .map(|_| Action::PrepareActiveConsole)
+        })
 }
 
 fn apply_action(app: &mut App, runtime: &mut Runtime, action: Action) {

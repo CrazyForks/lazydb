@@ -5295,6 +5295,7 @@ impl App {
             Action::DashboardMetricsDue | Action::DashboardProcessesDue => Vec::new(),
             Action::NewConsole => self.create_and_activate_sql_editor(),
             Action::NewConsoleNamed(name) => self.create_and_activate_sql_editor_named(name),
+            Action::PrepareActiveConsole => self.prepare_active_console_target(),
             Action::CloseActiveTab => {
                 if self.has_active_workspace() && !self.tabs.is_empty() {
                     let id = self.tabs[self.active_tab].id();
