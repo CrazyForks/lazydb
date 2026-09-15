@@ -304,23 +304,16 @@ pub fn render(
         ));
         return;
     }
+    let gutter = app
+        .redis_preview_logical_line_count(tab.id)
+        .map_or(1, |count| count.max(1).to_string().len() + 1);
     if let Ok(snapshot) = app.redis_preview_snapshot(
         tab.id,
         crate::model::editor::EditorViewport {
-            width: value_area.width.saturating_sub(4) as usize,
+            width: (value_area.width as usize).saturating_sub(gutter),
             height: value_area.height as usize,
         },
     ) {
-        let gutter = snapshot.total_lines.max(1).to_string().len() + 1;
-        let snapshot = app
-            .redis_preview_snapshot(
-                tab.id,
-                crate::model::editor::EditorViewport {
-                    width: (value_area.width as usize).saturating_sub(gutter),
-                    height: value_area.height as usize,
-                },
-            )
-            .unwrap_or(snapshot);
         // Preserve the border controls drawn above while sharing DDL's body renderer.
         let controls = (value_outer.x..value_outer.right())
             .map(|x| frame.buffer_mut()[(x, value_outer.y)].clone())

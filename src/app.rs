@@ -1803,6 +1803,17 @@ impl App {
         )
     }
 
+    pub(crate) fn redis_preview_logical_line_count(
+        &self,
+        tab_id: Uuid,
+    ) -> Result<usize, EditorError> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
+            return Err(EditorError::MissingSession(tab_id));
+        };
+        self.editor.line_count(tab.preview_editor_id)
+    }
+
     pub fn active_profile(&self) -> Option<&ConnectionProfile> {
         let profile_id = self.connection.profile_id?;
         self.profiles

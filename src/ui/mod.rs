@@ -7304,6 +7304,7 @@ mod editor_diagnostic_tests {
             revision: 0,
             mode: EditorMode::Insert,
             first_line: 0,
+            logical_line_count: 3,
             total_lines: 3,
             viewport: EditorViewport {
                 width: 80,
