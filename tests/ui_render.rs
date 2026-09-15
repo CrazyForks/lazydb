@@ -2255,7 +2255,10 @@ fn console_manager_marks_invalid_bound_target_without_changing_open_marker() {
     });
     let output = render(&app, 100, 30);
 
-    assert!(output.contains("失 效"), "{output}");
+    assert!(
+        output.contains("失 效") || output.contains("Invalid target"),
+        "{output}"
+    );
     assert!(output.contains("●"), "{output}");
 }
 

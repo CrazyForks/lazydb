@@ -24502,11 +24502,21 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
-        app.connection.profile_id = Some(profile_id);
-        app.connection.generation = 1;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
-        app.connection.target = app.active_console().execution_target.clone();
+        let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Postgres,
+                version: "16".into(),
+                database: "kms".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.update(Action::ReplaceEditor(sql.into()));
         let mut commands = app.update(Action::RunActiveSql);
         if commands.is_empty() {
@@ -27212,11 +27222,21 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
-        app.connection.profile_id = Some(profile_id);
-        app.connection.generation = 1;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
-        app.connection.target = app.active_console().execution_target.clone();
+        let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: ":memory:".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.update(Action::ReplaceEditor("SELECT 1".into()));
         let commands = app.update(Action::RunActiveSql);
         let (tab_id, generation) = match &commands[0] {
@@ -27452,10 +27472,23 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
-        app.connection.profile_id = Some(profile.id);
+        let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: ":memory:".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.connection.generation = 8;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
+        app.connection.target = app.active_console().execution_target.clone();
         app.active_console_mut().transaction_generation = 2;
         app.active_console_mut().transaction_state =
             crate::model::transaction::TransactionState::Active;
