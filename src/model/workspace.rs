@@ -935,11 +935,22 @@ impl ExplorerState {
     }
 
     pub fn rebuild_projection(&mut self, profile_id: Uuid) {
+        self.rebuild_projection_for(profile_id, true);
+    }
+
+    pub fn rebuild_projection_for(&mut self, profile_id: Uuid, activate: bool) {
         let Some(profile) = self.normalized.profiles.get(&profile_id) else {
-            self.nodes.clear();
+            if activate {
+                self.nodes.clear();
+            }
             return;
         };
-        self.active_profile = Some(profile_id);
+        if activate {
+            self.active_profile = Some(profile_id);
+        }
+        if !activate && self.active_profile != Some(profile_id) {
+            return;
+        }
         self.nodes = profile
             .catalog
             .entries()

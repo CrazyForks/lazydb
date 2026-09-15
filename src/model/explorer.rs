@@ -1474,6 +1474,16 @@ impl ExplorerTreeState {
                     },
                     child_depth,
                 );
+            } else if profile.redis_databases.is_empty()
+                && profile.status == ExplorerConnectionStatus::Syncing
+            {
+                projection.push(
+                    ExplorerNodeId::Status {
+                        owner: ExplorerOwnerId::Profile(profile_id),
+                        kind: StatusRowKind::Loading,
+                    },
+                    child_depth,
+                );
             }
             return;
         }

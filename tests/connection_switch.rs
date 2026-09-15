@@ -322,7 +322,12 @@ fn failed_switch_keeps_visible_workspace_and_editor_text_unchanged() {
     let second_id = second.id;
     let mut app = App::new(vec![first, second]);
 
-    let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+    let first_generation = match app
+        .update(Action::RequestProfileConnect {
+            profile_id: first_id,
+        })
+        .as_slice()
+    {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
     };
@@ -1336,6 +1341,101 @@ fn late_success_for_an_older_connect_attempt_does_not_steal_selected_connection(
             })
             .map(|session| session.status.clone()),
         Some(lazydb::model::session::SessionStatus::Connected)
+    );
+}
+
+#[test]
+fn catalog_request_stays_with_profile_that_finished_connecting() {
+    let first = memory_profile("first");
+    let second = memory_profile("second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    let _second_generation = match app
+        .update(Action::RequestProfileConnect {
+            profile_id: second_id,
+        })
+        .as_slice()
+    {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    assert!(
+        app.explorer
+            .normalized
+            .select(ExplorerNodeId::Profile(second_id))
+    );
+
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id: first_id,
+        generation: first_generation,
+        server: server("first"),
+        mutation_capabilities: Default::default(),
+    });
+
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            Command::LoadCatalogPage(request)
+                if request.key.connection.profile_id == first_id
+                    && request.key.connection.generation == first_generation
+                    && request.key.target == CatalogTarget::Databases
+        )),
+        "{commands:?}"
+    );
+}
+
+#[test]
+fn expanding_online_profile_without_catalog_starts_a_request() {
+    let profile = memory_profile("first");
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    let generation = app
+        .sessions
+        .start_attempt(ExecutionTarget::from_profile(&app.profiles[0]))
+        .unwrap()
+        .generation;
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: server("first"),
+        mutation_capabilities: Default::default(),
+    });
+    app.explorer.normalized.selected = Some(ExplorerNodeId::Profile(profile_id));
+    app.explorer
+        .normalized
+        .expanded
+        .remove(&ExplorerNodeId::Profile(profile_id));
+    let state = app
+        .explorer
+        .normalized
+        .profiles
+        .get_mut(&profile_id)
+        .unwrap();
+    state.pending_requests.clear();
+    state.load_states.clear();
+    state.status = ExplorerConnectionStatus::Online;
+
+    let commands = app.update(Action::ExplorerToggle);
+    assert!(
+        commands.iter().any(|command| matches!(
+            command,
+            Command::LoadCatalogPage(request)
+                if request.key.connection == ConnectionIdentity { profile_id, generation }
+                    && request.key.target == CatalogTarget::Databases
+        )),
+        "{commands:?}"
+    );
+    assert!(
+        app.explorer
+            .normalized
+            .expanded
+            .contains(&ExplorerNodeId::Profile(profile_id))
     );
 }
 
