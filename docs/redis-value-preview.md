@@ -30,6 +30,10 @@ Pickle bytes, PHP references, and non-JSON types are represented with explicit
 type metadata where possible. Unsupported or over-budget data can still be
 viewed with Raw or Hex.
 
+Press `?` or `F1` while browsing a Redis value to open the contextual shortcut
+help. Text and Table views list different controls. In text search or another
+text-input state, `?` remains available as input rather than opening help.
+
 Serialization parsing is bounded by a 4 MiB input budget and an 8 MiB rendered
 output budget. These limits protect the TUI from unexpectedly large values;
 they do not modify or delete the Redis value.
