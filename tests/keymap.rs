@@ -152,6 +152,46 @@ fn redis_preview_routes_vim_motion_to_its_read_only_editor() {
 }
 
 #[test]
+fn redis_table_preview_routes_motion_to_the_shared_grid() {
+    let target = lazydb::db::redis::types::RedisTarget {
+        profile_id: Uuid::from_u128(35),
+        database: 0,
+    };
+    let mut app = App::new(Vec::new());
+    app.tabs.push(WorkspaceTab::RedisBrowser(
+        lazydb::model::redis_browser::RedisBrowserTab::new(Uuid::from_u128(36), target),
+    ));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    if let WorkspaceTab::RedisBrowser(tab) = &mut app.tabs[app.active_tab] {
+        tab.focus = lazydb::model::redis_browser::RedisBrowserFocus::Preview;
+        tab.format
+            .select(lazydb::value_preview::PreviewFormat::TABLE);
+    }
+
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::GridMove {
+            rows: 1,
+            columns: 0,
+        })
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('h')), &app),
+        Some(Action::GridMove {
+            rows: 0,
+            columns: -1,
+        })
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char(']')), &app),
+        Some(Action::GridResizeColumn(1))
+    );
+    assert_eq!(keymap.map(key(KeyCode::Char('W')), &app), None);
+}
+
+#[test]
 fn redis_preview_keeps_application_controls_outside_the_editor_stream() {
     let target = lazydb::db::redis::types::RedisTarget {
         profile_id: Uuid::from_u128(32),

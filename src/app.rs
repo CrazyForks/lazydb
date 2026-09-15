@@ -20756,6 +20756,17 @@ impl App {
                 let result = tab.process_result_set();
                 (result.rows.len(), result.columns.len())
             }
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                match &tab.value_page {
+                    crate::model::redis_browser::RedisValuePageState::Ready(page) => {
+                        let table = crate::value_preview::table::from_page(&page.value);
+                        (table.rows.len(), table.columns.len())
+                    }
+                    _ => (0, 0),
+                }
+            }
             Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Data => {
                 tab.edit.as_ref().map_or_else(
                     || relation_grid_dimensions(&tab.data),
@@ -20857,6 +20868,11 @@ impl App {
             {
                 f(&mut tab.grid, dimensions)
             }
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                f(&mut tab.preview_grid, dimensions)
+            }
             _ => {}
         }
     }
@@ -20885,6 +20901,11 @@ impl App {
                 if tab.page == crate::model::dashboard::DashboardPage::Processes =>
             {
                 &mut tab.grid
+            }
+            WorkspaceTab::RedisBrowser(tab)
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                &mut tab.preview_grid
             }
             _ => return,
         };
