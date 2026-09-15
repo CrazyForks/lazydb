@@ -125,7 +125,7 @@ fn role_password_editing_keeps_value_redacted_and_syncs_secret_state() {
     role.paste("ecret");
 
     assert_eq!(role.password.as_ref().unwrap().expose(), "secret");
-    assert_eq!(format!("{role:?}").contains("secret"), false);
+    assert!(!format!("{role:?}").contains("secret"));
 
     role.backspace();
     assert_eq!(role.password.as_ref().unwrap().expose(), "secre");

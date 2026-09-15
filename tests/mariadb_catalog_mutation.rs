@@ -38,6 +38,7 @@ async fn mariadb_table_and_view_definition_round_trip_preserves_native_options()
     assert!(
         view_ddl.result_sets.last().unwrap().rows[0][1]
             .clipboard_text()
+            .to_ascii_uppercase()
             .contains("SELECT")
     );
     database

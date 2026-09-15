@@ -1384,6 +1384,7 @@ fn role_editor_uses_catalog_editor_field_keymap() {
 fn database_editor_toggle_key_is_routed_to_catalog_toggle() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
