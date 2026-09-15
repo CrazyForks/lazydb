@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::model::redis_browser::RedisValuePageState;
@@ -247,7 +247,10 @@ pub fn render(
         " f:{} ▾ ",
         preview_format_label(tab.format.selected, tab.format.automatic)
     );
-    let wrap_label = if tab.preview_wrap {
+    let table_view = tab.format.view() == crate::value_preview::ValueView::Table;
+    let wrap_label = if table_view {
+        ""
+    } else if tab.preview_wrap {
         " W:Wrap ON "
     } else {
         " W:Wrap OFF "
@@ -288,19 +291,39 @@ pub fn render(
         && let RedisValuePageState::Ready(page) = &tab.value_page
     {
         let table = crate::value_preview::table::from_page(&page.value);
-        render_table_preview(
-            frame,
-            value_area,
-            &table,
-            tab.preview_scroll,
-            tab.id,
-            ui,
-            theme,
+        let result = redis_table_result(&table);
+        let grid_area = Rect::new(
+            value_area.x,
+            value_area.y,
+            value_area.width,
+            value_area.height.saturating_sub(1),
         );
+        super::data_grid::render(
+            frame,
+            grid_area,
+            tab.id,
+            &result,
+            tab.preview_grid.clone(),
+            &tab.preview_grid.column_widths,
+            theme,
+            ratatui::widgets::Block::default().style(Style::new().bg(theme.surface)),
+            ui,
+            None,
+            ui.activity_icons,
+            None,
+            false,
+        );
+        let status_area = Rect::new(
+            grid_area.x,
+            grid_area.bottom().saturating_sub(1),
+            grid_area.width,
+            1,
+        );
+        render_value_page_status(frame, status_area, tab, ui, theme, result.rows.len());
         ui.redis_preview_viewport_rows = Some((
             tab.id,
-            value_area.height.saturating_sub(1) as usize,
-            table.rows.len() + 1,
+            grid_area.height.saturating_sub(2) as usize,
+            result.rows.len() + 1,
         ));
         return;
     }
@@ -369,71 +392,70 @@ pub fn render(
     }
 }
 
-fn render_table_preview(
+fn render_value_page_status(
     frame: &mut Frame<'_>,
     area: Rect,
-    table: &crate::value_preview::table::RedisTable,
-    offset: usize,
-    tab_id: uuid::Uuid,
+    tab: &crate::model::redis_browser::RedisBrowserTab,
     ui: &mut crate::ui::UiState,
     theme: Theme,
+    row_count: usize,
 ) {
-    let widths = table
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(index, column)| {
-            let content_width = table
-                .rows
-                .iter()
-                .map(|row| row.cells.get(index).map_or(0, |cell| cell.chars().count()))
-                .max()
-                .unwrap_or(0)
-                .max(column.chars().count())
-                .min(32) as u16;
-            Constraint::Length(content_width.max(6))
-        })
-        .collect::<Vec<_>>();
-    let rows = table
-        .rows
-        .iter()
-        .skip(offset)
-        .map(|row| Row::new(row.cells.clone()));
-    for (visible_row, row) in table.rows.iter().skip(offset).enumerate() {
-        let y = area.y.saturating_add(1 + visible_row as u16);
-        if y >= area.bottom() {
-            break;
-        }
-        let mut x = area.x;
-        for (column, cell) in row.cells.iter().enumerate() {
-            let width =
-                (cell.chars().count().clamp(6, 32) as u16).min(area.right().saturating_sub(x));
-            if width == 0 {
-                break;
-            }
-            ui.hit_regions.push(crate::ui::HitRegion {
-                area: Rect::new(x, y, width, 1),
-                target: crate::ui::HitTarget::RedisPreviewTableCell {
-                    tab_id,
-                    row: offset + visible_row,
-                    column,
-                },
-            });
-            x = x.saturating_add(width + 1);
-        }
+    if area.height == 0 || area.width == 0 {
+        return;
     }
-    let widget = Table::new(rows, widths)
-        .header(
-            Row::new(table.columns.clone()).style(
-                Style::new()
-                    .fg(theme.grid_header_text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        )
-        .style(Style::new().fg(theme.text).bg(theme.surface))
-        .row_highlight_style(Style::new().bg(theme.selection))
-        .column_spacing(1);
-    frame.render_stateful_widget(widget, area, &mut TableState::default());
+    let state = match &tab.value_page {
+        RedisValuePageState::Ready(_) if tab.value_page_loading => "Loading…".to_owned(),
+        RedisValuePageState::Ready(page) if page.complete => "Complete".to_owned(),
+        RedisValuePageState::Ready(_) => "More available".to_owned(),
+        RedisValuePageState::Failed { .. } => "Load failed · Retry".to_owned(),
+        _ => "Not loaded".to_owned(),
+    };
+    let start = tab.preview_grid.row_offset.saturating_add(1);
+    let end = (start + tab.preview_grid.viewport_rows.max(1)).min(row_count);
+    let text = if row_count == 0 {
+        format!("0 loaded · {state}")
+    } else {
+        format!("Rows {start}–{end} · {row_count} loaded · {state}")
+    };
+    frame.render_widget(
+        Paragraph::new(text).style(Style::new().fg(theme.muted).bg(theme.surface)),
+        area,
+    );
+    if !tab.value_page_loading
+        && matches!(tab.value_page, RedisValuePageState::Ready(ref page) if !page.complete)
+    {
+        ui.hit_regions.push(crate::ui::HitRegion {
+            area,
+            target: crate::ui::HitTarget::RedisPreviewLoadMore(tab.id),
+        });
+    }
+}
+
+fn redis_table_result(
+    table: &crate::value_preview::table::RedisTable,
+) -> crate::db::query::ResultSet {
+    crate::db::query::ResultSet {
+        columns: table
+            .columns
+            .iter()
+            .map(|name| crate::db::query::ColumnMeta {
+                name: name.clone(),
+                type_name: "REDIS".into(),
+            })
+            .collect(),
+        rows: table
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .cloned()
+                    .map(crate::db::value::CellValue::Text)
+                    .collect()
+            })
+            .collect(),
+        affected_rows: 0,
+    }
 }
 
 fn preview_format_label(format: crate::value_preview::PreviewFormat, automatic: bool) -> String {

@@ -1227,6 +1227,7 @@ impl Keymap {
                 app.tabs.get(app.active_tab),
                 Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
                     if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                        && tab.format.view() != crate::value_preview::ValueView::Table
             )
             && let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)
@@ -1750,13 +1751,20 @@ impl Keymap {
             return Some(Action::EditorKey(event));
         }
 
+        let redis_table_preview = matches!(
+            app.tabs.get(app.active_tab),
+            Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                if app.focus == Focus::Results
+                    && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+        );
         match event.code {
             KeyCode::Char('?') => return Some(Action::ShowHelp),
             KeyCode::Char(' ') => {
                 self.set_pending(Pending::Leader, app);
                 return None;
             }
-            KeyCode::Char('[') => {
+            KeyCode::Char('[') if !redis_table_preview => {
                 self.set_pending(Pending::Previous, app);
                 return None;
             }
@@ -1776,7 +1784,7 @@ impl Keymap {
                 self.set_pending(Pending::Goto, app);
                 return None;
             }
-            KeyCode::Char(']') => {
+            KeyCode::Char(']') if !redis_table_preview => {
                 self.set_pending(Pending::Next, app);
                 return None;
             }
@@ -1940,8 +1948,22 @@ impl Keymap {
             if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
                 return Some(Action::RedisPreviewCycleFormat);
             }
-            if event.modifiers.is_empty() && event.code == KeyCode::Char('W') {
+            if event.modifiers.is_empty()
+                && event.code == KeyCode::Char('W')
+                && !matches!(
+                    app.tabs.get(app.active_tab),
+                    Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                        if tab.format.view() == crate::value_preview::ValueView::Table
+                )
+            {
                 return Some(Action::RedisPreviewToggleWrap);
+            }
+            if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+                && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                && tab.format.view() == crate::value_preview::ValueView::Table
+            {
+                return map_results(event.code, app);
             }
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)

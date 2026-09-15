@@ -7689,6 +7689,58 @@ fn redis_browser_explains_not_loaded_loading_empty_and_failure_states() {
 }
 
 #[test]
+fn redis_table_status_exposes_loaded_state_and_load_more_target() {
+    use lazydb::db::redis::read::{
+        RedisKeyMetadata, RedisPagePosition, RedisPageValue, RedisType, TtlState,
+    };
+    use lazydb::model::redis_browser::RedisValuePageState;
+
+    let mut app = App::new(Vec::new());
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        uuid::Uuid::from_u128(93),
+        lazydb::db::redis::types::RedisTarget {
+            profile_id: uuid::Uuid::from_u128(94),
+            database: 0,
+        },
+    );
+    tab.format
+        .select(lazydb::value_preview::PreviewFormat::TABLE);
+    tab.value_page = RedisValuePageState::Ready(lazydb::db::redis::read::RedisValuePage {
+        metadata: RedisKeyMetadata {
+            key: lazydb::db::redis::types::RedisKeyId {
+                target: tab.target.clone(),
+                key: b"hash".to_vec(),
+            },
+            value_type: RedisType::Hash,
+            ttl: TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: Some(1),
+        },
+        position: RedisPagePosition::HashCursor(9),
+        value: RedisPageValue::Hash(vec![(b"field".to_vec(), b"value".to_vec())]),
+        truncated: false,
+        complete: false,
+        raw_bytes: 10,
+        formatted_bytes: 10,
+    });
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+
+    let (output, state) = render_with_state(&app, 120, 32);
+    assert!(
+        output.contains("1 loaded") && output.contains("More available"),
+        "{output}"
+    );
+    assert!(
+        state
+            .hit_regions
+            .iter()
+            .any(|region| matches!(region.target, HitTarget::RedisPreviewLoadMore(_)))
+    );
+}
+
+#[test]
 fn tiny_terminal_wins_over_profile_overlay() {
     let mut app = App::new(Vec::new());
     app.update(Action::OpenProfileManager);
