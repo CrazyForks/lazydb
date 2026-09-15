@@ -714,7 +714,7 @@ fn oracle_create_plans_quote_names_and_target_the_selected_group() {
         object_type: CatalogObjectType::Catalog(CatalogKind::Table),
         current_database: Some("SERVICE".to_owned()),
     };
-    let mut table = TableDraft::new("APP");
+    let mut table = TableDraft::new_for_database("APP", DatabaseKind::Oracle);
     table.name.set("Order\"Items");
     table.columns[0].name.set("id");
     table.columns[0].native_type.set("NUMBER");
@@ -728,4 +728,69 @@ fn oracle_create_plans_quote_names_and_target_the_selected_group() {
     );
     assert!(lazydb::sql::oracle::prepare_oracle_statement(&plan.statements()[0]).is_ok());
     assert_eq!(plan.step_count(), 1);
+}
+
+#[test]
+fn oracle_create_uses_a_valid_default_type_for_new_columns() {
+    let profile_id = Uuid::from_u128(8);
+    let schema = CatalogId::new(profile_id, CatalogKind::Schema, ["SERVICE", "APP"]);
+    let connection = lazydb::identity::ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection,
+        request_id: 2,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Create,
+        anchor: CatalogMutationAnchor::Group {
+            schema,
+            group: lazydb::db::catalog::ObjectGroup::Tables,
+        },
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("SERVICE".to_owned()),
+    };
+    let mut table = TableDraft::new_for_database("APP", DatabaseKind::Oracle);
+    table.name.set("new_table");
+    table.columns[0].name.set("name");
+
+    let plan = OracleAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), None)
+        .expect("Oracle table plan should be valid with the default column type");
+
+    assert_eq!(
+        plan.statements()[0],
+        "CREATE TABLE \"APP\".\"new_table\" (\"name\" VARCHAR2(255 CHAR))"
+    );
+}
+
+#[test]
+fn oracle_create_rejects_text_before_execution_with_a_replacement_hint() {
+    let profile_id = Uuid::from_u128(9);
+    let schema = CatalogId::new(profile_id, CatalogKind::Schema, ["SERVICE", "APP"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 3,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Create,
+        anchor: CatalogMutationAnchor::Group {
+            schema,
+            group: lazydb::db::catalog::ObjectGroup::Tables,
+        },
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("SERVICE".into()),
+    };
+    let mut table = TableDraft::new_for_database("APP", DatabaseKind::Oracle);
+    table.name.set("invalid_table");
+    table.columns[0].name.set("description");
+    table.columns[0].native_type.set("TEXT");
+
+    let error = OracleAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), None)
+        .expect_err("Oracle must reject TEXT before execution");
+    let message = error.to_string();
+    assert!(message.contains("description"));
+    assert!(message.contains("VARCHAR2"));
+    assert!(message.contains("CLOB"));
 }

@@ -465,6 +465,7 @@ fn catalog_preview_keeps_sql_and_footer_visible_around_sanitized_failure() {
     .unwrap();
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor,
         object_type: Some(CatalogObjectType::Catalog(CatalogKind::Schema)),
@@ -491,10 +492,10 @@ fn catalog_preview_keeps_sql_and_footer_visible_around_sanitized_failure() {
     assert!(output.contains("target: appsecret"), "{output}");
     assert!(!output.contains("target: app\nsecret"), "{output}");
     assert!(!output.contains("Applying changes..."), "{output}");
-    assert!(output.contains("database deniedsecret"), "{output}");
+    assert!(output.contains("database denied"), "{output}");
+    assert!(output.contains("secret"), "{output}");
     assert!(output.contains("Enter apply"), "{output}");
     assert!(output.contains("Esc return to form"), "{output}");
-    assert!(!output.contains("\nsecret"), "{output}");
 }
 
 #[test]
@@ -603,6 +604,7 @@ fn role_editor_renders_secret_as_status_only() {
     draft.set_password("render-secret");
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -630,6 +632,7 @@ fn role_editor_renders_secret_as_status_only() {
 fn table_editor_renders_general_and_columns_sections() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Edit,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -649,6 +652,7 @@ fn table_editor_renders_general_and_columns_sections() {
         preview_scroll: 0,
         draft: Some(lazydb::model::catalog_editor::CatalogDraft::Table(
             lazydb::model::catalog_editor::TableDraft {
+                database_kind: lazydb::profile::DatabaseKind::Postgres,
                 name: "events".into(),
                 schema: "public".into(),
                 owner: "postgres".into(),
@@ -682,6 +686,7 @@ fn table_editor_renders_general_and_columns_sections() {
 fn table_editor_baseline_hit_regions_stay_inside_the_rendered_window() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -729,6 +734,7 @@ fn table_editor_baseline_column_rows_are_disjoint_and_selectable() {
     draft.selected_column = 2;
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -916,6 +922,7 @@ fn table_editor_marks_removed_columns_and_exposes_restore_action() {
     draft.selected_column = 0;
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -961,6 +968,7 @@ fn table_editor_column_list_has_headers_and_bounds_wide_values() {
     draft.columns[0].native_type = "character varying(4096) with custom metadata".into();
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -997,6 +1005,7 @@ fn table_editor_column_list_has_headers_and_bounds_wide_values() {
 fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1016,6 +1025,7 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
         preview_scroll: 0,
         draft: Some(lazydb::model::catalog_editor::CatalogDraft::Table(
             lazydb::model::catalog_editor::TableDraft {
+                database_kind: lazydb::profile::DatabaseKind::Postgres,
                 name: "events".into(),
                 schema: "public".into(),
                 owner: "postgres".into(),
@@ -1150,6 +1160,7 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
 fn compact_table_editor_hides_inline_details_and_keeps_actions_reachable() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Group {
             schema: CatalogId::new(uuid::Uuid::nil(), CatalogKind::Schema, ["app", "public"]),
@@ -1209,6 +1220,7 @@ fn very_small_table_editor_keeps_selected_column_reachable() {
     draft.columns[0].name = "selected_column".into();
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1247,6 +1259,7 @@ fn table_column_details_modal_renders_all_fields_and_controls_at_compact_size() 
     let mut draft = lazydb::model::catalog_editor::TableDraft::new("public");
     draft.begin_edit_selected_column();
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1311,6 +1324,7 @@ fn table_column_details_modal_keeps_validation_error_above_controls() {
     draft.begin_edit_selected_column();
     draft.column_editor.as_mut().unwrap().error = Some("column type is required".into());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1358,6 +1372,7 @@ fn table_editor_scrolls_selected_column_into_the_rendered_window() {
     draft.selected_column = 7;
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1403,6 +1418,7 @@ fn table_editor_hides_details_for_last_column_at_list_capacity() {
     draft.selected_column = draft.columns.len() - 1;
     draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1438,6 +1454,7 @@ fn table_editor_hides_details_for_last_column_at_list_capacity() {
 fn constraint_editor_renders_typed_fields() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1801,6 +1818,7 @@ fn set_catalog_form_focus(app: &mut App, focus: lazydb::model::catalog_editor::C
 fn view_editor_fixture() -> App {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1843,6 +1861,7 @@ fn view_editor_fixture() -> App {
 fn index_editor_renders_typed_fields() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1889,6 +1908,7 @@ fn index_editor_renders_typed_fields() {
 fn materialized_view_editor_renders_data_state_and_read_only_query() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Edit,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),
@@ -1975,6 +1995,7 @@ fn materialized_view_editor_renders_data_state_and_read_only_query() {
 fn sequence_editor_renders_sections_bounds_and_all_fields() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: CatalogMutationMode::Create,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),

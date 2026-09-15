@@ -132,11 +132,34 @@ impl OracleAdapter {
             (ObjectGroup::Tables, CatalogDraft::Table(draft)) => {
                 draft.validate()?;
                 let name = draft.name.value().trim().to_owned();
+                let type_policy = crate::db::column_type::ColumnTypePolicy::for_database(
+                    crate::profile::DatabaseKind::Oracle,
+                );
                 let columns = draft
                     .columns
                     .iter()
                     .filter(|column| !matches!(column.state, DraftRowState::Removed { .. }))
                     .map(|column| {
+                        if let Some(issue) =
+                            type_policy.validate_native_type(column.native_type.value().trim())
+                            && issue.kind == crate::db::column_type::ColumnTypeIssueKind::Invalid
+                        {
+                            let suggestion = issue
+                                .suggestion
+                                .map(|value| format!("; {value}"))
+                                .unwrap_or_default();
+                            return Err(
+                                super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                                    reason: format!(
+                                        "column {} type {}: {}{}",
+                                        column.name.value().trim(),
+                                        column.native_type.value().trim(),
+                                        issue.message,
+                                        suggestion
+                                    ),
+                                },
+                            );
+                        }
                         let mut sql = format!(
                             "{} {}",
                             quote_identifier(column.name.value().trim()),

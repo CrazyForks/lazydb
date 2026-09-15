@@ -1290,6 +1290,7 @@ fn postgres_view_options_are_version_gated_and_render_exact_syntax() {
 
 fn table_draft(name: &str, columns: Vec<ColumnDraft>) -> CatalogDraft {
     CatalogDraft::Table(TableDraft {
+        database_kind: lazydb::profile::DatabaseKind::Postgres,
         name: name.into(),
         schema: "public".into(),
         owner: "owner".into(),

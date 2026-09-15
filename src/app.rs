@@ -6704,6 +6704,7 @@ impl App {
                         selection.catalog_epoch,
                         options,
                     );
+                    editor.database_kind = self.active_profile().map(|profile| profile.kind);
                     if editor.options.len() == 1 {
                         let view_capabilities = self.connection.mutation_capabilities.view_options;
                         Self::select_catalog_editor_option(&mut editor, 0, view_capabilities);
@@ -6850,12 +6851,14 @@ impl App {
                         self.notify_warning("Catalog", "Catalog request ID exhausted");
                         return Vec::new();
                     };
-                    self.catalog_editor = Some(CatalogEditorState::new(
+                    let mut editor = CatalogEditorState::new(
                         CatalogMutationMode::Edit,
                         anchor.clone(),
                         catalog_epoch,
                         Vec::new(),
-                    ));
+                    );
+                    editor.database_kind = self.active_profile().map(|profile| profile.kind);
+                    self.catalog_editor = Some(editor);
                     self.overlay = Some(Overlay::CatalogEditor);
                     let editor = self.catalog_editor.as_mut().unwrap();
                     editor.begin_loading(request_id);
@@ -18242,6 +18245,7 @@ impl App {
             catalog_epoch,
             Vec::new(),
         );
+        editor.database_kind = Some(profile.kind);
         if !editor.select_object_type(object_type) {
             return Vec::new();
         }
