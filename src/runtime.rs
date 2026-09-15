@@ -45,6 +45,8 @@ use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream, MouseEventKind};
 use futures_util::StreamExt;
 use secrecy::SecretString;
+
+const EXPLORER_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 use tokio::{
     sync::{Mutex, mpsc},
     task::{self, JoinHandle},
@@ -1098,7 +1100,17 @@ impl Runtime {
                         .as_deref()
                         .and_then(|value| value.parse::<u32>().ok())
                         .unwrap_or(0);
-                    adapter.discover_databases(current, &[current]).await
+                    timeout(
+                        EXPLORER_METADATA_TIMEOUT,
+                        adapter.discover_databases(current, &[current]),
+                    )
+                    .await
+                    .map_err(|_| {
+                        DatabaseError::configuration(
+                            "Redis database discovery timed out after 30 seconds",
+                        )
+                    })
+                    .unwrap_or_else(Err)
                 }
                 _ => Err(DatabaseError::configuration(
                     "Redis database discovery requires a Redis connection",
@@ -2205,8 +2217,29 @@ impl Runtime {
                 });
                 return;
             };
-            match database.load_catalog_page(&request).await {
-                Ok(page) => {
+            match timeout(
+                EXPLORER_METADATA_TIMEOUT,
+                database.load_catalog_page(&request),
+            )
+            .await
+            {
+                Err(_) => {
+                    let accepted = latest_catalog_requests.lock().is_ok_and(|latest| {
+                        latest.get(&(request.key.connection, request.key.target.clone()))
+                            == Some(&request.key)
+                    });
+                    let active = active_database(Arc::clone(&connection), request.key.connection)
+                        .await
+                        .is_some();
+                    if active && accepted {
+                        let _ = sender.send(Action::CatalogPageFailed {
+                            key,
+                            category: crate::db::ErrorCategory::Network,
+                            message: "catalog request timed out after 30 seconds".to_owned(),
+                        });
+                    }
+                }
+                Ok(Ok(page)) => {
                     if let Err(error) = page.validate_for(&request) {
                         let _ = sender.send(Action::CatalogPageFailed {
                             key,
@@ -2234,7 +2267,7 @@ impl Runtime {
                         let _ = sender.send(Action::CatalogPageLoaded(page));
                     }
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     let accepted = latest_catalog_requests.lock().is_ok_and(|latest| {
                         latest.get(&(request.key.connection, request.key.target.clone()))
                             == Some(&request.key)

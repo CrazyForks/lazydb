@@ -9594,11 +9594,19 @@ impl App {
                                 )
                             });
                         if !loaded {
-                            commands.extend(self.start_catalog_request(
-                                CatalogTarget::relation_children(relation).unwrap(),
-                                None,
-                                CatalogRequestIntent::Automatic,
-                            ));
+                            let connection = self
+                                .explorer
+                                .catalog_sessions
+                                .get(&relation.profile_id())
+                                .copied();
+                            if let Some(connection) = connection {
+                                commands.extend(self.start_catalog_request_for_connection(
+                                    connection,
+                                    CatalogTarget::relation_children(relation).unwrap(),
+                                    None,
+                                    CatalogRequestIntent::Automatic,
+                                ));
+                            }
                         }
                     }
                     return commands;
@@ -10017,7 +10025,8 @@ impl App {
                 if databases_loaded {
                     Vec::new()
                 } else {
-                    self.start_catalog_request(
+                    self.start_catalog_request_for_connection(
+                        connection,
                         CatalogTarget::Databases,
                         None,
                         CatalogRequestIntent::Explicit,
@@ -11173,10 +11182,12 @@ impl App {
                     manager.operation = None;
                     manager.set_message(ProfileMessageLevel::Success, "Connected");
                 }
+                self.explorer.catalog_sessions.insert(profile_id, identity);
                 let commands_for_catalog = if profile_kind == DatabaseKind::Redis {
                     Vec::new()
                 } else if editor_target_switch.is_none() {
-                    self.start_catalog_request(
+                    self.start_catalog_request_for_connection(
+                        identity,
                         CatalogTarget::Databases,
                         None,
                         CatalogRequestIntent::Automatic,
@@ -11185,7 +11196,12 @@ impl App {
                     interrupted_catalog_targets
                         .into_iter()
                         .flat_map(|target| {
-                            self.start_catalog_request(target, None, CatalogRequestIntent::Refresh)
+                            self.start_catalog_request_for_connection(
+                                identity,
+                                target,
+                                None,
+                                CatalogRequestIntent::Refresh,
+                            )
                         })
                         .collect()
                 };
@@ -11714,7 +11730,8 @@ impl App {
                             if let Ok(target) =
                                 CatalogTarget::relation_children(new_relation.clone())
                             {
-                                commands.extend(self.start_catalog_request(
+                                commands.extend(self.start_catalog_request_for_connection(
+                                    connection,
                                     target,
                                     None,
                                     CatalogRequestIntent::Refresh,
@@ -12732,8 +12749,12 @@ impl App {
                 generation,
                 discovery,
             } => {
-                if self.connection.profile_id != Some(profile_id)
-                    || self.connection.generation != generation
+                let identity = ConnectionIdentity {
+                    profile_id,
+                    generation,
+                };
+                if self.sessions.get_by_identity(identity).is_none()
+                    || self.explorer.catalog_sessions.get(&profile_id) != Some(&identity)
                 {
                     return Vec::new();
                 }
@@ -12748,11 +12769,16 @@ impl App {
                 generation,
                 message,
             } => {
-                if self.connection.profile_id == Some(profile_id)
-                    && self.connection.generation == generation
+                let identity = ConnectionIdentity {
+                    profile_id,
+                    generation,
+                };
+                if self.sessions.get_by_identity(identity).is_some()
+                    && self.explorer.catalog_sessions.get(&profile_id) == Some(&identity)
                     && let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id)
                 {
                     profile.redis_databases_error = Some(message);
+                    profile.status = ExplorerConnectionStatus::Online;
                 }
                 Vec::new()
             }
@@ -16355,11 +16381,19 @@ impl App {
                     )
                 });
             if !loaded {
-                commands.extend(self.start_catalog_request(
-                    CatalogTarget::relation_children(relation.clone()).unwrap(),
-                    None,
-                    CatalogRequestIntent::Completion,
-                ));
+                if let Some(connection) = self
+                    .explorer
+                    .catalog_sessions
+                    .get(&relation.profile_id())
+                    .copied()
+                {
+                    commands.extend(self.start_catalog_request_for_connection(
+                        connection,
+                        CatalogTarget::relation_children(relation.clone()).unwrap(),
+                        None,
+                        CatalogRequestIntent::Completion,
+                    ));
+                }
             }
         }
         let relation_children = dependencies.relation_children.clone();
@@ -17458,28 +17492,30 @@ impl App {
         let Some(profile_id) = profile_id else {
             return Vec::new();
         };
-        let connection = self
+        let Some(connection) = self
             .explorer
             .catalog_sessions
             .get(&profile_id)
             .copied()
             .filter(|identity| self.sessions.get_by_identity(*identity).is_some())
-            .or_else(|| {
-                self.sessions
-                    .iter()
-                    .find(|session| {
-                        session.identity.profile_id == profile_id
-                            && session.status == crate::model::session::SessionStatus::Connected
-                    })
-                    .map(|session| session.identity)
-            })
-            .or_else(|| {
-                (self.connection.status == ConnectionStatus::Connected
-                    && self.connection.profile_id == Some(profile_id))
-                .then(|| self.connection.active_identity())
-                .flatten()
-            });
-        let Some(connection) = connection else {
+        else {
+            return Vec::new();
+        };
+        self.start_catalog_request_for_connection(connection, target, cursor, intent)
+    }
+
+    fn start_catalog_request_for_connection(
+        &mut self,
+        connection: ConnectionIdentity,
+        target: CatalogTarget,
+        cursor: Option<crate::db::catalog::CatalogCursor>,
+        intent: CatalogRequestIntent,
+    ) -> Vec<Command> {
+        let profile_id = connection.profile_id;
+        if target.profile_id().is_some_and(|id| id != profile_id)
+            || self.explorer.catalog_sessions.get(&profile_id) != Some(&connection)
+            || self.sessions.get_by_identity(connection).is_none()
+        {
             return Vec::new();
         };
         self.explorer
@@ -17552,6 +17588,7 @@ impl App {
             .load_states
             .insert(owner.clone(), ExplorerLoadState::Loading { request_id });
         state.pending_requests.insert(owner, request.clone());
+        state.status = ExplorerConnectionStatus::Syncing;
         vec![Command::LoadCatalogPage(request)]
     }
 
@@ -17736,11 +17773,14 @@ impl App {
         for target in targets {
             if unique.insert(target.clone()) {
                 self.explorer.invalidate_catalog_target(profile_id, target);
-                commands.extend(self.start_catalog_request(
-                    target.clone(),
-                    None,
-                    CatalogRequestIntent::Refresh,
-                ));
+                if let Some(connection) = self.explorer.catalog_sessions.get(&profile_id).copied() {
+                    commands.extend(self.start_catalog_request_for_connection(
+                        connection,
+                        target.clone(),
+                        None,
+                        CatalogRequestIntent::Refresh,
+                    ));
+                }
             }
         }
         commands
@@ -17826,9 +17866,10 @@ impl App {
         request_id: u64,
     ) -> Vec<Command> {
         let current = self
-            .connection
-            .active_identity()
-            .is_some_and(|active| active == connection)
+            .explorer
+            .catalog_sessions
+            .get(&connection.profile_id)
+            .is_some_and(|active| *active == connection)
             && self
                 .explorer
                 .normalized
@@ -17860,7 +17901,20 @@ impl App {
                         _ => return Vec::new(),
                     },
                 );
-                return self.start_catalog_request(parent, None, CatalogRequestIntent::Refresh);
+                if let Some(connection) = self
+                    .explorer
+                    .catalog_sessions
+                    .get(&connection.profile_id)
+                    .copied()
+                {
+                    return self.start_catalog_request_for_connection(
+                        connection,
+                        parent,
+                        None,
+                        CatalogRequestIntent::Refresh,
+                    );
+                }
+                return Vec::new();
             }
         }
         self.pending_identity_refreshes.remove(&request_id);
@@ -18062,12 +18116,14 @@ impl App {
             self.explorer.completion_index = Default::default();
         }
         self.explorer.catalog_generation = self.explorer.catalog_generation.saturating_add(1);
-        self.explorer.rebuild_projection(profile_id);
+        self.explorer
+            .rebuild_projection_for(profile_id, self.explorer.active_profile == Some(profile_id));
         self.explorer.refresh_frontend_search();
 
         let mut commands = Vec::new();
         if let Some(cursor) = page.next_cursor {
-            commands.extend(self.start_catalog_request(
+            commands.extend(self.start_catalog_request_for_connection(
+                request.key.connection,
                 request.key.target.clone(),
                 Some(cursor),
                 CatalogRequestIntent::Continuation,
@@ -18078,7 +18134,8 @@ impl App {
             CatalogTarget::Databases => {
                 if !database_selector_open {
                     for entry in page.entries {
-                        commands.extend(self.start_catalog_request(
+                        commands.extend(self.start_catalog_request_for_connection(
+                            request.key.connection,
                             CatalogTarget::schemas(entry.id).unwrap(),
                             None,
                             CatalogRequestIntent::Automatic,
@@ -18088,7 +18145,8 @@ impl App {
             }
             CatalogTarget::Schemas { .. } => {
                 for entry in page.entries {
-                    commands.extend(self.start_catalog_request(
+                    commands.extend(self.start_catalog_request_for_connection(
+                        request.key.connection,
                         CatalogTarget::groups(entry.id).unwrap(),
                         None,
                         CatalogRequestIntent::Automatic,
@@ -18101,7 +18159,8 @@ impl App {
                     .into_iter()
                     .filter(|summary| search_preload_group(summary.group))
                 {
-                    commands.extend(self.start_catalog_request(
+                    commands.extend(self.start_catalog_request_for_connection(
+                        request.key.connection,
                         CatalogTarget::objects(schema.clone(), summary.group).unwrap(),
                         None,
                         CatalogRequestIntent::Automatic,
@@ -18202,7 +18261,10 @@ impl App {
         if state.pending_requests.is_empty() {
             state.status = ExplorerConnectionStatus::Online;
         }
-        self.explorer.rebuild_projection(key.connection.profile_id);
+        self.explorer.rebuild_projection_for(
+            key.connection.profile_id,
+            self.explorer.active_profile == Some(key.connection.profile_id),
+        );
     }
 
     fn selected_catalog_target(&self) -> Option<CatalogTarget> {
@@ -18867,8 +18929,12 @@ impl App {
                     }
                     ExplorerConnectionStatus::Linking => Vec::new(),
                     ExplorerConnectionStatus::Online | ExplorerConnectionStatus::Syncing => {
+                        let was_expanded = self.explorer.normalized.expanded.contains(&selected);
                         self.explorer.toggle_selected();
-                        Vec::new()
+                        if was_expanded {
+                            return Vec::new();
+                        }
+                        self.ensure_profile_catalog(*profile_id, CatalogRequestIntent::Explicit)
                     }
                 }
             }
@@ -19764,6 +19830,11 @@ impl App {
                 }
                 return self.request_connection(profile_id);
             }
+            let expanded = self.explorer.normalized.expanded.contains(&selected);
+            if !expanded {
+                self.explorer.normalized.expand();
+            }
+            return self.ensure_profile_catalog(profile_id, CatalogRequestIntent::Explicit);
         }
         if let ExplorerNodeId::Status {
             owner: ExplorerOwnerId::Profile(profile_id),
@@ -19775,7 +19846,12 @@ impl App {
                 .find(|profile| profile.id == profile_id)
                 .is_some_and(|profile| profile.kind == DatabaseKind::Redis)
         {
-            let generation = self.connection.generation;
+            let generation = self
+                .explorer
+                .catalog_sessions
+                .get(&profile_id)
+                .map(|identity| identity.generation)
+                .unwrap_or(self.connection.generation);
             return vec![Command::DiscoverRedisDatabases {
                 profile_id,
                 generation,
@@ -19862,9 +19938,13 @@ impl App {
     }
 
     fn target_needs_load(&self, target: &CatalogTarget) -> bool {
-        let Some(profile_id) = self.connection.profile_id else {
+        let Some(profile_id) = target.profile_id().or(self.connection.profile_id) else {
             return false;
         };
+        self.target_needs_load_for_profile(profile_id, target)
+    }
+
+    fn target_needs_load_for_profile(&self, profile_id: Uuid, target: &CatalogTarget) -> bool {
         let owner = owner_for_target(profile_id, target);
         self.explorer
             .normalized
@@ -19880,6 +19960,27 @@ impl App {
                         | ExplorerLoadState::PermissionDenied { .. }
                 )
             })
+    }
+
+    fn ensure_profile_catalog(
+        &mut self,
+        profile_id: Uuid,
+        intent: CatalogRequestIntent,
+    ) -> Vec<Command> {
+        let Some(connection) = self
+            .explorer
+            .catalog_sessions
+            .get(&profile_id)
+            .copied()
+            .filter(|identity| self.sessions.get_by_identity(*identity).is_some())
+        else {
+            return Vec::new();
+        };
+        let target = CatalogTarget::Databases;
+        if !self.target_needs_load_for_profile(profile_id, &target) {
+            return Vec::new();
+        }
+        self.start_catalog_request_for_connection(connection, target, None, intent)
     }
 
     fn clear_active_catalog(&mut self, profile_id: Uuid) {
