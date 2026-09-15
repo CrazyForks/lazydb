@@ -1292,6 +1292,42 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    pub(crate) fn is_console_management_action(&self) -> bool {
+        matches!(
+            self,
+            Self::NewConsole
+                | Self::NewConsoleNamed(_)
+                | Self::OpenSqlEditorList
+                | Self::SqlEditorListMove(_)
+                | Self::SqlEditorListActivate
+                | Self::SqlEditorListCreate
+                | Self::SqlEditorListDeleteRequest
+                | Self::SqlEditorListDeleteConfirm
+                | Self::SqlEditorListDeleteActivate
+                | Self::SqlEditorListDeleteCancel
+                | Self::SqlEditorListDeleteFocusNext
+                | Self::SqlEditorListDeleteFocusPrevious
+                | Self::SqlEditorListSearchStart
+                | Self::SqlEditorListRenameStart
+                | Self::SqlEditorListRenameCommit
+                | Self::SqlEditorListInputInsert(_)
+                | Self::SqlEditorListInputBackspace
+                | Self::SqlEditorListInputDeletePreviousWord
+                | Self::SqlEditorListInputDeleteToStart
+                | Self::SqlEditorListInputDelete
+                | Self::SqlEditorListInputMoveLeft
+                | Self::SqlEditorListInputMoveRight
+                | Self::SqlEditorListInputMoveHome
+                | Self::SqlEditorListInputMoveEnd
+                | Self::SqlEditorListInputUndo
+                | Self::SqlEditorListInputRedo
+                | Self::SqlEditorListCancel
+                | Self::ActivateSqlEditor(_)
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CatalogEditorCursorTarget {
     SchemaField(usize),

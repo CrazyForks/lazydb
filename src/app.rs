@@ -3655,6 +3655,7 @@ impl App {
             return Vec::new();
         }
         if self.active_console_opt().is_none()
+            && !action.is_console_management_action()
             && !matches!(
                 action,
                 Action::OpenOmni
