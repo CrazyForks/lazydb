@@ -38,7 +38,7 @@ use ratatui::{
 };
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -339,6 +339,7 @@ pub struct UiState {
         text_selection::InputHitMap,
     )>,
     pub(crate) query_bar_highlights: query_bar::QueryBarHighlightCache,
+    pub(crate) sql_history_kind_cache: SqlHistoryKindCache,
     pub(crate) animations: animation::AnimationState,
     pub(crate) result_area: Option<Rect>,
     pub(crate) activity_icons: icons::IconSet,
@@ -472,6 +473,7 @@ impl UiState {
             catalog_input_targets: Vec::new(),
             input_selection_targets: Vec::new(),
             query_bar_highlights: query_bar::QueryBarHighlightCache::default(),
+            sql_history_kind_cache: SqlHistoryKindCache::default(),
             animations: animation::AnimationState::new(mode, Instant::now()),
             result_area: None,
             activity_icons: icons::IconSet::default(),
@@ -629,6 +631,99 @@ impl UiState {
         self.input_selection_targets
             .iter()
             .any(|(target, map)| target == &gesture.target && map == &gesture.hit_map)
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SqlHistoryKindCache {
+    identity: Option<(Uuid, u64)>,
+    entries: HashMap<Uuid, SqlHistoryKindCacheEntry>,
+}
+
+#[derive(Debug)]
+struct SqlHistoryKindCacheEntry {
+    sql: String,
+    dialect: crate::sql::SqlDialect,
+    kind: crate::sql::SqlStatementKind,
+}
+
+impl SqlHistoryKindCache {
+    pub(crate) fn begin(&mut self, overlay_id: Uuid, generation: u64) {
+        if self.identity != Some((overlay_id, generation)) {
+            self.identity = Some((overlay_id, generation));
+            self.entries.clear();
+        }
+    }
+
+    pub(crate) fn kind(
+        &mut self,
+        execution_id: Uuid,
+        sql: &str,
+        dialect: crate::sql::SqlDialect,
+    ) -> crate::sql::SqlStatementKind {
+        if let Some(entry) = self.entries.get(&execution_id)
+            && entry.sql == sql
+            && entry.dialect == dialect
+        {
+            return entry.kind;
+        }
+        let kind = crate::sql::classify_statement_kind(sql, dialect);
+        self.entries.insert(
+            execution_id,
+            SqlHistoryKindCacheEntry {
+                sql: sql.to_owned(),
+                dialect,
+                kind,
+            },
+        );
+        kind
+    }
+
+    pub(crate) fn retain(&mut self, visible_ids: &HashSet<Uuid>) {
+        self.entries
+            .retain(|execution_id, _| visible_ids.contains(execution_id));
+    }
+}
+
+#[cfg(test)]
+mod sql_history_kind_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cache_reuses_entries_and_invalidates_changed_inputs() {
+        let id = Uuid::new_v4();
+        let overlay = Uuid::new_v4();
+        let mut cache = SqlHistoryKindCache::default();
+        cache.begin(overlay, 1);
+        assert_eq!(
+            cache.kind(id, "SELECT 1", crate::sql::SqlDialect::Postgres),
+            crate::sql::SqlStatementKind::Dql
+        );
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(
+            cache.kind(
+                id,
+                "ALTER TABLE users ADD COLUMN active BOOLEAN",
+                crate::sql::SqlDialect::Postgres
+            ),
+            crate::sql::SqlStatementKind::Ddl
+        );
+        assert_eq!(cache.entries.len(), 1);
+        cache.begin(overlay, 2);
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn cache_retain_removes_non_visible_entries() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut cache = SqlHistoryKindCache::default();
+        cache.begin(Uuid::new_v4(), 1);
+        cache.kind(first, "SELECT 1", crate::sql::SqlDialect::Generic);
+        cache.kind(second, "SELECT 2", crate::sql::SqlDialect::Generic);
+        cache.retain(&HashSet::from([first]));
+        assert!(cache.entries.contains_key(&first));
+        assert!(!cache.entries.contains_key(&second));
     }
 }
 

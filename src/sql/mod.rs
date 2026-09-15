@@ -23,6 +23,7 @@ mod relation_filter;
 mod risk;
 mod scope;
 mod semantic;
+mod statement_kind;
 mod transaction;
 mod type_name;
 
@@ -65,6 +66,7 @@ pub use semantic::{
     CatalogCoverage, CatalogNamespace, CatalogSnapshot, RelationResolution, SemanticAnalysis,
     SemanticContext, analyze_semantics,
 };
+pub use statement_kind::{SqlStatementKind, classify_statement_kind};
 pub use transaction::{
     BeginRequest, TransactionControl, TransactionSqlClassification, TransactionSqlError,
     classify_transaction_batch, classify_transaction_sql, savepoint_requires_active_manual,

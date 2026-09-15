@@ -6,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+use std::collections::HashSet;
 
 use crate::{
     app::App,
@@ -13,6 +14,7 @@ use crate::{
         editor::EditorViewport,
         sql_history_view::{SqlHistoryMode, SqlHistoryState},
     },
+    sql::SqlStatementKind,
     ui::{HitRegion, HitTarget, render_text_input, sql_preview, theme::Theme},
 };
 
@@ -45,6 +47,10 @@ pub(crate) fn render(
         );
         return;
     }
+
+    state
+        .sql_history_kind_cache
+        .begin(view.overlay_id, view.query_generation);
 
     let header_height = 1;
     let footer_height = 1;
@@ -155,17 +161,35 @@ fn render_list(
         .title(" SQL ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    const TYPE_WIDTH: u16 = 6;
+    let has_type_column = inner.width > TYPE_WIDTH;
+    let content_x = inner
+        .x
+        .saturating_add(if has_type_column { TYPE_WIDTH } else { 0 });
+    let content_width = inner
+        .width
+        .saturating_sub(if has_type_column { TYPE_WIDTH } else { 0 });
+    let mut visible_ids = HashSet::new();
     let mut y = inner.y;
     for (index, item) in view.items.iter().enumerate().skip(view.list_offset) {
         if y >= inner.bottom() {
             break;
         }
         let selected = view.selected_execution == Some(item.execution_id);
-        let preview_height = (inner.bottom().saturating_sub(y)).min(3);
+        let remaining = inner.bottom().saturating_sub(y);
+        if remaining < 2 {
+            break;
+        }
+        let dialect = app.sql_history_dialect(item.profile_id);
+        let kind = state
+            .sql_history_kind_cache
+            .kind(item.execution_id, &item.sql, dialect);
+        visible_ids.insert(item.execution_id);
+        let preview_height = remaining.saturating_sub(1).min(3);
         let lines = sql_preview::lines_without_line_numbers(
             &item.sql,
-            app.sql_history_dialect(item.profile_id),
-            inner.width.saturating_sub(2) as usize,
+            dialect,
+            content_width as usize,
             theme,
         );
         let shown = lines
@@ -174,7 +198,7 @@ fn render_list(
             .collect::<Vec<_>>();
         let metadata = Line::from(Span::styled(
             format!(
-                "  {} · {} · {}",
+                "{} · {} · {}",
                 format_timestamp(item.requested_at),
                 item.database.as_deref().unwrap_or("—"),
                 format_status(item.status)
@@ -190,31 +214,71 @@ fn render_list(
             area: row_area,
             target: HitTarget::SqlHistoryRow(index),
         });
+        let row_style = Style::new().bg(if selected {
+            theme.selection
+        } else {
+            theme.surface_raised
+        });
+        frame.render_widget(Paragraph::new(" ").style(row_style), row_area);
+        if has_type_column {
+            frame.render_widget(
+                Paragraph::new(Span::styled(type_label(kind), type_style(kind, theme)))
+                    .style(row_style),
+                Rect::new(inner.x, y, TYPE_WIDTH, 1),
+            );
+        }
         for (line_index, line) in shown.into_iter().enumerate() {
             frame.render_widget(
-                Paragraph::new(line).style(Style::new().bg(if selected {
-                    theme.selection
-                } else {
-                    theme.surface_raised
-                })),
-                Rect::new(inner.x, y.saturating_add(line_index as u16), inner.width, 1),
+                Paragraph::new(line).style(row_style),
+                Rect::new(
+                    content_x,
+                    y.saturating_add(line_index as u16),
+                    content_width,
+                    1,
+                ),
             );
         }
         frame.render_widget(
-            Paragraph::new(metadata).style(Style::new().bg(if selected {
-                theme.selection
-            } else {
-                theme.surface_raised
-            })),
-            Rect::new(inner.x, y.saturating_add(row_height - 1), inner.width, 1),
+            Paragraph::new(metadata).style(row_style),
+            Rect::new(
+                content_x,
+                y.saturating_add(row_height - 1),
+                content_width,
+                1,
+            ),
         );
         y = y.saturating_add(row_height);
     }
+    state.sql_history_kind_cache.retain(&visible_ids);
     if view.loading && view.items.is_empty() {
         frame.render_widget(Paragraph::new(" Loading…"), inner);
     } else if view.items.is_empty() && view.error.is_none() {
         frame.render_widget(Paragraph::new(" No SQL execution history"), inner);
     }
+}
+
+fn type_label(kind: SqlStatementKind) -> &'static str {
+    match kind {
+        SqlStatementKind::Dql => "[DQL] ",
+        SqlStatementKind::Dml => "[DML] ",
+        SqlStatementKind::Ddl => "[DDL] ",
+        SqlStatementKind::Dcl => "[DCL] ",
+        SqlStatementKind::Tcl => "[TCL] ",
+        SqlStatementKind::Mixed => "[MIX] ",
+        SqlStatementKind::Other => "[SQL] ",
+    }
+}
+
+fn type_style(kind: SqlStatementKind, theme: Theme) -> Style {
+    let color = match kind {
+        SqlStatementKind::Dql => theme.action,
+        SqlStatementKind::Dml => theme.warning,
+        SqlStatementKind::Ddl => theme.syntax_type,
+        SqlStatementKind::Dcl => theme.syntax_parameter,
+        SqlStatementKind::Tcl => theme.accent,
+        SqlStatementKind::Mixed | SqlStatementKind::Other => theme.muted,
+    };
+    Style::new().fg(color).add_modifier(Modifier::BOLD)
 }
 
 fn render_detail(
@@ -344,5 +408,25 @@ fn format_transaction(
         RolledBack => "rolled back",
         RolledBackToSavepoint => "savepoint",
         Unknown => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_labels_have_a_fixed_six_cell_width() {
+        for kind in [
+            SqlStatementKind::Dql,
+            SqlStatementKind::Dml,
+            SqlStatementKind::Ddl,
+            SqlStatementKind::Dcl,
+            SqlStatementKind::Tcl,
+            SqlStatementKind::Mixed,
+            SqlStatementKind::Other,
+        ] {
+            assert_eq!(unicode_width::UnicodeWidthStr::width(type_label(kind)), 6);
+        }
     }
 }
