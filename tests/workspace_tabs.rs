@@ -61,9 +61,13 @@ fn global_console_manager_search_uses_profile_target_and_pure_name_order() {
         .unwrap()
         .profile;
     let mut app = App::new(vec![profile.clone()]);
+    let open_id = Uuid::from_u128(2);
+    let mut open_tab = ConsoleTab::new("zeta");
+    open_tab.id = open_id;
+    app.tabs.push(WorkspaceTab::Sql(open_tab));
     app.sql_editors = vec![
         lazydb::model::tab::ConsoleRecord {
-            id: Uuid::from_u128(2),
+            id: open_id,
             name: "zeta".into(),
             execution_target: Some(lazydb::model::execution_target::ExecutionTarget {
                 profile_id: profile.id,
@@ -690,7 +694,7 @@ fn initial_and_new_consoles_use_the_active_profile_target() {
 }
 
 #[test]
-fn explicit_console_target_binding_updates_console_without_connecting() {
+fn explicit_console_target_binding_updates_console_and_starts_connection() {
     let first = import_connection_url(":memory:", Some("first"))
         .unwrap()
         .profile;
@@ -719,11 +723,9 @@ fn explicit_console_target_binding_updates_console_without_connecting() {
             .iter()
             .any(|command| matches!(command, Command::PersistWorkspace { .. }))
     );
-    assert!(
-        !commands
-            .iter()
-            .any(|command| matches!(command, Command::Connect { .. }))
-    );
+    assert!(commands.iter().any(|command| {
+        matches!(command, Command::Connect { target: requested, .. } if requested == &target)
+    }));
     assert_eq!(app.active_console().execution_target, Some(target.clone()));
     assert_eq!(
         app.sql_editors
@@ -842,7 +844,7 @@ fn workspace_restore_preserves_valid_targets_and_defaults_missing_targets() {
 }
 
 #[test]
-fn workspace_restore_caches_profiles_without_exposing_a_workspace() {
+fn workspace_restore_exposes_all_saved_console_documents_before_connecting() {
     let first = import_connection_url(":memory:", Some("first"))
         .unwrap()
         .profile;
@@ -869,9 +871,9 @@ fn workspace_restore_caches_profiles_without_exposing_a_workspace() {
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot, Some(first.id));
 
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
-    assert_eq!(app.active_workspace_profile, None);
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.sql_editors.len(), 2);
+    assert_eq!(app.active_workspace_profile, Some(first.id));
     let restored = app.workspace_snapshot();
     assert_eq!(
         restored
@@ -907,8 +909,8 @@ fn workspace_restore_ignores_invalid_or_deleted_targets_and_uses_first_profile()
     let mut app = App::new(vec![profile.clone()]);
     app.restore_workspace(snapshot, None);
 
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.sql_editors.len(), 1);
     assert_eq!(app.active_workspace_profile, None);
 }
 
@@ -932,13 +934,14 @@ fn workspace_restore_assigns_targetless_consoles_to_startup_then_first_profile()
     };
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot.clone(), Some(second.id));
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.sql_editors.len(), 1);
 
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot, None);
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.sql_editors.len(), 2);
+    assert!(app.sql_editors.iter().any(|record| record.id == id));
 }
 
 #[test]
@@ -998,21 +1001,37 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.restore_workspace(snapshot.clone(), Some(first.id));
 
-    assert!(app.tabs.is_empty());
-    assert!(app.sql_editors.is_empty());
-    assert_eq!(app.active_workspace_profile, None);
+    assert_eq!(app.tabs.len(), 3);
+    assert_eq!(app.sql_editors.len(), 3);
+    assert_eq!(app.active_workspace_profile, Some(first.id));
 
     let restored = app.workspace_snapshot();
     assert_eq!(restored.profiles.len(), 2);
-    assert_eq!(restored.sql, snapshot.sql);
-    assert!(matches!(
-        restored.profiles[0].tabs[0],
-        PersistedTab::Console { console_id: id } if id == console_id
-    ));
-    assert!(matches!(
-        restored.profiles[0].tabs[1],
-        PersistedTab::Relation(ref relation) if relation.id == relation_id
-    ));
+    assert_eq!(
+        restored
+            .sql
+            .iter()
+            .map(|(_, text)| text)
+            .collect::<std::collections::HashSet<_>>(),
+        snapshot
+            .sql
+            .iter()
+            .map(|(_, text)| text)
+            .collect::<std::collections::HashSet<_>>()
+    );
+    let first_workspace = restored
+        .profiles
+        .iter()
+        .find(|profile| profile.profile_id == first.id)
+        .unwrap();
+    assert!(first_workspace.tabs.iter().any(|tab| matches!(
+        tab,
+        PersistedTab::Console { console_id: id } if *id == console_id
+    )));
+    assert!(first_workspace.tabs.iter().any(|tab| matches!(
+        tab,
+        PersistedTab::Relation(relation) if relation.id == relation_id
+    )));
 }
 
 #[test]

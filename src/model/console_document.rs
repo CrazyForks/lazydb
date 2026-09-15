@@ -102,10 +102,16 @@ impl ConsoleDocuments {
     }
 
     pub fn next_name(&self) -> String {
-        (1..)
-            .map(|number| format!("console_{number}"))
-            .find(|name| !self.name_taken(name, None))
-            .expect("console name sequence must not exhaust usize")
+        let number = self
+            .entries
+            .values()
+            .map(|document| document.name.trim().to_ascii_lowercase())
+            .filter_map(|name| name.strip_prefix("console_").map(str::to_owned))
+            .filter_map(|number| number.parse::<usize>().ok())
+            .max()
+            .and_then(|number| number.checked_add(1))
+            .unwrap_or(1);
+        format!("console_{number}")
     }
 
     fn name_taken(&self, name: &str, except: Option<Uuid>) -> bool {
@@ -158,13 +164,13 @@ mod tests {
     }
 
     #[test]
-    fn next_name_includes_closed_documents_and_reuses_deleted_names() {
+    fn next_name_uses_the_global_maximum_and_reuses_deleted_numbers() {
         let mut documents = ConsoleDocuments::new();
         documents.insert(document(1, "console_1")).unwrap();
         documents.insert(document(2, "console_3")).unwrap();
-        assert_eq!(documents.next_name(), "console_2");
+        assert_eq!(documents.next_name(), "console_4");
         documents.remove(Uuid::from_u128(1));
-        assert_eq!(documents.next_name(), "console_1");
+        assert_eq!(documents.next_name(), "console_4");
     }
 
     #[test]

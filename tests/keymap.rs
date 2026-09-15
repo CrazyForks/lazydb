@@ -2684,6 +2684,10 @@ fn maps_global_sequences_and_function_keys() {
         Some(Action::RunActiveSql)
     );
     assert_eq!(keymap.map(key(KeyCode::F(1)), &app), Some(Action::ShowHelp));
+    assert_eq!(
+        keymap.map(key(KeyCode::F(6)), &app),
+        Some(Action::OpenSqlEditorList)
+    );
     assert_eq!(keymap.map(ctrl('w'), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Char('h')), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Esc), &app), None);

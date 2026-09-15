@@ -943,20 +943,27 @@ impl App {
     }
 
     fn next_console_name(&self) -> String {
-        let used = self
+        let number = self
             .sql_editors
             .iter()
             .map(|record| record.name.trim().to_ascii_lowercase())
             .filter_map(|name| name.strip_prefix("console_").map(str::to_owned))
             .filter_map(|number| number.parse::<usize>().ok())
-            .collect::<HashSet<_>>();
-        let number = (1..).find(|number| !used.contains(number)).unwrap_or(1);
+            .max()
+            .and_then(|number| number.checked_add(1))
+            .unwrap_or(1);
         format!("console_{number}")
     }
 
     /// Returns the console records in the order used by the console manager.
     pub fn visible_console_records(&self, query: &str) -> Vec<&ConsoleRecord> {
         let query = query.to_lowercase();
+        let open_ids = self
+            .tabs
+            .iter()
+            .filter_map(WorkspaceTab::as_console)
+            .map(|tab| tab.id)
+            .collect::<HashSet<_>>();
         let mut records = self
             .sql_editors
             .iter()
@@ -979,13 +986,16 @@ impl App {
             })
             .collect::<Vec<_>>();
         records.sort_by(|left, right| {
-            right.open.cmp(&left.open).then_with(|| {
-                left.name
-                    .to_lowercase()
-                    .cmp(&right.name.to_lowercase())
-                    .then_with(|| left.name.cmp(&right.name))
-                    .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
-            })
+            open_ids
+                .contains(&right.id)
+                .cmp(&open_ids.contains(&left.id))
+                .then_with(|| {
+                    left.name
+                        .to_lowercase()
+                        .cmp(&right.name.to_lowercase())
+                        .then_with(|| left.name.cmp(&right.name))
+                        .then_with(|| left.id.as_bytes().cmp(right.id.as_bytes()))
+                })
         });
         records
     }
@@ -2171,14 +2181,6 @@ impl App {
                 profile.profile_id,
                 self.restore_profile_workspace(profile, &snapshot.sql),
             );
-        }
-        if !snapshot.profiles.is_empty() && self.connection.profile_id.is_none() {
-            self.tabs.clear();
-            self.sql_editors.clear();
-            self.editor = EditorWorkspace::new();
-            self.active_workspace_profile = None;
-            self.active_tab = 0;
-            return;
         }
         if let Some(profile_id) = selected_profile_id
             && self.profiles.iter().any(|profile| profile.id == profile_id)
@@ -3663,6 +3665,8 @@ impl App {
                     | Action::ExecuteSemanticCommand { .. }
                     | Action::NewConsole
                     | Action::NewConsoleNamed(_)
+                    | Action::OpenSqlEditorList
+                    | Action::ActivateSqlEditor(_)
                     | Action::RedisCopyKey
                     | Action::RedisDeleteKey
             )
@@ -5372,9 +5376,6 @@ impl App {
                 Vec::new()
             }
             Action::OpenSqlEditorList => {
-                if !self.has_active_workspace() {
-                    return Vec::new();
-                }
                 let selected_id = self
                     .active_console_opt()
                     .map(|tab| tab.id)
@@ -8526,12 +8527,12 @@ impl App {
                     return Vec::new();
                 };
                 if profile_kind == crate::profile::DatabaseKind::Oracle {
-                    let availability = match entry.kind {
+                    let availability = matches!(
+                        entry.kind,
                         crate::db::catalog::CatalogKind::Table
-                        | crate::db::catalog::CatalogKind::View
-                        | crate::db::catalog::CatalogKind::Sequence => true,
-                        _ => false,
-                    };
+                            | crate::db::catalog::CatalogKind::View
+                            | crate::db::catalog::CatalogKind::Sequence
+                    );
                     if !availability {
                         self.notify_warning(
                             "Catalog",
@@ -8757,6 +8758,9 @@ impl App {
                 };
                 let removed_set = removed.into_iter().collect();
                 self.explorer.completion_index.remove_ids(&removed_set);
+                for index in self.explorer.completion_indexes.values_mut() {
+                    index.remove_ids(&removed_set);
+                }
                 for tab in &mut self.tabs {
                     if let WorkspaceTab::Relation(tab) = tab
                         && tab.descriptor.key.object_id == plan.object
@@ -14874,9 +14878,6 @@ impl App {
     }
 
     fn open_sql_editor(&mut self, id: Uuid) {
-        if !self.has_active_workspace() {
-            return;
-        }
         let Some(record) = self.sql_editors.iter().find(|record| record.id == id) else {
             return;
         };
@@ -14912,7 +14913,7 @@ impl App {
     }
 
     fn activate_sql_editor(&mut self, id: Uuid) -> Vec<Command> {
-        if !self.has_active_workspace() || !self.sql_editors.iter().any(|record| record.id == id) {
+        if !self.sql_editors.iter().any(|record| record.id == id) {
             return Vec::new();
         }
         if let Some(index) = self.tabs.iter().position(|tab| tab.id() == id) {
@@ -14939,9 +14940,28 @@ impl App {
             && self.connection.pending_generation.is_none()
             && self.connection.target.as_ref() == Some(&target)
         {
-            return Vec::new();
+            let Some(connection) = self.connection.active_identity() else {
+                return Vec::new();
+            };
+            let is_redis = self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == target.profile_id)
+                .is_some_and(|profile| profile.kind == DatabaseKind::Redis);
+            return if is_redis {
+                Vec::new()
+            } else {
+                self.start_catalog_request_for_connection(
+                    connection,
+                    CatalogTarget::Databases,
+                    None,
+                    CatalogRequestIntent::Automatic,
+                )
+            };
         }
-        if self.connection.pending_generation.is_some() {
+        if self.connection.pending_generation.is_some()
+            && self.connection.pending_target.as_ref() != Some(&target)
+        {
             self.notify_warning(
                 "Connection",
                 "Wait for the current connection change to finish before activating another console",
@@ -15329,6 +15349,7 @@ impl App {
             && profile_has_session
         {
             self.explorer.completion_index = Default::default();
+            self.explorer.completion_indexes.remove(&profile_id);
             if let Some(tab) = self.active_console_opt_mut() {
                 tab.completion = None;
             }
@@ -15395,6 +15416,7 @@ impl App {
         }
         let deleted_console_ids = self.remove_profile_workspace(profile_id);
         self.explorer.normalized.remove_profile(profile_id);
+        self.explorer.completion_indexes.remove(&profile_id);
         self.profiles.retain(|profile| profile.id != profile_id);
         self.recent_targets
             .retain(|target| target.profile_id != profile_id);
@@ -15622,7 +15644,6 @@ impl App {
         editor_target_console: Option<Uuid>,
     ) -> Vec<Command> {
         let profile_id = target.profile_id;
-        let force_reconnect = editor_target_console.is_some();
         self.sessions
             .advance_generation_to(self.connection_request_generation);
         self.sessions
@@ -15637,13 +15658,7 @@ impl App {
             self.pending_target_console = None;
             return Vec::new();
         }
-        let session_request = if force_reconnect {
-            self.sessions
-                .force_reconnect(target.clone())
-                .map(crate::model::session::SessionRequest::Started)
-        } else {
-            self.sessions.request(target.clone())
-        };
+        let session_request = self.sessions.request(target.clone());
         let Some(session_request) = session_request else {
             self.connection.error =
                 Some("Connection generation exhausted; restart LazyDB to reconnect".into());
@@ -15651,14 +15666,7 @@ impl App {
         };
         let (identity, should_connect) = match session_request {
             crate::model::session::SessionRequest::Started(identity) => (identity, true),
-            crate::model::session::SessionRequest::Existing(identity) => (
-                identity,
-                self.sessions
-                    .get_by_identity(identity)
-                    .is_none_or(|session| {
-                        session.status != crate::model::session::SessionStatus::Connected
-                    }),
-            ),
+            crate::model::session::SessionRequest::Existing(identity) => (identity, false),
         };
         let generation = identity.generation;
         if !should_connect
@@ -15739,7 +15747,14 @@ impl App {
         if default.is_valid(profile) {
             values.insert((default.database.clone(), default.schema.clone()));
         }
-        if let Some(state) = self.explorer.normalized.profiles.get(&profile.id) {
+        let default_is_connected = self.sessions.get(&default).is_some_and(|session| {
+            session.status == crate::model::session::SessionStatus::Connected
+        }) || (self.connection.status == ConnectionStatus::Connected
+            && self.connection.pending_generation.is_none()
+            && self.connection.target.as_ref() == Some(&default));
+        if default_is_connected
+            && let Some(state) = self.explorer.normalized.profiles.get(&profile.id)
+        {
             for entry in state.catalog.entries().values() {
                 let selectable = entry.kind == crate::db::catalog::CatalogKind::Schema
                     || (profile.kind == DatabaseKind::MySql
@@ -15843,7 +15858,9 @@ impl App {
         }
         self.sync_cached_console_target(console_id, &target);
         self.remember_target(&target);
-        vec![self.persist_workspace_command()]
+        let mut commands = self.prepare_active_console_target();
+        commands.push(self.persist_workspace_command());
+        commands
     }
 
     fn sync_cached_console_name(&mut self, console_id: Uuid, name: &str) {
@@ -16457,11 +16474,19 @@ impl App {
                 .as_ref()
                 .and_then(|(_, schema)| schema.as_deref()),
         };
+        let completion_profile_id = self
+            .active_console_opt()
+            .and_then(|tab| tab.execution_target.as_ref())
+            .map(|target| target.profile_id);
+        let completion_index = completion_profile_id
+            .and_then(|profile_id| self.explorer.completion_indexes.get(&profile_id))
+            .cloned()
+            .unwrap_or_else(|| self.explorer.completion_index.clone());
         let dependencies = sql::completion_dependencies(
             &text,
             cursor,
             self.editor_sql_dialect(),
-            &self.explorer.completion_index,
+            &completion_index,
             completion_context,
         );
         let mut commands = Vec::new();
@@ -16501,7 +16526,7 @@ impl App {
             &text,
             cursor,
             self.editor_sql_dialect(),
-            &self.explorer.completion_index,
+            &completion_index,
             completion_context,
         );
         let Some(tab) = self.active_console_opt_mut() else {
@@ -18201,8 +18226,19 @@ impl App {
             .profiles
             .iter()
             .find(|profile| profile.id == profile_id)
-            .map(|profile| &profile.catalog_scope);
-        if let Some(scope) = scope {
+            .map(|profile| profile.catalog_scope.clone());
+        if let Some(scope) = scope.as_ref() {
+            let entries = self.explorer.normalized.profiles[&profile_id]
+                .catalog
+                .entries()
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            self.explorer
+                .completion_indexes
+                .entry(profile_id)
+                .or_default()
+                .replace_scoped(&entries, scope);
             self.explorer.completion_index.replace_scoped(
                 &self.explorer.normalized.profiles[&profile_id]
                     .catalog
@@ -18214,6 +18250,7 @@ impl App {
             );
         } else {
             self.explorer.completion_index = Default::default();
+            self.explorer.completion_indexes.remove(&profile_id);
         }
         self.explorer.catalog_generation = self.explorer.catalog_generation.saturating_add(1);
         self.explorer
@@ -20265,13 +20302,12 @@ impl App {
         &mut self,
         relation: &crate::db::catalog::CatalogId,
     ) -> Vec<Command> {
-        if self
+        let completion_index = self
             .explorer
-            .completion_index
-            .relation_columns(relation)
-            .next()
-            .is_some()
-        {
+            .completion_indexes
+            .get(&relation.profile_id())
+            .unwrap_or(&self.explorer.completion_index);
+        if completion_index.relation_columns(relation).next().is_some() {
             return Vec::new();
         }
         let Ok(target) = CatalogTarget::relation_children(relation.clone()) else {
@@ -20306,9 +20342,12 @@ impl App {
         };
         let (value, cursor, columns) = match self.tabs.get(self.active_tab) {
             Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Data => {
-                let mut columns = self
+                let completion_index = self
                     .explorer
-                    .completion_index
+                    .completion_indexes
+                    .get(&tab.descriptor.key.profile_id)
+                    .unwrap_or(&self.explorer.completion_index);
+                let mut columns = completion_index
                     .relation_columns(&tab.descriptor.key.object_id)
                     .map(|entry| {
                         let type_name = match &entry.metadata {
@@ -26542,6 +26581,9 @@ mod tests {
     #[test]
     fn visible_console_records_filter_names_case_insensitively() {
         let mut app = App::new(Vec::new());
+        let mut open_tab = ConsoleTab::new("Backups");
+        open_tab.id = Uuid::from_u128(1);
+        app.tabs.push(WorkspaceTab::Sql(open_tab));
         app.sql_editors = vec![
             console_record(1, "Backups", true),
             console_record(2, "backup-report", false),

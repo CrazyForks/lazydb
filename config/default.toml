@@ -75,6 +75,8 @@ terminal-selection = ["Ctrl-Shift-s"]
 notification-history = ["F8"]
 # F7 opens SQL execution history.
 open-sql-history = ["F7"]
+# F6 opens the global console manager from every input context.
+open-consoles = ["F6"]
 # F9 opens the update center.
 update = ["F9"]
 # Tab focuses the next pane.
