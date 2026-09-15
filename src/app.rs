@@ -19,8 +19,8 @@ use crate::{
     db::{
         ErrorCategory,
         catalog::{
-            CatalogCount, CatalogMetadata, CatalogPage, CatalogRequest, CatalogRequestKey,
-            CatalogTarget, MAX_CATALOG_PAGE_SIZE,
+            CatalogCount, CatalogKind, CatalogMetadata, CatalogPage, CatalogRequest,
+            CatalogRequestKey, CatalogTarget, MAX_CATALOG_PAGE_SIZE,
         },
         query::ColumnMeta,
         value::CellValue,
@@ -11230,7 +11230,7 @@ impl App {
                         })
                         .unwrap_or_default()
                 } else {
-                    interrupted_catalog_targets
+                    let mut commands = interrupted_catalog_targets
                         .into_iter()
                         .flat_map(|target| {
                             self.start_catalog_request_for_connection(
@@ -11240,7 +11240,9 @@ impl App {
                                 CatalogRequestIntent::Refresh,
                             )
                         })
-                        .collect()
+                        .collect::<Vec<_>>();
+                    commands.extend(self.ensure_editor_target_catalog(&target));
+                    commands
                 };
                 let mut commands_for_redis = Vec::new();
                 if profile_kind == DatabaseKind::Redis && editor_target_switch.is_none() {
@@ -16520,10 +16522,13 @@ impl App {
             .active_console_opt()
             .and_then(|tab| tab.execution_target.as_ref())
             .map(|target| target.profile_id);
+        // Completion metadata is scoped to the editor target. Never fall back
+        // to the active-profile compatibility projection: it may belong to a
+        // different connection and would leak its objects into this editor.
         let completion_index = completion_profile_id
             .and_then(|profile_id| self.explorer.completion_indexes.get(&profile_id))
             .cloned()
-            .unwrap_or_else(|| self.explorer.completion_index.clone());
+            .unwrap_or_default();
         let dependencies = sql::completion_dependencies(
             &text,
             cursor,
@@ -20168,6 +20173,102 @@ impl App {
             })
     }
 
+    /// Ensure that an editor target has a catalog loading chain in flight.
+    ///
+    /// A successful connection does not imply that this database's catalog is
+    /// loaded. In particular, rebinding a console can reuse an existing
+    /// session while its target database is still cold. Start at the narrowest
+    /// missing namespace and let the catalog page reducer continue loading
+    /// schemas and object groups.
+    fn ensure_editor_target_catalog(&mut self, target: &ExecutionTarget) -> Vec<Command> {
+        let profile_id = target.profile_id;
+        let Some(connection) = self
+            .explorer
+            .catalog_sessions
+            .get(&profile_id)
+            .copied()
+            .filter(|identity| self.sessions.get_by_identity(*identity).is_some())
+        else {
+            return Vec::new();
+        };
+
+        let database_id = self
+            .explorer
+            .normalized
+            .profiles
+            .get(&profile_id)
+            .and_then(|state| {
+                state
+                    .catalog
+                    .roots()
+                    .iter()
+                    .find_map(|id| state.catalog.get(id))
+                    .filter(|entry| {
+                        entry.kind == CatalogKind::Database
+                            && entry
+                                .qualified_name
+                                .object
+                                .eq_ignore_ascii_case(&target.database)
+                    })
+                    .map(|entry| entry.id.clone())
+            });
+
+        let catalog_target = match database_id {
+            None => CatalogTarget::Databases,
+            Some(database) => {
+                let Some(schema_name) = target.schema.as_deref() else {
+                    let Ok(schemas) = CatalogTarget::schemas(database) else {
+                        return Vec::new();
+                    };
+                    if !self.target_needs_load_for_profile(profile_id, &schemas) {
+                        return Vec::new();
+                    }
+                    return self.start_catalog_request_for_connection(
+                        connection,
+                        schemas,
+                        None,
+                        CatalogRequestIntent::Automatic,
+                    );
+                };
+                let schema_id = self
+                    .explorer
+                    .normalized
+                    .profiles
+                    .get(&profile_id)
+                    .and_then(|state| {
+                        state
+                            .catalog
+                            .children(&database)
+                            .iter()
+                            .find_map(|id| state.catalog.get(id))
+                            .filter(|entry| {
+                                entry.kind == CatalogKind::Schema
+                                    && entry
+                                        .qualified_name
+                                        .object
+                                        .eq_ignore_ascii_case(schema_name)
+                            })
+                            .map(|entry| entry.id.clone())
+                    });
+                match schema_id {
+                    Some(schema) => CatalogTarget::groups(schema).ok(),
+                    None => CatalogTarget::schemas(database).ok(),
+                }
+                .unwrap_or(CatalogTarget::Databases)
+            }
+        };
+
+        if !self.target_needs_load_for_profile(profile_id, &catalog_target) {
+            return Vec::new();
+        }
+        self.start_catalog_request_for_connection(
+            connection,
+            catalog_target,
+            None,
+            CatalogRequestIntent::Automatic,
+        )
+    }
+
     fn ensure_profile_catalog(
         &mut self,
         profile_id: Uuid,
@@ -20371,11 +20472,13 @@ impl App {
         &mut self,
         relation: &crate::db::catalog::CatalogId,
     ) -> Vec<Command> {
-        let completion_index = self
+        let Some(completion_index) = self
             .explorer
             .completion_indexes
             .get(&relation.profile_id())
-            .unwrap_or(&self.explorer.completion_index);
+        else {
+            return Vec::new();
+        };
         if completion_index.relation_columns(relation).next().is_some() {
             return Vec::new();
         }
@@ -20414,10 +20517,10 @@ impl App {
                 let completion_index = self
                     .explorer
                     .completion_indexes
-                    .get(&tab.descriptor.key.profile_id)
-                    .unwrap_or(&self.explorer.completion_index);
+                    .get(&tab.descriptor.key.profile_id);
                 let mut columns = completion_index
-                    .relation_columns(&tab.descriptor.key.object_id)
+                    .into_iter()
+                    .flat_map(|index| index.relation_columns(&tab.descriptor.key.object_id))
                     .map(|entry| {
                         let type_name = match &entry.metadata {
                             CatalogMetadata::Column(column) => Some(column.native_type.clone()),

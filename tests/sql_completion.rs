@@ -4475,7 +4475,9 @@ fn app_completion_prefers_the_active_console_target_schema() {
         .as_mut()
         .unwrap()
         .schema = Some("public".into());
-    app.explorer.completion_index = CompletionIndex::new(&entries);
+    app.explorer
+        .completion_indexes
+        .insert(profile_id, CompletionIndex::new(&entries));
     app.update(Action::ReplaceEditor("select * from or".into()));
     app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('A'),
@@ -4545,7 +4547,10 @@ fn completion_app_with_table() -> (App, Uuid, CatalogEntry) {
         .catalog
         .insert_subtree(vec![database, schema, table.clone()])
         .unwrap();
-    app.explorer.completion_index = CompletionIndex::new(std::slice::from_ref(&table));
+    app.explorer.completion_indexes.insert(
+        profile_id,
+        CompletionIndex::new(std::slice::from_ref(&table)),
+    );
     (app, profile_id, table)
 }
 
