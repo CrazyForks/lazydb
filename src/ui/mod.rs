@@ -6137,51 +6137,99 @@ fn render_console_manager(
                     theme.muted,
                 )));
             } else {
-                let status_width = 40usize.min(usize::from(inner.width).saturating_sub(8));
-                let name_width = usize::from(inner.width).saturating_sub(4 + status_width);
-                lines.extend(records.iter().map(|record| {
+                let icons = state.activity_icons;
+                let rows = records
+                    .iter()
+                    .map(|record| {
+                        let target = record.execution_target.as_ref();
+                        let profile = target.and_then(|target| {
+                            app.profiles
+                                .iter()
+                                .find(|profile| profile.id == target.profile_id)
+                        });
+                        let target_valid = target
+                            .zip(profile)
+                            .is_some_and(|(target, profile)| target.is_valid(profile));
+                        let connection = profile.map_or_else(
+                            || {
+                                if target.is_none() {
+                                    "未绑定"
+                                } else {
+                                    "目标失效"
+                                }
+                                .to_owned()
+                            },
+                            |profile| {
+                                if target_valid {
+                                    profile.name.clone()
+                                } else {
+                                    "目标失效".to_owned()
+                                }
+                            },
+                        );
+                        let location = target.map_or_else(String::new, |target| {
+                            target.schema.as_deref().map_or_else(
+                                || target.database.clone(),
+                                |schema| format!("{}/{}", target.database, schema),
+                            )
+                        });
+                        let icon = profile.map(|profile| {
+                            (
+                                icons.database(profile.kind).to_owned(),
+                                icons.database_color(profile.kind),
+                            )
+                        });
+                        (record, connection, location, icon)
+                    })
+                    .collect::<Vec<_>>();
+                let available = usize::from(inner.width);
+                let location_width = rows
+                    .iter()
+                    .map(|(_, _, location, _)| usize::from(location.cell_width()))
+                    .max()
+                    .unwrap_or(0)
+                    .min(28usize);
+                let connection_natural = rows
+                    .iter()
+                    .map(|(_, connection, _, icon)| {
+                        usize::from(connection.cell_width())
+                            + icon
+                                .as_ref()
+                                .map_or(0, |(icon, _)| usize::from(icon.cell_width()) + 1)
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let connection_width = connection_natural.min(
+                    available
+                        .saturating_sub(location_width + 8)
+                        .min(available * 3 / 5),
+                );
+                let right_width = connection_width + location_width + 2usize;
+                let name_width = available.saturating_sub(right_width + 6);
+                lines.extend(rows.iter().map(|(record, connection, location, icon)| {
                     let selected = list.selected_id == Some(record.id);
-                    let target = record.execution_target.as_ref();
-                    let profile = target.and_then(|target| {
-                        app.profiles
-                            .iter()
-                            .find(|profile| profile.id == target.profile_id)
-                    });
-                    let connection =
-                        profile.map_or("失效目标", |profile| profile.name.as_str());
-                    let target_valid = target
-                        .zip(profile)
-                        .is_some_and(|(target, profile)| target.is_valid(profile));
-                    let connected = target.is_some_and(|target| {
-                        target_valid
-                            && app.sessions.get(target).is_some_and(|session| {
-                                session.status == crate::model::session::SessionStatus::Connected
-                            })
-                    });
-                    let connection_status = if target.is_none() {
-                        "未绑定"
-                    } else if !target_valid {
-                        "失效"
-                    } else if connected {
-                        "已连接"
-                    } else {
-                        "未连接"
-                    };
-                    let location = target.map_or_else(String::new, |target| {
-                        format!(
-                            " {}/{}",
-                            target.database,
-                            target.schema.as_deref().unwrap_or("-")
-                        )
-                    });
-                    let detail = format!(
-                        "{} | {connection_status} | {connection}{location}",
-                        if record.open { "OPEN" } else { "CLOSED" }
-                    );
                     let name = truncate_to_cells(&record.name, name_width);
-                    let detail = truncate_to_cells(&detail, status_width);
-                    let detail_padding =
-                        status_width.saturating_sub(usize::from(detail.cell_width()));
+                    let status = match (icons.mode(), record.open) {
+                        (icons::IconMode::Ascii, true) => "*",
+                        (icons::IconMode::Ascii, false) => "o",
+                        (_, true) => "●",
+                        (_, false) => "○",
+                    };
+                    let connection = truncate_to_cells(connection, connection_width);
+                    let location = truncate_to_cells(location, location_width);
+                    let connection_used = usize::from(connection.cell_width())
+                        + icon
+                            .as_ref()
+                            .map_or(0, |(icon, _)| usize::from(icon.cell_width()) + 1);
+                    let connection_padding = connection_width.saturating_sub(connection_used);
+                    let location_padding =
+                        location_width.saturating_sub(usize::from(location.cell_width()));
+                    let middle_padding = available.saturating_sub(
+                        2 + usize::from(name.cell_width())
+                            + 1
+                            + usize::from(status.cell_width())
+                            + right_width,
+                    );
                     let background = if selected {
                         theme.selection
                     } else {
@@ -6190,7 +6238,7 @@ fn render_console_manager(
                     let prefix = if selected { "> " } else { "  " };
                     Line::from(vec![
                         Span::styled(
-                            format!("{prefix}{name}"),
+                            format!("{prefix}{name} "),
                             theme.base().bg(background).add_modifier(if selected {
                                 Modifier::BOLD
                             } else {
@@ -6198,16 +6246,34 @@ fn render_console_manager(
                             }),
                         ),
                         Span::styled(
-                            format!("{}{detail}", " ".repeat(detail_padding)),
+                            status,
                             theme
                                 .base()
-                                .fg(if record.open && connected {
-                                    theme.success
+                                .fg(if record.open {
+                                    theme.accent
                                 } else {
                                     theme.muted
                                 })
                                 .bg(background),
                         ),
+                        Span::styled(" ".repeat(middle_padding), theme.base().bg(background)),
+                        Span::styled(" ".repeat(connection_padding), theme.base().bg(background)),
+                        icon.as_ref().map_or_else(
+                            || Span::styled("", theme.base().bg(background)),
+                            |(icon, color)| {
+                                Span::styled(
+                                    format!("{icon} "),
+                                    theme.base().fg(*color).bg(background),
+                                )
+                            },
+                        ),
+                        Span::styled(connection, theme.base().fg(theme.text).bg(background)),
+                        Span::styled("  ", theme.base().bg(background)),
+                        Span::styled(
+                            format!("{}{}", " ".repeat(location_padding), location),
+                            theme.base().fg(theme.muted).bg(background),
+                        ),
+                        Span::styled(" ", theme.base().bg(background)),
                     ])
                 }));
             }
