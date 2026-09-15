@@ -55,7 +55,15 @@ pub fn render(
         && let Some(CatalogDraft::Table(draft)) = editor.draft.as_ref()
         && let Some(session) = draft.column_editor.as_ref()
     {
-        render_table_column_details_modal(frame, inner, draft.focus, session, ui, theme);
+        render_table_column_details_modal(
+            frame,
+            inner,
+            draft.focus,
+            session,
+            editor.database_kind,
+            ui,
+            theme,
+        );
     }
 }
 
@@ -2154,6 +2162,7 @@ fn render_table_column_details_modal(
     area: Rect,
     focus: TableEditorFocus,
     session: &crate::model::catalog_editor::TableColumnEditSession,
+    database_kind: Option<crate::profile::DatabaseKind>,
     ui: &mut UiState,
     theme: Theme,
 ) {
@@ -2200,8 +2209,23 @@ fn render_table_column_details_modal(
     if let Some(error) = session.error.as_deref() {
         frame.render_widget(
             Paragraph::new(format!("x {}", sanitize_terminal_text(error)))
+                .wrap(Wrap { trim: true })
                 .style(Style::new().fg(theme.error).bg(theme.surface)),
-            Rect::new(inner.x, inner.y.saturating_add(6), inner.width, 1),
+            Rect::new(inner.x, inner.y.saturating_add(6), inner.width, 2),
+        );
+    }
+    if focus == TableEditorFocus::ColumnDetails(TableColumnField::Type)
+        && let Some(database_kind) = database_kind
+    {
+        let hint = match database_kind {
+            crate::profile::DatabaseKind::Oracle => {
+                "Oracle: VARCHAR2(n CHAR), NUMBER(p,s), DATE, TIMESTAMP, CLOB"
+            }
+            _ => "Enter the native type for the selected database",
+        };
+        frame.render_widget(
+            Paragraph::new(hint).style(Style::new().fg(theme.muted).bg(theme.surface)),
+            Rect::new(inner.x, inner.y.saturating_add(7), inner.width, 1),
         );
     }
     let nullable = Rect::new(inner.x, inner.y.saturating_add(4), inner.width, 1);
@@ -2659,10 +2683,16 @@ fn preview(
     ));
     lines.push(Line::raw(""));
     if let Some(error) = editor.error.as_deref() {
-        lines.push(Line::styled(
-            format!("× {}", sanitize_terminal_text(error)),
-            Style::new().fg(theme.error),
-        ));
+        for (index, line) in sanitize_terminal_text(error).lines().enumerate() {
+            lines.push(Line::styled(
+                if index == 0 {
+                    format!("× {line}")
+                } else {
+                    format!("  {line}")
+                },
+                Style::new().fg(theme.error),
+            ));
+        }
     }
     let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
     let body_area = Rect::new(area.x, area.y, area.width, area.height.saturating_sub(1));

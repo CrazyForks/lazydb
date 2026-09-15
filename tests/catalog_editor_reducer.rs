@@ -106,6 +106,7 @@ fn table_editor_for_paste() -> App {
 fn simple_catalog_editor(mode: CatalogMutationMode, draft: CatalogDraft) -> App {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(CatalogEditorState {
+        database_kind: None,
         mode,
         anchor: CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -1576,6 +1577,7 @@ fn catalog_mutation_failure_from_an_old_connection_is_ignored() {
     )
     .unwrap();
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor,
         object_type: Some(CatalogObjectType::Catalog(CatalogKind::Schema)),

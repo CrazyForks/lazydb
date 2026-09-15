@@ -745,6 +745,7 @@ async fn serialized_postgres_catalog_mutations_round_trip_catalog_definitions() 
                     CatalogObjectType::Catalog(CatalogKind::Table),
                 ),
                 CatalogDraft::Table(lazydb::model::catalog_editor::TableDraft {
+                    database_kind: lazydb::profile::DatabaseKind::Postgres,
                     name: name.clone().into(),
                     schema: schema_name.clone().into(),
                     owner: owner.clone().into(),

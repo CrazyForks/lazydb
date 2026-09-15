@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod catalog_change_set;
 pub mod catalog_drop;
 pub mod catalog_mutation;
+pub mod column_type;
 pub(crate) mod ddl;
 pub mod descriptor;
 pub mod monitor;

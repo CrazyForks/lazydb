@@ -786,6 +786,7 @@ pub enum DraftRowState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TableDraft {
+    pub database_kind: crate::profile::DatabaseKind,
     pub name: TextInput,
     pub schema: TextInput,
     pub owner: TextInput,
@@ -1795,12 +1796,20 @@ impl IndexDraft {
 
 impl TableDraft {
     pub fn new(schema: impl Into<String>) -> Self {
+        Self::new_for_database(schema, crate::profile::DatabaseKind::Postgres)
+    }
+
+    pub fn new_for_database(
+        schema: impl Into<String>,
+        database_kind: crate::profile::DatabaseKind,
+    ) -> Self {
         Self {
+            database_kind,
             name: TextInput::default(),
             schema: schema.into().into(),
             owner: TextInput::default(),
             comment: TextInput::default(),
-            columns: vec![ColumnDraft::new_added()],
+            columns: vec![ColumnDraft::new_added_for_database(database_kind)],
             selected_column: 0,
             focus: TableEditorFocus::General(TableGeneralField::Name),
             column_editor: None,
@@ -1810,7 +1819,15 @@ impl TableDraft {
     }
 
     pub fn from_definition(definition: &crate::db::catalog_mutation::TableDefinition) -> Self {
+        Self::from_definition_for_database(definition, crate::profile::DatabaseKind::Postgres)
+    }
+
+    pub fn from_definition_for_database(
+        definition: &crate::db::catalog_mutation::TableDefinition,
+        database_kind: crate::profile::DatabaseKind,
+    ) -> Self {
         Self {
+            database_kind,
             name: definition.name.clone().into(),
             schema: definition.schema.clone().into(),
             owner: definition.owner.clone().into(),
@@ -2174,7 +2191,7 @@ impl TableDraft {
             .selected_column
             .min(self.columns.len().saturating_sub(1))
             .saturating_add(1);
-        let mut column = ColumnDraft::new_added();
+        let mut column = ColumnDraft::new_added_for_database(self.database_kind);
         column.ordinal_position = self
             .columns
             .iter()
@@ -2221,6 +2238,20 @@ impl TableDraft {
         }
         if column.native_type.value().trim().is_empty() {
             return Some((TableColumnField::Type, "column type is required".into()));
+        }
+        if let Some(issue) =
+            crate::db::column_type::ColumnTypePolicy::for_database(self.database_kind)
+                .validate_native_type(column.native_type.value())
+            && issue.kind == crate::db::column_type::ColumnTypeIssueKind::Invalid
+        {
+            let suggestion = issue
+                .suggestion
+                .map(|value| format!("; {value}"))
+                .unwrap_or_default();
+            return Some((
+                TableColumnField::Type,
+                format!("{}{}", issue.message, suggestion),
+            ));
         }
         let target_index = match session.target {
             TableColumnEditTarget::Existing { index } => Some(index),
@@ -2528,12 +2559,18 @@ fn is_empty_added_column(column: &ColumnDraft) -> bool {
 
 impl ColumnDraft {
     pub fn new_added() -> Self {
+        Self::new_added_for_database(crate::profile::DatabaseKind::Postgres)
+    }
+
+    pub fn new_added_for_database(database_kind: crate::profile::DatabaseKind) -> Self {
         Self {
             row_id: Uuid::new_v4(),
             ordinal_position: 1,
             existing_name: None,
             name: TextInput::default(),
-            native_type: "text".into(),
+            native_type: crate::db::column_type::ColumnTypePolicy::for_database(database_kind)
+                .default_native_type()
+                .into(),
             nullable: true,
             default_expression: TextInput::default(),
             identity: false,
@@ -3251,6 +3288,7 @@ impl OwnerPickerState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CatalogEditorState {
+    pub database_kind: Option<crate::profile::DatabaseKind>,
     pub mode: CatalogMutationMode,
     pub anchor: CatalogMutationAnchor,
     pub object_type: Option<CatalogObjectType>,
@@ -3281,6 +3319,7 @@ impl CatalogEditorState {
             ),
         });
         Self {
+            database_kind: None,
             mode,
             anchor,
             object_type,
@@ -3392,8 +3431,10 @@ impl CatalogEditorState {
             if id.kind == crate::db::catalog::CatalogKind::Schema
                 && object_type == CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::Table)
             {
-                self.draft = Some(CatalogDraft::Table(TableDraft::new(
+                self.draft = Some(CatalogDraft::Table(TableDraft::new_for_database(
                     id.native_path.get(1).cloned().unwrap_or_default(),
+                    self.database_kind
+                        .unwrap_or(crate::profile::DatabaseKind::Postgres),
                 )));
             }
             if id.kind == crate::db::catalog::CatalogKind::Schema
@@ -3549,7 +3590,13 @@ impl CatalogEditorState {
             self.draft = Some(CatalogDraft::Role(RoleDraft::from_definition(definition)));
         }
         if let Some(CatalogObjectDefinition::Table(definition)) = self.baseline.as_ref() {
-            self.draft = Some(CatalogDraft::Table(TableDraft::from_definition(definition)));
+            self.draft = Some(CatalogDraft::Table(
+                TableDraft::from_definition_for_database(
+                    definition,
+                    self.database_kind
+                        .unwrap_or(crate::profile::DatabaseKind::Postgres),
+                ),
+            ));
         }
         if let Some(CatalogObjectDefinition::View(definition)) = self.baseline.as_ref() {
             self.draft = Some(CatalogDraft::View(ViewDraft::from_definition(definition)));
@@ -3815,6 +3862,7 @@ mod tests {
     #[test]
     fn catalog_form_focus_owner_detection_covers_all_owner_forms() {
         let mut editor = CatalogEditorState {
+            database_kind: None,
             draft: Some(CatalogDraft::Schema(SchemaDraft {
                 name: TextInput::default(),
                 owner: TextInput::default(),

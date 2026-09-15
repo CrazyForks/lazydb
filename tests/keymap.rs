@@ -959,6 +959,7 @@ fn catalog_form_keymap_keeps_review_and_cancel_semantics() {
 fn materialized_view_keymap_app() -> App {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -1302,6 +1303,7 @@ fn table_editor_action_buttons_keep_arrow_navigation() {
 fn constraint_editor_maps_field_navigation_and_text_input() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -1346,6 +1348,7 @@ fn constraint_editor_maps_field_navigation_and_text_input() {
 fn role_editor_uses_catalog_editor_field_keymap() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -1868,6 +1871,7 @@ fn schema_editor_with_owner_choices() -> App {
         },
     };
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile { profile_id },
         object_type: Some(lazydb::db::catalog_mutation::CatalogObjectType::Catalog(
@@ -2001,6 +2005,7 @@ fn leaving_the_owner_row_releases_the_owner_list() {
 fn view_editor_form_owns_navigation_and_preview_keys() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -2054,6 +2059,7 @@ fn sequence_editor_form_owns_text_input_keys() {
             .profile,
     ]);
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         draft: Some(lazydb::model::catalog_editor::CatalogDraft::Sequence(
             lazydb::model::catalog_editor::SequenceDraft {
                 name: "seq".into(),
@@ -2767,6 +2773,7 @@ fn maps_tab_sequences_from_editor_normal_mode() {
 fn maps_column_details_navigation_and_toggle_keys() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode: lazydb::db::catalog_mutation::CatalogMutationMode::Create,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: Uuid::nil(),
@@ -3085,6 +3092,7 @@ fn materialized_view_editor(
 ) -> App {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: None,
         mode,
         anchor: lazydb::db::catalog_mutation::CatalogMutationAnchor::Profile {
             profile_id: uuid::Uuid::nil(),

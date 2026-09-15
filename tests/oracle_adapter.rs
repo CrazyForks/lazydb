@@ -4,12 +4,16 @@ use lazydb::{
     db::{
         DatabaseConnection,
         catalog::{CatalogRequest, CatalogRequestKey, CatalogTarget},
+        catalog_mutation::{
+            CatalogMutationAnchor, CatalogMutationMode, CatalogMutationRequest, CatalogObjectType,
+        },
     },
     identity::ConnectionIdentity,
     profile::import_connection_url,
     sql::{SqlDialect, build_paginated_query},
 };
 use secrecy::SecretString;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn oracle_probe_uses_the_configured_service_when_credentials_are_available() {
@@ -34,6 +38,81 @@ async fn oracle_probe_uses_the_configured_service_when_credentials_are_available
     assert_eq!(info.kind, lazydb::profile::DatabaseKind::Oracle);
     assert_eq!(info.database.to_ascii_lowercase(), "supportdb");
     assert!(!info.version.trim().is_empty());
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn oracle_create_table_with_default_types_round_trips_when_configured() {
+    let (Ok(url), Ok(user), Ok(password)) = (
+        std::env::var("LAZYDB_TEST_ORACLE_URL"),
+        std::env::var("LAZYDB_TEST_ORACLE_USER"),
+        std::env::var("LAZYDB_TEST_ORACLE_PASSWORD"),
+    ) else {
+        eprintln!("Skipping Oracle mutation test: Oracle test credentials are not configured");
+        return;
+    };
+
+    let mut imported = import_connection_url(&url, Some("oracle-mutation-test")).unwrap();
+    imported.profile.user = Some(user);
+    let connection =
+        DatabaseConnection::connect(&imported.profile, Some(&SecretString::from(password)))
+            .await
+            .unwrap();
+    let Some(schema) = imported.profile.user.clone() else {
+        panic!("Oracle mutation test requires a configured user/schema");
+    };
+    let table_name = format!("LAZYDB_T_{}", Uuid::new_v4().simple());
+    let profile_id = imported.profile.id;
+    let request = CatalogMutationRequest {
+        connection: ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 1,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Create,
+        anchor: CatalogMutationAnchor::Group {
+            schema: lazydb::db::catalog::CatalogId::new(
+                profile_id,
+                lazydb::db::catalog::CatalogKind::Schema,
+                [
+                    imported.profile.database.clone().unwrap_or_default(),
+                    schema.clone(),
+                ],
+            ),
+            group: lazydb::db::catalog::ObjectGroup::Tables,
+        },
+        object_type: CatalogObjectType::Catalog(lazydb::db::catalog::CatalogKind::Table),
+        current_database: imported.profile.database.clone(),
+    };
+    let mut table = lazydb::model::catalog_editor::TableDraft::new_for_database(
+        schema.clone(),
+        lazydb::profile::DatabaseKind::Oracle,
+    );
+    table.name.set(&table_name);
+    table.columns[0].name.set("name");
+    let plan = connection
+        .plan_catalog_mutation(
+            request,
+            lazydb::model::catalog_editor::CatalogDraft::Table(table),
+            None,
+        )
+        .unwrap();
+    connection.execute_catalog_mutation(&plan).await.unwrap();
+
+    let check = format!(
+        "SELECT DATA_TYPE, CHAR_LENGTH FROM USER_TAB_COLUMNS WHERE TABLE_NAME = '{}' AND COLUMN_NAME = 'NAME'",
+        table_name
+    );
+    let result = connection.execute(&check).await.unwrap();
+    let rows = &result.result_sets[0].rows;
+    assert!(rows.iter().any(|row| {
+        row.first()
+            .is_some_and(|value| value.clipboard_text().contains("VARCHAR2"))
+    }));
+
+    let drop = format!("DROP TABLE \"{}\" PURGE", table_name);
+    let _ = connection.execute(&drop).await;
     connection.close().await;
 }
 
