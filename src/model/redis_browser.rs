@@ -7,6 +7,7 @@ use crate::db::redis::types::{RedisKeyId, RedisTarget};
 use super::redis_key_tree::{KeyTreeNodeId, VisibleKeyTreeRow};
 use super::{keyspace::KeyspaceState, redis_key_tree::KeyTreeState};
 
+use crate::model::tab::DataGridState;
 use crate::value_preview::PreviewFormat;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +97,7 @@ pub struct RedisBrowserTab {
     pub preview_scroll: usize,
     pub preview_viewport_rows: usize,
     pub preview_content_rows: usize,
+    pub preview_grid: DataGridState,
 }
 
 impl RedisBrowserTab {
@@ -119,7 +121,32 @@ impl RedisBrowserTab {
             preview_scroll: 0,
             preview_viewport_rows: 0,
             preview_content_rows: 0,
+            preview_grid: DataGridState::default(),
         }
+    }
+
+    pub fn reset_preview_grid(&mut self) {
+        self.preview_grid = DataGridState::default();
+    }
+
+    pub fn clamp_preview_grid(&mut self, row_count: usize, column_count: usize) {
+        self.preview_grid.selected_row = self
+            .preview_grid
+            .selected_row
+            .min(row_count.saturating_sub(1));
+        self.preview_grid.selected_column = self
+            .preview_grid
+            .selected_column
+            .min(column_count.saturating_sub(1));
+        self.preview_grid.row_offset = self
+            .preview_grid
+            .row_offset
+            .min(row_count.saturating_sub(self.preview_grid.viewport_rows.max(1)));
+        self.preview_grid.column_offset = self
+            .preview_grid
+            .column_offset
+            .min(column_count.saturating_sub(1));
+        self.preview_grid.column_widths.truncate(column_count);
     }
 
     pub fn rebuild_tree(&mut self) {

@@ -22,6 +22,33 @@ fn redis_profile(name: &str) -> lazydb::profile::ConnectionProfile {
 }
 
 #[test]
+fn redis_preview_grid_resets_and_clamps_like_a_result_grid() {
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(100),
+        lazydb::db::redis::types::RedisTarget {
+            profile_id: Uuid::from_u128(101),
+            database: 0,
+        },
+    );
+    tab.preview_grid.selected_row = 9;
+    tab.preview_grid.selected_column = 4;
+    tab.preview_grid.row_offset = 8;
+    tab.preview_grid.column_offset = 3;
+    tab.preview_grid.viewport_rows = 3;
+    tab.preview_grid.column_widths = vec![Some(8); 5];
+
+    tab.clamp_preview_grid(4, 2);
+    assert_eq!(tab.preview_grid.selected_row, 3);
+    assert_eq!(tab.preview_grid.selected_column, 1);
+    assert_eq!(tab.preview_grid.row_offset, 1);
+    assert_eq!(tab.preview_grid.column_offset, 1);
+    assert_eq!(tab.preview_grid.column_widths, vec![Some(8), Some(8)]);
+
+    tab.reset_preview_grid();
+    assert_eq!(tab.preview_grid, Default::default());
+}
+
+#[test]
 fn preview_controls_open_picker_and_apply_only_on_enter() {
     use lazydb::model::{
         redis_browser::{RedisBrowserFocus, RedisBrowserTab},
