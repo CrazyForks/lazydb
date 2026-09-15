@@ -1190,11 +1190,11 @@ impl ExplorerState {
                                 .and_then(|item| item.keys.map(|keys| keys.to_string()))
                         }),
                         None,
+                        Some(CatalogKind::Database),
                         None,
-                        Some(DatabaseKind::Redis),
                         None,
                         None,
-                        profile.map(|profile| profile.status),
+                        None,
                         None,
                         false,
                         None,

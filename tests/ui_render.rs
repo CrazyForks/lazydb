@@ -7539,8 +7539,9 @@ fn redis_browser_tab_title_uses_its_connection_name() {
     app.focus = Focus::Results;
 
     let output = render(&app, 120, 32);
-    assert!(output.contains("Redis @cache"));
-    assert!(!output.contains("Redis @Redis"));
+    assert!(output.contains("db0@cache"));
+    assert!(!output.contains("Redis @cache"));
+    assert!(!output.contains("db0@Redis"));
 }
 
 #[test]
