@@ -176,6 +176,60 @@ fn loading_the_next_redis_value_page_is_idempotent_and_stops_at_complete() {
 }
 
 #[test]
+fn appending_value_pages_merges_overlapping_collection_entries() {
+    use lazydb::db::redis::read::{RedisPagePosition, RedisPageValue};
+
+    let target = RedisTarget {
+        profile_id: Uuid::from_u128(107),
+        database: 0,
+    };
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(Uuid::from_u128(108), target);
+    let metadata = lazydb::db::redis::read::RedisKeyMetadata {
+        key: RedisKeyId {
+            target: tab.target.clone(),
+            key: b"hash".to_vec(),
+        },
+        value_type: lazydb::db::redis::read::RedisType::Hash,
+        ttl: lazydb::db::redis::read::TtlState::Persistent,
+        memory_usage_bytes: None,
+        value_size: Some(2),
+    };
+    tab.value_page = RedisValuePageState::Ready(lazydb::db::redis::read::RedisValuePage {
+        metadata: metadata.clone(),
+        position: RedisPagePosition::HashCursor(4),
+        value: RedisPageValue::Hash(vec![(b"field".to_vec(), b"old".to_vec())]),
+        truncated: false,
+        complete: false,
+        raw_bytes: 3,
+        formatted_bytes: 3,
+    });
+    tab.append_value_page(lazydb::db::redis::read::RedisValuePage {
+        metadata,
+        position: RedisPagePosition::Complete,
+        value: RedisPageValue::Hash(vec![
+            (b"field".to_vec(), b"new".to_vec()),
+            (b"other".to_vec(), b"value".to_vec()),
+        ]),
+        truncated: false,
+        complete: true,
+        raw_bytes: 8,
+        formatted_bytes: 8,
+    });
+
+    let RedisValuePageState::Ready(page) = tab.value_page else {
+        panic!("expected ready page");
+    };
+    assert_eq!(
+        page.value,
+        RedisPageValue::Hash(vec![
+            (b"field".to_vec(), b"new".to_vec()),
+            (b"other".to_vec(), b"value".to_vec()),
+        ])
+    );
+    assert_eq!(page.position, RedisPagePosition::Complete);
+}
+
+#[test]
 fn preview_controls_open_picker_and_apply_only_on_enter() {
     use lazydb::model::{
         redis_browser::{RedisBrowserFocus, RedisBrowserTab},

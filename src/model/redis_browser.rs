@@ -260,23 +260,23 @@ impl RedisBrowserTab {
             (
                 crate::db::redis::read::RedisPageValue::Hash(left),
                 crate::db::redis::read::RedisPageValue::Hash(right),
-            ) => left.extend(right),
+            ) => merge_pairs(left, right, |(field, _)| field),
             (
                 crate::db::redis::read::RedisPageValue::List(left),
                 crate::db::redis::read::RedisPageValue::List(right),
-            ) => left.extend(right),
+            ) => merge_list(left, right),
             (
                 crate::db::redis::read::RedisPageValue::Set(left),
                 crate::db::redis::read::RedisPageValue::Set(right),
-            ) => left.extend(right),
+            ) => merge_values(left, right),
             (
                 crate::db::redis::read::RedisPageValue::SortedSet(left),
                 crate::db::redis::read::RedisPageValue::SortedSet(right),
-            ) => left.extend(right),
+            ) => merge_pairs(left, right, |(member, _)| member),
             (
                 crate::db::redis::read::RedisPageValue::Stream(left),
                 crate::db::redis::read::RedisPageValue::Stream(right),
-            ) => left.extend(right),
+            ) => merge_streams(left, right),
             _ => return,
         }
         current.position = next.position;
@@ -491,6 +491,53 @@ impl RedisBrowserTab {
         {
             self.tree.select(find.original_selected);
             self.scroll = find.original_scroll;
+        }
+    }
+}
+
+fn merge_pairs<T, F>(current: &mut Vec<T>, incoming: Vec<T>, key: F)
+where
+    F: Fn(&T) -> &[u8],
+{
+    for item in incoming {
+        if let Some(existing) = current
+            .iter_mut()
+            .find(|existing| key(existing) == key(&item))
+        {
+            *existing = item;
+        } else {
+            current.push(item);
+        }
+    }
+}
+
+fn merge_list(current: &mut Vec<(u64, Vec<u8>)>, incoming: Vec<(u64, Vec<u8>)>) {
+    for item in incoming {
+        if let Some(existing) = current.iter_mut().find(|existing| existing.0 == item.0) {
+            *existing = item;
+        } else {
+            current.push(item);
+        }
+    }
+}
+
+fn merge_values(current: &mut Vec<Vec<u8>>, incoming: Vec<Vec<u8>>) {
+    for item in incoming {
+        if !current.iter().any(|existing| existing == &item) {
+            current.push(item);
+        }
+    }
+}
+
+fn merge_streams(
+    current: &mut Vec<crate::db::redis::read::RedisStreamEntry>,
+    incoming: Vec<crate::db::redis::read::RedisStreamEntry>,
+) {
+    for item in incoming {
+        if let Some(existing) = current.iter_mut().find(|existing| existing.0 == item.0) {
+            *existing = item;
+        } else {
+            current.push(item);
         }
     }
 }
