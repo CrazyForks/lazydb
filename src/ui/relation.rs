@@ -580,7 +580,7 @@ fn render_data(
         RelationLoad::Cancelled { previous } => {
             (previous.as_ref(), Some(("Cancelled", true, false)))
         }
-        RelationLoad::Empty => (None, Some(("No relation data", false, false))),
+        RelationLoad::Empty => (None, Some(("Relation not loaded", false, false))),
     };
     let status = if matches!(tab.data, RelationLoad::Empty)
         && !matches!(
@@ -596,7 +596,7 @@ fn render_data(
                     "Resolving relation identity"
                 }
                 crate::model::relation::RelationPreparation::Failed { message } => message,
-                crate::model::relation::RelationPreparation::Idle => "No relation data",
+                crate::model::relation::RelationPreparation::Idle => "Relation not loaded",
             },
             false,
             true,
