@@ -257,6 +257,7 @@ pub struct App {
     deferred: DeferredIntentQueue,
     resolving_deferred: Option<DeferredTransactionPrompt>,
     pending_target_console: Option<Uuid>,
+    deferred_console_activation: Option<DeferredConsoleActivation>,
     pending_editor_target_switch: Option<(Uuid, Uuid, u64)>,
     pending_executions: HashMap<Uuid, PendingExecution>,
     next_pending_execution_id: u64,
@@ -327,6 +328,13 @@ struct PendingDashboardTarget {
     profile_id: Uuid,
     database: Option<u32>,
     generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DeferredConsoleActivation {
+    console_id: Uuid,
+    target: ExecutionTarget,
+    waiting_for: ConnectionIdentity,
 }
 
 struct SuspendedInteraction {
@@ -818,6 +826,7 @@ impl App {
             deferred: DeferredIntentQueue::default(),
             resolving_deferred: None,
             pending_target_console: None,
+            deferred_console_activation: None,
             pending_editor_target_switch: None,
             pending_executions: HashMap::new(),
             next_pending_execution_id: 0,
@@ -11360,6 +11369,26 @@ impl App {
                 if persist_target || should_activate_workspace {
                     commands.push(self.persist_workspace_command());
                 }
+                let deferred_activation = self
+                    .deferred_console_activation
+                    .as_ref()
+                    .filter(|pending| pending.waiting_for == identity)
+                    .filter(|pending| {
+                        self.active_console_opt().is_some_and(|console| {
+                            console.id == pending.console_id
+                                && console.execution_target.as_ref() == Some(&pending.target)
+                        })
+                    })
+                    .cloned();
+                if deferred_activation.is_some() {
+                    let pending = self.deferred_console_activation.take().unwrap();
+                    self.active_tab = self
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.id() == pending.console_id)
+                        .unwrap_or(self.active_tab);
+                    commands.extend(self.prepare_active_console_target());
+                }
                 let ready_pending = self
                     .pending_executions
                     .iter()
@@ -15009,10 +15038,13 @@ impl App {
         if self.connection.pending_generation.is_some()
             && self.connection.pending_target.as_ref() != Some(&target)
         {
-            self.notify_warning(
-                "Connection",
-                "Wait for the current connection change to finish before activating another console",
-            );
+            if let Some(waiting_for) = self.connection.pending_identity() {
+                self.deferred_console_activation = Some(DeferredConsoleActivation {
+                    console_id: tab.id,
+                    target,
+                    waiting_for,
+                });
+            }
             return Vec::new();
         }
         if tab.transaction_mode == TransactionMode::Manual

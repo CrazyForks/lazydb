@@ -608,6 +608,43 @@ fn switching_to_a_console_reconnects_its_target_before_execution() {
 }
 
 #[test]
+fn activating_another_console_while_connecting_retries_latest_target_after_success() {
+    let first = memory_profile("deferred-first");
+    let second = memory_profile("deferred-second");
+    let first_id = first.id;
+    let second_id = second.id;
+    let second_target = ExecutionTarget::from_profile(&second);
+    let mut app = App::new(vec![first.clone(), second.clone()]);
+    app.connection.profile_id = Some(first_id);
+    app.update(Action::NewConsole);
+    let first_connect = app.connection.pending_identity().unwrap();
+
+    app.update(Action::NewConsole);
+    app.tabs[1].as_console_mut().unwrap().execution_target = Some(second_target.clone());
+
+    app.update(Action::ActivateTab(0));
+    assert!(app.update(Action::ActivateTab(1)).is_empty());
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id: first_id,
+        generation: first_connect.generation,
+        server: server(":memory:"),
+        mutation_capabilities: Default::default(),
+    });
+    assert!(commands.iter().any(|command| {
+        matches!(command, Command::Connect { target, .. } if target == &second_target)
+    }));
+    assert_eq!(app.active_console().execution_target, Some(second_target));
+    assert_eq!(
+        second_id,
+        app.active_console()
+            .execution_target
+            .as_ref()
+            .unwrap()
+            .profile_id
+    );
+}
+
+#[test]
 fn console_target_reconnect_updates_the_active_target_before_sql_runs() {
     let mut profile = memory_profile("console-target-success");
     profile.catalog_scope.databases = CatalogSelection::All;
