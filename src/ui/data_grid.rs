@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Cell, HighlightSpacing, Paragraph, Row, Table, TableState},
 };
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
@@ -230,29 +230,13 @@ pub(crate) fn render(
             theme,
         ))
     });
-    let selected_row_deleted = edit
-        .and_then(|session| session.rows.get(grid.selected_row))
-        .is_some_and(|row| {
-            matches!(
-                row.state,
-                crate::model::relation_edit::EditableRowState::Deleted
-            )
-        });
-    let row_highlight_style = if selected_row_deleted {
-        Style::new()
-            .fg(theme.muted)
-            .bg(theme.row_deleted_background)
-            .add_modifier(Modifier::DIM)
-    } else {
-        Style::new().bg(theme.selection)
-    };
     let table = Table::new(rows, constraints)
         .header(header)
         .block(block)
         .column_spacing(0)
-        .row_highlight_style(row_highlight_style)
-        .cell_highlight_style(Style::new().bg(theme.accent).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▌");
+        // Selection is painted below the table so semantic cell foregrounds are
+        // preserved. Do not let Table reserve an implicit highlight column.
+        .highlight_spacing(HighlightSpacing::Never);
     // Paint the selected row below the table so Null and other semantic
     // foreground colors remain visible.
     let mut table_state = TableState::default();
@@ -619,16 +603,8 @@ fn row_number_width(row_count: usize) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
-#[cfg(test)]
-fn selected_data_cell(visible_position: usize) -> usize {
-    2usize.saturating_add(visible_position.saturating_mul(2))
-}
-
 fn data_start_x(area: Rect, number_width: u16) -> u16 {
-    area.x
-        .saturating_add(1)
-        .saturating_add(number_width)
-        .saturating_add(1)
+    area.x.saturating_add(number_width).saturating_add(1)
 }
 
 fn visible_columns(widths: &[u16], first: usize, available: u16) -> Vec<VisibleColumn> {
@@ -885,7 +861,7 @@ mod tests {
     use super::{
         GridHorizontalScrollTarget, VisibleColumn, column_header_text, data_cell_style,
         horizontal_scroll_target, row_number_style, row_number_width, row_viewport_start,
-        selected_data_cell, total_width, viewport_start, visible_columns,
+        total_width, viewport_start, visible_columns,
     };
     use ratatui::style::{Modifier, Style};
     use unicode_width::UnicodeWidthStr;
@@ -986,6 +962,67 @@ mod tests {
     }
 
     #[test]
+    fn selected_cell_background_matches_rendered_content() {
+        let result = ResultSet {
+            columns: vec![
+                ColumnMeta {
+                    name: "first".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "second".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "third".into(),
+                    type_name: "TEXT".into(),
+                },
+            ],
+            rows: vec![vec![
+                crate::db::value::CellValue::Text("a".into()),
+                crate::db::value::CellValue::Text("b".into()),
+                crate::db::value::CellValue::Text("c".into()),
+            ]],
+            affected_rows: 0,
+        };
+        let theme = Theme::deep_space();
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    Rect::new(0, 0, 40, 6),
+                    uuid::Uuid::nil(),
+                    &result,
+                    crate::model::tab::DataGridState {
+                        selected_column: 1,
+                        ..Default::default()
+                    },
+                    &[Some(6); 3],
+                    theme,
+                    Block::default(),
+                    &mut crate::ui::UiState::new(),
+                    None,
+                    IconSet::new(IconMode::Ascii),
+                    None,
+                    false,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(4, 1)].symbol(), "a");
+        assert_eq!(buffer[(11, 1)].symbol(), "b");
+        assert_eq!(buffer[(18, 1)].symbol(), "c");
+        for x in 11..17 {
+            assert_eq!(buffer[(x, 1)].bg, theme.accent, "selected cell x={x}");
+        }
+        assert_eq!(buffer[(10, 1)].symbol(), "│");
+        assert_eq!(buffer[(10, 1)].bg, theme.surface);
+        assert_eq!(buffer[(17, 1)].symbol(), "│");
+        assert_eq!(buffer[(17, 1)].bg, theme.surface);
+    }
+
+    #[test]
     fn relation_sort_hit_regions_cover_header_content_not_separators() {
         let projection = [None, None, None];
         let state = hit_regions(0, Some(&projection));
@@ -1004,7 +1041,7 @@ mod tests {
                 && region.area.y == 0
         }));
         assert_eq!(
-            state.target_at(11, 0),
+            state.target_at(10, 0),
             Some(&HitTarget::RelationColumnResize {
                 column: 0,
                 width: 6,
@@ -1388,12 +1425,6 @@ mod tests {
         assert_eq!(row_number_width(9), 3);
         assert_eq!(row_number_width(10), 4);
         assert_eq!(row_number_width(500), 5);
-    }
-
-    #[test]
-    fn selected_data_cells_follow_the_fixed_gutter() {
-        assert_eq!(selected_data_cell(0), 2);
-        assert_eq!(selected_data_cell(1), 4);
     }
 
     #[test]
