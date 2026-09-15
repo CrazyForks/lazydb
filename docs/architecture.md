@@ -99,7 +99,11 @@ schema. The target is independent from Explorer focus and may refer to an offlin
 profile. New consoles resolve their target from the focused Explorer node, the
 recent-target list, and then stable profile order; if no profile exists they remain
 unbound. The target selector can explicitly rebind a console across profiles
-without connecting, while preserving its SQL document and editor history.
+    while preserving its SQL document and editor history; confirmation starts
+    or reuses the target connection. Offline profiles contribute only their
+    configured default database/schema. A profile without a configured
+    database uses the profile manager's discovery flow rather than fabricating
+    an empty target.
 
 Runtime connections are keyed by the complete target plus `ConnectionIdentity`.
 Different profiles and database/schema targets can connect and execute concurrently;

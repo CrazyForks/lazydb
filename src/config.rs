@@ -46,6 +46,7 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "open-dashboard",
     "open-explorer",
     "open-editors",
+    "open-consoles",
     "run-leader-statement",
     "run-leader-buffer",
     "open-target-selector",

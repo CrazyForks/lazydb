@@ -2,6 +2,11 @@
 
 > 执行说明：按任务依赖顺序实施，每个任务先补行为测试、确认旧行为失败，再实现并运行相关检查。仅在用户明确要求时提交 Git。本文中的新增类型、动作名和测试名是拟定接口，不表示已经实现。
 
+> **状态：部分 superseded。** 全局 Consoles、离线恢复、按需连接、target
+> selector 重绑定和 max+1 命名以
+> [`2026-09-15-consoles-global-lifecycle-implementation.md`](2026-09-15-consoles-global-lifecycle-implementation.md)
+> 为准。本文保留其余多连接 runtime 设计背景。
+
 **Goal:** 支持多个数据库连接和跨连接 Tabs 同时工作，使所有 Console 可独立创建、绑定、关闭、删除和离线持久化，并在执行时按需连接。
 
 **Architecture:** 保留 Action → App::update → Command → Runtime 边界。将按 profile 切换的工作区转换为全局文档工作区；将单活动连接转换为按 ExecutionTarget 索引的会话集合。Console 文档绑定、Explorer 选择和运行时连接状态彼此独立，所有异步操作按对象及会话身份路由。

@@ -24,12 +24,17 @@ The configurable Leader commands currently include `Space b` (Dashboard),
 statement or complete buffer), `Space d` (execution target selector), and
 `Space D` (active workspace database selector).
 
+`F6` is also a global console-manager shortcut and works while no connection or
+Console tab is active.
+
 In the SQL Editor, the target and transaction status shown on the editor's
 top-right border are also mouse controls. Clicking the target opens the same
 execution-target selector as `Space d`; clicking a valid target row confirms it
 immediately, just like selecting it and pressing `Enter`. The selector contains
-the profile default and currently loaded catalog targets, even when only two
-targets are available. Selecting the current target is a no-op.
+the profile default and currently loaded catalog targets when the target's
+connection is online. An offline profile shows only its configured default
+database/schema; selecting a Console target starts or reuses that connection.
+Selecting an already-online current target is a no-op.
 `Space D` and the workspace header database name select the active connection
 database without rebinding existing Console or Relation tabs; `Space d` remains
 the per-Console target selector.

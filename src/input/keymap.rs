@@ -114,6 +114,10 @@ impl Keymap {
             self.pending = None;
             return (event.kind != KeyEventKind::Repeat).then_some(Action::OpenOmni);
         }
+        if self.bindings.matches("open-consoles", event) {
+            self.pending = None;
+            return (event.kind != KeyEventKind::Repeat).then_some(Action::OpenSqlEditorList);
+        }
         if app.overlay == Some(Overlay::CatalogEditor)
             && app
                 .catalog_editor
@@ -2813,6 +2817,7 @@ fn configured_command_action(command: &str, app: &App) -> Option<Action> {
         "open-sql-history" => Some(Action::OpenSqlHistory),
         "open-explorer" => Some(Action::Focus(Focus::Explorer)),
         "open-editors" => Some(Action::OpenSqlEditorList),
+        "open-consoles" => Some(Action::OpenSqlEditorList),
         "run-leader-statement" => Some(Action::RunActiveSql),
         "run-leader-buffer" => Some(Action::RunAllSql),
         "open-target-selector" => Some(Action::OpenTargetSelector),
@@ -4746,14 +4751,17 @@ mod tests {
         config
             .keybindings
             .global
-            .insert("help".into(), vec!["F3".into()]);
+            .insert("help".into(), vec!["F11".into()]);
         let bindings = config.keybindings.key_bindings().unwrap();
         let mut keymap =
             Keymap::with_sequence_timeout_and_bindings(Duration::from_millis(750), bindings);
         let mut app = App::new(Vec::new());
         app.focus = Focus::Results;
 
-        assert_eq!(keymap.map(key(KeyCode::F(3)), &app), Some(Action::ShowHelp));
+        assert_eq!(
+            keymap.map(key(KeyCode::F(11)), &app),
+            Some(Action::ShowHelp)
+        );
         assert_eq!(keymap.map(key(KeyCode::F(1)), &app), None);
     }
 
