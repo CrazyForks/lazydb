@@ -1702,6 +1702,7 @@ fn connected_app() -> (App, ConnectionProfile) {
     let mut profile = import_connection_url(":memory:", Some("test"))
         .unwrap()
         .profile;
+    profile.database = Some("app".into());
     profile.catalog_scope.databases = lazydb::profile::CatalogSelection::All;
     let mut app = App::new(vec![profile.clone()]);
     let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
