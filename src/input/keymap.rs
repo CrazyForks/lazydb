@@ -1948,14 +1948,15 @@ impl Keymap {
             if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
                 return Some(Action::RedisPreviewCycleFormat);
             }
-            if event.modifiers.is_empty() && event.code == KeyCode::Char('W') {
-                if !matches!(
+            if event.modifiers.is_empty()
+                && event.code == KeyCode::Char('W')
+                && !matches!(
                     app.tabs.get(app.active_tab),
                     Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
                         if tab.format.view() == crate::value_preview::ValueView::Table
-                ) {
-                    return Some(Action::RedisPreviewToggleWrap);
-                }
+                )
+            {
+                return Some(Action::RedisPreviewToggleWrap);
             }
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)
