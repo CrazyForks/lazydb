@@ -4370,6 +4370,59 @@ fn relation_status_row_is_present_only_for_non_ready_snapshots() {
 }
 
 #[test]
+fn relation_preparation_renders_without_a_query_request() {
+    use lazydb::model::relation::RelationPreparation;
+
+    let profile = import_connection_url("postgresql://localhost/app", Some("postgres"))
+        .unwrap()
+        .profile;
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&profile);
+    for (preparation, message, retry) in [
+        (
+            RelationPreparation::WaitingForSession { target },
+            "Connecting to relation target",
+            false,
+        ),
+        (
+            RelationPreparation::ResolvingIdentity,
+            "Resolving relation identity",
+            false,
+        ),
+        (
+            RelationPreparation::Failed {
+                message: "Connection refused".into(),
+            },
+            "Connection refused",
+            true,
+        ),
+    ] {
+        let mut app = App::new(vec![profile.clone()]);
+        let mut relation = RelationTab::new("users");
+        relation.preparation = preparation;
+        app.tabs.push(WorkspaceTab::Relation(relation));
+        app.active_tab = app.tabs.len() - 1;
+        app.focus = Focus::Results;
+
+        let (output, state) = render_with_icons(&app, 120, 36, IconSet::new(IconMode::Ascii));
+
+        assert!(output.contains(message), "{output}");
+        assert!(
+            !state
+                .hit_regions
+                .iter()
+                .any(|region| { matches!(region.target, HitTarget::RelationCancel) })
+        );
+        assert_eq!(
+            state
+                .hit_regions
+                .iter()
+                .any(|region| { matches!(region.target, HitTarget::RelationRetry) }),
+            retry
+        );
+    }
+}
+
+#[test]
 fn relation_first_load_uses_quiet_status_without_dense_skeleton() {
     let mut app = fixture();
     let mut relation = RelationTab::new("users");

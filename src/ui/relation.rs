@@ -587,6 +587,8 @@ fn render_data(
             tab.preparation,
             crate::model::relation::RelationPreparation::Idle
         ) {
+        // Preparation has no relation request yet, so it cannot use the
+        // request-backed loading animation or query cancellation controls.
         Some((
             match &tab.preparation {
                 crate::model::relation::RelationPreparation::WaitingForSession { .. } => {
@@ -598,8 +600,11 @@ fn render_data(
                 crate::model::relation::RelationPreparation::Failed { message } => message,
                 crate::model::relation::RelationPreparation::Idle => "Relation not loaded",
             },
+            matches!(
+                tab.preparation,
+                crate::model::relation::RelationPreparation::Failed { .. }
+            ),
             false,
-            true,
         ))
     } else {
         status
