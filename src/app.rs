@@ -4631,7 +4631,6 @@ impl App {
                 Vec::new()
             }
             Action::WorkspaceSaveSucceeded { revision } => {
-                self.notify_info("Workspace", format!("Saved workspace revision {revision}"));
                 self.workspace_save.succeeded(revision);
                 let live_ids = self
                     .sql_editors
@@ -24144,6 +24143,11 @@ mod tests {
             }] if *saved == revision
         ));
         assert!(!app.should_quit);
+        assert!(
+            app.notifications
+                .history()
+                .all(|notification| notification.title != "Workspace")
+        );
     }
 
     #[test]
