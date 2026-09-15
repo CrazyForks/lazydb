@@ -108,13 +108,6 @@ fn cancel_relation_load<T: Clone>(load: &RelationLoad<T>) -> RelationLoad<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RelationCatalogReadiness {
-    Present,
-    Loading,
-    Missing,
-}
-
 fn cancel_pending_relation<T: Clone>(load: &mut RelationLoad<T>) -> Option<RelationRequest> {
     let pending = pending_relation_request(load);
     if let RelationLoad::Loading { previous, .. } = load {
@@ -21962,7 +21955,7 @@ impl App {
                 return Vec::new();
             };
             (
-                relation_execution_target(tab, &profile).or_else(|| self.connection.target.clone()),
+                relation_execution_target(tab, &profile),
                 tab.descriptor.qualified_name.database.is_some(),
                 tab.stale_native_identity,
                 tab.descriptor.key.clone(),
@@ -21983,7 +21976,11 @@ impl App {
             })
         });
         let Some(connection) = connection else {
-            let Some(target) = target else {
+            let Some(target) = target.or_else(|| {
+                (!database_is_specified)
+                    .then(|| self.connection.target.clone())
+                    .flatten()
+            }) else {
                 return Vec::new();
             };
             let commands = self.request_connection_target(target.clone());
@@ -22003,11 +22000,6 @@ impl App {
             matches!(tab, WorkspaceTab::Relation(tab) if relation_is_in_scope(tab, &profile.catalog_scope))
         });
         if !in_scope {
-            return Vec::new();
-        }
-        if self.relation_catalog_readiness(connection, &relation.object_id)
-            == RelationCatalogReadiness::Loading
-        {
             return Vec::new();
         }
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
@@ -22142,30 +22134,6 @@ impl App {
             return Vec::new();
         };
         self.load_active_relation_with_page(true, Some(page))
-    }
-
-    fn relation_catalog_readiness(
-        &self,
-        connection: ConnectionIdentity,
-        relation: &crate::db::catalog::CatalogId,
-    ) -> RelationCatalogReadiness {
-        let Some(state) = self
-            .explorer
-            .normalized
-            .profiles
-            .get(&connection.profile_id)
-        else {
-            return RelationCatalogReadiness::Missing;
-        };
-        if state.catalog.get(relation).is_some() {
-            RelationCatalogReadiness::Present
-        } else if state.status == ExplorerConnectionStatus::Syncing
-            || !state.pending_requests.is_empty()
-        {
-            RelationCatalogReadiness::Loading
-        } else {
-            RelationCatalogReadiness::Missing
-        }
     }
 
     fn accept_relation(

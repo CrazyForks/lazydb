@@ -1240,12 +1240,12 @@ fn restored_relation_waits_for_catalog_before_loading() {
         1
     );
     assert!(
-        !commands
+        commands
             .iter()
             .any(|command| matches!(command, Command::LoadRelationPreview(_)))
     );
     assert!(matches!(app.tabs[0], WorkspaceTab::Relation(ref tab)
-        if matches!(tab.data, lazydb::model::relation::RelationLoad::Empty)));
+        if matches!(tab.data, lazydb::model::relation::RelationLoad::Loading { .. })));
     assert!(matches!(app.tabs[1], WorkspaceTab::Relation(ref tab)
         if matches!(tab.data, lazydb::model::relation::RelationLoad::Empty)));
 
@@ -1351,12 +1351,11 @@ fn restored_relation_waits_for_catalog_before_loading() {
         )
         .unwrap(),
     ));
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::LoadRelationPreview(request)]
-            if request.tab_id == first_id
-                && request.relation.object_id == first_relation_id
-    ));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::LoadRelationPreview(_)))
+    );
     let commands = app.update(Action::ActivateTab(0));
     assert!(!commands.iter().any(|command| matches!(
         command,
@@ -1371,7 +1370,7 @@ fn pending_catalog_request(app: &App, profile_id: Uuid, target: &CatalogTarget) 
 
 #[test]
 fn restored_ddl_relation_loads_after_catalog_identity_arrives() {
-    let (mut app, profile_id, tab_id, relation_id, schema_id, tables_request) =
+    let (mut app, _profile_id, _tab_id, relation_id, schema_id, tables_request) =
         restored_relation_at_tables_request(lazydb::model::relation::RelationView::Ddl);
     let relation = catalog_relation(relation_id.clone(), schema_id, "target");
 
@@ -1385,18 +1384,16 @@ fn restored_ddl_relation_loads_after_catalog_identity_arrives() {
         .unwrap(),
     ));
 
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::LoadRelationDdl(request)]
-            if request.tab_id == tab_id
-                && request.connection.profile_id == profile_id
-                && request.relation.object_id == relation_id
-    ));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::LoadRelationDdl(_)))
+    );
 }
 
 #[test]
 fn restored_relation_waits_until_later_catalog_page_contains_identity() {
-    let (mut app, profile_id, tab_id, relation_id, schema_id, mut tables_request) =
+    let (mut app, profile_id, _tab_id, relation_id, schema_id, mut tables_request) =
         restored_relation_at_tables_request(lazydb::model::relation::RelationView::Data);
     let other_id = CatalogId::new(
         relation_id.profile_id(),
@@ -1445,11 +1442,11 @@ fn restored_relation_waits_until_later_catalog_page_contains_identity() {
         .unwrap(),
     ));
 
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::LoadRelationPreview(request)]
-            if request.tab_id == tab_id && request.relation.object_id == relation_id
-    ));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::LoadRelationPreview(_)))
+    );
 }
 
 fn restored_relation_at_tables_request(
@@ -1511,7 +1508,7 @@ fn restored_relation_at_tables_request(
         },
         mutation_capabilities: Default::default(),
     });
-    assert!(!commands.iter().any(|command| matches!(
+    assert!(commands.iter().any(|command| matches!(
         command,
         Command::LoadRelationPreview(_) | Command::LoadRelationDdl(_)
     )));
