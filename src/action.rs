@@ -838,6 +838,7 @@ pub enum Action {
         profile_id: Uuid,
     },
     RequestConnect(Uuid),
+    RetryActiveConsoleConnection,
     RequestProfileDisconnect {
         profile_id: Uuid,
     },

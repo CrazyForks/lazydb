@@ -3428,6 +3428,9 @@ fn render_editor(
                     );
                     if app.connection.active_identity().is_some()
                         && app.connection.target.as_ref() == Some(target)
+                        && app.sessions.get(target).is_some_and(|session| {
+                            session.status == crate::model::session::SessionStatus::Connected
+                        })
                     {
                         format!("{target_label} READY")
                     } else if app.connection.pending_target.as_ref() == Some(target) {

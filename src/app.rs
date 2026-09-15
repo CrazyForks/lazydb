@@ -10885,6 +10885,12 @@ impl App {
             }
             Action::RequestProfileConnect { profile_id } => self.request_connection(profile_id),
             Action::RequestConnect(profile_id) => self.request_connection(profile_id),
+            Action::RetryActiveConsoleConnection => {
+                if let Some(tab) = self.active_console_opt_mut() {
+                    tab.target_error = None;
+                }
+                self.prepare_active_console_target()
+            }
             Action::RequestProfileDisconnect { profile_id } => {
                 self.request_profile_disconnect(profile_id)
             }
