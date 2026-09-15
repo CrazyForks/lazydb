@@ -278,6 +278,7 @@ pub struct CompletionRequest {
     pub revision: u64,
     pub cursor: usize,
     pub connection: Option<ConnectionIdentity>,
+    pub target: Option<crate::model::execution_target::ExecutionTarget>,
     pub catalog_generation: u64,
     pub explicit: bool,
     pub relation_children: Vec<CatalogId>,

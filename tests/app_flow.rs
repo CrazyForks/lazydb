@@ -851,7 +851,7 @@ fn accepting_completion_preserves_ordering_continuation() {
         let key = commands
             .iter()
             .find_map(|command| match command {
-                Command::ScheduleCompletion(key) => Some(*key),
+                Command::ScheduleCompletion(key) => Some(key.clone()),
                 _ => None,
             })
             .expect("next ordering position must be scheduled");
@@ -903,7 +903,7 @@ fn accepting_completion_does_not_suppress_later_input_or_explicit_requests() {
         let key = commands
             .iter()
             .find_map(|command| match command {
-                Command::ScheduleCompletion(key) => Some(*key),
+                Command::ScheduleCompletion(key) => Some(key.clone()),
                 _ => None,
             })
             .expect("later editing must schedule completion");
@@ -971,7 +971,7 @@ fn accepting_completion_ignores_pre_accept_due_event() {
         let key = commands
             .iter()
             .find_map(|command| match command {
-                Command::ScheduleCompletion(key) => Some(*key),
+                Command::ScheduleCompletion(key) => Some(key.clone()),
                 _ => None,
             })
             .expect("actual input must schedule the pre-accept timer");

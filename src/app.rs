@@ -16409,6 +16409,7 @@ impl App {
             connection: tab
                 .execution_connection
                 .or(self.connection.active_identity())?,
+            target: tab.execution_target.clone()?,
             catalog_generation: self.explorer.catalog_generation,
         })
     }
@@ -16463,6 +16464,7 @@ impl App {
         };
         request.revision == self.active_editor_revision()
             && request.cursor == self.active_editor_text_and_cursor().1
+            && request.target == tab.execution_target
             && request.connection
                 == tab
                     .execution_connection
@@ -16615,13 +16617,22 @@ impl App {
     ) {
         let (_, cursor) = self.active_editor_text_and_cursor();
         let revision = self.active_editor_revision();
-        let connection = self.connection.active_identity();
+        let (connection, target) = self
+            .active_console_opt()
+            .map(|tab| {
+                (
+                    tab.execution_connection.or(self.connection.active_identity()),
+                    tab.execution_target.clone(),
+                )
+            })
+            .unwrap_or((None, None));
         let generation = self.explorer.catalog_generation;
         if let Some(tab) = self.active_console_opt_mut() {
             tab.completion_request = Some(CompletionRequest {
                 revision,
                 cursor,
                 connection,
+                target,
                 catalog_generation: generation,
                 explicit,
                 relation_children,

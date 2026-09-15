@@ -809,12 +809,13 @@ impl Runtime {
                 if let Some(task) = self.completion_tasks.remove(&key.console_id) {
                     task.abort();
                 }
+                let console_id = key.console_id;
                 let sender = self.event_sender.clone();
                 let task = tokio::spawn(async move {
                     sleep(Duration::from_millis(120)).await;
                     let _ = sender.send(Action::CompletionDue(key));
                 });
-                self.completion_tasks.insert(key.console_id, task);
+                self.completion_tasks.insert(console_id, task);
             }
             Command::ScheduleDiagnostics(key) => {
                 let console_id = key.console_id;
