@@ -53,12 +53,24 @@ fn console_manager_empty_startup_creates_offline_console() {
     );
     assert_eq!(app.focus, Focus::Editor);
     assert!(app.overlay.is_none());
-    assert!(app.connection.profile_id.is_none());
+    assert_eq!(
+        app.connection.status,
+        lazydb::model::workspace::ConnectionStatus::Connecting
+    );
+    assert_eq!(
+        app.connection.pending_target.as_ref().unwrap().profile_id,
+        profile_id
+    );
     assert!(!commands.is_empty());
     assert!(
         commands
             .iter()
-            .all(|command| matches!(command, Command::PersistWorkspace { .. }))
+            .any(|command| matches!(command, Command::Connect { target, .. } if target.profile_id == profile_id))
+    );
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
     );
 }
 

@@ -14839,7 +14839,9 @@ impl App {
         self.create_sql_editor_named(name, origin_target);
         self.active_tab = self.tabs.len().saturating_sub(1);
         self.focus = Focus::Editor;
-        vec![self.persist_workspace_command()]
+        let mut commands = self.prepare_active_console_target();
+        commands.push(self.persist_workspace_command());
+        commands
     }
 
     fn update_sql_editor_list_input(
