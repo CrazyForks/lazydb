@@ -2186,7 +2186,12 @@ fn render_tabs(
                         .map(|profile| profile.name.clone())
                         .unwrap_or_else(|| "失效目标".to_owned()),
                 };
-                format!("{} @{connection_name}", tab.title())
+                match tab {
+                    WorkspaceTab::RedisBrowser(redis) => {
+                        format!("db{}@{connection_name}", redis.target.database)
+                    }
+                    _ => format!("{} @{connection_name}", tab.title()),
+                }
             };
             let title = sanitize_terminal_text(&title)
                 .chars()
