@@ -172,6 +172,28 @@ impl Theme {
         Style::new().fg(self.text).bg(self.background)
     }
 
+    /// Style used by the focused cell in a data grid.
+    ///
+    /// The accent is intentionally paired with the dark application
+    /// background rather than the normal light data foreground. In plain
+    /// color mode there is no palette color to rely on, so reverse video is
+    /// the only reliable focus indicator.
+    pub fn grid_active_cell(self) -> Style {
+        if self.accent == Color::Reset {
+            Style::new()
+                .fg(Color::Reset)
+                .bg(Color::Reset)
+                .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                .remove_modifier(Modifier::DIM)
+        } else {
+            Style::new()
+                .fg(self.background)
+                .bg(self.accent)
+                .add_modifier(Modifier::BOLD)
+                .remove_modifier(Modifier::DIM | Modifier::REVERSED)
+        }
+    }
+
     pub fn title(self, focused: bool) -> Style {
         Style::new()
             .fg(if focused { self.accent } else { self.muted })

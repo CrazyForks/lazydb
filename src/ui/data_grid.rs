@@ -267,8 +267,16 @@ pub(crate) fn render(
                     .set_fg(foreground)
                     .set_bg(theme.selection);
                 if column.index == grid.selected_column {
-                    buffer[(cell_x, y)].set_bg(theme.accent);
-                    buffer[(cell_x, y)].modifier.insert(Modifier::BOLD);
+                    let active_style = theme.grid_active_cell();
+                    buffer[(cell_x, y)]
+                        .set_fg(active_style.fg.unwrap_or(foreground))
+                        .set_bg(active_style.bg.unwrap_or(theme.accent));
+                    buffer[(cell_x, y)]
+                        .modifier
+                        .remove(active_style.remove_modifier);
+                    buffer[(cell_x, y)]
+                        .modifier
+                        .insert(active_style.add_modifier);
                 }
             }
             x = x.saturating_add(column.rendered_width).saturating_add(1);
@@ -1015,6 +1023,7 @@ mod tests {
         assert_eq!(buffer[(18, 1)].symbol(), "c");
         for x in 11..17 {
             assert_eq!(buffer[(x, 1)].bg, theme.accent, "selected cell x={x}");
+            assert_eq!(buffer[(x, 1)].fg, theme.background, "selected cell x={x}");
         }
         assert_eq!(buffer[(10, 1)].symbol(), "│");
         assert_eq!(buffer[(10, 1)].bg, theme.surface);
