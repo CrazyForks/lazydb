@@ -481,7 +481,7 @@ fn keyspace_status_distinguishes_initial_empty_partial_and_failure() {
 }
 
 #[test]
-fn selecting_a_key_is_debounced_but_prefix_selection_stays_empty() {
+fn selecting_a_key_does_not_open_a_preview_but_explicit_open_does() {
     let mut app = App::new(Vec::new());
     app.connection.profile_id = Some(Uuid::from_u128(1));
     app.connection.generation = 1;
@@ -502,20 +502,25 @@ fn selecting_a_key_is_debounced_but_prefix_selection_stays_empty() {
             key: b"user:1".to_vec(),
         }]);
     }
-    let commands = app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
-    assert!(commands.is_empty());
+    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
     assert!(app.update(Action::RedisPreviewTick).is_empty());
-    assert!(
-        app.select_redis_key(tab_id, Some(KeyTreeNodeId::Prefix(b"user:".to_vec())))
-            .is_empty()
-    );
+    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Prefix(b"user:".to_vec())));
     assert!(
         matches!(app.tabs.last().unwrap(), WorkspaceTab::RedisBrowser(tab) if tab.preview == RedisPreviewState::Empty)
     );
+    let commands = app.update(Action::OpenRedisKey {
+        tab_id,
+        node: KeyTreeNodeId::Key(b"user:1".to_vec()),
+    });
+    assert!(commands.is_empty());
+    assert!(matches!(
+        app.tabs.last().unwrap(),
+        WorkspaceTab::RedisBrowser(tab) if matches!(tab.value_page, RedisValuePageState::Loading { .. })
+    ));
 }
 
 #[test]
-fn rapid_redis_key_selection_dispatches_only_the_latest_preview() {
+fn rapid_redis_key_open_dispatches_only_the_latest_preview() {
     let mut app = App::new(Vec::new());
     app.connection.profile_id = Some(Uuid::from_u128(1));
     app.connection.generation = 1;
@@ -542,9 +547,14 @@ fn rapid_redis_key_selection_dispatches_only_the_latest_preview() {
             },
         ]);
     }
-    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"a".to_vec())));
-    app.select_redis_key(tab_id, Some(KeyTreeNodeId::Key(b"b".to_vec())));
-    std::thread::sleep(std::time::Duration::from_millis(110));
+    app.update(Action::OpenRedisKey {
+        tab_id,
+        node: KeyTreeNodeId::Key(b"a".to_vec()),
+    });
+    app.update(Action::OpenRedisKey {
+        tab_id,
+        node: KeyTreeNodeId::Key(b"b".to_vec()),
+    });
     let commands = app.update(Action::RedisPreviewTick);
     assert_eq!(commands.len(), 1);
     assert!(matches!(
@@ -554,7 +564,7 @@ fn rapid_redis_key_selection_dispatches_only_the_latest_preview() {
 }
 
 #[test]
-fn selecting_keys_advances_preview_generation_so_old_results_can_be_rejected() {
+fn opening_keys_advances_preview_generation_so_old_results_can_be_rejected() {
     let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
         Uuid::from_u128(1),
         RedisTarget {
@@ -562,14 +572,30 @@ fn selecting_keys_advances_preview_generation_so_old_results_can_be_rejected() {
             database: 2,
         },
     );
-    tab.select(Some(KeyTreeNodeId::Key(b"a".to_vec())));
+    tab.tree.rebuild(&[
+        RedisKeyId {
+            target: tab.target.clone(),
+            key: b"a".to_vec(),
+        },
+        RedisKeyId {
+            target: tab.target.clone(),
+            key: b"b".to_vec(),
+        },
+    ]);
+    tab.open_key(RedisKeyId {
+        target: tab.target.clone(),
+        key: b"a".to_vec(),
+    });
     let first = tab.preview_generation;
-    tab.select(Some(KeyTreeNodeId::Key(b"b".to_vec())));
+    tab.open_key(RedisKeyId {
+        target: tab.target.clone(),
+        key: b"b".to_vec(),
+    });
     assert!(first < tab.preview_generation);
 }
 
 #[test]
-fn selecting_a_key_starts_a_typed_value_page_lifecycle() {
+fn opening_a_key_starts_a_typed_value_page_lifecycle() {
     let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
         Uuid::from_u128(1),
         RedisTarget {
@@ -581,13 +607,19 @@ fn selecting_a_key_starts_a_typed_value_page_lifecycle() {
         target: tab.target.clone(),
         key: b"user:1".to_vec(),
     }]);
-    tab.select(Some(KeyTreeNodeId::Key(b"user:1".to_vec())));
+    tab.open_key(RedisKeyId {
+        target: tab.target.clone(),
+        key: b"user:1".to_vec(),
+    });
     assert!(matches!(
         tab.value_page,
         RedisValuePageState::Loading { .. }
     ));
     tab.select(None);
-    assert_eq!(tab.value_page, RedisValuePageState::Empty);
+    assert!(matches!(
+        tab.value_page,
+        RedisValuePageState::Loading { .. }
+    ));
 }
 
 #[test]

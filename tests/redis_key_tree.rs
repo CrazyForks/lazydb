@@ -102,3 +102,32 @@ fn key_before_descendant_is_promoted_to_a_folder_in_incremental_and_full_builds(
     full.expanded.insert(prefix.clone());
     assert_eq!(incremental.visible_rows(), full.visible_rows());
 }
+
+#[test]
+fn subtree_counts_include_own_key_and_ignore_duplicate_inserts() {
+    let mut tree = KeyTreeState::default();
+    tree.rebuild(&[key(b"foo"), key(b"foo:a"), key(b"foo:group:b")]);
+    let prefix = KeyTreeNodeId::Prefix(b"foo:".to_vec());
+    let row = tree
+        .visible_rows()
+        .into_iter()
+        .find(|row| row.id == prefix)
+        .unwrap();
+    assert_eq!(row.total_keys, 3);
+
+    tree.insert_keys(&[key(b"foo:a"), key(b"foo:group:c")]);
+    let row = tree
+        .visible_rows()
+        .into_iter()
+        .find(|row| row.id == prefix)
+        .unwrap();
+    assert_eq!(row.total_keys, 4);
+
+    tree.rebuild(&[key(b"foo"), key(b"foo:group:c")]);
+    let row = tree
+        .visible_rows()
+        .into_iter()
+        .find(|row| row.id == prefix)
+        .unwrap();
+    assert_eq!(row.total_keys, 2);
+}

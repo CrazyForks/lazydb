@@ -651,15 +651,26 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 HitTarget::ExplorerToggle(id) => Some(Action::ExplorerToggleNode(id)),
                 HitTarget::RedisKeyNode { tab_id, node } => {
-                    if ui.track_redis_click(tab_id, &node, Instant::now())
-                        && matches!(node, crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_))
-                    {
-                        Some(Action::RedisToggleNode { tab_id, node })
-                    } else {
-                        Some(Action::SelectRedisNode {
-                            tab_id,
-                            node: Some(node),
-                        })
+                    let double = ui.track_redis_click(tab_id, &node, Instant::now());
+                    match (&node, double) {
+                        (crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_), true) => {
+                            Some(Action::SelectRedisNode {
+                                tab_id,
+                                node: Some(node),
+                            })
+                        }
+                        (crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_), false) => {
+                            Some(Action::RedisToggleNode { tab_id, node })
+                        }
+                        (crate::model::redis_key_tree::KeyTreeNodeId::Key(_), true) => {
+                            Some(Action::OpenRedisKey { tab_id, node })
+                        }
+                        (crate::model::redis_key_tree::KeyTreeNodeId::Key(_), false) => {
+                            Some(Action::SelectRedisNode {
+                                tab_id,
+                                node: Some(node),
+                            })
+                        }
                     }
                 }
                 HitTarget::RedisKeyToggle { tab_id, node } => {

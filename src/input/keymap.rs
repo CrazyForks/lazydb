@@ -1435,7 +1435,6 @@ impl Keymap {
             ) && event.modifiers.is_empty()
             {
                 match event.code {
-                    KeyCode::Char('o') => return Some(Action::RedisPrimarySelection),
                     KeyCode::Char('y') => return Some(Action::RedisCopyKey),
                     KeyCode::Char('d') => return Some(Action::RedisDeleteKey),
                     _ => {}
