@@ -48,6 +48,61 @@ fn workspace_tabs_expose_common_identity() {
 }
 
 #[test]
+fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
+    use lazydb::persistence::workspace::WorkspaceStore;
+
+    let first = import_connection_url(":memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url(":memory:", Some("second"))
+        .unwrap()
+        .profile;
+    let console_id = Uuid::new_v4();
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(first.id),
+        profiles: vec![
+            PersistedProfileWorkspace {
+                profile_id: first.id,
+                active_tab: None,
+                consoles: Vec::new(),
+                tabs: Vec::new(),
+            },
+            PersistedProfileWorkspace {
+                profile_id: second.id,
+                active_tab: Some(console_id),
+                consoles: vec![persisted_console(console_id, "second", true)],
+                tabs: vec![PersistedTab::Console { console_id }],
+            },
+        ],
+        active_console: Uuid::nil(),
+        consoles: Vec::new(),
+        tabs: Vec::new(),
+        sql: vec![(console_id, "select 42".into())],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![first, second]);
+    app.restore_workspace(snapshot, None);
+
+    assert!(app.tabs.iter().any(|tab| tab.id() == console_id));
+    app.update(Action::CloseTab(console_id));
+
+    assert!(app.tabs.iter().all(|tab| tab.id() != console_id));
+    let saved = app.workspace_snapshot();
+    assert!(saved.profiles.iter().all(|workspace| {
+        workspace.tabs.iter().all(
+            |tab| !matches!(tab, PersistedTab::Console { console_id: id } if *id == console_id),
+        )
+    }));
+
+    let temp = tempfile::TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    store.save(&saved).unwrap();
+    let mut restarted = App::new(Vec::new());
+    restarted.restore_workspace(store.load().unwrap().unwrap(), None);
+    assert!(restarted.tabs.iter().all(|tab| tab.id() != console_id));
+}
+
+#[test]
 fn console_tab_title_remains_the_persisted_name() {
     let console = ConsoleTab::new("analysis");
     let tab = WorkspaceTab::Sql(console);

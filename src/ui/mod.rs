@@ -6162,9 +6162,9 @@ fn render_console_manager(
                         let connection = profile.map_or_else(
                             || {
                                 if target.is_none() {
-                                    "未绑定"
+                                    "Unbound"
                                 } else {
-                                    "目标失效"
+                                    "Invalid target"
                                 }
                                 .to_owned()
                             },
@@ -6172,7 +6172,7 @@ fn render_console_manager(
                                 if target_valid {
                                     profile.name.clone()
                                 } else {
-                                    "目标失效".to_owned()
+                                    "Invalid target".to_owned()
                                 }
                             },
                         );
