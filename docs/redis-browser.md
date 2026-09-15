@@ -33,7 +33,7 @@ views, including normal-mode navigation, search, selection, mouse selection,
 and editor scrollbars. `h` and `l` therefore move the Vim cursor when Preview
 is focused; pane focus uses the normal pane-focus commands.
 
-The format label can be clicked or cycled with `f`. RAW, JSON, YAML, Table
+The format label can be clicked or opened from Preview with `Space f`. RAW, JSON, YAML, Table
 projection, and Hex are supported views. JSON and YAML are formatted from
 validated input; invalid structured input falls back to the raw view. Java,
 PHP, Pickle, and schema-less Protobuf decoders are available in the
@@ -64,8 +64,13 @@ copies its complete name; folders cannot be deleted or copied. `/` filters all
 keys already loaded for this database, including keys inside collapsed folders;
 Enter confirms the filter and Esc restores the previous selection. The filter
 does not start a new SCAN and is explicitly limited to the loaded client-side
-snapshot. In Preview, `j`/`k` scroll the loaded value and PageUp/PageDown page
-the focused pane. Keys folders use the same group icons, colors, and selection
+snapshot. In Preview, the read-only Vim buffer supports `hjkl`, `w`/`b`/`e`,
+`0`/`$`, `gg`/`G`, counts, Visual mode (`v`/`V`), `/` and `?` search, `n`/`N`,
+and `yy`/Visual `y` copying. `Ctrl-d`/`Ctrl-u` move half a page and
+PageUp/PageDown move a full page while keeping the text cursor visible. `Space
+f` cycles format, `Space w` toggles wrapping, and `Space l` loads the next
+value page. Pane focus uses `Ctrl-w h/l` or Tab/BackTab; `h`/`l` in Preview
+remain text motions. Keys folders use the same group icons, colors, and selection
 behavior as Explorer; leaf keys use a key icon.
 
 Deleting a folder first scans the database independently, deduplicates matching

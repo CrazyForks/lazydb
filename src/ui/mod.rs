@@ -4377,7 +4377,25 @@ fn render_footer(
             EditorMode::VisualBlock => ("VISUAL BLOCK", theme.accent),
         },
         Focus::Explorer => ("EXPLORE", theme.accent),
-        Focus::Results => ("DATA", theme.warning),
+        Focus::Results => {
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+            ) {
+                let mode = match app.active_read_only_editor_mode() {
+                    Some(EditorMode::VisualChar) => "VISUAL",
+                    Some(EditorMode::VisualLine) => "VISUAL LINE",
+                    Some(EditorMode::VisualBlock) => "VISUAL BLOCK",
+                    Some(EditorMode::Insert) => "INSERT",
+                    Some(EditorMode::Replace) => "REPLACE",
+                    _ => "NORMAL",
+                };
+                (mode, theme.accent)
+            } else {
+                ("DATA", theme.warning)
+            }
+        }
     };
     let context = crate::help::shortcut_context(app);
     let capabilities = crate::help::shortcut_capabilities(app);

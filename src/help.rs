@@ -24,6 +24,8 @@ pub enum ShortcutContext {
     EditorVisual,
     SqlResultsData,
     SqlOutput,
+    RedisKeys,
+    RedisPreview,
     Dashboard,
     RelationDataBrowse,
     RelationDataEdit,
@@ -75,6 +77,8 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::EditorVisual,
     ShortcutContext::SqlResultsData,
     ShortcutContext::SqlOutput,
+    ShortcutContext::RedisKeys,
+    ShortcutContext::RedisPreview,
     ShortcutContext::Dashboard,
     ShortcutContext::RelationDataBrowse,
     ShortcutContext::RelationDataEdit,
@@ -238,6 +242,12 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
         return ShortcutContext::DataQueryInput;
     }
     match app.tabs.get(app.active_tab) {
+        Some(WorkspaceTab::RedisBrowser(tab)) if app.focus == Focus::Results => match tab.focus {
+            crate::model::redis_browser::RedisBrowserFocus::Keys => ShortcutContext::RedisKeys,
+            crate::model::redis_browser::RedisBrowserFocus::Preview => {
+                ShortcutContext::RedisPreview
+            }
+        },
         Some(WorkspaceTab::Relation(tab))
             if app.focus == Focus::Results && tab.view == RelationView::Ddl =>
         {
@@ -525,6 +535,15 @@ pub enum HelpShortcutId {
     RelationEditJson,
     RelationEditDeleteWord,
     EditorYank,
+    RedisPreviewFormat,
+    RedisPreviewWrap,
+    RedisPreviewNextPage,
+    RedisPreviewMove,
+    RedisPreviewPage,
+    RedisPreviewCopy,
+    RedisPreviewSearch,
+    RedisKeysMove,
+    RedisKeysFind,
     ExplorerFindOpen,
     ExplorerSearchOpen,
     DataQueryWhere,
@@ -1475,6 +1494,64 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         display
     ),
     row!(EditorYank, [EditorVisual], "y", "copy selection", display),
+    row!(
+        RedisPreviewFormat,
+        [RedisPreview],
+        "Space f",
+        "cycle Redis Preview format",
+        Leader,
+        "f"
+    ),
+    row!(
+        RedisPreviewWrap,
+        [RedisPreview],
+        "Space w",
+        "toggle Redis Preview wrapping",
+        Leader,
+        "w"
+    ),
+    row!(
+        RedisPreviewNextPage,
+        [RedisPreview],
+        "Space l",
+        "load the next Redis Preview page",
+        Leader,
+        "l"
+    ),
+    row!(
+        RedisPreviewMove,
+        [RedisPreview],
+        "hjkl",
+        "move through Preview text"
+    ),
+    row!(
+        RedisPreviewPage,
+        [RedisPreview],
+        "Ctrl-d / Ctrl-u",
+        "move by half a page",
+        display
+    ),
+    row!(
+        RedisPreviewCopy,
+        [RedisPreview],
+        "yy / y{motion}",
+        "copy Preview text",
+        display
+    ),
+    row!(
+        RedisPreviewSearch,
+        [RedisPreview],
+        "/ / ? / n / N",
+        "search Preview text",
+        display
+    ),
+    row!(
+        RedisKeysMove,
+        [RedisKeys],
+        "hjkl",
+        "move through Redis keys"
+    ),
+    row!(RedisKeysFind, [RedisKeys], "/", "find Redis keys", display),
     row!(
         ResultsMoveLeft,
         [SqlResultsData, RelationDataBrowse],
@@ -3287,6 +3364,8 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         | ShortcutContext::EditorVisual => "EDITOR",
         ShortcutContext::SqlResultsData
         | ShortcutContext::SqlOutput
+        | ShortcutContext::RedisKeys
+        | ShortcutContext::RedisPreview
         | ShortcutContext::RelationDataBrowse
         | ShortcutContext::RelationDataEdit
         | ShortcutContext::RelationDataVisual
