@@ -127,18 +127,17 @@ pub enum RelationLoad<T> {
 pub type RelationPreviewLoad = RelationLoad<RelationPreview>;
 pub type RelationDdlLoad = RelationLoad<RelationDdl>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum RelationPreparation {
+    #[default]
     Idle,
-    WaitingForSession { target: ExecutionTarget },
+    WaitingForSession {
+        target: ExecutionTarget,
+    },
     ResolvingIdentity,
-    Failed { message: String },
-}
-
-impl Default for RelationPreparation {
-    fn default() -> Self {
-        Self::Idle
-    }
+    Failed {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

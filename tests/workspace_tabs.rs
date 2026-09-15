@@ -1121,6 +1121,17 @@ fn restored_postgres_relation_prepares_its_schema_session() {
         },
         mutation_capabilities: Default::default(),
     });
+    let relation_connection_generation = commands.iter().find_map(|command| match command {
+        Command::Connect {
+            generation, target, ..
+        } if target.database == "lazydb_test"
+            && target.schema.as_deref() == Some("test_schema") =>
+        {
+            Some(*generation)
+        }
+        _ => None,
+    });
+    assert!(relation_connection_generation.is_some());
     assert!(commands.iter().any(|command| matches!(
         command,
         Command::Connect { target, .. }
@@ -1135,6 +1146,28 @@ fn restored_postgres_relation_prepares_its_schema_session() {
                     if target.database == "lazydb_test"
                         && target.schema.as_deref() == Some("test_schema")
             )
+    ));
+
+    let follow_up = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation: relation_connection_generation.unwrap(),
+        server: lazydb::db::ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Postgres,
+            version: "16".into(),
+            database: "lazydb_test".into(),
+            current_user: Some("postgres".into()),
+        },
+        mutation_capabilities: Default::default(),
+    });
+    assert!(
+        !follow_up
+            .iter()
+            .any(|command| matches!(command, Command::Connect { .. }))
+    );
+    assert!(matches!(
+        &app.tabs[0],
+        WorkspaceTab::Relation(tab)
+            if matches!(tab.preparation, lazydb::model::relation::RelationPreparation::Idle)
     ));
 }
 
