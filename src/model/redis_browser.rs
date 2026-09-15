@@ -89,6 +89,11 @@ pub struct RedisBrowserTab {
     pub value_page: RedisValuePageState,
     pub content: RedisPreviewContentState,
     pub format: crate::model::redis_preview::RedisPreviewFormatState,
+    /// The key whose value is currently shown in the preview pane.
+    ///
+    /// This is deliberately separate from `tree.selected`: moving the cursor
+    /// through the key tree must not change the value preview.
+    pub opened_key: Option<RedisKeyId>,
     pub preview_generation: u64,
     pub focus: RedisBrowserFocus,
     pub find: Option<RedisKeyFindState>,
@@ -114,6 +119,7 @@ impl RedisBrowserTab {
             value_page: RedisValuePageState::Empty,
             content: RedisPreviewContentState::Empty,
             format: Default::default(),
+            opened_key: None,
             preview_generation: 0,
             focus: RedisBrowserFocus::Keys,
             find: None,
@@ -194,39 +200,35 @@ impl RedisBrowserTab {
     }
 
     pub fn select(&mut self, node: Option<super::redis_key_tree::KeyTreeNodeId>) {
-        let previous_key = self.tree.selected_key().map(ToOwned::to_owned);
-        self.preview_generation = self.preview_generation.saturating_add(1);
         self.tree.select(node);
-        if previous_key != self.tree.selected_key().map(ToOwned::to_owned) {
+    }
+
+    /// Open a leaf key in the value pane.
+    ///
+    /// Selection and opening are intentionally separate operations. Callers
+    /// should use this only for explicit actions such as Enter or a double
+    /// click, not for cursor movement.
+    pub fn open_key(&mut self, key: RedisKeyId) {
+        let previous_key = self.opened_key.as_ref().map(|key| &key.key);
+        if previous_key != Some(&key.key) {
             self.format.reset_auto();
         }
-        self.preview = match self.tree.selected_key() {
-            Some(key) => RedisPreviewState::Loading {
-                key: RedisKeyId {
-                    target: self.target.clone(),
-                    key: key.to_vec(),
-                },
-            },
-            None => RedisPreviewState::Empty,
-        };
-        self.value_page = match self.tree.selected_key() {
-            Some(key) => RedisValuePageState::Loading {
-                key: RedisKeyId {
-                    target: self.target.clone(),
-                    key: key.to_vec(),
-                },
-            },
-            None => RedisValuePageState::Empty,
-        };
-        self.content = match self.tree.selected_key() {
-            Some(key) => RedisPreviewContentState::Loading {
-                key: RedisKeyId {
-                    target: self.target.clone(),
-                    key: key.to_vec(),
-                },
-            },
-            None => RedisPreviewContentState::Empty,
-        };
+        self.opened_key = Some(key.clone());
+        self.preview_generation = self.preview_generation.saturating_add(1);
+        self.preview = RedisPreviewState::Loading { key: key.clone() };
+        self.value_page = RedisValuePageState::Loading { key: key.clone() };
+        self.content = RedisPreviewContentState::Loading { key };
+        self.preview_scroll = 0;
+        self.value_page_loading = false;
+    }
+
+    /// Clear the explicitly opened value, invalidating any in-flight result.
+    pub fn clear_opened_key(&mut self) {
+        self.opened_key = None;
+        self.preview_generation = self.preview_generation.saturating_add(1);
+        self.preview = RedisPreviewState::Empty;
+        self.value_page = RedisValuePageState::Empty;
+        self.content = RedisPreviewContentState::Empty;
         self.preview_scroll = 0;
         self.value_page_loading = false;
     }

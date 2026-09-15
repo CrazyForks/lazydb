@@ -12911,15 +12911,22 @@ impl App {
                     else {
                         return Vec::new();
                     };
+                    let replacing_snapshot = tab.keyspace.is_refreshing_snapshot();
                     if tab.keyspace.apply_batch(batch) {
-                        tab.insert_tree_keys();
+                        if replacing_snapshot && !tab.keyspace.is_refreshing_snapshot() {
+                            tab.rebuild_tree();
+                        } else {
+                            tab.insert_tree_keys();
+                        }
                         tab.select_first_root_if_empty()
                     } else {
                         None
                     }
                 };
-                let mut commands = selected
-                    .map_or_else(Vec::new, |node| self.select_redis_key(tab_id, Some(node)));
+                let mut commands = selected.map_or_else(Vec::new, |node| {
+                    self.select_redis_key(tab_id, Some(node));
+                    Vec::new()
+                });
                 if should_continue
                     && self.active_tab_id() == Some(tab_id)
                     && *self.redis_initial_scan_requests.entry(tab_id).or_default()
@@ -13362,11 +13369,16 @@ impl App {
                 profile_id,
                 database,
             } => self.open_redis_browser(profile_id, database),
-            Action::SelectRedisNode { tab_id, node } => self.select_redis_key(tab_id, node),
+            Action::SelectRedisNode { tab_id, node } => {
+                self.select_redis_key(tab_id, node);
+                Vec::new()
+            }
+            Action::OpenRedisKey { tab_id, node } => self.open_redis_key(tab_id, node),
             Action::RedisToggleNode { tab_id, node } => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
                     self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
                 {
+                    tab.select(Some(node.clone()));
                     tab.toggle_prefix(&node);
                 }
                 Vec::new()
@@ -13569,7 +13581,7 @@ impl App {
                         .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
                     if let Some(key) = tab.tree.selected_key().map(<[u8]>::to_vec) {
                         let tab_id = tab.id;
-                        return self.select_redis_key(
+                        self.select_redis_key(
                             tab_id,
                             Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(key)),
                         );
@@ -19331,13 +19343,39 @@ impl App {
         &mut self,
         tab_id: Uuid,
         node: Option<crate::model::redis_key_tree::KeyTreeNodeId>,
+    ) {
+        let Some(WorkspaceTab::RedisBrowser(tab)) =
+            self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+        else {
+            return;
+        };
+        tab.select(node);
+    }
+
+    pub fn open_redis_key(
+        &mut self,
+        tab_id: Uuid,
+        node: crate::model::redis_key_tree::KeyTreeNodeId,
     ) -> Vec<Command> {
         let Some(WorkspaceTab::RedisBrowser(tab)) =
             self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
         else {
             return Vec::new();
         };
-        tab.select(node);
+        if !matches!(node, crate::model::redis_key_tree::KeyTreeNodeId::Key(_))
+            || !tab.tree.contains(&node)
+        {
+            return Vec::new();
+        }
+        let key = match &node {
+            crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => key.clone(),
+            crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_) => return Vec::new(),
+        };
+        tab.select(Some(node));
+        tab.open_key(crate::db::redis::types::RedisKeyId {
+            target: tab.target.clone(),
+            key,
+        });
         let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
             return Vec::new();
         };
@@ -19345,7 +19383,7 @@ impl App {
             .entry(tab_id)
             .or_insert_with(|| {
                 crate::db::redis::preview_scheduler::PreviewScheduler::new(
-                    std::time::Duration::from_millis(100),
+                    std::time::Duration::ZERO,
                 )
             })
             .select(crate::db::redis::preview_scheduler::PreviewRequest {
@@ -19645,7 +19683,8 @@ impl App {
         tab.tree
             .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
         let tab_id = tab.id;
-        self.select_redis_key(tab_id, Some(node))
+        self.select_redis_key(tab_id, Some(node));
+        Vec::new()
     }
 
     fn retry_redis_scan(&mut self) -> Vec<Command> {
@@ -19674,7 +19713,9 @@ impl App {
                         },
                     )];
                 }
-                crate::model::keyspace::KeyspaceStatus::Failed(_)
+                crate::model::keyspace::KeyspaceStatus::Complete
+                | crate::model::keyspace::KeyspaceStatus::CompleteEmpty
+                | crate::model::keyspace::KeyspaceStatus::Failed(_)
                 | crate::model::keyspace::KeyspaceStatus::Stale => {
                     tab.keyspace.refresh();
                 }
@@ -19713,12 +19754,12 @@ impl App {
         self.notify_success("Redis", format!("{:?} mutation applied", result.value_type));
         let mut commands = Vec::new();
         if let Some(tab_id) = preview_command {
-            commands.extend(self.select_redis_key(
+            self.select_redis_key(
                 tab_id,
                 Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(
                     plan.request.key.key.clone(),
                 )),
-            ));
+            );
         }
         commands.extend(self.ensure_redis_browser_loaded(index, true));
         commands
@@ -19982,7 +20023,8 @@ impl App {
             self.select_redis_key(
                 tab_id,
                 Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(key)),
-            )
+            );
+            Vec::new()
         } else {
             Vec::new()
         }
@@ -20019,7 +20061,8 @@ impl App {
         tab.tree
             .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
         if let Some(node) = selected_child.or(selected_existing) {
-            self.select_redis_key(tab_id, Some(node))
+            self.select_redis_key(tab_id, Some(node));
+            Vec::new()
         } else {
             Vec::new()
         }
@@ -20044,7 +20087,8 @@ impl App {
                     .ensure_selected_visible(&mut tab.scroll, tab.viewport_rows);
                 let tab_id = tab.id;
                 let node = tab.tree.selected.clone();
-                return self.select_redis_key(tab_id, node);
+                self.select_redis_key(tab_id, node);
+                return Vec::new();
             }
         }
         Vec::new()
@@ -20064,7 +20108,12 @@ impl App {
         if tab.toggle_prefix(&selected) {
             Vec::new()
         } else {
-            self.select_redis_key(tab_id, Some(selected))
+            match selected {
+                crate::model::redis_key_tree::KeyTreeNodeId::Key(_) => {
+                    self.open_redis_key(tab_id, selected)
+                }
+                crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_) => Vec::new(),
+            }
         }
     }
 

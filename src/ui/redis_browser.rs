@@ -202,10 +202,10 @@ pub fn render(
         };
         let key = metadata.map_or_else(
             || {
-                tab.tree
-                    .selected_key()
-                    .map(display_bytes)
-                    .unwrap_or_else(|| "No key selected".into())
+                tab.opened_key
+                    .as_ref()
+                    .map(|key| display_bytes(&key.key))
+                    .unwrap_or_else(|| "No key opened".into())
             },
             |metadata| display_bytes(&metadata.key.key),
         );
@@ -529,11 +529,11 @@ fn render_row(
     icons: IconSet,
 ) -> Line<'static> {
     let marker = if !row.expandable {
-        "  "
+        " "
     } else if row.expanded {
-        "▾ "
+        "▾"
     } else {
-        "▸ "
+        "▸"
     };
     let label = if row.is_key && row.expandable {
         format!("{} [key]", display_bytes(&row.label))
@@ -560,7 +560,7 @@ fn render_row(
     });
     ui.hit_regions.push(crate::ui::HitRegion {
         area: Rect::new(
-            area.x + 2,
+            area.x + row.depth.saturating_mul(2) as u16,
             area.y + visible_index as u16,
             area.width.saturating_sub(2),
             1,
@@ -572,7 +572,12 @@ fn render_row(
     });
     if row.expandable {
         ui.hit_regions.push(crate::ui::HitRegion {
-            area: Rect::new(area.x, area.y + visible_index as u16, 2, 1),
+            area: Rect::new(
+                area.x + row.depth.saturating_mul(2) as u16,
+                area.y + visible_index as u16,
+                2,
+                1,
+            ),
             target: crate::ui::HitTarget::RedisKeyToggle {
                 tab_id,
                 node: row.id.clone(),
@@ -584,15 +589,22 @@ fn render_row(
     } else {
         icons.redis_key()
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("{}{} ", "  ".repeat(row.depth), marker), style),
         Span::styled(format!("{} ", icon), icon_style),
         Span::styled(label, style),
-        Span::styled(
-            " ".repeat(area.width.saturating_sub(1) as usize),
-            Style::new().bg(background),
-        ),
-    ])
+    ];
+    if row.expandable {
+        spans.push(Span::styled(
+            format!(" ({})", row.total_keys),
+            Style::new().fg(theme.muted).bg(background),
+        ));
+    }
+    spans.push(Span::styled(
+        " ".repeat(area.width.saturating_sub(1) as usize),
+        Style::new().bg(background),
+    ));
+    Line::from(spans)
 }
 
 fn display_bytes(value: &[u8]) -> String {

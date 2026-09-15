@@ -256,7 +256,7 @@ fn redis_keys_keep_tree_navigation_when_preview_routing_is_enabled() {
 }
 
 #[test]
-fn redis_keys_route_o_y_and_d_before_generic_results_bindings() {
+fn redis_keys_route_y_and_d_before_generic_results_bindings() {
     let mut app = App::new(Vec::new());
     app.tabs.push(WorkspaceTab::RedisBrowser(
         lazydb::model::redis_browser::RedisBrowserTab::new(
@@ -270,10 +270,6 @@ fn redis_keys_route_o_y_and_d_before_generic_results_bindings() {
     app.active_tab = app.tabs.len() - 1;
     app.focus = Focus::Results;
     let mut keymap = Keymap::default();
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('o')), &app),
-        Some(Action::RedisPrimarySelection)
-    );
     assert_eq!(
         keymap.map(key(KeyCode::Char('y')), &app),
         Some(Action::RedisCopyKey)

@@ -209,6 +209,10 @@ impl KeyspaceState {
         self.store.bytes()
     }
 
+    pub fn is_refreshing_snapshot(&self) -> bool {
+        self.refreshing_snapshot
+    }
+
     pub fn remove_key(&mut self, key: &[u8]) -> bool {
         self.deleted_in_generation.insert(key.to_vec());
         let Some(index) = self.keys.iter().position(|item| item.key == key) else {

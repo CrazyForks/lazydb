@@ -1188,6 +1188,10 @@ pub enum Action {
         tab_id: Uuid,
         node: Option<crate::model::redis_key_tree::KeyTreeNodeId>,
     },
+    OpenRedisKey {
+        tab_id: Uuid,
+        node: crate::model::redis_key_tree::KeyTreeNodeId,
+    },
     RedisToggleNode {
         tab_id: Uuid,
         node: crate::model::redis_key_tree::KeyTreeNodeId,

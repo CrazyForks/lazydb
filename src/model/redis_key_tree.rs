@@ -15,6 +15,7 @@ pub struct KeyTreeNode {
     pub label: Vec<u8>,
     pub children: Vec<KeyTreeNode>,
     pub is_key: bool,
+    pub total_keys: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -34,6 +35,7 @@ pub struct VisibleKeyTreeRow {
     pub is_key: bool,
     pub expandable: bool,
     pub expanded: bool,
+    pub total_keys: usize,
 }
 
 impl KeyTreeState {
@@ -56,6 +58,7 @@ impl KeyTreeState {
                     is_key: node.id.is_key(),
                     expandable,
                     expanded,
+                    total_keys: node.total_keys,
                 });
                 if expanded {
                     if let Some(key_id) = &node.key_id {
@@ -67,6 +70,7 @@ impl KeyTreeState {
                             is_key: true,
                             expandable: false,
                             expanded: false,
+                            total_keys: 1,
                         });
                     }
                     visit(state, &node.children, Some(&node.id), depth + 1, output);
@@ -133,6 +137,7 @@ impl KeyTreeState {
             insert_key(&mut root, &key.key);
         }
         self.nodes = root.into_values().map(NodeBuilder::build).collect();
+        recompute_counts(&mut self.nodes);
         self.rebuild_index();
         self.selected = self.selected.take().filter(|id| self.contains(id));
         self.retain_valid_state();
@@ -147,6 +152,7 @@ impl KeyTreeState {
             }
             insert_key_nodes(&mut self.nodes, &key.key, &mut self.node_index);
         }
+        recompute_counts(&mut self.nodes);
         self.retain_valid_state();
     }
 
@@ -242,6 +248,7 @@ impl NodeBuilder {
             label: self.label,
             children: self.children.into_values().map(Self::build).collect(),
             is_key: self.is_key,
+            total_keys: 0,
         }
     }
 }
@@ -287,6 +294,7 @@ fn insert_node_parts(
                 label: part.to_vec(),
                 children: Vec::new(),
                 is_key: is_last,
+                total_keys: usize::from(is_last),
             },
         );
         index.insert(node_id.clone());
@@ -320,6 +328,18 @@ fn insert_node_parts(
             index,
         );
     }
+}
+
+fn recompute_counts(nodes: &mut [KeyTreeNode]) -> usize {
+    nodes
+        .iter_mut()
+        .map(|node| {
+            let children = recompute_counts(&mut node.children);
+            node.total_keys = children + usize::from(node.is_key || node.key_id.is_some())
+                - usize::from(node.is_key && node.key_id.is_some());
+            node.total_keys
+        })
+        .sum()
 }
 
 fn index_nodes(nodes: &[KeyTreeNode], index: &mut HashSet<KeyTreeNodeId>) {
