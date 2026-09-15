@@ -347,17 +347,6 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
     );
     assert!(reconnect.is_empty());
 
-    let beta_console_ids = app
-        .workspace_snapshot()
-        .profiles
-        .iter()
-        .find(|workspace| workspace.profile_id == beta_id)
-        .unwrap()
-        .consoles
-        .iter()
-        .map(|console| console.id)
-        .collect::<HashSet<_>>();
-
     dispatch(
         &mut app,
         &mut runtime,
@@ -394,15 +383,10 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
             ..
         } if profile_id == beta_id
     ));
-    assert_eq!(
+    assert!(
         commands
             .iter()
-            .filter_map(|command| match command {
-                Command::DeleteSqlFile(id) => Some(*id),
-                _ => None,
-            })
-            .collect::<HashSet<_>>(),
-        beta_console_ids
+            .all(|command| !matches!(command, Command::DeleteSqlFile(_)))
     );
     assert_eq!(app.profiles.len(), 1);
     assert!(

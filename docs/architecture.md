@@ -126,6 +126,19 @@ replacing document text with an empty string. Saving after multiple profiles are
 opened serializes each Console once, even while compatibility caches for older
 profile workspaces are still present in memory.
 
+Console creation and rename share trimmed, non-empty, control-character-free,
+case-insensitive name validation. UUID, not the display name, is the stable identity.
+Restore preserves persisted closed tabs and offline or invalid target bindings instead
+of forcing the first Console open or silently rebinding it. Deleting a Console removes
+its SQL file only after the corresponding workspace manifest revision succeeds; a
+failed save leaves the file available for retry. SQL paths must be the exact
+`<console-uuid>.sql` filename before loading.
+
+Inactive profile snapshots use the shared live `ConsoleRecord` and
+`EditorWorkspace` whenever that Console UUID is already installed. Legacy
+`ConnectionWorkspace` data is only an import fallback during restoration; it
+does not override live names, targets, SQL text, or deletion decisions.
+
 ## Profile and Credential Boundary
 
 Coding-agent access uses a headless boundary above `DatabaseConnection`:

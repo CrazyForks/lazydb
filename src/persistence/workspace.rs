@@ -221,6 +221,13 @@ impl WorkspaceStore {
                 });
             };
         let allow_missing_sql = version <= 2;
+        for console in profiles
+            .iter()
+            .flat_map(|profile| profile.consoles.iter())
+            .chain(consoles.iter())
+        {
+            validate_sql_file_path(console)?;
+        }
         let sql = profiles
             .iter()
             .flat_map(|profile| profile.consoles.iter())
@@ -352,14 +359,12 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
             .map(|console| console.id)
             .collect::<std::collections::HashSet<_>>();
         for console in &profile.consoles {
-            if console.sql_file.as_path() != Path::new(&format!("{}.sql", console.id)) {
-                return Err(WorkspaceError::Invalid(format!(
-                    "invalid SQL file for console {}",
-                    console.id
-                )));
-            }
+            validate_sql_file_path(console)?;
             if !console_ids.insert(console.id) {
-                return Err(WorkspaceError::Invalid("duplicate console ID".into()));
+                return Err(WorkspaceError::Invalid(format!(
+                    "duplicate console ID {} (profile {})",
+                    console.id, profile.profile_id
+                )));
             }
         }
         let mut open_console_ids = std::collections::HashSet::new();
@@ -417,14 +422,12 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
         }
     }
     for console in &snapshot.consoles {
-        if console.sql_file.as_path() != Path::new(&format!("{}.sql", console.id)) {
+        validate_sql_file_path(console)?;
+        if !console_ids.insert(console.id) {
             return Err(WorkspaceError::Invalid(format!(
-                "invalid SQL file for console {}",
+                "duplicate console ID {} (global workspace)",
                 console.id
             )));
-        }
-        if !console_ids.insert(console.id) {
-            return Err(WorkspaceError::Invalid("duplicate console ID".into()));
         }
     }
     let mut global_tab_ids = std::collections::HashSet::new();
@@ -458,16 +461,31 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
     }
     let mut sql_ids = std::collections::HashSet::new();
     for (id, _) in &snapshot.sql {
-        if !sql_ids.insert(*id) || !console_ids.contains(id) {
-            return Err(WorkspaceError::Invalid(
-                "SQL entry does not name one known console".into(),
-            ));
+        if !sql_ids.insert(*id) {
+            return Err(WorkspaceError::Invalid(format!(
+                "duplicate SQL entry for console {id}"
+            )));
+        }
+        if !console_ids.contains(id) {
+            return Err(WorkspaceError::Invalid(format!(
+                "SQL entry names unknown console {id}"
+            )));
         }
     }
     if sql_ids.len() != console_ids.len() {
         return Err(WorkspaceError::Invalid(
             "every console must have exactly one SQL entry".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_sql_file_path(console: &PersistedConsole) -> Result<(), WorkspaceError> {
+    if console.sql_file.as_path() != Path::new(&format!("{}.sql", console.id)) {
+        return Err(WorkspaceError::Invalid(format!(
+            "invalid SQL file for console {}",
+            console.id
+        )));
     }
     Ok(())
 }
