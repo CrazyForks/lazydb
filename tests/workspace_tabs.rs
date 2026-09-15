@@ -1063,6 +1063,72 @@ fn restored_relation_tab_is_not_loaded_before_connection_installation() {
 }
 
 #[test]
+fn restored_postgres_relation_prepares_its_schema_session() {
+    let profile = import_connection_url(
+        "postgresql://postgres:password@localhost:5432/lazydb_test",
+        Some("postgres"),
+    )
+    .unwrap()
+    .profile;
+    let profile_id = profile.id;
+    let relation_id = Uuid::new_v4();
+    let snapshot = WorkspaceSnapshot {
+        recent_targets: Vec::new(),
+        active_profile: Some(profile_id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id,
+            active_tab: Some(relation_id),
+            consoles: Vec::new(),
+            tabs: vec![PersistedTab::Relation(
+                lazydb::persistence::workspace::PersistedRelationTab {
+                    id: relation_id,
+                    object_id: CatalogId::new(
+                        profile_id,
+                        CatalogKind::Table,
+                        ["lazydb_test", "test_schema", "all_types_test"],
+                    ),
+                    qualified_name: QualifiedName {
+                        database: Some("lazydb_test".into()),
+                        schema: Some("test_schema".into()),
+                        object: "all_types_test".into(),
+                    },
+                    catalog_kind: CatalogKind::Table,
+                    title: "all_types_test".into(),
+                    view: lazydb::model::relation::RelationView::Data,
+                },
+            )],
+        }],
+        active_console: Uuid::nil(),
+        tabs: Vec::new(),
+        consoles: Vec::new(),
+        sql: Vec::new(),
+    };
+    let mut app = App::new(vec![profile]);
+    app.restore_workspace(snapshot, None);
+
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: lazydb::db::ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Postgres,
+            version: "16".into(),
+            database: "lazydb_test".into(),
+            current_user: Some("postgres".into()),
+        },
+        mutation_capabilities: Default::default(),
+    });
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        Command::Connect { target, .. }
+            if target.database == "lazydb_test" && target.schema.as_deref() == Some("test_schema")
+    )));
+}
+
+#[test]
 fn restored_relation_waits_for_catalog_before_loading() {
     let profile = import_connection_url(":memory:", Some("first"))
         .unwrap()

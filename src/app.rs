@@ -21967,16 +21967,11 @@ impl App {
                 .filter(|session| session.status == crate::model::session::SessionStatus::Connected)
                 .map(|session| session.identity)
         });
-        let Some(connection) = connection.or_else(|| {
-            self.connection.active_identity().filter(|identity| {
-                identity.profile_id == tab.descriptor.key.profile_id
-                    && (tab.descriptor.qualified_name.database.is_none()
-                        || self.connection.target.as_ref().is_none_or(|current| {
-                            target.as_ref().is_none_or(|target| current == target)
-                        }))
-            })
-        }) else {
-            return Vec::new();
+        let Some(connection) = connection else {
+            let Some(target) = target else {
+                return Vec::new();
+            };
+            return self.request_connection_target(target);
         };
         if tab.stale_native_identity {
             return Vec::new();
