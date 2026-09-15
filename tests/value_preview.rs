@@ -95,6 +95,23 @@ fn redis_table_keeps_collection_columns_and_raw_identity() {
 }
 
 #[test]
+fn redis_table_projection_preserves_all_display_rows_and_source_bytes() {
+    let value = lazydb::db::redis::read::RedisPageValue::Hash(vec![
+        (b"field-1".to_vec(), b"short".to_vec()),
+        ("中文".as_bytes().to_vec(), vec![0xff, 0x00]),
+    ]);
+    let table = lazydb::value_preview::table::from_page(&value);
+
+    assert_eq!(table.columns, vec!["Field", "Value"]);
+    assert_eq!(table.rows.len(), 2);
+    assert_eq!(table.rows[0].cells, vec!["field-1", "short"]);
+    assert_eq!(table.rows[1].cells[0], "中文");
+    assert_eq!(table.rows[1].cells[1], r#"\xff\x00"#);
+    assert_eq!(table.rows[1].identity[0], "中文".as_bytes());
+    assert_eq!(table.rows[1].identity[1], &[0xff, 0x00]);
+}
+
+#[test]
 fn unsupported_format_falls_back_without_losing_raw_value() {
     use lazydb::db::redis::read::{RedisKeyMetadata, RedisPagePosition, RedisType, TtlState};
     use lazydb::db::redis::types::{RedisKeyId, RedisTarget};

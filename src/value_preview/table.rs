@@ -76,11 +76,12 @@ pub fn from_page(value: &RedisPageValue) -> RedisTable {
 }
 
 fn display(value: &[u8]) -> String {
-    if value
-        .iter()
-        .all(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+    if let Ok(text) = std::str::from_utf8(value)
+        && text
+            .chars()
+            .all(|character| !character.is_control() || character.is_ascii_whitespace())
     {
-        String::from_utf8_lossy(value).into_owned()
+        text.to_owned()
     } else {
         value.iter().map(|byte| format!("\\x{byte:02x}")).collect()
     }

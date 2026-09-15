@@ -247,7 +247,10 @@ pub fn render(
         " f:{} ▾ ",
         preview_format_label(tab.format.selected, tab.format.automatic)
     );
-    let wrap_label = if tab.preview_wrap {
+    let table_view = tab.format.view() == crate::value_preview::ValueView::Table;
+    let wrap_label = if table_view {
+        ""
+    } else if tab.preview_wrap {
         " W:Wrap ON "
     } else {
         " W:Wrap OFF "
