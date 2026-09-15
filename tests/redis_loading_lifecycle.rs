@@ -34,7 +34,7 @@ fn opening_existing_not_loaded_tab_dispatches_first_scan() {
         },
     );
     app.tabs.push(WorkspaceTab::RedisBrowser(tab));
-    app.active_tab = 1;
+    app.active_tab = 2;
 
     let commands = app.update(Action::OpenRedisDatabase {
         profile_id,
@@ -64,7 +64,7 @@ fn reopening_complete_empty_tab_does_not_rescan() {
     tab.keyspace.position = lazydb::db::redis::types::ScanPosition::Complete;
     tab.keyspace.status = KeyspaceStatus::CompleteEmpty;
     app.tabs.push(WorkspaceTab::RedisBrowser(tab));
-    app.active_tab = 1;
+    app.active_tab = 2;
 
     let commands = app.update(Action::OpenRedisDatabase {
         profile_id,
@@ -162,4 +162,219 @@ fn opening_a_browser_for_another_db_creates_tab_and_connect_intent_together() {
     assert!(commands.iter().any(
         |command| matches!(command, Command::Connect { target, .. } if target.database == "0")
     ));
+}
+
+#[test]
+fn next_tab_activates_an_unloaded_redis_browser() {
+    let profile_id = Uuid::from_u128(8);
+    let mut app = connected_app(profile_id, 0);
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(9),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(10),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.active_tab = 0;
+
+    let commands = app.update(Action::NextTab);
+
+    assert!(commands.iter().any(|command| {
+        matches!(command, Command::ScanRedisKeys(request) if request.identity.target.database == 0)
+    }));
+}
+
+#[test]
+fn connection_success_activates_a_restored_redis_browser() {
+    let profile_id = Uuid::from_u128(11);
+    let profile =
+        lazydb::profile::import_connection_url("redis://localhost:6379", Some("restored"))
+            .unwrap()
+            .profile;
+    let mut app = App::new(vec![lazydb::profile::ConnectionProfile {
+        id: profile_id,
+        ..profile
+    }]);
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 7;
+    app.connection.target = Some(ExecutionTarget {
+        profile_id,
+        database: "0".into(),
+        schema: None,
+    });
+    app.connection.status = ConnectionStatus::Connecting;
+    app.connection.pending_profile_id = Some(profile_id);
+    app.connection.pending_generation = Some(7);
+    app.connection.pending_target = app.connection.target.clone();
+    app.active_workspace_profile = Some(profile_id);
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(12),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.active_tab = app.tabs.len() - 1;
+
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation: 7,
+        server: lazydb::db::ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Redis,
+            version: "7.2".into(),
+            database: "0".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::ScanRedisKeys(_)))
+    );
+}
+
+#[test]
+fn activating_an_unloaded_redis_browser_for_another_database_requests_connection_first() {
+    let profile = lazydb::profile::import_connection_url("redis://localhost:6379", Some("target"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 7;
+    app.connection.target = Some(ExecutionTarget {
+        profile_id,
+        database: "0".into(),
+        schema: None,
+    });
+    app.connection.status = ConnectionStatus::Connected;
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(13),
+            RedisTarget {
+                profile_id,
+                database: 1,
+            },
+        )));
+    app.active_tab = 0;
+
+    let commands = app.update(Action::ActivateTab(0));
+
+    assert!(commands.iter().any(|command| {
+        matches!(command, Command::Connect { target, .. } if target.database == "1")
+    }));
+    assert!(
+        !commands
+            .iter()
+            .any(|command| matches!(command, Command::ScanRedisKeys(_)))
+    );
+}
+
+#[test]
+fn activating_an_unloaded_redis_browser_is_idempotent_while_loading() {
+    let profile_id = Uuid::from_u128(14);
+    let mut app = connected_app(profile_id, 0);
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(15),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.active_tab = app.tabs.len() - 1;
+
+    let first = app.update(Action::ActivateTab(app.active_tab));
+    assert_eq!(
+        first
+            .iter()
+            .filter(|command| matches!(command, Command::ScanRedisKeys(_)))
+            .count(),
+        1
+    );
+
+    let second = app.update(Action::ActivateTab(app.active_tab));
+    assert!(
+        !second
+            .iter()
+            .any(|command| matches!(command, Command::ScanRedisKeys(_)))
+    );
+}
+
+#[test]
+fn previous_tab_activates_an_unloaded_redis_browser() {
+    let profile_id = Uuid::from_u128(16);
+    let mut app = connected_app(profile_id, 0);
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(17),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(18),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.active_tab = 2;
+
+    let commands = app.update(Action::PreviousTab);
+
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::ScanRedisKeys(_)))
+    );
+}
+
+#[test]
+fn empty_initial_scan_batch_continues_within_the_initial_budget() {
+    let profile_id = Uuid::from_u128(19);
+    let mut app = connected_app(profile_id, 0);
+    app.tabs
+        .push(WorkspaceTab::RedisBrowser(RedisBrowserTab::new(
+            Uuid::from_u128(20),
+            RedisTarget {
+                profile_id,
+                database: 0,
+            },
+        )));
+    app.active_tab = 1;
+    let first = app.update(Action::ActivateTab(1));
+    let Command::ScanRedisKeys(request) = first
+        .into_iter()
+        .find(|command| matches!(command, Command::ScanRedisKeys(_)))
+        .expect("initial scan")
+    else {
+        unreachable!()
+    };
+
+    let next = app.update(Action::RedisKeysLoaded(
+        lazydb::db::redis::types::KeyScanBatch {
+            identity: request.identity,
+            keys: Vec::new(),
+            next: lazydb::db::redis::types::ScanPosition::Continue(42),
+        },
+    ));
+
+    assert!(next.iter().any(|command| {
+        matches!(command, Command::ScanRedisKeys(request) if matches!(request.position, lazydb::db::redis::types::ScanPosition::Continue(42)))
+    }));
 }

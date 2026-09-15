@@ -458,10 +458,25 @@ fn preview_format_label(format: crate::value_preview::PreviewFormat, automatic: 
 
 fn keys_title(tab: &crate::model::redis_browser::RedisBrowserTab) -> String {
     format!(
-        "Keys · DB {} · {} loaded",
+        "Keys · DB {} · {} loaded · {}",
         tab.target.database,
-        tab.keyspace.keys.len()
+        tab.keyspace.keys.len(),
+        keyspace_status_label(&tab.keyspace.status)
     )
+}
+
+fn keyspace_status_label(status: &crate::model::keyspace::KeyspaceStatus) -> &'static str {
+    use crate::model::keyspace::KeyspaceStatus;
+    match status {
+        KeyspaceStatus::NotLoaded | KeyspaceStatus::Idle => "not loaded",
+        KeyspaceStatus::Loading => "loading",
+        KeyspaceStatus::Partial => "partial",
+        KeyspaceStatus::Complete => "complete",
+        KeyspaceStatus::CompleteEmpty => "empty",
+        KeyspaceStatus::Paused { .. } => "paused",
+        KeyspaceStatus::Stale => "stale",
+        KeyspaceStatus::Failed(_) => "failed",
+    }
 }
 
 fn keyspace_empty_text(status: &crate::model::keyspace::KeyspaceStatus) -> String {
