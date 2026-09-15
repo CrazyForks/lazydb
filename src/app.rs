@@ -1566,7 +1566,7 @@ impl App {
             Some(WorkspaceTab::Sql(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Relation(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Dashboard(tab)) => tab.grid.selected_column,
-            Some(WorkspaceTab::RedisBrowser(_)) => 0,
+            Some(WorkspaceTab::RedisBrowser(tab)) => tab.preview_grid.selected_column,
             None => 0,
         }
     }
@@ -3679,6 +3679,11 @@ impl App {
                     self.tabs.get(self.active_tab),
                     Some(WorkspaceTab::Dashboard(tab))
                         if tab.page == crate::model::dashboard::DashboardPage::Processes
+                )
+                || matches!(
+                    self.tabs.get(self.active_tab),
+                    Some(WorkspaceTab::RedisBrowser(tab))
+                        if tab.format.view() == crate::value_preview::ValueView::Table
                 ))
                 && matches!(
                     action,
@@ -20833,6 +20838,33 @@ impl App {
                         .as_ref()
                         .map_or(result.rows.len(), |edit| edit.rows.len()),
                 ))
+            }
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page
+                else {
+                    return None;
+                };
+                let table = crate::value_preview::table::from_page(&page.value);
+                let row_index = tab.preview_grid.selected_row;
+                let row = table.rows.get(row_index)?;
+                let columns = table
+                    .columns
+                    .iter()
+                    .map(|name| ColumnMeta {
+                        name: name.clone(),
+                        type_name: "REDIS".into(),
+                    })
+                    .collect();
+                let values = row
+                    .identity
+                    .iter()
+                    .map(|value| {
+                        CellValue::Text(crate::ui::redis_value::display_bytes_lossless(value))
+                    })
+                    .collect();
+                Some((columns, values, row_index, table.rows.len()))
             }
             Some(WorkspaceTab::Dashboard(tab))
                 if tab.page == crate::model::dashboard::DashboardPage::Processes =>

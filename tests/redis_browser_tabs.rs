@@ -49,6 +49,62 @@ fn redis_preview_grid_resets_and_clamps_like_a_result_grid() {
 }
 
 #[test]
+fn redis_table_grid_snapshot_uses_raw_source_cells() {
+    use lazydb::db::redis::read::{RedisKeyMetadata, RedisPagePosition, RedisType, TtlState};
+
+    let profile_id = Uuid::from_u128(103);
+    let mut app = App::new(Vec::new());
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(104),
+        lazydb::db::redis::types::RedisTarget {
+            profile_id,
+            database: 0,
+        },
+    );
+    tab.focus = lazydb::model::redis_browser::RedisBrowserFocus::Preview;
+    tab.format
+        .select(lazydb::value_preview::PreviewFormat::TABLE);
+    tab.preview_grid.selected_row = 1;
+    tab.preview_grid.selected_column = 1;
+    tab.value_page = lazydb::model::redis_browser::RedisValuePageState::Ready(
+        lazydb::db::redis::read::RedisValuePage {
+            metadata: RedisKeyMetadata {
+                key: lazydb::db::redis::types::RedisKeyId {
+                    target: tab.target.clone(),
+                    key: b"hash".to_vec(),
+                },
+                value_type: RedisType::Hash,
+                ttl: TtlState::Persistent,
+                memory_usage_bytes: None,
+                value_size: Some(2),
+            },
+            position: RedisPagePosition::Complete,
+            value: lazydb::db::redis::read::RedisPageValue::Hash(vec![
+                (b"one".to_vec(), b"short".to_vec()),
+                (b"two".to_vec(), vec![0xff, 0x00]),
+            ]),
+            truncated: false,
+            complete: true,
+            raw_bytes: 0,
+            formatted_bytes: 0,
+        },
+    );
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = lazydb::model::workspace::Focus::Results;
+
+    let commands = app.update(lazydb::action::Action::CopyGridCell);
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [lazydb::action::Command::WriteClipboard(payload)]
+                if payload.text == r#"\xff\x00"#
+        ),
+        "commands: {commands:?}"
+    );
+}
+
+#[test]
 fn preview_controls_open_picker_and_apply_only_on_enter() {
     use lazydb::model::{
         redis_browser::{RedisBrowserFocus, RedisBrowserTab},
