@@ -2344,6 +2344,7 @@ fn qualified_candidate_indices(
                             .as_deref()
                             .is_some_and(|database| database.eq_ignore_ascii_case(qualifier)))
             })
+            .filter(|(_, entry)| catalog_entry_navigable(entry, dialect, completion_context))
             .map(|(position, _)| position)
             .collect();
     }
