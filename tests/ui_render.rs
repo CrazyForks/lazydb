@@ -2206,7 +2206,10 @@ fn console_manager_renders_profile_and_connection_state_and_searches_all_target_
     let output = render(&app, 120, 30);
 
     assert!(output.contains("analytics_db"), "{output}");
-    assert!(output.contains("OPEN"), "{output}");
+    assert!(output.contains("●"), "{output}");
+    assert!(!output.contains("OPEN"), "{output}");
+    assert!(!output.contains("已连接"), "{output}");
+    assert!(!output.contains("未连接"), "{output}");
     assert!(output.contains("warehouse"), "{output}");
     assert!(!output.contains("default"), "{output}");
     assert!(app.sql_editors.iter().any(|record| record.id == id));
@@ -2217,6 +2220,43 @@ fn console_manager_renders_profile_and_connection_state_and_searches_all_target_
     }
     let output = render(&app, 120, 30);
     assert!(output.contains("analysis"), "{output}");
+}
+
+#[test]
+fn console_manager_uses_ascii_open_markers_without_connection_status_text() {
+    let app = console_manager_fixture();
+    let output = render_with_icons(&app, 100, 30, IconSet::new(IconMode::Ascii)).0;
+
+    assert!(output.contains('*'), "{output}");
+    assert!(output.contains('o'), "{output}");
+    assert!(!output.contains('●'), "{output}");
+    assert!(!output.contains('○'), "{output}");
+    assert!(!output.contains("已连接"), "{output}");
+    assert!(!output.contains("未连接"), "{output}");
+}
+
+#[test]
+fn console_manager_marks_invalid_bound_target_without_changing_open_marker() {
+    let mut app = console_manager_fixture();
+    let profile = import_connection_url("sqlite::memory:", Some("warehouse"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    app.profiles.push(profile);
+    let record = app
+        .sql_editors
+        .iter_mut()
+        .find(|record| record.open)
+        .unwrap();
+    record.execution_target = Some(ExecutionTarget {
+        profile_id,
+        database: "other".into(),
+        schema: None,
+    });
+    let output = render(&app, 100, 30);
+
+    assert!(output.contains("失 效"), "{output}");
+    assert!(output.contains("●"), "{output}");
 }
 
 #[test]
@@ -3012,8 +3052,10 @@ fn console_manager_renders_sorted_open_and_closed_consoles() {
     let output = render(&app, 100, 30);
 
     assert_order(&output, &["alpha", "Beta", "charlie", "console"]);
-    assert!(output.contains("OPEN"), "{output}");
-    assert!(output.contains("CLOSED"), "{output}");
+    assert!(output.contains("●"), "{output}");
+    assert!(output.contains("○"), "{output}");
+    assert!(!output.contains("OPEN"), "{output}");
+    assert!(!output.contains("CLOSED"), "{output}");
     assert!(output.contains("a new"), "{output}");
     assert!(output.contains("d delete"), "{output}");
     assert!(output.contains("r rename"), "{output}");
