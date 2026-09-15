@@ -7833,6 +7833,25 @@ fn disconnected_workspace_with_profiles_prompts_for_connection() {
 }
 
 #[test]
+fn offline_console_renders_the_complete_workspace() {
+    let profile = import_connection_url(":memory:", Some("local"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile]);
+    app.reveal_startup_profile(None);
+    app.update(Action::NewConsole);
+    app.update(Action::ReplaceEditor("SELECT 1;".into()));
+
+    let (output, state) = render_with_state(&app, 120, 36);
+
+    assert!(output.contains("SELECT 1;"), "{output}");
+    assert!(output.contains("SQL EDITOR"), "{output}");
+    assert!(output.contains("OUTPUT"), "{output}");
+    assert!(!output.contains("NO ACTIVE CONNECTION"), "{output}");
+    assert!(state.editor_viewport.is_some());
+}
+
+#[test]
 fn disconnected_workspace_keeps_actionable_copy_at_compact_sizes() {
     let no_profiles = App::new(Vec::new());
     let no_profiles_output = render(&no_profiles, 80, 24);

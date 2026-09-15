@@ -736,6 +736,13 @@ enum DisconnectedWorkspace {
 
 impl DisconnectedWorkspace {
     fn for_app(app: &App) -> Option<Self> {
+        if app
+            .active_console_opt()
+            .and_then(|console| console.execution_target.as_ref())
+            .is_some()
+        {
+            return None;
+        }
         (app.connection.status == ConnectionStatus::Disconnected
             && app.sessions.iter().next().is_none())
         .then_some({
