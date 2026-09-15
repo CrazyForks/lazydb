@@ -18,6 +18,7 @@ use super::catalog::{
     CatalogEntry, CatalogId, CatalogKind, CatalogPage, CatalogRequest, CatalogTarget,
     DdlProvenance, ObjectGroup, OptionalMetadata, QualifiedName, RelationDdl,
 };
+use super::catalog_drop::{CatalogDropError, CatalogDropPlan, CatalogDropRequest};
 use super::catalog_mutation::{
     CatalogMutationAnchor, CatalogMutationAvailability, CatalogMutationCapabilities,
     CatalogMutationExecutionMode, CatalogMutationMode, CatalogMutationOption, CatalogMutationPlan,
@@ -64,6 +65,67 @@ impl std::fmt::Debug for OracleAdapter {
 }
 
 impl OracleAdapter {
+    pub const fn catalog_drop_availability(kind: CatalogKind) -> CatalogMutationAvailability {
+        match kind {
+            CatalogKind::Table | CatalogKind::View | CatalogKind::Sequence => {
+                CatalogMutationAvailability::Available
+            }
+            _ => CatalogMutationAvailability::Unavailable {
+                reason: "Oracle catalog drops support tables, views, and sequences",
+            },
+        }
+    }
+
+    pub fn plan_catalog_drop(
+        request: CatalogDropRequest,
+        entry: &CatalogEntry,
+    ) -> Result<CatalogDropPlan, CatalogDropError> {
+        request.validate()?;
+        let path = &entry.id.native_path;
+        let database = path.first().map(String::as_str).unwrap_or_default();
+        let schema = path.get(1).map(String::as_str).unwrap_or_default();
+        let object = path.get(2).map(String::as_str).unwrap_or_default();
+        let qualified_name = &entry.qualified_name;
+        if path.len() != 3
+            || database.is_empty()
+            || schema.is_empty()
+            || object.is_empty()
+            || entry.id.kind != entry.kind
+            || qualified_name.database.as_deref() != Some(database)
+            || qualified_name.schema.as_deref() != Some(schema)
+            || qualified_name.object != object
+            || entry.parent_id.as_ref()
+                != Some(&CatalogId::new(
+                    entry.id.profile_id(),
+                    CatalogKind::Schema,
+                    [database.to_owned(), schema.to_owned()],
+                ))
+        {
+            return Err(CatalogDropError::InvalidMetadata {
+                kind: entry.kind,
+                reason: "Oracle catalog entry has an invalid database/schema/object identity"
+                    .to_owned(),
+            });
+        }
+        let keyword = match entry.kind {
+            CatalogKind::Table => "TABLE",
+            CatalogKind::View => "VIEW",
+            CatalogKind::Sequence => "SEQUENCE",
+            kind => {
+                return Err(CatalogDropError::Unsupported {
+                    kind,
+                    reason: "Oracle catalog drops support tables, views, and sequences".to_owned(),
+                });
+            }
+        };
+        let sql = format!(
+            "DROP {keyword} {}.{}",
+            quote_identifier(schema),
+            quote_identifier(object)
+        );
+        CatalogDropPlan::new(request, entry, sql)
+    }
+
     pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
         let create = [CatalogKind::Table, CatalogKind::View, CatalogKind::Sequence]
             .into_iter()

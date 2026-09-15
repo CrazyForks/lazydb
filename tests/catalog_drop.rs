@@ -7,6 +7,7 @@ use lazydb::{
         },
         mssql::MsSqlAdapter,
         mysql::MySqlAdapter,
+        oracle::OracleAdapter,
         postgres::PostgresAdapter,
         sqlite::SqliteAdapter,
     },
@@ -31,6 +32,80 @@ fn entry(profile_id: Uuid, kind: CatalogKind) -> CatalogEntry {
         expandable: false,
         relation_id: None,
     }
+}
+
+fn oracle_entry(profile_id: Uuid, kind: CatalogKind, object: &str) -> CatalogEntry {
+    let id = CatalogId::new(profile_id, kind, ["SUPPORTDB", "MFGSUPPORT", object]);
+    CatalogEntry {
+        id,
+        parent_id: Some(CatalogId::new(
+            profile_id,
+            CatalogKind::Schema,
+            ["SUPPORTDB", "MFGSUPPORT"],
+        )),
+        kind,
+        native_kind: format!("{kind:?}"),
+        qualified_name: QualifiedName {
+            database: Some("SUPPORTDB".into()),
+            schema: Some("MFGSUPPORT".into()),
+            object: object.into(),
+        },
+        comment: OptionalMetadata::Unsupported,
+        metadata: Default::default(),
+        expandable: false,
+        relation_id: None,
+    }
+}
+
+#[test]
+fn oracle_drop_plans_supported_objects_with_quoted_names() {
+    let profile_id = Uuid::new_v4();
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    for (kind, expected) in [
+        (CatalogKind::Table, "DROP TABLE \"MFGSUPPORT\".\"tt1\""),
+        (CatalogKind::View, "DROP VIEW \"MFGSUPPORT\".\"tt1\""),
+        (
+            CatalogKind::Sequence,
+            "DROP SEQUENCE \"MFGSUPPORT\".\"tt1\"",
+        ),
+    ] {
+        let object = oracle_entry(profile_id, kind, "tt1");
+        let plan = OracleAdapter::plan_catalog_drop(
+            CatalogDropRequest::new(connection, object.id.clone(), 1),
+            &object,
+        )
+        .unwrap();
+        assert_eq!(plan.sql(), expected);
+    }
+}
+
+#[test]
+fn oracle_drop_rejects_invalid_metadata_and_unsupported_kinds() {
+    let profile_id = Uuid::new_v4();
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    let mut invalid = oracle_entry(profile_id, CatalogKind::Table, "tt1");
+    invalid.qualified_name.schema = Some("OTHER_SCHEMA".into());
+    assert!(matches!(
+        OracleAdapter::plan_catalog_drop(
+            CatalogDropRequest::new(connection, invalid.id.clone(), 1),
+            &invalid,
+        ),
+        Err(CatalogDropError::InvalidMetadata { .. })
+    ));
+    let index = oracle_entry(profile_id, CatalogKind::Index, "tt1");
+    assert!(matches!(
+        OracleAdapter::plan_catalog_drop(
+            CatalogDropRequest::new(connection, index.id.clone(), 2),
+            &index,
+        ),
+        Err(CatalogDropError::Unsupported { .. })
+    ));
 }
 
 #[test]
