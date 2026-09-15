@@ -5686,12 +5686,7 @@ impl App {
                 self.clear_active_data_query_focus();
                 self.active_tab = (self.active_tab + 1) % self.tabs.len();
                 self.normalize_focus_after_tab_switch();
-                let commands = self.prepare_active_console_target();
-                if commands.is_empty() {
-                    self.load_active_relation(false)
-                } else {
-                    commands
-                }
+                self.prepare_active_tab()
             }
             Action::PreviousTab => {
                 if self.tabs.is_empty() {
@@ -5704,12 +5699,7 @@ impl App {
                     .checked_sub(1)
                     .unwrap_or(self.tabs.len() - 1);
                 self.normalize_focus_after_tab_switch();
-                let commands = self.prepare_active_console_target();
-                if commands.is_empty() {
-                    self.load_active_relation(false)
-                } else {
-                    commands
-                }
+                self.prepare_active_tab()
             }
             Action::ActivateTab(index) => {
                 if index < self.tabs.len() {
@@ -5717,14 +5707,7 @@ impl App {
                     self.clear_active_data_query_focus();
                     self.active_tab = index;
                     self.normalize_focus();
-                    if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(index) {
-                        return self.open_redis_browser(tab.target.profile_id, tab.target.database);
-                    }
-                    let mut commands = self.prepare_active_console_target();
-                    if commands.is_empty() {
-                        commands.extend(self.load_active_relation(false));
-                    }
-                    return commands;
+                    return self.prepare_active_tab();
                 }
                 Vec::new()
             }
@@ -11262,9 +11245,11 @@ impl App {
                 let mut commands = std::mem::take(&mut workspace_commands);
                 let opened_pending_redis_browser = pending_redis_target.is_some();
                 if let Some(redis_target) = pending_redis_target {
-                    commands.extend(
-                        self.open_redis_browser(redis_target.profile_id, redis_target.database),
-                    );
+                    if let Some(index) = self.tabs.iter().position(|tab| {
+                        matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.target == redis_target)
+                    }) {
+                        commands.extend(self.ensure_redis_browser_loaded(index, true));
+                    }
                 }
                 if let Some(redis_target) = pending_redis_create_target {
                     if !opened_pending_redis_browser {
@@ -11344,6 +11329,9 @@ impl App {
                     commands.extend(self.load_active_relation(false));
                 }
                 self.active_tab = active_tab.min(self.tabs.len().saturating_sub(1));
+                if matches!(self.tabs.get(self.active_tab), Some(WorkspaceTab::RedisBrowser(_))) {
+                    commands.extend(self.ensure_redis_browser_loaded(self.active_tab, false));
+                }
                 if editor_target_switch.is_some()
                     && let Some(key) = self.editor_diagnostics_key()
                 {
@@ -15694,6 +15682,9 @@ impl App {
             if self.is_active_relation_tab() {
                 commands.extend(self.load_active_relation(false));
             }
+            if matches!(self.tabs.get(self.active_tab), Some(WorkspaceTab::RedisBrowser(_))) {
+                commands.extend(self.ensure_redis_browser_loaded(self.active_tab, false));
+            }
             return commands;
         }
         self.connection_request_generation = generation;
@@ -19104,6 +19095,17 @@ impl App {
             self.pending_redis_browser_target = None;
         }
         self.ensure_redis_browser_loaded(index, true)
+    }
+
+    fn prepare_active_tab(&mut self) -> Vec<Command> {
+        if matches!(self.tabs.get(self.active_tab), Some(WorkspaceTab::RedisBrowser(_))) {
+            return self.ensure_redis_browser_loaded(self.active_tab, false);
+        }
+        let mut commands = self.prepare_active_console_target();
+        if commands.is_empty() {
+            commands.extend(self.load_active_relation(false));
+        }
+        commands
     }
 
     fn ensure_redis_browser_loaded(&mut self, index: usize, explicit_open: bool) -> Vec<Command> {
