@@ -22574,7 +22574,9 @@ fn relation_execution_target(
     profile: &ConnectionProfile,
 ) -> Option<ExecutionTarget> {
     let mut target = ExecutionTarget::from_profile(profile);
-    if let Some(database) = tab.descriptor.qualified_name.database.clone() {
+    if profile.kind != DatabaseKind::Sqlite
+        && let Some(database) = tab.descriptor.qualified_name.database.clone()
+    {
         target.database = database;
     }
     if matches!(
