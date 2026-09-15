@@ -11701,7 +11701,13 @@ impl App {
                     self.active_console_mut().semantic_diagnostics.clear();
                     commands.push(Command::ScheduleDiagnostics(key));
                 }
-                self.refresh_active_data_query_completion();
+                if self
+                    .active_console_opt()
+                    .and_then(|tab| tab.execution_target.as_ref())
+                    .is_some_and(|target| target.profile_id == profile_id)
+                {
+                    self.refresh_active_data_query_completion();
+                }
                 if self.catalog_sync_pending
                     && self
                         .explorer
