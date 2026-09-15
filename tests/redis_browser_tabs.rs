@@ -105,6 +105,77 @@ fn redis_table_grid_snapshot_uses_raw_source_cells() {
 }
 
 #[test]
+fn loading_the_next_redis_value_page_is_idempotent_and_stops_at_complete() {
+    let profile_id = Uuid::from_u128(105);
+    let mut app = App::new(Vec::new());
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 1;
+    app.connection.target = Some(ExecutionTarget {
+        profile_id,
+        database: "0".into(),
+        schema: None,
+    });
+    app.connection.status = ConnectionStatus::Connected;
+    let mut tab = lazydb::model::redis_browser::RedisBrowserTab::new(
+        Uuid::from_u128(106),
+        RedisTarget {
+            profile_id,
+            database: 0,
+        },
+    );
+    tab.value_page = RedisValuePageState::Ready(lazydb::db::redis::read::RedisValuePage {
+        metadata: lazydb::db::redis::read::RedisKeyMetadata {
+            key: RedisKeyId {
+                target: tab.target.clone(),
+                key: b"list".to_vec(),
+            },
+            value_type: lazydb::db::redis::read::RedisType::List,
+            ttl: lazydb::db::redis::read::TtlState::Persistent,
+            memory_usage_bytes: None,
+            value_size: Some(2),
+        },
+        position: lazydb::db::redis::read::RedisPagePosition::ListOffset(2),
+        value: lazydb::db::redis::read::RedisPageValue::List(vec![(0, b"a".to_vec())]),
+        truncated: false,
+        complete: false,
+        raw_bytes: 1,
+        formatted_bytes: 1,
+    });
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab));
+    app.active_tab = app.tabs.len() - 1;
+
+    let first = app.update(Action::RedisPreviewLoadNext);
+    assert!(matches!(
+        first.as_slice(),
+        [Command::LoadRedisValuePage { .. }]
+    ));
+    assert!(app.update(Action::RedisPreviewLoadNext).is_empty());
+
+    let tab_id = app.tabs[app.active_tab].id();
+    app.update(Action::RedisValuePageLoaded {
+        tab_id,
+        connection: app.connection.active_identity().unwrap(),
+        preview_generation: 0,
+        page: lazydb::db::redis::read::RedisValuePage {
+            metadata: match &app.tabs[app.active_tab] {
+                WorkspaceTab::RedisBrowser(tab) => match &tab.value_page {
+                    RedisValuePageState::Ready(page) => page.metadata.clone(),
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            },
+            position: lazydb::db::redis::read::RedisPagePosition::Complete,
+            value: lazydb::db::redis::read::RedisPageValue::List(vec![(2, b"b".to_vec())]),
+            truncated: false,
+            complete: true,
+            raw_bytes: 1,
+            formatted_bytes: 1,
+        },
+    });
+    assert!(app.update(Action::RedisPreviewLoadNext).is_empty());
+}
+
+#[test]
 fn preview_controls_open_picker_and_apply_only_on_enter() {
     use lazydb::model::{
         redis_browser::{RedisBrowserFocus, RedisBrowserTab},

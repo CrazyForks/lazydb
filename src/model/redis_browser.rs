@@ -98,6 +98,7 @@ pub struct RedisBrowserTab {
     pub preview_viewport_rows: usize,
     pub preview_content_rows: usize,
     pub preview_grid: DataGridState,
+    pub value_page_loading: bool,
 }
 
 impl RedisBrowserTab {
@@ -122,6 +123,7 @@ impl RedisBrowserTab {
             preview_viewport_rows: 0,
             preview_content_rows: 0,
             preview_grid: DataGridState::default(),
+            value_page_loading: false,
         }
     }
 
@@ -226,6 +228,7 @@ impl RedisBrowserTab {
             None => RedisPreviewContentState::Empty,
         };
         self.preview_scroll = 0;
+        self.value_page_loading = false;
     }
 
     pub fn preview_generation(&self) -> Option<u64> {

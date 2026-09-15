@@ -12988,6 +12988,7 @@ impl App {
                     && self.connection.active_identity() == Some(connection)
                     && preview_generation == tab.preview_generation
                 {
+                    tab.value_page_loading = false;
                     tab.append_value_page(page);
                     if let crate::model::redis_browser::RedisValuePageState::Ready(page) =
                         &tab.value_page
@@ -13139,6 +13140,13 @@ impl App {
                 key,
                 message,
             } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && self.connection.active_identity() == Some(connection)
+                    && preview_generation == tab.preview_generation
+                {
+                    tab.value_page_loading = false;
+                }
                 if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
                     scheduler.mark_complete();
                 }
@@ -19436,13 +19444,16 @@ impl App {
         }]
     }
 
-    fn load_next_redis_page(&self) -> Vec<Command> {
+    fn load_next_redis_page(&mut self) -> Vec<Command> {
         let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
         let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
             return Vec::new();
         };
+        if tab.value_page_loading || page.complete {
+            return Vec::new();
+        }
         let request = match &page.position {
             crate::db::redis::read::RedisPagePosition::StringOffset(start) => {
                 crate::db::redis::read::RedisReadRequest::StringRange {
@@ -19499,12 +19510,16 @@ impl App {
         let Some(connection) = self.connection.active_identity() else {
             return Vec::new();
         };
-        vec![Command::LoadRedisValuePage {
+        let command = Command::LoadRedisValuePage {
             tab_id: tab.id,
             connection,
             preview_generation: tab.preview_generation,
             request,
-        }]
+        };
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
+            tab.value_page_loading = true;
+        }
+        vec![command]
     }
 
     fn redis_preview_cell_detail(
