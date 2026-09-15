@@ -102,8 +102,7 @@ fn accepting_completion_does_not_reopen_on_late_relation_children() {
 
     assert_eq!(catalog(&app, profile.id).get(&column.id), Some(&column));
     assert!(
-        app.explorer
-            .completion_index
+        app.explorer.completion_indexes[&profile.id]
             .entries()
             .iter()
             .any(|entry| entry.id == column.id)
@@ -944,7 +943,12 @@ fn page_validation_uses_exact_pending_request_before_tree_or_completion_mutation
     app.update(Action::CatalogPageLoaded(malformed));
 
     assert!(catalog(&app, profile.id).is_empty());
-    assert!(app.explorer.completion_index.entries().is_empty());
+    assert!(
+        app.explorer
+            .completion_indexes
+            .get(&profile.id)
+            .is_none_or(|index| index.entries().is_empty())
+    );
     assert!(matches!(
         load_state(&app, ExplorerOwnerId::Profile(profile.id)),
         ExplorerLoadState::Failed { .. }
@@ -962,7 +966,10 @@ fn catalog_drop_success_removes_subtree_reselects_parent_and_clears_completion()
         CatalogDropRequest::new(connection, table.id.clone(), 42).with_entry(table.clone());
     request.catalog_epoch = app.explorer.normalized.profiles[&profile.id].catalog_epoch;
     let plan = CatalogDropPlan::new(request, &table, "DROP TABLE users").unwrap();
-    app.explorer.completion_index = lazydb::sql::CompletionIndex::new(std::slice::from_ref(&table));
+    app.explorer.completion_indexes.insert(
+        profile.id,
+        lazydb::sql::CompletionIndex::new(std::slice::from_ref(&table)),
+    );
     app.explorer.normalized.selected = Some(ExplorerNodeId::Catalog(table.id.clone()));
     app.overlay = Some(Overlay::CatalogDropConfirm {
         plan: Box::new(plan.clone()),
@@ -985,7 +992,12 @@ fn catalog_drop_success_removes_subtree_reselects_parent_and_clears_completion()
         app.explorer.normalized.selected,
         Some(ExplorerNodeId::Catalog(schema.id))
     );
-    assert!(app.explorer.completion_index.entries().is_empty());
+    assert!(
+        app.explorer
+            .completion_indexes
+            .get(&profile.id)
+            .is_none_or(|index| index.entries().is_empty())
+    );
     assert!(app.overlay.is_none());
 }
 

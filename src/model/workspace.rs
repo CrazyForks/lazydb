@@ -420,9 +420,7 @@ pub struct ExplorerState {
     pub selected: usize,
     pub scroll: usize,
     pub catalog_generation: u64,
-    pub completion_index: CompletionIndex,
     /// Completion data retained independently for each connection profile.
-    /// `completion_index` remains the active-profile compatibility projection.
     pub completion_indexes: HashMap<Uuid, CompletionIndex>,
     pub active_profile: Option<Uuid>,
     pub search: Option<ExplorerSearchState>,
@@ -554,7 +552,6 @@ impl ExplorerState {
         self.catalog_generation = self.catalog_generation.saturating_add(1);
         self.nodes.clear();
         self.expanded.clear();
-        self.completion_index = CompletionIndex::default();
         self.completion_indexes.clear();
         self.selected = 0;
         self.scroll = 0;

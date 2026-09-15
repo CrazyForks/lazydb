@@ -8749,7 +8749,6 @@ impl App {
                     }
                 };
                 let removed_set = removed.into_iter().collect();
-                self.explorer.completion_index.remove_ids(&removed_set);
                 for index in self.explorer.completion_indexes.values_mut() {
                     index.remove_ids(&removed_set);
                 }
@@ -15392,7 +15391,6 @@ impl App {
             && scope_changed
             && profile_has_session
         {
-            self.explorer.completion_index = Default::default();
             self.explorer.completion_indexes.remove(&profile_id);
             if let Some(tab) = self.active_console_opt_mut() {
                 tab.completion = None;
@@ -16627,7 +16625,8 @@ impl App {
             .active_console_opt()
             .map(|tab| {
                 (
-                    tab.execution_connection.or(self.connection.active_identity()),
+                    tab.execution_connection
+                        .or(self.connection.active_identity()),
                     tab.execution_target.clone(),
                 )
             })
@@ -18303,17 +18302,7 @@ impl App {
                 .entry(profile_id)
                 .or_default()
                 .replace_scoped(&entries, scope);
-            self.explorer.completion_index.replace_scoped(
-                &self.explorer.normalized.profiles[&profile_id]
-                    .catalog
-                    .entries()
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                scope,
-            );
         } else {
-            self.explorer.completion_index = Default::default();
             self.explorer.completion_indexes.remove(&profile_id);
         }
         self.explorer.catalog_generation = self.explorer.catalog_generation.saturating_add(1);
@@ -20247,26 +20236,26 @@ impl App {
                         CatalogRequestIntent::Automatic,
                     );
                 };
-                let schema_id = self
-                    .explorer
-                    .normalized
-                    .profiles
-                    .get(&profile_id)
-                    .and_then(|state| {
-                        state
-                            .catalog
-                            .children(&database)
-                            .iter()
-                            .find_map(|id| state.catalog.get(id))
-                            .filter(|entry| {
-                                entry.kind == CatalogKind::Schema
-                                    && entry
-                                        .qualified_name
-                                        .object
-                                        .eq_ignore_ascii_case(schema_name)
-                            })
-                            .map(|entry| entry.id.clone())
-                    });
+                let schema_id =
+                    self.explorer
+                        .normalized
+                        .profiles
+                        .get(&profile_id)
+                        .and_then(|state| {
+                            state
+                                .catalog
+                                .children(&database)
+                                .iter()
+                                .find_map(|id| state.catalog.get(id))
+                                .filter(|entry| {
+                                    entry.kind == CatalogKind::Schema
+                                        && entry
+                                            .qualified_name
+                                            .object
+                                            .eq_ignore_ascii_case(schema_name)
+                                })
+                                .map(|entry| entry.id.clone())
+                        });
                 match schema_id {
                     Some(schema) => CatalogTarget::groups(schema).ok(),
                     None => CatalogTarget::schemas(database).ok(),
@@ -20489,10 +20478,7 @@ impl App {
         &mut self,
         relation: &crate::db::catalog::CatalogId,
     ) -> Vec<Command> {
-        let Some(completion_index) = self
-            .explorer
-            .completion_indexes
-            .get(&relation.profile_id())
+        let Some(completion_index) = self.explorer.completion_indexes.get(&relation.profile_id())
         else {
             return Vec::new();
         };

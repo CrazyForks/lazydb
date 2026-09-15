@@ -1182,7 +1182,11 @@ fn relation_query_suggests_only_current_relation_columns() {
     })
     .collect::<Vec<_>>();
     let mut app = lazydb::app::App::new(Vec::new());
-    app.explorer.completion_index.append(&columns);
+    app.explorer
+        .completion_indexes
+        .entry(descriptor.key.profile_id)
+        .or_default()
+        .append(&columns);
     app.tabs
         .push(WorkspaceTab::Relation(RelationTab::with_descriptor(
             descriptor,
