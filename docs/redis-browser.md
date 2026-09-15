@@ -57,6 +57,10 @@ selected automatically. Later scan batches preserve the current selection.
 Redis tabs are labeled `Redis @connection-name`; the name belongs to the tab's
 connection profile rather than to the currently active connection.
 
+Press `?` or `F1` to open contextual help. The help panel shows only shortcuts
+that apply to the focused Redis area; its heading distinguishes Redis Keys,
+text Value, Table Value, and key search states. In text Value browse mode, `?`
+opens help; while a search or key-filter input is active, `?` remains text input.
 Use `j`/`k` to move through Keys, `o` or `Enter` to expand/collapse a folder,
 and `h`/`Left` to collapse or move to the parent, or `l`/`Right` to expand or
 enter the first child. In Keys, `d` deletes the selected complete key and `y`
@@ -65,7 +69,7 @@ keys already loaded for this database, including keys inside collapsed folders;
 Enter confirms the filter and Esc restores the previous selection. The filter
 does not start a new SCAN and is explicitly limited to the loaded client-side
 snapshot. In Preview, the read-only Vim buffer supports `hjkl`, `w`/`b`/`e`,
-`0`/`$`, `gg`/`G`, counts, Visual mode (`v`/`V`), `/` and `?` search, `n`/`N`,
+`0`/`$`, `gg`/`G`, counts, Visual mode (`v`/`V`), `/` search, `n`/`N`,
 and `yy`/Visual `y` copying. `Ctrl-d`/`Ctrl-u` move half a page and
 PageUp/PageDown move a full page while keeping the text cursor visible. `Space
 f` cycles format, `Space w` toggles wrapping, and `Space l` loads the next

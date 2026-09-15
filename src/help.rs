@@ -25,7 +25,11 @@ pub enum ShortcutContext {
     SqlResultsData,
     SqlOutput,
     RedisKeys,
+    RedisKeysFindEditing,
+    RedisKeysFindConfirmed,
     RedisPreview,
+    RedisPreviewVisual,
+    RedisPreviewTable,
     Dashboard,
     RelationDataBrowse,
     RelationDataEdit,
@@ -78,7 +82,11 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::SqlResultsData,
     ShortcutContext::SqlOutput,
     ShortcutContext::RedisKeys,
+    ShortcutContext::RedisKeysFindEditing,
+    ShortcutContext::RedisKeysFindConfirmed,
     ShortcutContext::RedisPreview,
+    ShortcutContext::RedisPreviewVisual,
+    ShortcutContext::RedisPreviewTable,
     ShortcutContext::Dashboard,
     ShortcutContext::RelationDataBrowse,
     ShortcutContext::RelationDataEdit,
@@ -243,9 +251,28 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
     }
     match app.tabs.get(app.active_tab) {
         Some(WorkspaceTab::RedisBrowser(tab)) if app.focus == Focus::Results => match tab.focus {
-            crate::model::redis_browser::RedisBrowserFocus::Keys => ShortcutContext::RedisKeys,
+            crate::model::redis_browser::RedisBrowserFocus::Keys => {
+                match tab.find.as_ref().map(|find| find.phase) {
+                    Some(crate::model::redis_browser::RedisFindPhase::Editing) => {
+                        ShortcutContext::RedisKeysFindEditing
+                    }
+                    Some(crate::model::redis_browser::RedisFindPhase::Confirmed) => {
+                        ShortcutContext::RedisKeysFindConfirmed
+                    }
+                    None => ShortcutContext::RedisKeys,
+                }
+            }
             crate::model::redis_browser::RedisBrowserFocus::Preview => {
-                ShortcutContext::RedisPreview
+                if tab.format.view() == crate::value_preview::ValueView::Table {
+                    ShortcutContext::RedisPreviewTable
+                } else if matches!(
+                    app.active_read_only_editor_mode(),
+                    Some(EditorMode::VisualChar | EditorMode::VisualLine | EditorMode::VisualBlock)
+                ) {
+                    ShortcutContext::RedisPreviewVisual
+                } else {
+                    ShortcutContext::RedisPreview
+                }
             }
         },
         Some(WorkspaceTab::Relation(tab))
@@ -544,6 +571,22 @@ pub enum HelpShortcutId {
     RedisPreviewSearch,
     RedisKeysMove,
     RedisKeysFind,
+    RedisKeysExpand,
+    RedisKeysCollapse,
+    RedisKeysOpen,
+    RedisKeysCopy,
+    RedisKeysCreate,
+    RedisKeysEdit,
+    RedisKeysDelete,
+    RedisKeysRefresh,
+    RedisKeysPage,
+    RedisPreviewTableMove,
+    RedisPreviewTableCopy,
+    RedisPreviewTableDetails,
+    RedisFindConfirm,
+    RedisFindCancel,
+    RedisFindNext,
+    RedisFindPrevious,
     ExplorerFindOpen,
     ExplorerSearchOpen,
     DataQueryWhere,
@@ -591,7 +634,12 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | RelationVisualMove
         | PageSizeMove
         | CatalogDropEdit
-        | CatalogEditorMove => 1,
+        | CatalogEditorMove
+        | RedisKeysMove
+        | RedisPreviewMove
+        | RedisPreviewTableMove
+        | RedisFindConfirm
+        | RedisFindNext => 1,
         ExplorerMoveUp
         | EditorRun
         | ResultsMoveDown
@@ -642,12 +690,46 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | CatalogEditorCancel
         | CatalogEditorColumnDetailsMove
         | RelationRedo
-        | RelationRollback => 2,
-        ExplorerCollapse | EditorFormat | ResultsMoveUp | OutputSearch | RelationDdlSearch
-        | RecordEnds | DataQueryCancel | ProfileFormSave | ProfileScopeRefresh
-        | ConsoleManagerCreate | HelpExecute | ProfileAccessClose | ExecutionToggle
-        | ManualCancelToggle | TransactionToggle | ClearOutcomeToggle | TargetCancel
-        | DatabaseCancel | RelationEditText | RelationVisualDelete => 3,
+        | RelationRollback
+        | RedisKeysOpen
+        | RedisKeysExpand
+        | RedisKeysCollapse
+        | RedisPreviewPage
+        | RedisPreviewTableCopy
+        | RedisFindCancel
+        | RedisFindPrevious => 2,
+        ExplorerCollapse
+        | EditorFormat
+        | ResultsMoveUp
+        | OutputSearch
+        | RelationDdlSearch
+        | RecordEnds
+        | DataQueryCancel
+        | ProfileFormSave
+        | ProfileScopeRefresh
+        | ConsoleManagerCreate
+        | HelpExecute
+        | ProfileAccessClose
+        | ExecutionToggle
+        | ManualCancelToggle
+        | TransactionToggle
+        | ClearOutcomeToggle
+        | TargetCancel
+        | DatabaseCancel
+        | RelationEditText
+        | RelationVisualDelete
+        | RedisKeysFind
+        | RedisPreviewSearch
+        | RedisPreviewFormat
+        | RedisPreviewWrap
+        | RedisPreviewNextPage
+        | RedisKeysCopy
+        | RedisKeysCreate
+        | RedisKeysEdit
+        | RedisKeysDelete
+        | RedisKeysRefresh
+        | RedisKeysPage
+        | RedisPreviewTableDetails => 3,
         RelationEditSetNull | RelationEditRestoreDefault | RelationEditUseValue => 3,
         ExplorerExpand
         | EditorCopyStatement
@@ -832,6 +914,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            RedisKeys,
+            RedisKeysFindEditing,
+            RedisKeysFindConfirmed,
+            RedisPreview,
+            RedisPreviewVisual,
+            RedisPreviewTable,
             Dashboard
         ],
         "? (also F1)",
@@ -852,6 +940,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            RedisKeys,
+            RedisKeysFindEditing,
+            RedisKeysFindConfirmed,
+            RedisPreview,
+            RedisPreviewVisual,
+            RedisPreviewTable,
             Dashboard
         ],
         "F2",
@@ -871,6 +965,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            RedisKeys,
+            RedisKeysFindEditing,
+            RedisKeysFindConfirmed,
+            RedisPreview,
+            RedisPreviewVisual,
+            RedisPreviewTable,
             Dashboard
         ],
         "Ctrl-c",
@@ -1496,7 +1596,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(EditorYank, [EditorVisual], "y", "copy selection", display),
     row!(
         RedisPreviewFormat,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "Space f",
         "cycle Redis Preview format",
         Leader,
@@ -1504,7 +1604,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         RedisPreviewWrap,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "Space w",
         "toggle Redis Preview wrapping",
         Leader,
@@ -1512,7 +1612,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         RedisPreviewNextPage,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "Space l",
         "load the next Redis Preview page",
         Leader,
@@ -1520,28 +1620,28 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         RedisPreviewMove,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "hjkl",
         "move through Preview text"
     ),
     row!(
         RedisPreviewPage,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "Ctrl-d / Ctrl-u",
         "move by half a page",
         display
     ),
     row!(
         RedisPreviewCopy,
-        [RedisPreview],
+        [RedisPreview, RedisPreviewVisual],
         "yy / y{motion}",
         "copy Preview text",
         display
     ),
     row!(
         RedisPreviewSearch,
-        [RedisPreview],
-        "/ / ? / n / N",
+        [RedisPreview, RedisPreviewVisual],
+        "/ / n / N",
         "search Preview text",
         display
     ),
@@ -1552,6 +1652,118 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "move through Redis keys"
     ),
     row!(RedisKeysFind, [RedisKeys], "/", "find Redis keys", display),
+    row!(
+        RedisKeysExpand,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "Right / l",
+        "expand the selected Redis key group",
+        display
+    ),
+    row!(
+        RedisKeysCollapse,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "Left / h",
+        "collapse the selected Redis key group",
+        display
+    ),
+    row!(
+        RedisKeysOpen,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "Enter",
+        "open the selected Redis key",
+        display
+    ),
+    row!(
+        RedisKeysCopy,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "y",
+        "copy the selected Redis key",
+        display
+    ),
+    row!(
+        RedisKeysCreate,
+        [RedisKeys],
+        "a",
+        "create a Redis object",
+        display
+    ),
+    row!(
+        RedisKeysEdit,
+        [RedisKeys],
+        "e",
+        "edit the selected Redis key",
+        display
+    ),
+    row!(
+        RedisKeysDelete,
+        [RedisKeys],
+        "d",
+        "delete the selected Redis key",
+        display
+    ),
+    row!(
+        RedisKeysRefresh,
+        [RedisKeys],
+        "r",
+        "refresh the Redis key scan",
+        display
+    ),
+    row!(
+        RedisKeysPage,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "PageUp / PageDown",
+        "scroll the Redis key tree",
+        display
+    ),
+    row!(
+        RedisFindConfirm,
+        [RedisKeysFindEditing],
+        "Enter",
+        "confirm the Redis key search",
+        display
+    ),
+    row!(
+        RedisFindCancel,
+        [RedisKeysFindEditing, RedisKeysFindConfirmed],
+        "Esc",
+        "close Redis key search",
+        display
+    ),
+    row!(
+        RedisFindNext,
+        [RedisKeysFindConfirmed],
+        "n",
+        "go to the next Redis key match",
+        display
+    ),
+    row!(
+        RedisFindPrevious,
+        [RedisKeysFindConfirmed],
+        "N",
+        "go to the previous Redis key match",
+        display
+    ),
+    row!(
+        RedisPreviewTableMove,
+        [RedisPreviewTable],
+        "hjkl / arrows",
+        "move through the Redis value table",
+        display
+    ),
+    row!(
+        RedisPreviewTableCopy,
+        [RedisPreviewTable],
+        "y",
+        "copy the selected Redis table value",
+        display
+    ),
+    row!(
+        RedisPreviewTableDetails,
+        [RedisPreviewTable],
+        "v",
+        "open Redis table value details",
+        display
+    ),
     row!(
         ResultsMoveLeft,
         [SqlResultsData, RelationDataBrowse],
@@ -3364,13 +3576,17 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         | ShortcutContext::EditorVisual => "EDITOR",
         ShortcutContext::SqlResultsData
         | ShortcutContext::SqlOutput
-        | ShortcutContext::RedisKeys
-        | ShortcutContext::RedisPreview
         | ShortcutContext::RelationDataBrowse
         | ShortcutContext::RelationDataEdit
         | ShortcutContext::RelationDataVisual
         | ShortcutContext::RelationDataBusy
         | ShortcutContext::RelationDdl => "RESULTS",
+        ShortcutContext::RedisKeys => "REDIS KEYS",
+        ShortcutContext::RedisKeysFindEditing | ShortcutContext::RedisKeysFindConfirmed => {
+            "REDIS KEYS · FIND"
+        }
+        ShortcutContext::RedisPreview | ShortcutContext::RedisPreviewVisual => "REDIS VALUE · TEXT",
+        ShortcutContext::RedisPreviewTable => "REDIS VALUE · TABLE",
         ShortcutContext::Dashboard => "DASHBOARD",
         ShortcutContext::RecordView => "RECORD VIEW",
         ShortcutContext::DataQueryInput => "DATA QUERY",
@@ -3813,6 +4029,28 @@ mod tests {
         app.active_console_mut().result_view = ResultView::Data;
         app.active_console_mut().query.focus = Some(DataQueryInput::Where);
         assert_eq!(shortcut_context(&app), ShortcutContext::DataQueryInput);
+    }
+
+    #[test]
+    fn redis_contexts_separate_keys_find_and_value_views() {
+        let mut app = App::new(Vec::new());
+        app.tabs.push(WorkspaceTab::RedisBrowser(
+            crate::model::redis_browser::RedisBrowserTab::new(
+                uuid::Uuid::from_u128(1),
+                crate::db::redis::types::RedisTarget {
+                    profile_id: uuid::Uuid::from_u128(2),
+                    database: 0,
+                },
+            ),
+        ));
+        app.active_tab = 1;
+        app.focus = Focus::Results;
+
+        assert_eq!(shortcut_context(&app), ShortcutContext::RedisKeys);
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = app.tabs.get_mut(1) {
+            tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+        }
+        assert_eq!(shortcut_context(&app), ShortcutContext::RedisPreview);
     }
 
     #[test]

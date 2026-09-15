@@ -934,6 +934,15 @@ impl Keymap {
             return Some(action);
         }
 
+        // Redis panes have input handlers that intentionally run before the
+        // generic bindings below. Keep the configured help binding ahead of
+        // those handlers, while allowing find/editor insert modes to consume
+        // printable characters as text.
+        if redis_help_binding_is_active(app, event, &self.bindings) {
+            self.pending = None;
+            return Some(Action::ShowHelp);
+        }
+
         if app.focus == Focus::Editor && self.bindings.matches("focus-previous-pane", event) {
             return Some(Action::FocusPrevious);
         }
@@ -1403,30 +1412,10 @@ impl Keymap {
                 return Some(Action::RedisRetryScan);
             }
             if event.code == KeyCode::PageDown {
-                return Some(
-                    if matches!(
-                        app.tabs.get(app.active_tab),
-                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
-                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
-                    ) {
-                        Action::RedisPreviewScroll(10)
-                    } else {
-                        Action::RedisKeysScroll(10)
-                    },
-                );
+                return Some(Action::RedisKeysScroll(10));
             }
             if event.code == KeyCode::PageUp {
-                return Some(
-                    if matches!(
-                        app.tabs.get(app.active_tab),
-                        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
-                            if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
-                    ) {
-                        Action::RedisPreviewScroll(-10)
-                    } else {
-                        Action::RedisKeysScroll(-10)
-                    },
-                );
+                return Some(Action::RedisKeysScroll(-10));
             }
             if matches!(
                 app.tabs.get(app.active_tab),
@@ -1973,9 +1962,6 @@ impl Keymap {
                     session_id: tab.preview_editor_id,
                     event,
                 });
-            }
-            if event.modifiers.is_empty() && event.code == KeyCode::Char('f') {
-                return Some(Action::RedisPreviewCycleFormat);
             }
             if event.modifiers.is_empty() && event.code == KeyCode::Char(']') {
                 return Some(Action::RedisPreviewLoadNext);
@@ -3840,6 +3826,36 @@ fn active_data_query_has_focus(app: &App) -> bool {
         Some(crate::model::tab::WorkspaceTab::RedisBrowser(_)) => false,
         None => false,
     }
+}
+
+fn redis_help_binding_is_active(
+    app: &App,
+    event: KeyEvent,
+    bindings: &crate::config::KeyBindings,
+) -> bool {
+    let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) = app.tabs.get(app.active_tab)
+    else {
+        return false;
+    };
+    if app.focus != Focus::Results {
+        return false;
+    }
+
+    let printable_input = matches!(event.code, KeyCode::Char(_));
+    let input_mode = match tab.focus {
+        crate::model::redis_browser::RedisBrowserFocus::Keys => tab
+            .find
+            .as_ref()
+            .is_some_and(|find| find.phase == crate::model::redis_browser::RedisFindPhase::Editing),
+        crate::model::redis_browser::RedisBrowserFocus::Preview => matches!(
+            app.active_read_only_editor_mode(),
+            Some(EditorMode::Insert | EditorMode::Replace)
+        ),
+    };
+    if input_mode && printable_input {
+        return false;
+    }
+    bindings.matches("help", event)
 }
 
 #[cfg(test)]
