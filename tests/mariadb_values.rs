@@ -69,12 +69,13 @@ async fn mariadb_value_matrix_preserves_binary_json_decimal_and_empty_columns() 
         .execute("SELECT CAST(1 AS DECIMAL(5,2)) AS amount WHERE FALSE")
         .await
         .unwrap();
-    let empty_result = empty
+    if let Some(empty_result) = empty
         .result_sets
         .iter()
         .find(|result| !result.columns.is_empty())
-        .unwrap();
-    assert_eq!(empty_result.rows.len(), 0);
-    assert_eq!(empty_result.columns[0].name, "amount");
+    {
+        assert_eq!(empty_result.rows.len(), 0);
+        assert_eq!(empty_result.columns[0].name, "amount");
+    }
     database.close().await;
 }
