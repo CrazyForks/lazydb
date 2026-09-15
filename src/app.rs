@@ -11258,7 +11258,12 @@ impl App {
                             if relation_execution_target(
                                 tab,
                                 self.profiles.iter().find(|profile| profile.id == profile_id)?,
-                            ) == Some(target.clone()))
+                            ) == Some(target.clone())
+                                && matches!(
+                                    tab.preparation,
+                                    crate::model::relation::RelationPreparation::WaitingForSession { target: ref waiting }
+                                        if waiting == &target
+                                ))
                         .then_some(index)
                     })
                     .collect::<Vec<_>>();
