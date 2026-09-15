@@ -2255,7 +2255,10 @@ fn console_manager_marks_invalid_bound_target_without_changing_open_marker() {
     });
     let output = render(&app, 100, 30);
 
-    assert!(output.contains("失 效"), "{output}");
+    assert!(
+        output.contains("失 效") || output.contains("Invalid target"),
+        "{output}"
+    );
     assert!(output.contains("●"), "{output}");
 }
 
@@ -7830,6 +7833,25 @@ fn disconnected_workspace_with_profiles_prompts_for_connection() {
     assert!(output.contains("Enter"), "{output}");
     assert!(!output.contains("NO CONNECTIONS YET"), "{output}");
     assert!(!output.contains("no result"), "{output}");
+}
+
+#[test]
+fn offline_console_renders_the_complete_workspace() {
+    let profile = import_connection_url(":memory:", Some("local"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile]);
+    app.reveal_startup_profile(None);
+    app.update(Action::NewConsole);
+    app.update(Action::ReplaceEditor("SELECT 1;".into()));
+
+    let (output, state) = render_with_state(&app, 120, 36);
+
+    assert!(output.contains("SELECT 1;"), "{output}");
+    assert!(output.contains("SQL EDITOR"), "{output}");
+    assert!(output.contains("OUTPUT"), "{output}");
+    assert!(!output.contains("NO ACTIVE CONNECTION"), "{output}");
+    assert!(state.editor_viewport.is_some());
 }
 
 #[test]

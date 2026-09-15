@@ -736,6 +736,13 @@ enum DisconnectedWorkspace {
 
 impl DisconnectedWorkspace {
     fn for_app(app: &App) -> Option<Self> {
+        if app
+            .active_console_opt()
+            .and_then(|console| console.execution_target.as_ref())
+            .is_some()
+        {
+            return None;
+        }
         (app.connection.status == ConnectionStatus::Disconnected
             && app.sessions.iter().next().is_none())
         .then_some({
@@ -3421,6 +3428,9 @@ fn render_editor(
                     );
                     if app.connection.active_identity().is_some()
                         && app.connection.target.as_ref() == Some(target)
+                        && app.sessions.get(target).is_some_and(|session| {
+                            session.status == crate::model::session::SessionStatus::Connected
+                        })
                     {
                         format!("{target_label} READY")
                     } else if app.connection.pending_target.as_ref() == Some(target) {

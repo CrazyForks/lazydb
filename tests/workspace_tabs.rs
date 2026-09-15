@@ -6,6 +6,7 @@ use lazydb::profile::import_connection_url;
 use lazydb::{
     action::{Action, Command},
     app::App,
+    db::ServerInfo,
     db::catalog::{
         CatalogCount, CatalogCursor, CatalogEntry, CatalogGroupSummary, CatalogId, CatalogKind,
         CatalogPage, CatalogRequest, CatalogTarget, ObjectGroup, OptionalMetadata, QualifiedName,
@@ -13,6 +14,7 @@ use lazydb::{
     model::relation::RelationTab,
     model::tab::{ConsoleTab, TabKind, WorkspaceTab},
     model::workspace::Focus,
+    profile::DatabaseKind,
 };
 use uuid::Uuid;
 
@@ -100,6 +102,52 @@ fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
     let mut restarted = App::new(Vec::new());
     restarted.restore_workspace(store.load().unwrap().unwrap(), None);
     assert!(restarted.tabs.iter().all(|tab| tab.id() != console_id));
+}
+
+#[test]
+fn restored_active_console_can_prepare_its_target_without_explicit_startup_selection() {
+    let profile = import_connection_url(":memory:", Some("restored"))
+        .unwrap()
+        .profile;
+    let console_id = Uuid::new_v4();
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(console_id),
+            consoles: vec![PersistedConsole {
+                id: console_id,
+                name: "restored".into(),
+                sql_file: format!("{console_id}.sql").into(),
+                target: Some(
+                    lazydb::model::execution_target::ExecutionTarget::from_profile(&profile),
+                ),
+                transaction_mode: TransactionMode::Auto,
+                open: true,
+            }],
+            tabs: vec![PersistedTab::Console { console_id }],
+        }],
+        active_console: Uuid::nil(),
+        consoles: Vec::new(),
+        tabs: Vec::new(),
+        sql: vec![(console_id, "select 42".into())],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile.clone()]);
+    app.restore_workspace(snapshot, None);
+
+    lazydb::runtime::apply_startup_action(&mut app, None);
+
+    assert_eq!(app.active_console().id, console_id);
+    assert_eq!(
+        app.connection.status,
+        lazydb::model::workspace::ConnectionStatus::Connecting
+    );
+    assert_eq!(
+        app.connection.pending_target.as_ref().unwrap().profile_id,
+        profile.id
+    );
+    assert_eq!(app.active_editor_text().unwrap(), "select 42");
 }
 
 #[test]
@@ -759,6 +807,18 @@ fn explicit_console_target_binding_updates_console_and_starts_connection() {
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.connection.profile_id = Some(first.id);
     app.update(Action::NewConsole);
+    let first_generation = app.connection.pending_generation.unwrap();
+    app.update(Action::ConnectionSucceeded {
+        profile_id: first.id,
+        generation: first_generation,
+        server: ServerInfo {
+            kind: DatabaseKind::Sqlite,
+            version: "3.50.0".into(),
+            database: ":memory:".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
     let console_id = app.active_console().id;
     app.update(Action::ReplaceEditor("select 1".into()));
     let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&second);
@@ -1801,7 +1861,7 @@ fn console_lifecycle_can_run_offline_with_a_profile_workspace() {
     assert!(
         commands
             .iter()
-            .all(|command| !matches!(command, Command::Connect { .. }))
+            .any(|command| matches!(command, Command::Connect { .. }))
     );
     assert_eq!(app.active_workspace_profile, Some(profile_id));
     assert_eq!(app.sql_editors.len(), 1);

@@ -38,6 +38,7 @@ use crate::{
 pub enum Action {
     NewConsole,
     NewConsoleNamed(String),
+    PrepareActiveConsole,
     OpenDashboard,
     OpenSqlHistory,
     SqlHistoryOpenDetail,
@@ -837,6 +838,7 @@ pub enum Action {
         profile_id: Uuid,
     },
     RequestConnect(Uuid),
+    RetryActiveConsoleConnection,
     RequestProfileDisconnect {
         profile_id: Uuid,
     },

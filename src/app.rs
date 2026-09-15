@@ -257,6 +257,7 @@ pub struct App {
     deferred: DeferredIntentQueue,
     resolving_deferred: Option<DeferredTransactionPrompt>,
     pending_target_console: Option<Uuid>,
+    deferred_console_activation: Option<DeferredConsoleActivation>,
     pending_editor_target_switch: Option<(Uuid, Uuid, u64)>,
     pending_executions: HashMap<Uuid, PendingExecution>,
     next_pending_execution_id: u64,
@@ -327,6 +328,13 @@ struct PendingDashboardTarget {
     profile_id: Uuid,
     database: Option<u32>,
     generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DeferredConsoleActivation {
+    console_id: Uuid,
+    target: ExecutionTarget,
+    waiting_for: ConnectionIdentity,
 }
 
 struct SuspendedInteraction {
@@ -818,6 +826,7 @@ impl App {
             deferred: DeferredIntentQueue::default(),
             resolving_deferred: None,
             pending_target_console: None,
+            deferred_console_activation: None,
             pending_editor_target_switch: None,
             pending_executions: HashMap::new(),
             next_pending_execution_id: 0,
@@ -5294,6 +5303,7 @@ impl App {
             Action::DashboardMetricsDue | Action::DashboardProcessesDue => Vec::new(),
             Action::NewConsole => self.create_and_activate_sql_editor(),
             Action::NewConsoleNamed(name) => self.create_and_activate_sql_editor_named(name),
+            Action::PrepareActiveConsole => self.prepare_active_console_target(),
             Action::CloseActiveTab => {
                 if self.has_active_workspace() && !self.tabs.is_empty() {
                     let id = self.tabs[self.active_tab].id();
@@ -10874,6 +10884,12 @@ impl App {
             }
             Action::RequestProfileConnect { profile_id } => self.request_connection(profile_id),
             Action::RequestConnect(profile_id) => self.request_connection(profile_id),
+            Action::RetryActiveConsoleConnection => {
+                if let Some(tab) = self.active_console_opt_mut() {
+                    tab.target_error = None;
+                }
+                self.prepare_active_console_target()
+            }
             Action::RequestProfileDisconnect { profile_id } => {
                 self.request_profile_disconnect(profile_id)
             }
@@ -11357,6 +11373,26 @@ impl App {
                 }
                 if persist_target || should_activate_workspace {
                     commands.push(self.persist_workspace_command());
+                }
+                let deferred_activation = self
+                    .deferred_console_activation
+                    .as_ref()
+                    .filter(|pending| pending.waiting_for == identity)
+                    .filter(|pending| {
+                        self.active_console_opt().is_some_and(|console| {
+                            console.id == pending.console_id
+                                && console.execution_target.as_ref() == Some(&pending.target)
+                        })
+                    })
+                    .cloned();
+                if deferred_activation.is_some() {
+                    let pending = self.deferred_console_activation.take().unwrap();
+                    self.active_tab = self
+                        .tabs
+                        .iter()
+                        .position(|tab| tab.id() == pending.console_id)
+                        .unwrap_or(self.active_tab);
+                    commands.extend(self.prepare_active_console_target());
                 }
                 let ready_pending = self
                     .pending_executions
@@ -14838,7 +14874,9 @@ impl App {
         self.create_sql_editor_named(name, origin_target);
         self.active_tab = self.tabs.len().saturating_sub(1);
         self.focus = Focus::Editor;
-        vec![self.persist_workspace_command()]
+        let mut commands = self.prepare_active_console_target();
+        commands.push(self.persist_workspace_command());
+        commands
     }
 
     fn update_sql_editor_list_input(
@@ -15005,10 +15043,13 @@ impl App {
         if self.connection.pending_generation.is_some()
             && self.connection.pending_target.as_ref() != Some(&target)
         {
-            self.notify_warning(
-                "Connection",
-                "Wait for the current connection change to finish before activating another console",
-            );
+            if let Some(waiting_for) = self.connection.pending_identity() {
+                self.deferred_console_activation = Some(DeferredConsoleActivation {
+                    console_id: tab.id,
+                    target,
+                    waiting_for,
+                });
+            }
             return Vec::new();
         }
         if tab.transaction_mode == TransactionMode::Manual
@@ -24465,11 +24506,21 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
-        app.connection.profile_id = Some(profile_id);
-        app.connection.generation = 1;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
-        app.connection.target = app.active_console().execution_target.clone();
+        let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Postgres,
+                version: "16".into(),
+                database: "kms".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.update(Action::ReplaceEditor(sql.into()));
         let mut commands = app.update(Action::RunActiveSql);
         if commands.is_empty() {
@@ -27175,11 +27226,21 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
-        app.connection.profile_id = Some(profile_id);
-        app.connection.generation = 1;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
-        app.connection.target = app.active_console().execution_target.clone();
+        let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: ":memory:".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.update(Action::ReplaceEditor("SELECT 1".into()));
         let commands = app.update(Action::RunActiveSql);
         let (tab_id, generation) = match &commands[0] {
@@ -27415,10 +27476,23 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
-        app.connection.profile_id = Some(profile.id);
+        let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
+            [Command::Connect { generation, .. }] => *generation,
+            commands => panic!("unexpected commands: {commands:?}"),
+        };
+        app.update(Action::ConnectionSucceeded {
+            profile_id: profile.id,
+            generation,
+            server: crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "3.50".into(),
+                database: ":memory:".into(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        });
         app.connection.generation = 8;
-        app.connection.status = ConnectionStatus::Connected;
-        app.update(Action::NewConsole);
+        app.connection.target = app.active_console().execution_target.clone();
         app.active_console_mut().transaction_generation = 2;
         app.active_console_mut().transaction_state =
             crate::model::transaction::TransactionState::Active;
