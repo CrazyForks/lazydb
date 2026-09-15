@@ -35,7 +35,7 @@ impl ReadOnlySqlEditor<'_> {
     ) {
         let inner = self.block.inner(area);
         let gutter_width = if self.show_line_numbers {
-            self.snapshot.total_lines.max(1).to_string().len() + 1
+            self.snapshot.logical_line_count.max(1).to_string().len() + 1
         } else {
             0
         } as u16;

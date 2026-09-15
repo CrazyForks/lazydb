@@ -107,6 +107,9 @@ pub struct EditorRenderSnapshot {
     pub revision: u64,
     pub mode: EditorMode,
     pub first_line: usize,
+    /// Number of logical source lines, before soft wrapping.
+    pub logical_line_count: usize,
+    /// Number of rows in the current rendered coordinate space.
     pub total_lines: usize,
     pub viewport: EditorViewport,
     pub horizontal_offset: usize,

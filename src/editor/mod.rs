@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
 use std::{cell::RefCell, collections::HashMap};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,6 +28,7 @@ fn full_line_width(text: &str) -> usize {
 
 mod indent;
 mod jump_history;
+mod preview;
 mod prompt;
 mod substitute;
 use jump_history::{JumpHistory, remap_text_position};
@@ -198,7 +200,17 @@ struct EditorSession {
     capability: EditorSessionCapability,
     pending_tail_scroll: bool,
     preview_layout: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    preview_document: RefCell<Option<(u64, preview::SharedPreviewDocument)>>,
+    preview_highlights: RefCell<PreviewHighlightCache>,
+    preview_wrap_index: RefCell<Option<(u64, preview::PreviewWrapIndex)>>,
+    preview_render_first_line: std::cell::Cell<Option<usize>>,
 }
+
+type PreviewHighlightCache = Option<(
+    u64,
+    crate::model::editor_language::EditorLanguage,
+    Arc<Vec<Vec<EditorRenderSpan>>>,
+)>;
 
 const EDITOR_HISTORY_LIMIT: usize = 100;
 
@@ -385,6 +397,10 @@ impl EditorWorkspace {
                 capability,
                 pending_tail_scroll: false,
                 preview_layout: std::cell::Cell::new(None),
+                preview_document: RefCell::new(None),
+                preview_highlights: RefCell::new(None),
+                preview_wrap_index: RefCell::new(None),
+                preview_render_first_line: std::cell::Cell::new(None),
             },
         );
         if capability == EditorSessionCapability::Editable {
@@ -459,22 +475,32 @@ impl EditorWorkspace {
         rows: isize,
         columns: isize,
     ) -> Result<(), EditorError> {
+        let has_preview_layout = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?
+            .preview_layout
+            .get();
+        if let Some((width, height, total, offset)) = has_preview_layout {
+            self.sessions
+                .get(&id)
+                .expect("session checked above")
+                .preview_layout
+                .set(Some((
+                    width,
+                    height,
+                    total,
+                    offset
+                        .saturating_add_signed(rows)
+                        .min(total.saturating_sub(height)),
+                )));
+            return Ok(());
+        }
         let text = self.text(id)?;
         let session = self
             .sessions
             .get_mut(&id)
             .ok_or(EditorError::MissingSession(id))?;
-        if let Some((width, height, total, offset)) = session.preview_layout.get() {
-            session.preview_layout.set(Some((
-                width,
-                height,
-                total,
-                offset
-                    .saturating_add_signed(rows)
-                    .min(total.saturating_sub(height)),
-            )));
-            return Ok(());
-        }
         let max_line_width = text
             .split('\n')
             .map(project_editor_line)
@@ -513,6 +539,25 @@ impl EditorWorkspace {
         rows: usize,
         columns: usize,
     ) -> Result<(), EditorError> {
+        let has_preview_layout = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?
+            .preview_layout
+            .get();
+        if let Some((width, height, total, _)) = has_preview_layout {
+            self.sessions
+                .get(&id)
+                .expect("session checked above")
+                .preview_layout
+                .set(Some((
+                    width,
+                    height,
+                    total,
+                    rows.min(total.saturating_sub(height)),
+                )));
+            return Ok(());
+        }
         let text = self.text(id)?;
         let session = self
             .sessions
@@ -534,6 +579,27 @@ impl EditorWorkspace {
         vertical: bool,
         offset: usize,
     ) -> Result<(), EditorError> {
+        let has_preview_layout = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?
+            .preview_layout
+            .get();
+        if let Some((width, height, total, _)) = has_preview_layout {
+            self.sessions
+                .get(&id)
+                .expect("session checked above")
+                .preview_layout
+                .set(Some((
+                    width,
+                    height,
+                    total,
+                    offset.min(total.saturating_sub(height)),
+                )));
+            if vertical {
+                return Ok(());
+            }
+        }
         let text = self.text(id)?;
         let session = self
             .sessions
@@ -956,23 +1022,73 @@ impl EditorWorkspace {
             None,
             false,
         )?;
+        let cached_highlights = self.preview_highlights(id, language)?;
         for line in &mut snapshot.lines {
             line.spans = match language {
                 crate::model::editor_language::EditorLanguage::Json
-                | crate::model::editor_language::EditorLanguage::Yaml => {
-                    Self::preview_highlight_spans(&line.display_text, line.source_start, language)
-                }
+                | crate::model::editor_language::EditorLanguage::Yaml => cached_highlights
+                    .get(line.line)
+                    .cloned()
+                    .unwrap_or_default(),
                 crate::model::editor_language::EditorLanguage::Plain
-                | crate::model::editor_language::EditorLanguage::Sql(_) => {
-                    line.spans
-                        .iter_mut()
-                        .for_each(|span| span.kind = EditorHighlightKind::Plain);
-                    line.spans.clone()
-                }
+                | crate::model::editor_language::EditorLanguage::Sql(_) => line
+                    .spans
+                    .iter()
+                    .map(|span| {
+                        let mut span = span.clone();
+                        span.kind = EditorHighlightKind::Plain;
+                        span
+                    })
+                    .collect(),
             };
         }
         snapshot.semantic_diagnostics.clear();
         Ok(snapshot)
+    }
+
+    fn preview_highlights(
+        &self,
+        id: Uuid,
+        language: crate::model::editor_language::EditorLanguage,
+    ) -> Result<Arc<Vec<Vec<EditorRenderSpan>>>, EditorError> {
+        let session = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        if let Some((revision, cached_language, highlights)) =
+            self.sessions.get(&id).and_then(|session| {
+                session.preview_highlights.borrow().as_ref().map(
+                    |(revision, cached_language, highlights)| {
+                        (*revision, *cached_language, Arc::clone(highlights))
+                    },
+                )
+            })
+            && revision == session.revision
+            && cached_language == language
+        {
+            return Ok(highlights);
+        }
+        let preview_document = session.preview_document.borrow();
+        let Some((revision, document)) = preview_document.as_ref() else {
+            return Ok(Arc::new(Vec::new()));
+        };
+        let highlights = Arc::new(
+            document
+                .projections
+                .iter()
+                .enumerate()
+                .map(|(line, projection)| {
+                    Self::preview_highlight_spans(
+                        &projection.text,
+                        document.line_starts[line],
+                        language,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        *session.preview_highlights.borrow_mut() =
+            Some((*revision, language, Arc::clone(&highlights)));
+        Ok(highlights)
     }
 
     pub(crate) fn render_wrapped_preview_snapshot(
@@ -990,49 +1106,72 @@ impl EditorWorkspace {
             session.preview_layout.set(None);
             return self.render_preview_snapshot(id, viewport, language);
         }
-        let total = self.line_count(id)?;
+        let width = viewport.width.max(1);
+        if session.preview_document.borrow().is_none() {
+            let _ = self.render_preview_snapshot(id, viewport, language)?;
+        }
+        let document = session
+            .preview_document
+            .borrow()
+            .as_ref()
+            .map(|(_, document)| Arc::clone(document));
+        let wrap_index = if let Some(document) = document.as_ref() {
+            let mut cached = session.preview_wrap_index.borrow_mut();
+            if cached.as_ref().is_none_or(|(revision, index)| {
+                *revision != session.revision || index.width != width
+            }) {
+                *cached = Some((
+                    session.revision,
+                    preview::PreviewWrapIndex::from_document(document, width),
+                ));
+            }
+            cached.as_ref().map(|(_, index)| index.clone())
+        } else {
+            None
+        };
+        let index = wrap_index
+            .as_ref()
+            .ok_or_else(|| EditorError::Operation("preview wrap index is unavailable".into()))?;
+        let first = session
+            .preview_layout
+            .get()
+            .map_or(0, |(_, _, _, offset)| offset)
+            .min(index.total_rows.saturating_sub(viewport.height));
+        let first_line = index
+            .line_visual_starts
+            .partition_point(|row| *row <= first)
+            .saturating_sub(1);
+        let last_line = index
+            .line_visual_starts
+            .partition_point(|row| *row < first.saturating_add(viewport.height.max(1)))
+            .min(index.starts.len())
+            .max(first_line + 1);
+        session.preview_render_first_line.set(Some(first_line));
         let mut snapshot = self.render_preview_snapshot(
             id,
             EditorViewport {
                 width: viewport.width,
-                height: total,
+                height: last_line.saturating_sub(first_line).saturating_add(2),
             },
             language,
         )?;
-        let width = viewport.width.max(1);
+        session.preview_render_first_line.set(None);
         let mut visual = Vec::new();
-        for (index, line) in snapshot.lines.iter().enumerate() {
-            let cells = line.source_to_display_cells.last().copied().unwrap_or(0);
-            let mut offset = 0;
-            loop {
-                visual.push((index, offset));
-                if cells <= offset + width {
-                    break;
-                }
-                let boundary = line
-                    .source_to_display_cells
-                    .partition_point(|cell| *cell <= offset + width)
-                    .saturating_sub(1);
-                let end = line
-                    .source_to_display_cells
-                    .get(boundary)
-                    .copied()
-                    .filter(|cell| *cell > offset)
-                    .unwrap_or(offset + width);
-                offset = end;
+        for (local_line, starts) in index.starts[first_line..last_line].iter().enumerate() {
+            for offset in starts {
+                visual.push((local_line, *offset));
             }
         }
-        let old = session.preview_layout.get();
-        let first = old
-            .map_or(0, |(_, _, _, offset)| offset)
-            .min(visual.len().saturating_sub(viewport.height));
-        session
-            .preview_layout
-            .set(Some((width, viewport.height, visual.len(), first)));
+        let local_first = first.saturating_sub(index.line_visual_starts[first_line]);
+        if let Some(session) = self.sessions.get(&id) {
+            session
+                .preview_layout
+                .set(Some((width, viewport.height, index.total_rows, first)));
+        }
         snapshot.cursor_screen_cell = visual
             .iter()
             .enumerate()
-            .skip(first)
+            .skip(local_first)
             .take(viewport.height)
             .find_map(|(row, (index, offset))| {
                 let line = &snapshot.lines[*index];
@@ -1044,14 +1183,16 @@ impl EditorWorkspace {
                     .get(snapshot.cursor.column)
                     .copied()
                     .unwrap_or(0);
-                (cell >= *offset && cell < offset + width)
-                    .then_some(((cell.saturating_sub(*offset)) as u16, (row - first) as u16))
+                (cell >= *offset && cell < offset + width).then_some((
+                    (cell.saturating_sub(*offset)) as u16,
+                    (row - local_first) as u16,
+                ))
             });
-        snapshot.total_lines = visual.len();
+        snapshot.total_lines = index.total_rows;
         snapshot.first_line = first;
         snapshot.lines = visual
             .into_iter()
-            .skip(first)
+            .skip(local_first)
             .take(viewport.height)
             .map(|(index, offset)| {
                 let mut line = snapshot.lines[index].clone();
@@ -1249,12 +1390,37 @@ impl EditorWorkspace {
             .write()
             .map_err(|_| EditorError::Operation("buffer lock poisoned".into()))?;
         let total_lines = buffer.get_lines().max(1);
-        let full_text = decode_editor_text(&buffer.get_text())?;
-        let max_line_width = full_line_width(&full_text);
+        let preview_document = if !analyze_sql && statement.is_none() && sql_ranges.is_none() {
+            let encoded = buffer.get_text();
+            let mut cached = session.preview_document.borrow_mut();
+            if cached
+                .as_ref()
+                .is_none_or(|(revision, _)| *revision != session.revision)
+            {
+                let text = decode_editor_text(&encoded)?;
+                *cached = Some((
+                    session.revision,
+                    Arc::new(preview::PreviewDocument::from_text(text)),
+                ));
+            }
+            cached.as_ref().map(|(_, document)| Arc::clone(document))
+        } else {
+            None
+        };
+        let full_text = preview_document.as_ref().map_or_else(
+            || decode_editor_text(&buffer.get_text()),
+            |document| Ok(document.text.clone()),
+        )?;
+        let max_line_width = preview_document.as_ref().map_or_else(
+            || full_line_width(&full_text),
+            |document| document.max_line_width,
+        );
         let tail_requested =
             session.pending_tail_scroll && viewport.width > 0 && viewport.height > 0;
         let max_row = total_lines.saturating_sub(viewport.height.max(1));
-        let first_line = if tail_requested {
+        let first_line = if let Some(preview_first_line) = session.preview_render_first_line.get() {
+            preview_first_line.min(max_row)
+        } else if tail_requested {
             max_row
         } else {
             session.viewport.corner.get_y().min(max_row)
@@ -1295,100 +1461,202 @@ impl EditorWorkspace {
             Vec::new()
         };
         let statements = statement.map(|_| sql::scan_statements(&full_text, dialect));
-        let mut line_start = full_text
-            .split_inclusive('\n')
-            .take(first_line)
-            .map(str::len)
-            .sum::<usize>();
-        let mut lines = buffer
-            .lines(first_line)
-            .take(viewport.height.saturating_add(overscan))
-            .enumerate()
-            .map(|(offset, line)| {
-                let source = line.to_string();
-                let projection = project_editor_line(&source);
-                let current_line_start = line_start;
-                let line_end = current_line_start + source.len();
-                let current_statement =
-                    statement.is_some_and(|range| range.start < line_end && range.end > line_start);
-                let statement_background_cells = statement_background_cells(
-                    &source,
-                    current_line_start,
-                    line_end,
-                    statement,
-                    statements.as_deref().unwrap_or_default(),
-                    &projection.source_to_display_cells,
-                );
-                let mut spans = Vec::new();
-                let mut byte = 0;
-                for highlight in highlights
-                    .iter()
-                    .filter(|item| item.range.start < line_end && item.range.end > line_start)
-                {
-                    let start = highlight.range.start.max(line_start) - line_start;
-                    let end = highlight.range.end.min(line_end) - line_start;
-                    if start > byte {
+        let mut line_start = preview_document.as_ref().map_or_else(
+            || {
+                full_text
+                    .split_inclusive('\n')
+                    .take(first_line)
+                    .map(str::len)
+                    .sum::<usize>()
+            },
+            |document| *document.line_starts.get(first_line).unwrap_or(&0),
+        );
+        let mut lines = if let Some(document) = preview_document.as_ref() {
+            document
+                .lines
+                .iter()
+                .skip(first_line)
+                .take(viewport.height.saturating_add(overscan))
+                .enumerate()
+                .map(|(offset, source)| {
+                    let line_index = first_line + offset;
+                    let source = source.clone();
+                    let projection = &document.projections[line_index];
+                    let current_line_start = document.line_starts[line_index];
+                    let line_end = current_line_start + source.len();
+                    let current_statement = statement.is_some_and(|range| {
+                        range.start < line_end && range.end > current_line_start
+                    });
+                    let statement_background_cells = statement_background_cells(
+                        &source,
+                        current_line_start,
+                        line_end,
+                        statement,
+                        statements.as_deref().unwrap_or_default(),
+                        &projection.source_to_display_cells,
+                    );
+                    let mut spans = Vec::new();
+                    let mut byte = 0;
+                    for highlight in highlights.iter().filter(|item| {
+                        item.range.start < line_end && item.range.end > current_line_start
+                    }) {
+                        let start =
+                            highlight.range.start.max(current_line_start) - current_line_start;
+                        let end = highlight.range.end.min(line_end) - current_line_start;
+                        if start > byte {
+                            spans.push(render_span(
+                                byte,
+                                start,
+                                EditorHighlightKind::Plain,
+                                statement,
+                                current_line_start,
+                                projection,
+                            ));
+                        }
+                        if end > start {
+                            spans.push(render_span(
+                                start,
+                                end,
+                                map_highlight(highlight.kind),
+                                statement,
+                                current_line_start,
+                                projection,
+                            ));
+                        }
+                        byte = byte.max(end);
+                    }
+                    if byte < source.len() {
                         spans.push(render_span(
                             byte,
-                            start,
+                            source.len(),
+                            EditorHighlightKind::Plain,
+                            statement,
+                            current_line_start,
+                            projection,
+                        ));
+                    }
+                    EditorRenderLine {
+                        wrap_offset: 0,
+                        line: first_line + offset,
+                        display_text: projection.text.clone(),
+                        spans: if spans.is_empty() {
+                            vec![EditorRenderSpan {
+                                text: projection.text.clone(),
+                                source_start: current_line_start,
+                                source_end: line_end,
+                                kind: EditorHighlightKind::Plain,
+                                current_statement: statement.is_some_and(|range| {
+                                    range.start < line_end && range.end > current_line_start
+                                }),
+                            }]
+                        } else {
+                            spans
+                        },
+                        source_start: current_line_start,
+                        source_end: line_end,
+                        source_byte_boundaries: projection.source_byte_boundaries.clone(),
+                        source_to_display_bytes: projection.source_to_display_bytes.clone(),
+                        source_to_display_cells: projection.source_to_display_cells.clone(),
+                        current_statement,
+                        statement_background_cells,
+                        selection_newline: false,
+                    }
+                })
+                .collect::<Vec<_>>()
+        } else {
+            buffer
+                .lines(first_line)
+                .take(viewport.height.saturating_add(overscan))
+                .enumerate()
+                .map(|(offset, line)| {
+                    let source = line.to_string();
+                    let projection = project_editor_line(&source);
+                    let current_line_start = full_text
+                        .split_inclusive('\n')
+                        .take(first_line + offset)
+                        .map(str::len)
+                        .sum::<usize>();
+                    let line_end = current_line_start + source.len();
+                    let current_statement = statement.is_some_and(|range| {
+                        range.start < line_end && range.end > current_line_start
+                    });
+                    let statement_background_cells = statement_background_cells(
+                        &source,
+                        current_line_start,
+                        line_end,
+                        statement,
+                        statements.as_deref().unwrap_or_default(),
+                        &projection.source_to_display_cells,
+                    );
+                    let mut spans = Vec::new();
+                    let mut byte = 0;
+                    for highlight in highlights.iter().filter(|item| {
+                        item.range.start < line_end && item.range.end > current_line_start
+                    }) {
+                        let start =
+                            highlight.range.start.max(current_line_start) - current_line_start;
+                        let end = highlight.range.end.min(line_end) - current_line_start;
+                        if start > byte {
+                            spans.push(render_span(
+                                byte,
+                                start,
+                                EditorHighlightKind::Plain,
+                                statement,
+                                current_line_start,
+                                &projection,
+                            ));
+                        }
+                        if end > start {
+                            spans.push(render_span(
+                                start,
+                                end,
+                                map_highlight(highlight.kind),
+                                statement,
+                                current_line_start,
+                                &projection,
+                            ));
+                        }
+                        byte = byte.max(end);
+                    }
+                    if byte < source.len() {
+                        spans.push(render_span(
+                            byte,
+                            source.len(),
                             EditorHighlightKind::Plain,
                             statement,
                             current_line_start,
                             &projection,
                         ));
                     }
-                    if end > start {
-                        spans.push(render_span(
-                            start,
-                            end,
-                            map_highlight(highlight.kind),
-                            statement,
-                            current_line_start,
-                            &projection,
-                        ));
-                    }
-                    byte = byte.max(end);
-                }
-                if byte < source.len() {
-                    spans.push(render_span(
-                        byte,
-                        source.len(),
-                        EditorHighlightKind::Plain,
-                        statement,
-                        current_line_start,
-                        &projection,
-                    ));
-                }
-                let rendered = EditorRenderLine {
-                    wrap_offset: 0,
-                    line: first_line + offset,
-                    display_text: projection.text.clone(),
-                    spans: if spans.is_empty() {
-                        vec![EditorRenderSpan {
-                            text: projection.text,
-                            source_start: current_line_start,
-                            source_end: line_end,
-                            kind: EditorHighlightKind::Plain,
-                            current_statement: statement.is_some_and(|range| {
-                                range.start < line_end && range.end > line_start
-                            }),
-                        }]
-                    } else {
-                        spans
-                    },
-                    source_start: current_line_start,
-                    source_end: line_end,
-                    source_byte_boundaries: projection.source_byte_boundaries,
-                    source_to_display_bytes: projection.source_to_display_bytes,
-                    source_to_display_cells: projection.source_to_display_cells,
-                    current_statement,
-                    statement_background_cells,
-                    selection_newline: false,
-                };
-                line_start = line_end + usize::from(line_end < full_text.len());
-                rendered
-            })
-            .collect::<Vec<_>>();
+                    let rendered = EditorRenderLine {
+                        wrap_offset: 0,
+                        line: first_line + offset,
+                        display_text: projection.text.clone(),
+                        spans: if spans.is_empty() {
+                            vec![EditorRenderSpan {
+                                text: projection.text,
+                                source_start: current_line_start,
+                                source_end: line_end,
+                                kind: EditorHighlightKind::Plain,
+                                current_statement,
+                            }]
+                        } else {
+                            spans
+                        },
+                        source_start: current_line_start,
+                        source_end: line_end,
+                        source_byte_boundaries: projection.source_byte_boundaries,
+                        source_to_display_bytes: projection.source_to_display_bytes,
+                        source_to_display_cells: projection.source_to_display_cells,
+                        current_statement,
+                        statement_background_cells,
+                        selection_newline: false,
+                    };
+                    line_start = line_end + usize::from(line_end < full_text.len());
+                    rendered
+                })
+                .collect::<Vec<_>>()
+        };
         let selection =
             buffer
                 .get_leader_selection(session.group_id)
@@ -1502,6 +1770,7 @@ impl EditorWorkspace {
             revision: session.revision,
             mode: session.mode,
             first_line,
+            logical_line_count: total_lines,
             total_lines,
             viewport,
             horizontal_offset,
@@ -2369,7 +2638,13 @@ impl EditorWorkspace {
 
     fn input_vim_key(&mut self, id: Uuid, key: EditorKey) -> Result<(), EditorError> {
         let mode_before = self.mode(id)?;
-        let before = self.snapshot(id)?;
+        let read_only = self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?
+            .capability
+            == EditorSessionCapability::ReadOnly;
+        let before = (!read_only).then(|| self.snapshot(id)).transpose()?;
         let unnamed_before = self.register('"').map(str::to_owned);
         let session = self
             .sessions
@@ -2474,8 +2749,10 @@ impl EditorWorkspace {
                 self.effects.push(EditorEffect::Yanked(copied));
             }
         }
-        let after = self.snapshot(id)?;
-        if before.text != after.text {
+        let after = before.as_ref().map(|_| self.snapshot(id)).transpose()?;
+        if let (Some(before), Some(after)) = (before.as_ref(), after.as_ref())
+            && before.text != after.text
+        {
             {
                 let session = self
                     .sessions
@@ -2484,7 +2761,7 @@ impl EditorWorkspace {
                 session.last_sequence = Some(std::mem::take(&mut session.current_sequence));
             }
             let mode_after = self.mode(id)?;
-            self.record_edit_history(id, before, &after, mode_before, mode_after)?;
+            self.record_edit_history(id, before.clone(), after, mode_before, mode_after)?;
             self.record_changed(id)?;
         } else {
             let mode_after = self.mode(id)?;
@@ -2495,8 +2772,10 @@ impl EditorWorkspace {
                     .sessions
                     .get_mut(&id)
                     .ok_or(EditorError::MissingSession(id))?;
-                if session.history.transaction_start.is_none() {
-                    session.history.transaction_start = Some(before);
+                if session.history.transaction_start.is_none()
+                    && let Some(before) = before.as_ref()
+                {
+                    session.history.transaction_start = Some(before.clone());
                 }
             } else if matches!(mode_before, EditorMode::Insert | EditorMode::Replace)
                 && !matches!(mode_after, EditorMode::Insert | EditorMode::Replace)
@@ -2742,6 +3021,60 @@ impl EditorWorkspace {
         position: EditorPosition,
         center: bool,
     ) -> Result<(), EditorError> {
+        if let Some((width, height, total, offset, _cursor_row)) =
+            self.sessions.get(&id).and_then(|session| {
+                let document = session.preview_document.borrow();
+                let index = session.preview_wrap_index.borrow();
+                match (document.as_ref(), index.as_ref()) {
+                    (Some((revision, document)), Some((index_revision, index)))
+                        if *revision == session.revision && *index_revision == session.revision =>
+                    {
+                        let projection = document.projections.get(position.line)?;
+                        let cell = projection
+                            .source_to_display_cells
+                            .get(position.column)
+                            .copied()
+                            .unwrap_or_else(|| {
+                                projection
+                                    .source_to_display_cells
+                                    .last()
+                                    .copied()
+                                    .unwrap_or(0)
+                            });
+                        let cursor_row = index.cursor_row(position.line, cell);
+                        let old = session.preview_layout.get();
+                        let (width, height, total, offset) = old.unwrap_or((
+                            index.width,
+                            session.viewport.get_height(),
+                            index.total_rows,
+                            0,
+                        ));
+                        let next = if cursor_row < offset {
+                            cursor_row
+                        } else if cursor_row >= offset + height {
+                            cursor_row.saturating_add(1).saturating_sub(height)
+                        } else {
+                            offset
+                        };
+                        Some((
+                            width,
+                            height,
+                            total,
+                            next.min(total.saturating_sub(height)),
+                            cursor_row,
+                        ))
+                    }
+                    _ => None,
+                }
+            })
+        {
+            if let Some(session) = self.sessions.get_mut(&id) {
+                session
+                    .preview_layout
+                    .set(Some((width, height, total, offset)));
+            }
+            return Ok(());
+        }
         let text = self.text(id)?;
         let session = self
             .sessions
@@ -3364,3 +3697,6 @@ fn byte_to_char_position(text: &str, offset: usize) -> EditorPosition {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod preview_perf_tests;
