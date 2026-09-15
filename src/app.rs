@@ -14743,6 +14743,15 @@ impl App {
             _ => None,
         };
         self.tabs.remove(index);
+        // Restored workspaces remain cached until their connection is activated.
+        // Remove the view from every projection as well, or a later save/install
+        // can resurrect it even though it is closed on the shared tab surface.
+        for workspace in self.workspaces.values_mut() {
+            workspace.tabs.retain(|tab| tab.id() != id);
+            if workspace.active_tab_id == Some(id) {
+                workspace.active_tab_id = workspace.tabs.first().map(WorkspaceTab::id);
+            }
+        }
         if was_console
             && let Some(record) = self.sql_editors.iter_mut().find(|record| record.id == id)
         {
