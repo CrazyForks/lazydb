@@ -1035,6 +1035,120 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
 }
 
 #[test]
+fn closing_restored_tabs_without_connecting_survives_disk_round_trip() {
+    use lazydb::persistence::workspace::{PersistedRelationTab, WorkspaceStore};
+
+    for missing_profile in [false, true] {
+        let first = import_connection_url(":memory:", Some("first"))
+            .unwrap()
+            .profile;
+        let second = import_connection_url("redis://localhost:6379", Some("second"))
+            .unwrap()
+            .profile;
+        let console_id = Uuid::new_v4();
+        let relation_id = Uuid::new_v4();
+        let dashboard_id = Uuid::new_v4();
+        let redis_id = Uuid::new_v4();
+        let mut console = persisted_console(console_id, "saved SQL", true);
+        console.target =
+            Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second));
+        let snapshot = WorkspaceSnapshot {
+            active_profile: Some(first.id),
+            profiles: vec![
+                PersistedProfileWorkspace {
+                    profile_id: first.id,
+                    active_tab: None,
+                    consoles: Vec::new(),
+                    tabs: Vec::new(),
+                },
+                PersistedProfileWorkspace {
+                    profile_id: second.id,
+                    active_tab: Some(relation_id),
+                    consoles: vec![console],
+                    tabs: vec![
+                        PersistedTab::Console { console_id },
+                        PersistedTab::Relation(PersistedRelationTab {
+                            id: relation_id,
+                            object_id: CatalogId::new(second.id, CatalogKind::Table, ["users"]),
+                            qualified_name: QualifiedName {
+                                database: None,
+                                schema: None,
+                                object: "users".into(),
+                            },
+                            catalog_kind: CatalogKind::Table,
+                            title: "users".into(),
+                            view: lazydb::model::relation::RelationView::Ddl,
+                        }),
+                        PersistedTab::Dashboard {
+                            dashboard_id,
+                            page: Default::default(),
+                            refresh_enabled: true,
+                            redis_database: None,
+                        },
+                        PersistedTab::RedisBrowser {
+                            tab_id: redis_id,
+                            profile_id: second.id,
+                            database: 0,
+                            pattern: Vec::new(),
+                        },
+                    ],
+                },
+            ],
+            active_console: relation_id,
+            consoles: Vec::new(),
+            tabs: Vec::new(),
+            sql: vec![(console_id, "select 42".into())],
+            recent_targets: Vec::new(),
+        };
+        let profiles = if missing_profile {
+            vec![first.clone()]
+        } else {
+            vec![first.clone(), second]
+        };
+        let mut app = App::new(profiles.clone());
+        app.restore_workspace(snapshot, Some(first.id));
+        assert_eq!(
+            app.connection.status,
+            lazydb::model::workspace::ConnectionStatus::Disconnected
+        );
+        let temp = tempfile::TempDir::new().unwrap();
+        let store =
+            WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+        // Close the cached active tab first to exercise active-tab repair,
+        // then close every remaining view, including the last tab.
+        let mut ids = vec![relation_id, console_id, dashboard_id];
+        if !missing_profile {
+            ids.push(redis_id);
+        }
+        for id in ids {
+            let commands = app.update(Action::CloseTab(id));
+            let snapshot = commands
+                .into_iter()
+                .find_map(|command| match command {
+                    Command::PersistWorkspace { snapshot, .. } => Some(snapshot),
+                    _ => None,
+                })
+                .expect("closing an offline tab must offer a save");
+            store.save(&snapshot).unwrap();
+            let mut restarted = App::new(profiles.clone());
+            restarted.restore_workspace(store.load().unwrap().unwrap(), Some(first.id));
+            assert!(restarted.tabs.iter().all(|tab| tab.id() != id));
+            assert_eq!(restarted.tabs.len(), app.tabs.len());
+            app = restarted;
+        }
+        assert!(app.tabs.is_empty());
+        assert_eq!(app.editor_text(console_id).unwrap(), "select 42");
+        assert!(
+            !app.sql_editors
+                .iter()
+                .find(|record| record.id == console_id)
+                .unwrap()
+                .open
+        );
+    }
+}
+
+#[test]
 fn restored_relation_tab_is_not_loaded_before_connection_installation() {
     let profile = import_connection_url(":memory:", Some("first"))
         .unwrap()

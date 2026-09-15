@@ -2135,18 +2135,18 @@ fn render_tabs(
         .map(|(index, tab)| {
             let title = if let Some(console) = tab.as_console() {
                 let connection_name = console.execution_target.as_ref().map_or_else(
-                    || "未绑定".to_owned(),
+                    || "Unbound".to_owned(),
                     |target| {
                         app.profiles
                             .iter()
                             .find(|profile| profile.id == target.profile_id)
                             .map_or_else(
-                                || "失效目标".to_owned(),
+                                || "Invalid target".to_owned(),
                                 |profile| {
                                     if target.is_valid(profile) {
                                         profile.name.clone()
                                     } else {
-                                        format!("失效:{}", profile.name)
+                                        format!("Invalid:{}", profile.name)
                                     }
                                 },
                             )
@@ -2160,7 +2160,7 @@ fn render_tabs(
                         .iter()
                         .find(|profile| profile.id == relation.descriptor.key.profile_id)
                         .map(|profile| profile.name.clone())
-                        .unwrap_or_else(|| "失效目标".to_owned()),
+                        .unwrap_or_else(|| "Invalid target".to_owned()),
                     WorkspaceTab::Dashboard(dashboard) => dashboard
                         .connection
                         .or_else(|| {
@@ -2177,14 +2177,14 @@ fn render_tabs(
                                 .find(|profile| profile.id == connection.profile_id)
                         })
                         .map(|profile| profile.name.clone())
-                        .unwrap_or_else(|| "未绑定".to_owned()),
+                        .unwrap_or_else(|| "Unbound".to_owned()),
                     WorkspaceTab::Sql(_) => unreachable!(),
                     WorkspaceTab::RedisBrowser(redis) => app
                         .profiles
                         .iter()
                         .find(|profile| profile.id == redis.target.profile_id)
                         .map(|profile| profile.name.clone())
-                        .unwrap_or_else(|| "失效目标".to_owned()),
+                        .unwrap_or_else(|| "Invalid target".to_owned()),
                 };
                 match tab {
                     WorkspaceTab::RedisBrowser(redis) => {
