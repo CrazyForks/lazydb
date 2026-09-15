@@ -1126,6 +1126,16 @@ fn restored_postgres_relation_prepares_its_schema_session() {
         Command::Connect { target, .. }
             if target.database == "lazydb_test" && target.schema.as_deref() == Some("test_schema")
     )));
+    assert!(matches!(
+        &app.tabs[0],
+        WorkspaceTab::Relation(tab)
+            if matches!(
+                tab.preparation,
+                lazydb::model::relation::RelationPreparation::WaitingForSession { ref target }
+                    if target.database == "lazydb_test"
+                        && target.schema.as_deref() == Some("test_schema")
+            )
+    ));
 }
 
 #[test]

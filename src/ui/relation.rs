@@ -582,6 +582,28 @@ fn render_data(
         }
         RelationLoad::Empty => (None, Some(("No relation data", false, false))),
     };
+    let status = if matches!(tab.data, RelationLoad::Empty)
+        && !matches!(
+            tab.preparation,
+            crate::model::relation::RelationPreparation::Idle
+        ) {
+        Some((
+            match &tab.preparation {
+                crate::model::relation::RelationPreparation::WaitingForSession { .. } => {
+                    "Connecting to relation target"
+                }
+                crate::model::relation::RelationPreparation::ResolvingIdentity => {
+                    "Resolving relation identity"
+                }
+                crate::model::relation::RelationPreparation::Failed { message } => message,
+                crate::model::relation::RelationPreparation::Idle => "No relation data",
+            },
+            false,
+            true,
+        ))
+    } else {
+        status
+    };
     if let Some(snapshot) = snapshot {
         let mut result = snapshot
             .value

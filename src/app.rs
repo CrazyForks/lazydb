@@ -21949,37 +21949,63 @@ impl App {
             );
             return Vec::new();
         }
-        let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
-            return Vec::new();
+        let (target, database_is_specified, stale_native_identity, relation, profile) = {
+            let Some(WorkspaceTab::Relation(tab)) = self.tabs.get(self.active_tab) else {
+                return Vec::new();
+            };
+            let Some(profile) = self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == tab.descriptor.key.profile_id)
+                .cloned()
+            else {
+                return Vec::new();
+            };
+            (
+                relation_execution_target(tab, &profile).or_else(|| self.connection.target.clone()),
+                tab.descriptor.qualified_name.database.is_some(),
+                tab.stale_native_identity,
+                tab.descriptor.key.clone(),
+                profile,
+            )
         };
-        let Some(profile) = self
-            .profiles
-            .iter()
-            .find(|profile| profile.id == tab.descriptor.key.profile_id)
-        else {
-            return Vec::new();
-        };
-        let target =
-            relation_execution_target(tab, profile).or_else(|| self.connection.target.clone());
         let connection = target.as_ref().and_then(|target| {
             self.sessions
                 .get(target)
                 .filter(|session| session.status == crate::model::session::SessionStatus::Connected)
                 .map(|session| session.identity)
         });
+        let connection = connection.or_else(|| {
+            self.connection.active_identity().filter(|identity| {
+                identity.profile_id == relation.profile_id
+                    && (!database_is_specified
+                        || self.connection.target.as_ref() == target.as_ref())
+            })
+        });
         let Some(connection) = connection else {
             let Some(target) = target else {
                 return Vec::new();
             };
-            return self.request_connection_target(target);
+            let commands = self.request_connection_target(target.clone());
+            if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
+                tab.preparation =
+                    crate::model::relation::RelationPreparation::WaitingForSession { target };
+            }
+            return commands;
         };
-        if tab.stale_native_identity {
+        if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) {
+            tab.preparation = crate::model::relation::RelationPreparation::Idle;
+        }
+        if stale_native_identity {
             return Vec::new();
         }
-        if !relation_is_in_scope(tab, &profile.catalog_scope) {
+        let in_scope = self.tabs.get(self.active_tab).is_some_and(|tab| {
+            matches!(tab, WorkspaceTab::Relation(tab) if relation_is_in_scope(tab, &profile.catalog_scope))
+        });
+        if !in_scope {
             return Vec::new();
         }
-        if self.relation_catalog_readiness(connection, &tab.descriptor.key.object_id)
+        if self.relation_catalog_readiness(connection, &relation.object_id)
             == RelationCatalogReadiness::Loading
         {
             return Vec::new();

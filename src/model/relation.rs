@@ -13,6 +13,7 @@ use crate::db::{
     catalog::{CatalogId, CatalogKind, QualifiedName, RelationDdl},
 };
 use crate::identity::ConnectionIdentity;
+use crate::model::execution_target::ExecutionTarget;
 use crate::profile::CatalogScope;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -126,6 +127,20 @@ pub enum RelationLoad<T> {
 pub type RelationPreviewLoad = RelationLoad<RelationPreview>;
 pub type RelationDdlLoad = RelationLoad<RelationDdl>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RelationPreparation {
+    Idle,
+    WaitingForSession { target: ExecutionTarget },
+    ResolvingIdentity,
+    Failed { message: String },
+}
+
+impl Default for RelationPreparation {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DdlViewportState {
     pub row_offset: usize,
@@ -185,6 +200,9 @@ pub struct RelationTab {
     pub transaction_snapshot: Option<RelationEditSession>,
     pub transaction_review_sql: Option<String>,
     pub stale_native_identity: bool,
+    /// Transient work required before a DATA/DDL request can be issued.
+    /// This is deliberately not part of workspace persistence.
+    pub preparation: RelationPreparation,
 }
 
 impl RelationTab {
@@ -221,6 +239,7 @@ impl RelationTab {
     pub fn rebind_descriptor(&mut self, descriptor: RelationDescriptor, stale_edits: bool) {
         self.descriptor = descriptor;
         self.generation = self.generation.saturating_add(1);
+        self.preparation = RelationPreparation::Idle;
         self.data = mutation_stale(std::mem::replace(&mut self.data, RelationLoad::Empty));
         self.ddl = mutation_stale(std::mem::replace(&mut self.ddl, RelationLoad::Empty));
         self.stale_native_identity = stale_edits;
@@ -341,6 +360,7 @@ impl RelationTab {
             transaction_snapshot: None,
             transaction_review_sql: None,
             stale_native_identity: false,
+            preparation: RelationPreparation::Idle,
         }
     }
 
