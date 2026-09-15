@@ -8525,6 +8525,21 @@ impl App {
                     );
                     return Vec::new();
                 };
+                if profile_kind == crate::profile::DatabaseKind::Oracle {
+                    let availability = match entry.kind {
+                        crate::db::catalog::CatalogKind::Table
+                        | crate::db::catalog::CatalogKind::View
+                        | crate::db::catalog::CatalogKind::Sequence => true,
+                        _ => false,
+                    };
+                    if !availability {
+                        self.notify_warning(
+                            "Catalog",
+                            "Oracle catalog drops support tables, views, and sequences",
+                        );
+                        return Vec::new();
+                    }
+                }
                 let maintenance_database = if profile_kind == crate::profile::DatabaseKind::Postgres
                     && entry.kind == crate::db::catalog::CatalogKind::Database
                 {
@@ -8742,6 +8757,13 @@ impl App {
                 };
                 let removed_set = removed.into_iter().collect();
                 self.explorer.completion_index.remove_ids(&removed_set);
+                for tab in &mut self.tabs {
+                    if let WorkspaceTab::Relation(tab) = tab
+                        && tab.descriptor.key.object_id == plan.object
+                    {
+                        tab.invalidate_deleted_catalog_object();
+                    }
+                }
                 self.explorer.catalog_generation =
                     self.explorer.catalog_generation.saturating_add(1);
                 self.explorer

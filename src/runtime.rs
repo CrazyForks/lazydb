@@ -2818,14 +2818,29 @@ impl Runtime {
                 });
                 return;
             }
-            if profile.is_some_and(|profile| profile.read_only) {
+            if profile.as_ref().is_some_and(|profile| profile.read_only) {
                 let _ = sender.send(Action::CatalogDropFailed {
                     plan: task_plan,
                     message: "catalog drop is unavailable on a read-only profile".to_owned(),
                 });
                 return;
             }
-            match database.execute(task_plan.sql()).await {
+            let result = if profile
+                .as_ref()
+                .is_some_and(|profile| profile.kind == crate::profile::DatabaseKind::Oracle)
+            {
+                Runtime::execute_oracle_catalog_drop(
+                    &task_plan,
+                    profile.as_ref().unwrap(),
+                    &registry,
+                    &secret_store,
+                    &local_credential_store,
+                )
+                .await
+            } else {
+                database.execute(task_plan.sql()).await
+            };
+            match result {
                 Ok(outcome) => {
                     let _ = sender.send(Action::CatalogDropSucceeded {
                         plan: task_plan,
@@ -2841,6 +2856,39 @@ impl Runtime {
             }
         });
         self.catalog_drop_execute_tasks.insert(key, task);
+    }
+
+    async fn execute_oracle_catalog_drop(
+        plan: &crate::db::catalog_drop::CatalogDropPlan,
+        profile: &crate::profile::ConnectionProfile,
+        registry: &Arc<Mutex<ProfileRegistry>>,
+        secret_store: &Arc<dyn SecretStore>,
+        local_credential_store: &LocalCredentialStore,
+    ) -> Result<crate::db::query::QueryOutcome, DatabaseError> {
+        let entry = plan.request.entry.as_ref().ok_or_else(|| {
+            DatabaseError::configuration("Oracle catalog drop request has no catalog entry")
+        })?;
+        let target = ExecutionTarget {
+            profile_id: profile.id,
+            database: entry.qualified_name.database.clone().ok_or_else(|| {
+                DatabaseError::configuration("Oracle catalog entry has no database")
+            })?,
+            schema: entry.qualified_name.schema.clone(),
+        };
+        if !target.is_valid(profile) {
+            return Err(DatabaseError::configuration(
+                "Oracle catalog drop target is invalid for this profile",
+            ));
+        }
+        let password =
+            resolve_profile_password(registry, secret_store, local_credential_store, profile)
+                .await
+                .map_err(DatabaseError::configuration)?;
+        let database =
+            DatabaseConnection::connect_target(profile, password.as_ref(), &target).await?;
+        let result = database.execute(plan.sql()).await;
+        database.close().await;
+        result
     }
 
     fn search_catalog(

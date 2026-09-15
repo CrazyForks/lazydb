@@ -485,6 +485,16 @@ impl DatabaseConnection {
         }
     }
 
+    pub fn catalog_drop_availability(
+        &self,
+        kind: CatalogKind,
+    ) -> catalog_mutation::CatalogMutationAvailability {
+        match self {
+            Self::Oracle(_) => OracleAdapter::catalog_drop_availability(kind),
+            _ => catalog_mutation::CatalogMutationAvailability::Available,
+        }
+    }
+
     pub fn plan_catalog_drop(
         &self,
         request: catalog_drop::CatalogDropRequest,
@@ -494,10 +504,7 @@ impl DatabaseConnection {
             Self::Postgres(_) => PostgresAdapter::plan_catalog_drop(request, entry),
             Self::MySql(_) => MySqlAdapter::plan_catalog_drop(request, entry),
             Self::MariaDb(_) => MySqlAdapter::plan_catalog_drop(request, entry),
-            Self::Oracle(_) => Err(catalog_drop::CatalogDropError::Unsupported {
-                kind: entry.kind,
-                reason: "Oracle catalog drops are not implemented yet".to_owned(),
-            }),
+            Self::Oracle(_) => OracleAdapter::plan_catalog_drop(request, entry),
             Self::Sqlite(_) => SqliteAdapter::plan_catalog_drop(request, entry),
             Self::SqlServer(_) => MsSqlAdapter::plan_catalog_drop(request, entry),
             Self::Redis(_) => Err(catalog_drop::CatalogDropError::Unsupported {

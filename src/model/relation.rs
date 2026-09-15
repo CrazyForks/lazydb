@@ -235,6 +235,15 @@ impl RelationTab {
         self.stale_native_identity |= native_identity_changed;
     }
 
+    pub fn invalidate_deleted_catalog_object(&mut self) {
+        self.generation = self.generation.saturating_add(1);
+        self.transaction_generation = self.transaction_generation.saturating_add(1);
+        self.preparation = RelationPreparation::Idle;
+        self.data = mutation_stale(std::mem::replace(&mut self.data, RelationLoad::Empty));
+        self.ddl = mutation_stale(std::mem::replace(&mut self.ddl, RelationLoad::Empty));
+        self.stale_native_identity = true;
+    }
+
     pub fn rebind_descriptor(&mut self, descriptor: RelationDescriptor, stale_edits: bool) {
         self.descriptor = descriptor;
         self.generation = self.generation.saturating_add(1);
