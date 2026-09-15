@@ -11186,16 +11186,31 @@ impl App {
                     manager.operation = None;
                     manager.set_message(ProfileMessageLevel::Success, "Connected");
                 }
-                self.explorer.catalog_sessions.insert(profile_id, identity);
+                let catalog_session = self
+                    .explorer
+                    .catalog_sessions
+                    .get(&profile_id)
+                    .copied()
+                    .filter(|catalog_identity| {
+                        self.catalog_session_can_serve_database(*catalog_identity, &target)
+                    });
+                if catalog_session.is_none() {
+                    self.explorer.catalog_sessions.insert(profile_id, identity);
+                }
                 let commands_for_catalog = if profile_kind == DatabaseKind::Redis {
                     Vec::new()
                 } else if editor_target_switch.is_none() {
-                    self.start_catalog_request_for_connection(
-                        identity,
-                        CatalogTarget::Databases,
-                        None,
-                        CatalogRequestIntent::Automatic,
-                    )
+                    catalog_session
+                        .or_else(|| self.explorer.catalog_sessions.get(&profile_id).copied())
+                        .map(|catalog_identity| {
+                            self.start_catalog_request_for_connection(
+                                catalog_identity,
+                                CatalogTarget::Databases,
+                                None,
+                                CatalogRequestIntent::Automatic,
+                            )
+                        })
+                        .unwrap_or_default()
                 } else {
                     interrupted_catalog_targets
                         .into_iter()
@@ -15638,7 +15653,17 @@ impl App {
             self.connection.pending_generation = None;
             self.connection.pending_target = None;
             self.explorer.active_profile = Some(profile_id);
-            self.explorer.catalog_sessions.insert(profile_id, identity);
+            let catalog_session = self
+                .explorer
+                .catalog_sessions
+                .get(&profile_id)
+                .copied()
+                .filter(|catalog_identity| {
+                    self.catalog_session_can_serve_database(*catalog_identity, &target)
+                });
+            if catalog_session.is_none() {
+                self.explorer.catalog_sessions.insert(profile_id, identity);
+            }
             if let Some(state) = self.explorer.normalized.profiles.get_mut(&profile_id) {
                 state.status = ExplorerConnectionStatus::Online;
             }
@@ -16018,6 +16043,26 @@ impl App {
     fn connection_identity_is_live(&self, identity: ConnectionIdentity) -> bool {
         self.sessions.get_by_identity(identity).is_some()
             || self.connection.active_identity() == Some(identity)
+    }
+
+    fn catalog_session_can_serve_database(
+        &self,
+        identity: ConnectionIdentity,
+        target: &ExecutionTarget,
+    ) -> bool {
+        if identity.profile_id != target.profile_id {
+            return false;
+        }
+        self.sessions
+            .get_by_identity(identity)
+            .is_some_and(|session| {
+                session.status == crate::model::session::SessionStatus::Connected
+                    && session.target.database == target.database
+            })
+            || (self.connection.active_identity() == Some(identity)
+                && self.connection.target.as_ref().is_some_and(|active| {
+                    active.profile_id == target.profile_id && active.database == target.database
+                }))
     }
 
     fn console_query_matches(
