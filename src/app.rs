@@ -11248,9 +11248,33 @@ impl App {
                         generation,
                     }));
                 }
-                if should_activate_workspace && self.is_active_relation_tab() {
+                let active_tab = self.active_tab;
+                let relation_tabs = self
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, tab)| {
+                        matches!(tab, WorkspaceTab::Relation(tab)
+                            if relation_execution_target(
+                                tab,
+                                self.profiles.iter().find(|profile| profile.id == profile_id)?,
+                            ) == Some(target.clone()))
+                        .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                for index in relation_tabs.iter().copied() {
+                    self.active_tab = index;
                     commands.extend(self.load_active_relation(false));
                 }
+                if !relation_tabs.contains(&active_tab)
+                    && self
+                        .tabs
+                        .get(active_tab)
+                        .is_some_and(|tab| matches!(tab, WorkspaceTab::Relation(_)))
+                {
+                    commands.extend(self.load_active_relation(false));
+                }
+                self.active_tab = active_tab.min(self.tabs.len().saturating_sub(1));
                 if editor_target_switch.is_some()
                     && let Some(key) = self.editor_diagnostics_key()
                 {

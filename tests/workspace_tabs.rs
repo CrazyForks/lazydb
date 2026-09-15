@@ -1247,7 +1247,7 @@ fn restored_relation_waits_for_catalog_before_loading() {
     assert!(matches!(app.tabs[0], WorkspaceTab::Relation(ref tab)
         if matches!(tab.data, lazydb::model::relation::RelationLoad::Loading { .. })));
     assert!(matches!(app.tabs[1], WorkspaceTab::Relation(ref tab)
-        if matches!(tab.data, lazydb::model::relation::RelationLoad::Empty)));
+        if matches!(tab.data, lazydb::model::relation::RelationLoad::Loading { .. })));
 
     let database_request = commands
         .iter()
