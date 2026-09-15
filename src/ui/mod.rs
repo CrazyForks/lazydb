@@ -2589,6 +2589,9 @@ fn explorer_list_item(
         crate::model::explorer::ExplorerNodeId::ConnectionGroup { .. } => {
             icons.group(crate::db::catalog::ObjectGroup::Tables, expanded)
         }
+        crate::model::explorer::ExplorerNodeId::RedisDatabase { .. } => {
+            icons.catalog(CatalogKind::Schema)
+        }
         crate::model::explorer::ExplorerNodeId::Group { group, .. } => {
             icons.group(*group, expanded)
         }
@@ -2648,17 +2651,23 @@ fn explorer_list_item(
                 }),
         ));
     } else if !is_others {
+        let icon_color = if matches!(
+            &visible.id,
+            crate::model::explorer::ExplorerNodeId::RedisDatabase { .. }
+        ) {
+            icons.database_color(DatabaseKind::Redis)
+        } else {
+            visible
+                .kind
+                .map_or(theme.muted, |kind| kind_color(kind, theme))
+        };
         spans.push(Span::styled(
             format!("{} ", icon),
-            Style::new()
-                .fg(visible
-                    .kind
-                    .map_or(theme.muted, |kind| kind_color(kind, theme)))
-                .bg(if selected {
-                    theme.selection
-                } else {
-                    theme.surface
-                }),
+            Style::new().fg(icon_color).bg(if selected {
+                theme.selection
+            } else {
+                theme.surface
+            }),
         ));
     }
     if let Some(reason) = visible.unavailable_reason.as_deref() {
