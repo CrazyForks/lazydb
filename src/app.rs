@@ -18064,7 +18064,7 @@ impl App {
                             page,
                             format,
                             ..
-                        } => crate::ui::redis_value::format_page(page, format.view)
+                        } => crate::ui::redis_value::format_page(page, *format)
                             .unwrap_or_else(|_| crate::ui::redis_value::page_text(page)),
                         _ => String::new(),
                     };
