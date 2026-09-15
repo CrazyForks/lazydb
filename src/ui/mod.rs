@@ -124,6 +124,7 @@ pub enum HitTarget {
         row: usize,
         column: usize,
     },
+    RedisPreviewLoadMore(Uuid),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,

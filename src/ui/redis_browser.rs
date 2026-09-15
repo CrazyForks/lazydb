@@ -292,9 +292,15 @@ pub fn render(
     {
         let table = crate::value_preview::table::from_page(&page.value);
         let result = redis_table_result(&table);
+        let grid_area = Rect::new(
+            value_area.x,
+            value_area.y,
+            value_area.width,
+            value_area.height.saturating_sub(1),
+        );
         super::data_grid::render(
             frame,
-            value_area,
+            grid_area,
             tab.id,
             &result,
             tab.preview_grid.clone(),
@@ -307,9 +313,16 @@ pub fn render(
             None,
             false,
         );
+        let status_area = Rect::new(
+            grid_area.x,
+            grid_area.bottom().saturating_sub(1),
+            grid_area.width,
+            1,
+        );
+        render_value_page_status(frame, status_area, tab, ui, theme, result.rows.len());
         ui.redis_preview_viewport_rows = Some((
             tab.id,
-            value_area.height.saturating_sub(1) as usize,
+            grid_area.height.saturating_sub(2) as usize,
             result.rows.len() + 1,
         ));
         return;
@@ -376,6 +389,45 @@ pub fn render(
         );
         ui.redis_preview_viewport_rows =
             Some((tab.id, preview_area.height as usize, preview_content_rows));
+    }
+}
+
+fn render_value_page_status(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    tab: &crate::model::redis_browser::RedisBrowserTab,
+    ui: &mut crate::ui::UiState,
+    theme: Theme,
+    row_count: usize,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let state = match &tab.value_page {
+        RedisValuePageState::Ready(_) if tab.value_page_loading => "Loading…".to_owned(),
+        RedisValuePageState::Ready(page) if page.complete => "Complete".to_owned(),
+        RedisValuePageState::Ready(_) => "More available".to_owned(),
+        RedisValuePageState::Failed { .. } => "Load failed · Retry".to_owned(),
+        _ => "Not loaded".to_owned(),
+    };
+    let start = tab.preview_grid.row_offset.saturating_add(1);
+    let end = (start + tab.preview_grid.viewport_rows.max(1)).min(row_count);
+    let text = if row_count == 0 {
+        format!("0 loaded · {state}")
+    } else {
+        format!("Rows {start}–{end} · {row_count} loaded · {state}")
+    };
+    frame.render_widget(
+        Paragraph::new(text).style(Style::new().fg(theme.muted).bg(theme.surface)),
+        area,
+    );
+    if !tab.value_page_loading
+        && matches!(tab.value_page, RedisValuePageState::Ready(ref page) if !page.complete)
+    {
+        ui.hit_regions.push(crate::ui::HitRegion {
+            area,
+            target: crate::ui::HitTarget::RedisPreviewLoadMore(tab.id),
+        });
     }
 }
 
