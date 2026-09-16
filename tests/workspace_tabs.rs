@@ -1264,6 +1264,36 @@ fn closing_restored_tabs_without_connecting_survives_disk_round_trip() {
 }
 
 #[test]
+fn sql_editor_target_selector_excludes_redis_profiles() {
+    let relational = import_connection_url(":memory:", Some("redis"))
+        .unwrap()
+        .profile;
+    let redis = import_connection_url("redis://localhost:6379", Some("cache"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![relational.clone(), redis.clone()]);
+    app.connection.profile_id = Some(relational.id);
+    app.update(Action::NewConsole);
+    let console_id = app.active_console().id;
+
+    app.update(Action::OpenConsoleTargetSelector { console_id });
+    let candidates = match app.overlay.as_ref().unwrap() {
+        lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates,
+        overlay => panic!("unexpected overlay: {overlay:?}"),
+    };
+    assert!(
+        candidates
+            .iter()
+            .any(|target| target.profile_id == relational.id)
+    );
+    assert!(
+        !candidates
+            .iter()
+            .any(|target| target.profile_id == redis.id)
+    );
+}
+
+#[test]
 fn restored_relation_tab_is_not_loaded_before_connection_installation() {
     let profile = import_connection_url(":memory:", Some("first"))
         .unwrap()

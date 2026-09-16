@@ -21,6 +21,20 @@ pub enum DatabaseKind {
     Redis,
 }
 
+impl DatabaseKind {
+    pub fn is_relational(self) -> bool {
+        matches!(
+            self,
+            Self::Postgres
+                | Self::MySql
+                | Self::MariaDb
+                | Self::Oracle
+                | Self::SqlServer
+                | Self::Sqlite
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectionUrlFormat {

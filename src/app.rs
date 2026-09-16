@@ -9978,6 +9978,9 @@ impl App {
                     );
                     return Vec::new();
                 };
+                if !profile.kind.is_relational() {
+                    return Vec::new();
+                }
                 if self.active_workspace_profile != Some(profile.id) || self.tabs.is_empty() {
                     let target = self
                         .connection
@@ -14888,6 +14891,7 @@ impl App {
             return Vec::new();
         }
         let origin_target = self.console_manager_origin_target.take();
+        let origin_target = origin_target.filter(|target| self.is_sql_editor_target(target));
         if self.active_workspace_profile.is_none()
             && let Some(target) = origin_target
                 .clone()
@@ -14938,7 +14942,9 @@ impl App {
 
     fn create_sql_editor_named(&mut self, name: String, default_target: Option<ExecutionTarget>) {
         let mut tab = ConsoleTab::new(name);
-        tab.execution_target = default_target.or_else(|| self.default_console_target());
+        tab.execution_target = default_target
+            .filter(|target| self.is_sql_editor_target(target))
+            .or_else(|| self.default_console_target());
         let id = tab.id;
         self.editor.open_console(id, "");
         self.editor.open_read_only(tab.output_editor_id, "");
@@ -14957,6 +14963,7 @@ impl App {
             if let Some(target) = self
                 .active_console_opt()
                 .and_then(|tab| tab.execution_target.clone())
+                .filter(|target| self.is_sql_editor_target(target))
             {
                 return Some(target);
             }
@@ -14975,16 +14982,33 @@ impl App {
                         .or_else(|| profile.database.clone())?,
                     schema: tab.descriptor.qualified_name.schema.clone(),
                 };
-                if target.is_valid(profile) {
+                if self.is_sql_editor_target(&target) {
                     return Some(target);
                 }
             }
         }
-        resolve_default_target(
-            self.explorer.normalized.selected.as_ref(),
-            &self.profiles,
-            &self.recent_targets,
-        )
+        let relational_profiles = self
+            .profiles
+            .iter()
+            .filter(|profile| profile.kind.is_relational())
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected =
+            self.explorer
+                .normalized
+                .selected
+                .as_ref()
+                .filter(|selected| match selected {
+                    ExplorerNodeId::Profile(id) => {
+                        relational_profiles.iter().any(|profile| profile.id == *id)
+                    }
+                    ExplorerNodeId::Catalog(id) => relational_profiles
+                        .iter()
+                        .any(|profile| profile.id == id.profile_id()),
+                    _ => true,
+                });
+        resolve_default_target(selected, &relational_profiles, &self.recent_targets)
+            .filter(|target| self.is_sql_editor_target(target))
     }
 
     fn remember_target(&mut self, target: &ExecutionTarget) {
@@ -15052,6 +15076,9 @@ impl App {
         let Some(target) = tab.execution_target.clone() else {
             return Vec::new();
         };
+        if !self.is_sql_editor_target(&target) {
+            return Vec::new();
+        }
         if self.connection.status == ConnectionStatus::Connected
             && self.connection.pending_generation.is_none()
             && self.connection.target.as_ref() == Some(&target)
@@ -15753,6 +15780,9 @@ impl App {
         target: ExecutionTarget,
         console_id: Uuid,
     ) -> Vec<Command> {
+        if !self.is_sql_editor_target(&target) {
+            return Vec::new();
+        }
         self.request_connection_target_inner(target, Some(console_id))
     }
 
@@ -15920,11 +15950,23 @@ impl App {
     fn execution_target_candidates_all_profiles(&self) -> Vec<ExecutionTarget> {
         self.profiles
             .iter()
+            .filter(|profile| profile.kind.is_relational())
             .flat_map(|profile| self.execution_target_candidates(profile))
             .collect()
     }
 
+    fn is_sql_editor_target(&self, target: &ExecutionTarget) -> bool {
+        self.profiles.iter().any(|profile| {
+            profile.id == target.profile_id
+                && profile.kind.is_relational()
+                && target.is_valid(profile)
+        })
+    }
+
     fn bind_console_target(&mut self, console_id: Uuid, target: ExecutionTarget) -> Vec<Command> {
+        if !self.is_sql_editor_target(&target) {
+            return Vec::new();
+        }
         let Some(profile) = self
             .profiles
             .iter()
