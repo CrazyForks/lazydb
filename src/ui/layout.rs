@@ -11,6 +11,59 @@ const WORKSPACE_TABS_HEIGHT: u16 = 2;
 const RESULT_TABS_HEIGHT: u16 = 2;
 const MIN_EDITOR_HEIGHT: u16 = 5;
 const MIN_RESULTS_HEIGHT: u16 = 7;
+const MIN_REDIS_KEYS_WIDTH: u16 = 16;
+const MIN_REDIS_PREVIEW_WIDTH: u16 = 24;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RedisBrowserLayout {
+    pub keys: Rect,
+    pub preview: Rect,
+    pub keys_width: Option<u16>,
+}
+
+impl RedisBrowserLayout {
+    pub fn calculate(area: Rect, preference: Option<u16>) -> Self {
+        let default = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(area);
+        let can_resize = area.width >= MIN_REDIS_KEYS_WIDTH + MIN_REDIS_PREVIEW_WIDTH;
+        if !can_resize {
+            return Self {
+                keys: default[0],
+                preview: default[1],
+                keys_width: None,
+            };
+        }
+        let maximum = area.width.saturating_sub(MIN_REDIS_PREVIEW_WIDTH);
+        let width = preference
+            .unwrap_or(default[0].width)
+            .clamp(MIN_REDIS_KEYS_WIDTH, maximum);
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(width),
+                Constraint::Min(MIN_REDIS_PREVIEW_WIDTH),
+            ])
+            .split(area);
+        Self {
+            keys: columns[0],
+            preview: columns[1],
+            keys_width: Some(columns[0].width),
+        }
+    }
+
+    pub fn resize_region(&self) -> Option<Rect> {
+        (self.keys_width.is_some() && self.keys.height >= 3 && self.keys.width >= 3).then(|| {
+            Rect::new(
+                self.keys.right().saturating_sub(1),
+                self.keys.y.saturating_add(1),
+                1,
+                self.keys.height.saturating_sub(2),
+            )
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayoutMode {
@@ -184,6 +237,7 @@ impl AppLayout {
             pane_metrics: PaneLayoutMetrics {
                 explorer_width: Some(horizontal[0].width),
                 editor_height: (!is_relation).then_some(content[0].height),
+                redis_keys_width: None,
             },
         }
     }
@@ -217,6 +271,7 @@ impl AppLayout {
                     },
                 )
             }
+            PaneSplit::RedisKeysWidth => None,
         }
     }
 }
@@ -468,6 +523,7 @@ mod tests {
             PaneSizePreferences {
                 explorer_width: Some(70),
                 editor_height: Some(20),
+                redis_keys_width: None,
             },
             false,
         );
@@ -487,6 +543,7 @@ mod tests {
             PaneSizePreferences {
                 explorer_width: Some(u16::MAX),
                 editor_height: Some(u16::MAX),
+                redis_keys_width: None,
             },
             false,
         );
@@ -505,6 +562,7 @@ mod tests {
             PaneSizePreferences {
                 explorer_width: Some(70),
                 editor_height: Some(20),
+                redis_keys_width: None,
             },
             false,
         );
@@ -550,5 +608,18 @@ mod tests {
         assert!(layout.relation.is_some());
         assert!(layout.tabs.is_some());
         assert_eq!(layout.pane_metrics, PaneLayoutMetrics::default());
+    }
+
+    #[test]
+    fn redis_browser_layout_preserves_minimum_pane_widths() {
+        let layout = RedisBrowserLayout::calculate(Rect::new(7, 3, 60, 20), Some(u16::MAX));
+        assert_eq!(layout.keys.width, 36);
+        assert_eq!(layout.preview.width, 24);
+        assert_eq!(layout.keys.right(), layout.preview.x);
+        assert!(layout.resize_region().is_some());
+
+        let narrow = RedisBrowserLayout::calculate(Rect::new(0, 0, 39, 10), Some(30));
+        assert_eq!(narrow.keys_width, None);
+        assert!(narrow.resize_region().is_none());
     }
 }

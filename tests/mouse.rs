@@ -2295,11 +2295,13 @@ fn pane_border_drag_uses_original_pointer_and_size_as_anchor() {
     app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: Some(10),
+        redis_keys_width: None,
     }));
     let mut ui = UiState::new();
     ui.pane_layout = PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: Some(10),
+        redis_keys_width: None,
     };
     ui.hit_regions.push(HitRegion {
         area: Rect::new(39, 3, 1, 20),
@@ -2363,16 +2365,69 @@ fn pane_border_drag_uses_original_pointer_and_size_as_anchor() {
 }
 
 #[test]
-fn editor_border_drag_uses_original_row_and_size_as_anchor() {
+fn redis_keys_border_drag_uses_horizontal_pointer_and_inner_width() {
     let mut app = App::new(Vec::new());
     app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: Some(10),
+        redis_keys_width: Some(28),
     }));
     let mut ui = UiState::new();
     ui.pane_layout = PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: Some(10),
+        redis_keys_width: Some(28),
+    };
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(27, 4, 1, 12),
+        target: HitTarget::PaneResize(PaneSplit::RedisKeysWidth),
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 27, 8),
+            &ui,
+            &app,
+        ),
+        None
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 34, 8),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetPaneSize {
+            split: PaneSplit::RedisKeysWidth,
+            size: 35,
+        })
+    );
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Up(MouseButton::Left), 34, 8),
+            &ui,
+            &app,
+        ),
+        Some(Action::SetPaneSize {
+            split: PaneSplit::RedisKeysWidth,
+            size: 35,
+        })
+    );
+}
+
+#[test]
+fn editor_border_drag_uses_original_row_and_size_as_anchor() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
+        explorer_width: Some(40),
+        editor_height: Some(10),
+        redis_keys_width: None,
+    }));
+    let mut ui = UiState::new();
+    ui.pane_layout = PaneLayoutMetrics {
+        explorer_width: Some(40),
+        editor_height: Some(10),
+        redis_keys_width: None,
     };
     ui.hit_regions.push(HitRegion {
         area: Rect::new(41, 12, 50, 1),
@@ -2430,6 +2485,7 @@ fn pane_border_click_without_movement_preserves_automatic_size() {
     ui.pane_layout = PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: None,
+        redis_keys_width: None,
     };
     ui.hit_regions.push(HitRegion {
         area: Rect::new(39, 3, 1, 20),
@@ -2586,6 +2642,7 @@ fn mouse_gesture_owner_locks_until_release() {
     ui.pane_layout = lazydb::model::workspace::PaneLayoutMetrics {
         explorer_width: Some(40),
         editor_height: Some(10),
+        redis_keys_width: None,
     };
     ui.hit_regions.push(HitRegion {
         area: Rect::new(39, 3, 1, 20),

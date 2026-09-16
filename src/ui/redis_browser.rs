@@ -27,10 +27,8 @@ pub fn render(
     theme: Theme,
     icons: IconSet,
 ) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(area);
+    let layout =
+        crate::ui::layout::RedisBrowserLayout::calculate(area, app.pane_sizes.redis_keys_width);
     let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) = app.tabs.get(app.active_tab)
     else {
         return;
@@ -38,8 +36,8 @@ pub fn render(
     let keys_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Keys;
     let preview_focused = app.focus == Focus::Results && tab.focus == RedisBrowserFocus::Preview;
     let keys_block = super::panel_block("", keys_focused, theme);
-    let keys_area = keys_block.inner(columns[0]);
-    let preview_area = columns[1];
+    let keys_area = keys_block.inner(layout.keys);
+    let preview_area = layout.preview;
     frame.render_widget(
         keys_block
             .title(keys_title(tab))
@@ -48,7 +46,7 @@ pub fn render(
             } else {
                 theme.border
             })),
-        columns[0],
+        layout.keys,
     );
     let rows = tab.visible_rows();
     let (rows, selected_id, query, phase, matches) = if let Some(find) = tab.find.as_ref() {

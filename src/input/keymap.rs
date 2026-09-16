@@ -1232,6 +1232,22 @@ impl Keymap {
         // stream before generic window counts and Redis tree navigation; the
         // editor must own counts, operators, searches, and motions.
         if app.focus == Focus::Results
+            && event.modifiers == KeyModifiers::CONTROL
+            && event.code == KeyCode::Char('w')
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+                        && tab.find.as_ref().is_none_or(|find| {
+                            find.phase != crate::model::redis_browser::RedisFindPhase::Editing
+                        })
+            )
+        {
+            self.set_pending(Pending::Window { count: 1 }, app);
+            return None;
+        }
+
+        if app.focus == Focus::Results
             && matches!(
                 app.tabs.get(app.active_tab),
                 Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
@@ -2779,7 +2795,13 @@ fn map_pending(
         }
         (Pending::Window { .. }, KeyCode::Char('j')) if app.focus == Focus::Explorer => None,
         (Pending::Window { count }, KeyCode::Char(operator @ ('+' | '-' | '>' | '<'))) => {
-            crate::model::workspace::pane_resize(app.focus, operator, count).map(Action::ResizePane)
+            let keys_focused = matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+            );
+            crate::model::workspace::redis_pane_resize(app.focus, keys_focused, operator, count)
+                .map(Action::ResizePane)
         }
         (Pending::Goto, KeyCode::Char('g')) if app.focus == Focus::Explorer => Some(
             Action::ExplorerSelectTarget(crate::model::explorer::ExplorerNodeTarget::First),

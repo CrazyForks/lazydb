@@ -70,7 +70,7 @@ use crate::{
         workspace::{
             ConnectionIdentity, ConnectionState, ConnectionStatus, ConnectionWorkspace,
             ExecutionConfirmFocus, ExplorerState, Focus, ManualCancelFocus, Overlay,
-            PaneLayoutMetrics, PaneSizePreferences, QueryStatus,
+            PaneLayoutMetrics, PaneResize, PaneSizePreferences, QueryStatus,
         },
     },
     persistence::workspace::{
@@ -1605,6 +1605,15 @@ impl App {
         self.pane_layout
     }
 
+    fn redis_pane_resize(&self, operator: char, count: u32) -> Option<PaneResize> {
+        let keys_focused = matches!(
+            self.tabs.get(self.active_tab),
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+        );
+        crate::model::workspace::redis_pane_resize(self.focus, keys_focused, operator, count)
+    }
+
     pub fn active_editor_viewport(&self) -> Result<EditorViewport, EditorError> {
         self.active_console_opt().map_or_else(
             || Err(EditorError::MissingSession(Uuid::nil())),
@@ -2725,9 +2734,11 @@ impl App {
                 .map_or_else(Vec::new, |resize| vec![Action::ResizePane(resize)]),
             Id::ResizeHeightDecrease => crate::model::workspace::pane_resize(self.focus, '-', 1)
                 .map_or_else(Vec::new, |resize| vec![Action::ResizePane(resize)]),
-            Id::ResizeWidthIncrease => crate::model::workspace::pane_resize(self.focus, '>', 1)
+            Id::ResizeWidthIncrease => self
+                .redis_pane_resize('>', 1)
                 .map_or_else(Vec::new, |resize| vec![Action::ResizePane(resize)]),
-            Id::ResizeWidthDecrease => crate::model::workspace::pane_resize(self.focus, '<', 1)
+            Id::ResizeWidthDecrease => self
+                .redis_pane_resize('<', 1)
                 .map_or_else(Vec::new, |resize| vec![Action::ResizePane(resize)]),
             Id::ResetPaneSizes => vec![Action::ResetPaneSizes],
             Id::RelationWhere => vec![Action::FocusRelationQueryInput(
@@ -5827,6 +5838,13 @@ impl App {
                             ));
                         }
                     }
+                    crate::model::workspace::PaneSplit::RedisKeysWidth => {
+                        if let Some(width) = self.pane_layout.redis_keys_width {
+                            self.pane_sizes.redis_keys_width = Some(width.saturating_add_signed(
+                                resize.delta.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                            ));
+                        }
+                    }
                 }
                 Vec::new()
             }
@@ -5840,6 +5858,11 @@ impl App {
                     crate::model::workspace::PaneSplit::EditorHeight => {
                         if self.pane_layout.editor_height.is_some() {
                             self.pane_sizes.editor_height = Some(size);
+                        }
+                    }
+                    crate::model::workspace::PaneSplit::RedisKeysWidth => {
+                        if self.pane_layout.redis_keys_width.is_some() {
+                            self.pane_sizes.redis_keys_width = Some(size);
                         }
                     }
                 }
@@ -26990,6 +27013,7 @@ mod tests {
         app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
             explorer_width: Some(40),
             editor_height: Some(10),
+            redis_keys_width: None,
         }));
 
         app.update(Action::ResizePane(PaneResize {
@@ -27015,6 +27039,7 @@ mod tests {
         app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
             explorer_width: Some(40),
             editor_height: Some(10),
+            redis_keys_width: None,
         }));
 
         app.update(Action::SetPaneSize {
@@ -27043,6 +27068,7 @@ mod tests {
         app.update(Action::PaneLayoutChanged(PaneLayoutMetrics {
             explorer_width: Some(40),
             editor_height: None,
+            redis_keys_width: None,
         }));
         app.update(Action::SetPaneSize {
             split: PaneSplit::ExplorerWidth,
@@ -27058,6 +27084,7 @@ mod tests {
         app.pane_sizes = PaneSizePreferences {
             explorer_width: Some(45),
             editor_height: Some(12),
+            redis_keys_width: None,
         };
         let sizes = app.pane_sizes;
 

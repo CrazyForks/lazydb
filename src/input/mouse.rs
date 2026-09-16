@@ -721,6 +721,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         crate::model::workspace::PaneSplit::EditorHeight => {
                             ui.pane_layout.editor_height
                         }
+                        crate::model::workspace::PaneSplit::RedisKeysWidth => {
+                            ui.pane_layout.redis_keys_width
+                        }
                     }?;
                     *ui.pane_resize_drag.borrow_mut() = Some(PaneResizeDrag {
                         split,
@@ -1152,10 +1155,12 @@ fn pane_resize_action(
     let current = match drag.split {
         crate::model::workspace::PaneSplit::ExplorerWidth => app.pane_sizes.explorer_width,
         crate::model::workspace::PaneSplit::EditorHeight => app.pane_sizes.editor_height,
+        crate::model::workspace::PaneSplit::RedisKeysWidth => app.pane_sizes.redis_keys_width,
     }
     .or(match drag.split {
         crate::model::workspace::PaneSplit::ExplorerWidth => ui.pane_layout.explorer_width,
         crate::model::workspace::PaneSplit::EditorHeight => ui.pane_layout.editor_height,
+        crate::model::workspace::PaneSplit::RedisKeysWidth => ui.pane_layout.redis_keys_width,
     });
     (current != Some(size)).then_some(Action::SetPaneSize {
         split: drag.split,
@@ -1167,6 +1172,7 @@ fn pane_resize_pointer(split: crate::model::workspace::PaneSplit, event: MouseEv
     match split {
         crate::model::workspace::PaneSplit::ExplorerWidth => event.column,
         crate::model::workspace::PaneSplit::EditorHeight => event.row,
+        crate::model::workspace::PaneSplit::RedisKeysWidth => event.column,
     }
 }
 
@@ -1183,6 +1189,7 @@ fn profile_button_action(button: ProfileButton) -> Action {
 
 fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
     match ui.target_at(column, row)? {
+        HitTarget::PaneResize(PaneSplit::RedisKeysWidth) => Some(Focus::Results),
         HitTarget::Focus(focus) => Some(*focus),
         HitTarget::ExplorerRow(_) => Some(Focus::Explorer),
         HitTarget::ExplorerToggle(_) => Some(Focus::Explorer),
