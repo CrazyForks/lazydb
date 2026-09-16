@@ -420,6 +420,7 @@ pub enum HelpShortcutId {
     ResultsAlignBottom,
     ResultsOpenRecordView,
     ResultsCopyCell,
+    RelationCopyCell,
     ResultsCopyRow,
     ResultsCopyRowWithHeaders,
     ResultsToggleView,
@@ -752,8 +753,8 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | OutputCopy
         | RelationDdlCopy
         | RelationEditCell => 5,
-        ExplorerFindOpen | EditorComplete | ResultsCopyCell | RelationDdlData
-        | RelationInsertRow => 6,
+        ExplorerFindOpen | EditorComplete | ResultsCopyCell | RelationCopyCell
+        | RelationDdlData | RelationInsertRow => 6,
         ExplorerSearchOpen | EditorDeleteWord | ResultsCopyRow | RelationVisualLine
         | RelationYankRow => 7,
         ResultsToggleView | RelationPaste | ExplorerRefresh | RelationBusyData => 8,
@@ -1928,6 +1929,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         executable
     ),
     row!(ResultsCopyCell, [SqlResultsData], "y", "copy selected cell"),
+    row!(
+        RelationCopyCell,
+        [RelationDataBrowse],
+        "y",
+        "copy selected cell"
+    ),
     row!(
         ResultsCopyRow,
         [SqlResultsData, RelationDataBrowse],
@@ -3473,12 +3480,13 @@ fn footer_rank(
             Id::ResultsMoveDown => Some(2),
             Id::ResultsMoveUp => Some(3),
             Id::ResultsMoveRight => Some(4),
-            Id::RelationYankRow => Some(5),
-            Id::RelationEditCell => Some(6),
-            Id::RelationInsertRow => Some(7),
-            Id::RelationVisualLine => Some(8),
-            Id::RelationPaste => Some(9),
-            Id::RelationCommit => Some(10),
+            Id::RelationCopyCell => Some(5),
+            Id::RelationYankRow => Some(6),
+            Id::RelationEditCell => Some(7),
+            Id::RelationInsertRow => Some(8),
+            Id::RelationVisualLine => Some(9),
+            Id::RelationPaste => Some(10),
+            Id::RelationCommit => Some(11),
             _ => None,
         },
         ShortcutContext::RelationDataBrowse => match id {
@@ -3487,11 +3495,12 @@ fn footer_rank(
             Id::ResultsMoveUp => Some(3),
             Id::ResultsMoveRight => Some(4),
             Id::ResultsOpenRecordView => Some(5),
-            Id::RelationYankRow => Some(6),
-            Id::ResultsCopyRow => Some(7),
-            Id::RelationWhere => Some(8),
-            Id::RelationOrderBy => Some(9),
-            Id::RelationRefresh => Some(10),
+            Id::RelationCopyCell => Some(6),
+            Id::RelationYankRow => Some(7),
+            Id::ResultsCopyRow => Some(8),
+            Id::RelationWhere => Some(9),
+            Id::RelationOrderBy => Some(10),
+            Id::RelationRefresh => Some(11),
             _ => None,
         },
         ShortcutContext::RelationDataEdit => match id {
@@ -4627,7 +4636,7 @@ mod tests {
         };
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataBrowse, editable),
-            vec!["h", "j", "k", "l", "yy", "e", "a", "V", "p", "Ctrl-s"]
+            vec!["h", "j", "k", "l", "y", "yy", "e", "a", "V", "p", "Ctrl-s"]
         );
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataEdit, editable),
@@ -4657,7 +4666,7 @@ mod tests {
         let rows = footer_sequences(ShortcutContext::RelationDataBrowse, read_only);
         assert_eq!(
             rows,
-            vec!["h", "j", "k", "l", "v", "yy", "Y", "/", "s", "r"]
+            vec!["h", "j", "k", "l", "v", "y", "yy", "Y", "/", "s", "r"]
         );
         for editing in ["e", "a", "V", "p", "Ctrl-s"] {
             assert!(!rows.contains(&editing));
@@ -4908,6 +4917,12 @@ mod tests {
                 .iter()
                 .any(|row| row.id == HelpShortcutId::ResultsCopyCell)
         );
+        let copy = rows
+            .iter()
+            .find(|row| row.id == HelpShortcutId::RelationCopyCell)
+            .expect("relation copy cell");
+        assert_eq!(copy.sequence, "y");
+        assert_eq!(copy.description, "copy selected cell");
 
         let footer = footer_sequences(
             ShortcutContext::RelationDataBrowse,
@@ -4919,7 +4934,7 @@ mod tests {
             },
         );
         assert!(footer.contains(&"yy"));
-        assert!(!footer.contains(&"y"));
+        assert!(footer.contains(&"y"));
     }
 
     #[test]

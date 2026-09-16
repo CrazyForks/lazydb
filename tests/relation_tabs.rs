@@ -1,6 +1,6 @@
 use chrono::Datelike;
 use lazydb::{
-    action::Action,
+    action::{Action, Command},
     db::catalog::{
         CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, ColumnMetadata, ConstraintMetadata,
         IndexMetadata, OptionalMetadata, QualifiedName,
@@ -1080,6 +1080,71 @@ fn relation_grid_actions_update_relation_grid_using_preview_dimensions() {
     };
     assert_eq!(tab.grid.selected_row, 0);
     assert_eq!(tab.grid.selected_column, 0);
+}
+
+#[test]
+fn relation_data_y_copies_the_selected_cell_value() {
+    let mut app = lazydb::app::App::new(Vec::new());
+    let mut tab = RelationTab::new("users");
+    tab.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "select".into(),
+                result: QueryOutcome {
+                    result_sets: vec![ResultSet {
+                        columns: vec![
+                            ColumnMeta {
+                                name: "id".into(),
+                                type_name: "int".into(),
+                            },
+                            ColumnMeta {
+                                name: "payload".into(),
+                                type_name: "text".into(),
+                            },
+                        ],
+                        rows: vec![vec![
+                            CellValue::Integer(1),
+                            CellValue::Text("complete\nvalue".into()),
+                        ]],
+                        affected_rows: 0,
+                    }],
+                    stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 1),
+                },
+                pagination: default_pagination(1),
+                row_versions: None,
+            },
+            lazydb::identity::ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 0,
+            },
+            lazydb::profile::CatalogScope::for_profile(
+                lazydb::profile::DatabaseKind::Sqlite,
+                "db",
+                None,
+            ),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(tab));
+    app.active_tab = 1;
+    app.focus = lazydb::model::workspace::Focus::Results;
+    app.update(Action::GridSelect { row: 0, column: 1 });
+
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+    let action = keymap
+        .map(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('y'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &app,
+        )
+        .expect("Relation Data y should map to cell copy");
+    assert_eq!(action, Action::CopyGridCell);
+
+    let commands = app.update(action);
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::WriteClipboard(payload)] if payload.text == "complete\nvalue"
+    ));
 }
 
 #[test]

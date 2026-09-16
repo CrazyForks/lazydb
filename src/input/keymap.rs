@@ -1023,6 +1023,19 @@ impl Keymap {
             _ => {}
         }
 
+        // Relation Browse uses `y` as an immediate cell copy while retaining
+        // `yy` for the relation row register. Any other key completes the
+        // optional sequence without consuming that key's normal action.
+        if self.pending.as_ref().is_some_and(|pending| {
+            pending.pending == Pending::RelationYank
+                && (!is_relation_data_focus(app)
+                    || !relation_grid_is_browse(app)
+                    || !event.modifiers.is_empty()
+                    || event.code != KeyCode::Char('y'))
+        }) {
+            self.clear_pending();
+        }
+
         if self.pending.as_ref().is_some_and(|pending| {
             pending_is_valid(
                 pending,
@@ -1633,7 +1646,7 @@ impl Keymap {
                     }
                     KeyCode::Char('y') => {
                         self.set_pending(Pending::RelationYank, app);
-                        return None;
+                        return Some(Action::CopyGridCell);
                     }
                     KeyCode::Char('Y') => {
                         return Some(Action::CopyGridRow {
@@ -4369,7 +4382,10 @@ mod tests {
     fn sequence_state_covers_relation_and_record_prefixes() {
         let mut relation = relation_app(RelationGridMode::Browse);
         let mut keymap = Keymap::default();
-        assert_eq!(keymap.map(key(KeyCode::Char('y')), &relation), None);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('y')), &relation),
+            Some(Action::CopyGridCell)
+        );
         assert_eq!(
             keymap
                 .sequence_state(&relation, Instant::now())
@@ -4728,11 +4744,33 @@ mod tests {
             keymap.map(key(KeyCode::Char('d')), &app),
             Some(Action::RelationDeleteCurrent)
         );
-        assert_eq!(keymap.map(key(KeyCode::Char('y')), &app), None);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('y')), &app),
+            Some(Action::CopyGridCell)
+        );
         assert_eq!(
             keymap.map(key(KeyCode::Char('y')), &app),
             Some(Action::RelationYank)
         );
+    }
+
+    #[test]
+    fn relation_cell_copy_does_not_consume_followup_navigation() {
+        let app = relation_app(RelationGridMode::Browse);
+        let mut keymap = Keymap::default();
+
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('y')), &app),
+            Some(Action::CopyGridCell)
+        );
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('j')), &app),
+            Some(Action::GridMove {
+                rows: 1,
+                columns: 0,
+            })
+        );
+        assert!(keymap.pending.is_none());
     }
 
     #[test]
