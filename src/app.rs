@@ -2759,7 +2759,6 @@ impl App {
             Id::RelationRedo => vec![Action::RelationRedo],
             Id::RelationCommit => vec![Action::OpenTransactionControl],
             Id::RelationRollback => vec![Action::OpenTransactionControl],
-            Id::RelationYankRow => vec![Action::RelationYank],
             Id::RecordFirstField => vec![Action::RecordViewJumpFirstField],
             _ => unreachable!("display-only shortcut passed execution guard"),
         };

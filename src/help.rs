@@ -595,7 +595,6 @@ pub enum HelpShortcutId {
     DataQueryOrderBy,
     DataQueryCompletionNext,
     DataQueryCompletionPrevious,
-    RelationYankRow,
     RelationDeleteRow,
     RelationBusyData,
     RelationBusyRefresh,
@@ -755,8 +754,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | RelationEditCell => 5,
         ExplorerFindOpen | EditorComplete | ResultsCopyCell | RelationCopyCell
         | RelationDdlData | RelationInsertRow => 6,
-        ExplorerSearchOpen | EditorDeleteWord | ResultsCopyRow | RelationVisualLine
-        | RelationYankRow => 7,
+        ExplorerSearchOpen | EditorDeleteWord | ResultsCopyRow | RelationVisualLine => 7,
         ResultsToggleView | RelationPaste | ExplorerRefresh | RelationBusyData => 8,
         DataQueryWhere | RelationWhere | RelationCommit => 9,
         DataQueryOrderBy | RelationOrderBy | RelationBusyRefresh => 10,
@@ -776,7 +774,6 @@ pub enum ShortcutPrefix {
     ExplorerAlign,
     Previous,
     Next,
-    RelationYank,
     RelationDelete,
     RecordViewGoto,
 }
@@ -794,7 +791,6 @@ impl ShortcutPrefix {
             Self::ExplorerAlign => "z",
             Self::Previous => "[",
             Self::Next => "]",
-            Self::RelationYank => "y",
             Self::RelationDelete => "d",
             Self::RecordViewGoto => "g",
         }
@@ -1948,14 +1944,6 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "copy row with headers",
         Leader,
         "Y"
-    ),
-    row!(
-        RelationYankRow,
-        [RelationDataBrowse],
-        "yy",
-        "yank row",
-        RelationYank,
-        "y"
     ),
     row!(
         ResultsToggleView,
@@ -3369,10 +3357,6 @@ fn prefix_rank(prefix: ShortcutPrefix, id: HelpShortcutId) -> Option<u8> {
             Id::NextTabAlias => 1,
             _ => return None,
         },
-        ShortcutPrefix::RelationYank => match id {
-            Id::RelationYankRow => 1,
-            _ => return None,
-        },
         ShortcutPrefix::RelationDelete => match id {
             Id::RelationDeleteRow => 1,
             _ => return None,
@@ -3481,7 +3465,6 @@ fn footer_rank(
             Id::ResultsMoveUp => Some(3),
             Id::ResultsMoveRight => Some(4),
             Id::RelationCopyCell => Some(5),
-            Id::RelationYankRow => Some(6),
             Id::RelationEditCell => Some(7),
             Id::RelationInsertRow => Some(8),
             Id::RelationVisualLine => Some(9),
@@ -3496,7 +3479,6 @@ fn footer_rank(
             Id::ResultsMoveRight => Some(4),
             Id::ResultsOpenRecordView => Some(5),
             Id::RelationCopyCell => Some(6),
-            Id::RelationYankRow => Some(7),
             Id::ResultsCopyRow => Some(8),
             Id::RelationWhere => Some(9),
             Id::RelationOrderBy => Some(10),
@@ -4406,7 +4388,6 @@ mod tests {
             shortcut_capabilities(&app),
         );
         let browse_ids = browse.iter().map(|row| row.id).collect::<Vec<_>>();
-        assert!(browse_ids.contains(&HelpShortcutId::RelationYankRow));
         assert!(browse_ids.contains(&HelpShortcutId::RelationDeleteRow));
         assert!(browse_ids.contains(&HelpShortcutId::RelationEditCell));
         assert!(!browse_ids.contains(&HelpShortcutId::RelationEditApply));
@@ -4431,7 +4412,6 @@ mod tests {
         assert!(edit_ids.contains(&HelpShortcutId::RelationEditApply));
         assert!(edit_ids.contains(&HelpShortcutId::RelationEditCancel));
         assert!(!edit_ids.contains(&HelpShortcutId::RelationEditCell));
-        assert!(!edit_ids.contains(&HelpShortcutId::RelationYankRow));
         assert_eq!(
             Keymap::default().map(
                 crossterm::event::KeyEvent::new(
@@ -4456,7 +4436,6 @@ mod tests {
         assert!(visual_ids.contains(&HelpShortcutId::RelationVisualYank));
         assert!(visual_ids.contains(&HelpShortcutId::RelationVisualDelete));
         assert!(!visual_ids.contains(&HelpShortcutId::RelationEditCell));
-        assert!(!visual_ids.contains(&HelpShortcutId::RelationYankRow));
 
         let WorkspaceTab::Relation(tab) = &mut app.tabs[0] else {
             unreachable!()
@@ -4470,7 +4449,6 @@ mod tests {
         assert!(busy_ids.contains(&HelpShortcutId::RelationBusyData));
         assert!(busy_ids.contains(&HelpShortcutId::RelationBusyRefresh));
         assert!(!busy_ids.contains(&HelpShortcutId::RelationEditCell));
-        assert!(!busy_ids.contains(&HelpShortcutId::RelationYankRow));
         assert!(!busy_ids.contains(&HelpShortcutId::RelationDeleteRow));
     }
 
@@ -4636,7 +4614,7 @@ mod tests {
         };
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataBrowse, editable),
-            vec!["h", "j", "k", "l", "y", "yy", "e", "a", "V", "p", "Ctrl-s"]
+            vec!["h", "j", "k", "l", "y", "e", "a", "V", "p", "Ctrl-s"]
         );
         assert_eq!(
             footer_sequences(ShortcutContext::RelationDataEdit, editable),
@@ -4664,10 +4642,7 @@ mod tests {
             ..ShortcutCapabilities::default()
         };
         let rows = footer_sequences(ShortcutContext::RelationDataBrowse, read_only);
-        assert_eq!(
-            rows,
-            vec!["h", "j", "k", "l", "v", "y", "yy", "Y", "/", "s", "r"]
-        );
+        assert_eq!(rows, vec!["h", "j", "k", "l", "v", "y", "Y", "/", "s", "r"]);
         for editing in ["e", "a", "V", "p", "Ctrl-s"] {
             assert!(!rows.contains(&editing));
         }
@@ -4901,17 +4876,11 @@ mod tests {
     }
 
     #[test]
-    fn relation_browse_uses_distinct_yy_yank_row_metadata() {
+    fn relation_browse_lists_cell_copy_without_row_yank() {
         let rows = shortcuts(
             ShortcutContext::RelationDataBrowse,
             ShortcutCapabilities::relation_data(),
         );
-        let yank = rows
-            .iter()
-            .find(|row| row.id == HelpShortcutId::RelationYankRow)
-            .expect("relation yank row");
-        assert_eq!(yank.sequence, "yy");
-        assert_eq!(yank.description, "yank row");
         assert!(
             !rows
                 .iter()
@@ -4933,7 +4902,6 @@ mod tests {
                 ..ShortcutCapabilities::default()
             },
         );
-        assert!(footer.contains(&"yy"));
         assert!(footer.contains(&"y"));
     }
 
@@ -5259,14 +5227,6 @@ mod tests {
                 HelpShortcutId::ResultsAlignTop,
                 HelpShortcutId::ResultsAlignBottom,
             ]
-        );
-        assert_eq!(
-            prefix_ids(
-                ShortcutContext::RelationDataBrowse,
-                ShortcutCapabilities::relation_data(),
-                ShortcutPrefix::RelationYank,
-            ),
-            vec![HelpShortcutId::RelationYankRow]
         );
         assert_eq!(
             prefix_ids(

@@ -473,7 +473,6 @@ cannot be parsed.
 | `h/j/k/l`, arrows | Move through cells |
 | `gg/G`, `H/M/L`, page controls | Move rows and viewport |
 | `y` | Copy current cell to the clipboard |
-| `yy` | Yank current row |
 | `Y` | Copy current row as TSV |
 | `dd` | Delete current row after the real pending sequence |
 | `e` | Edit selected cell when editing is available |
@@ -486,9 +485,7 @@ cannot be parsed.
 | `/` / `s` | Focus WHERE/ORDER BY when query capability is available |
 | `r` | Refresh relation |
 
-`y` copies the current cell immediately. A following `y` within the sequence
-timeout also yanks the current row into the relation register for `p`.
-`Y` copies the current row as TSV.
+`y` copies the current cell immediately. `Y` copies the current row as TSV.
 `Enter`, `[` and `]` are not executable Relation Data bindings in the current
 mapper and are not documented as actions.
 

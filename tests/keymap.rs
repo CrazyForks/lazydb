@@ -2575,7 +2575,7 @@ fn data_query_completion_controls_match_catalog_context() {
 }
 
 #[test]
-fn relation_browse_y_copies_and_yy_maps_the_catalog_yank_row_binding() {
+fn relation_browse_y_copies_the_selected_cell() {
     let mut app = App::new(Vec::new());
     app.tabs
         .push(WorkspaceTab::Relation(RelationTab::new("users")));
@@ -2586,10 +2586,6 @@ fn relation_browse_y_copies_and_yy_maps_the_catalog_yank_row_binding() {
     assert_eq!(
         keymap.map(key(KeyCode::Char('y')), &app),
         Some(Action::CopyGridCell)
-    );
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('y')), &app),
-        Some(Action::RelationYank)
     );
 }
 

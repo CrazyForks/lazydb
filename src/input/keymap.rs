@@ -24,7 +24,6 @@ enum Pending {
     WindowCount { count: u32 },
     Previous,
     Next,
-    RelationYank,
     RelationDelete,
     GridAlign,
     RecordViewGoto,
@@ -1023,19 +1022,6 @@ impl Keymap {
             _ => {}
         }
 
-        // Relation Browse uses `y` as an immediate cell copy while retaining
-        // `yy` for the relation row register. Any other key completes the
-        // optional sequence without consuming that key's normal action.
-        if self.pending.as_ref().is_some_and(|pending| {
-            pending.pending == Pending::RelationYank
-                && (!is_relation_data_focus(app)
-                    || !relation_grid_is_browse(app)
-                    || !event.modifiers.is_empty()
-                    || event.code != KeyCode::Char('y'))
-        }) {
-            self.clear_pending();
-        }
-
         if self.pending.as_ref().is_some_and(|pending| {
             pending_is_valid(
                 pending,
@@ -1645,7 +1631,6 @@ impl Keymap {
                         return None;
                     }
                     KeyCode::Char('y') => {
-                        self.set_pending(Pending::RelationYank, app);
                         return Some(Action::CopyGridCell);
                     }
                     KeyCode::Char('Y') => {
@@ -2828,7 +2813,6 @@ fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, Str
         }
         Pending::Previous => Some((ShortcutPrefix::Previous, "[".into())),
         Pending::Next => Some((ShortcutPrefix::Next, "]".into())),
-        Pending::RelationYank => Some((ShortcutPrefix::RelationYank, "y".into())),
         Pending::RelationDelete => Some((ShortcutPrefix::RelationDelete, "d".into())),
         Pending::GridAlign => Some((ShortcutPrefix::GridAlign, "z".into())),
         Pending::RecordViewGoto => Some((ShortcutPrefix::RecordViewGoto, "g".into())),
@@ -2882,7 +2866,6 @@ fn map_pending(
                 include_headers: true,
             })
         }
-        (Pending::RelationYank, KeyCode::Char('y')) => Some(Action::RelationYank),
         (Pending::Window { .. }, KeyCode::Char('w'))
             if event.modifiers == KeyModifiers::CONTROL =>
         {
@@ -4387,11 +4370,8 @@ mod tests {
             Some(Action::CopyGridCell)
         );
         assert_eq!(
-            keymap
-                .sequence_state(&relation, Instant::now())
-                .unwrap()
-                .prefix,
-            crate::help::ShortcutPrefix::RelationYank
+            keymap.sequence_state(&relation, Instant::now()).is_none(),
+            true
         );
         keymap.clear_pending();
         assert_eq!(keymap.map(key(KeyCode::Char('d')), &relation), None);
@@ -4735,7 +4715,7 @@ mod tests {
     }
 
     #[test]
-    fn relation_data_dd_and_yy_are_pending_sequences() {
+    fn relation_data_dd_remains_a_pending_sequence() {
         let app = relation_app(RelationGridMode::Browse);
         let mut keymap = Keymap::default();
 
@@ -4744,14 +4724,7 @@ mod tests {
             keymap.map(key(KeyCode::Char('d')), &app),
             Some(Action::RelationDeleteCurrent)
         );
-        assert_eq!(
-            keymap.map(key(KeyCode::Char('y')), &app),
-            Some(Action::CopyGridCell)
-        );
-        assert_eq!(
-            keymap.map(key(KeyCode::Char('y')), &app),
-            Some(Action::RelationYank)
-        );
+        assert!(keymap.pending.is_none());
     }
 
     #[test]
