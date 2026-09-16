@@ -558,7 +558,7 @@ pub fn parse_connection_url(input: &str) -> Result<ParsedConnectionUrl, ProfileE
 }
 
 fn parse_jdbc_oracle_url(input: &str) -> Result<ParsedConnectionUrl, ProfileError> {
-    let (input, query) = input.split_once('?').map_or((input, ""), |parts| parts);
+    let (input, query) = input.split_once('?').unwrap_or((input, ""));
     let address = input
         .strip_prefix("oracle:thin:@")
         .ok_or_else(|| ProfileError::UnsupportedScheme("oracle".to_owned()))?;

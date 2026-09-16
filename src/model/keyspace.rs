@@ -106,7 +106,7 @@ impl KeyspaceState {
             return false;
         }
         self.in_flight = false;
-        let mut incoming = self.pending_keys.drain(..).collect::<Vec<_>>();
+        let mut incoming = std::mem::take(&mut self.pending_keys);
         incoming.extend(batch.keys);
         incoming.retain(|key| !self.deleted_in_generation.contains(key));
         self.pending_next = None;

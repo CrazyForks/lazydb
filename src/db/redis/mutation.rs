@@ -245,12 +245,10 @@ impl RedisMutationPlan {
                 expected_score: None,
                 ..
             } => {}
-            RedisMutationOperation::AppendStream { fields } => {
-                if fields.is_empty() {
-                    return Err(RedisMutationError::InvalidDraft {
-                        reason: "a stream append requires at least one field".into(),
-                    });
-                }
+            RedisMutationOperation::AppendStream { fields } if fields.is_empty() => {
+                return Err(RedisMutationError::InvalidDraft {
+                    reason: "a stream append requires at least one field".into(),
+                });
             }
             _ => {}
         }

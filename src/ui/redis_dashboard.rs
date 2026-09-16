@@ -57,7 +57,7 @@ pub(crate) fn render(
             Line::styled(identity, theme.title(true)),
             Line::from(format!(
                 "Instance scope · context db{}",
-                tab.redis_database.map_or(0, |database| database)
+                tab.redis_database.unwrap_or(0)
             )),
         ]),
         rows[0],
