@@ -596,7 +596,7 @@ fn render_row(
     ];
     if row.expandable {
         spans.push(Span::styled(
-            format!(" ({})", row.total_keys),
+            format!(" {}", row.total_keys),
             Style::new().fg(theme.muted).bg(background),
         ));
     }

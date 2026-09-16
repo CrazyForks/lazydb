@@ -1429,6 +1429,22 @@ impl Keymap {
                     _ => {}
                 }
             }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('o') {
+                return match app.tabs.get(app.active_tab) {
+                    Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) => {
+                        match tab.tree.selected.as_ref() {
+                            Some(node @ crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_)) => {
+                                Some(Action::RedisToggleNode {
+                                    tab_id: tab.id,
+                                    node: node.clone(),
+                                })
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+            }
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(match action {
                     Action::GridMove { rows, columns: 0 } if rows != 0 => {
@@ -1499,9 +1515,6 @@ impl Keymap {
                 }
                 (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('d')) => {
                     Some(Action::RedisDeleteKey)
-                }
-                (crate::model::redis_browser::RedisBrowserFocus::Keys, KeyCode::Char('o')) => {
-                    Some(Action::RedisPrimarySelection)
                 }
                 _ => None,
             };
