@@ -967,11 +967,24 @@ fn render_with_state_at(
         && !is_redis_browser
         && DisconnectedWorkspace::for_app(app).is_none()
         && layout.editor.is_some();
+    let redis_layout = is_redis_browser
+        .then(|| {
+            layout.relation.map(|area| {
+                layout::RedisBrowserLayout::calculate(area, app.pane_sizes.redis_keys_width)
+            })
+        })
+        .flatten();
     let pane_drag_invalid = app.overlay.is_some()
         || state
             .pane_resize_drag
             .borrow()
-            .is_some_and(|drag| layout.pane_resize_region(drag.split).is_none());
+            .is_some_and(|drag| match drag.split {
+                PaneSplit::RedisKeysWidth => redis_layout
+                    .as_ref()
+                    .and_then(layout::RedisBrowserLayout::resize_region)
+                    .is_none(),
+                split => layout.pane_resize_region(split).is_none(),
+            });
     if pane_drag_invalid {
         state.pane_resize_drag.borrow_mut().take();
         if *state.mouse_gesture.borrow()
@@ -981,6 +994,7 @@ fn render_with_state_at(
         }
     }
     state.pane_layout = layout.pane_metrics;
+    state.pane_layout.redis_keys_width = redis_layout.as_ref().and_then(|value| value.keys_width);
     state.hit_regions.clear();
     state.editor_viewport = None;
     state.output_viewport = None;
@@ -1122,11 +1136,22 @@ fn render_with_state_at(
     }
 
     if app.overlay.is_none() {
-        for split in [PaneSplit::ExplorerWidth, PaneSplit::EditorHeight] {
+        for split in [
+            PaneSplit::ExplorerWidth,
+            PaneSplit::EditorHeight,
+            PaneSplit::RedisKeysWidth,
+        ] {
             if split == PaneSplit::EditorHeight && !editor_rendered {
                 continue;
             }
-            if let Some(area) = layout.pane_resize_region(split) {
+            let region = if split == PaneSplit::RedisKeysWidth {
+                redis_layout
+                    .as_ref()
+                    .and_then(layout::RedisBrowserLayout::resize_region)
+            } else {
+                layout.pane_resize_region(split)
+            };
+            if let Some(area) = region {
                 state.hit_regions.push(HitRegion {
                     area,
                     target: HitTarget::PaneResize(split),
@@ -1137,7 +1162,13 @@ fn render_with_state_at(
 
     if app.overlay.is_none()
         && let Some(split) = state.pane_resize_drag.borrow().map(|drag| drag.split)
-        && let Some(area) = layout.pane_resize_region(split)
+        && let Some(area) = if split == PaneSplit::RedisKeysWidth {
+            redis_layout
+                .as_ref()
+                .and_then(layout::RedisBrowserLayout::resize_region)
+        } else {
+            layout.pane_resize_region(split)
+        }
     {
         let buffer = frame.buffer_mut();
         for x in area.x..area.right() {

@@ -73,3 +73,24 @@ fn redis_help_does_not_cross_contaminate_key_find_state() {
         Some(Action::ShowHelp)
     );
 }
+
+#[test]
+fn redis_keys_ctrl_w_width_commands_target_the_inner_pane() {
+    let app = redis_app(RedisBrowserFocus::Keys);
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(
+            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            &app
+        ),
+        None
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('>')), &app),
+        Some(Action::ResizePane(lazydb::model::workspace::PaneResize {
+            split: lazydb::model::workspace::PaneSplit::RedisKeysWidth,
+            delta: 1,
+        }))
+    );
+}

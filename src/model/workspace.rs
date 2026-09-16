@@ -57,18 +57,21 @@ impl Focus {
 pub struct PaneSizePreferences {
     pub explorer_width: Option<u16>,
     pub editor_height: Option<u16>,
+    pub redis_keys_width: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PaneLayoutMetrics {
     pub explorer_width: Option<u16>,
     pub editor_height: Option<u16>,
+    pub redis_keys_width: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaneSplit {
     ExplorerWidth,
     EditorHeight,
+    RedisKeysWidth,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +104,25 @@ pub fn pane_resize(focus: Focus, operator: char, count: u32) -> Option<PaneResiz
         split,
         delta: step * direction,
     })
+}
+
+pub fn redis_pane_resize(
+    focus: Focus,
+    keys_focused: bool,
+    operator: char,
+    count: u32,
+) -> Option<PaneResize> {
+    if focus == Focus::Results && keys_focused && matches!(operator, '>' | '<') {
+        let step = i32::try_from(count).ok()?;
+        if step == 0 {
+            return None;
+        }
+        return Some(PaneResize {
+            split: PaneSplit::RedisKeysWidth,
+            delta: step * if operator == '>' { 1 } else { -1 },
+        });
+    }
+    pane_resize(focus, operator, count)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1615,6 +1637,7 @@ fn catalog_count_label(count: crate::db::catalog::CatalogCount) -> Option<String
 mod tests {
     use super::{
         CatalogOwnerContextState, Focus, PaneResize, PaneSplit, entry_detail, pane_resize,
+        redis_pane_resize,
     };
     use crate::db::catalog::{
         CatalogEntry, CatalogId, CatalogKind, CatalogMetadata, ColumnMetadata, OptionalMetadata,
@@ -1754,6 +1777,32 @@ mod tests {
                 OptionalMetadata::Supported(Some("(nextval('seq'))".to_owned()))
             ),
             Some("INTEGER DEFAULT (nextval('seq'))".to_owned())
+        );
+    }
+
+    #[test]
+    fn redis_keys_resize_maps_only_the_keys_pane() {
+        assert_eq!(
+            redis_pane_resize(Focus::Results, true, '>', 3),
+            Some(PaneResize {
+                split: PaneSplit::RedisKeysWidth,
+                delta: 3,
+            })
+        );
+        assert_eq!(
+            redis_pane_resize(Focus::Results, true, '<', 2),
+            Some(PaneResize {
+                split: PaneSplit::RedisKeysWidth,
+                delta: -2,
+            })
+        );
+        assert_eq!(
+            redis_pane_resize(Focus::Results, false, '>', 1),
+            pane_resize(Focus::Results, '>', 1)
+        );
+        assert_eq!(
+            redis_pane_resize(Focus::Results, true, '+', 1),
+            pane_resize(Focus::Results, '+', 1)
         );
     }
 }
