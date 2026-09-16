@@ -10,4 +10,9 @@ printf '%s\n' '### Added' '' '- test feature' '' '### Commits' '' '- [`abc1234`]
 python3 scripts/release/update-changelog.py 9.9.9-beta.1 "$body" 2026-08-29
 grep -F '## [9.9.9-beta.1] - 2026-08-29' CHANGELOG.md >/dev/null
 grep -F '### Commits' CHANGELOG.md >/dev/null
+section=$(scripts/release/changelog-section.sh 9.9.9-beta.1)
+printf '%s\n' "$section" | grep -F '<details>' >/dev/null
+printf '%s\n' "$section" | grep -F '<summary>Show commits</summary>' >/dev/null
+printf '%s\n' "$section" | grep -F '</details>' >/dev/null
+printf '%s\n' "$section" | grep -F '[`abc1234`](https://github.com/yelog/lazydb/commit/abc1234) test' >/dev/null
 printf '%s\n' 'changelog tools ok'
