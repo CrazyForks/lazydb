@@ -2722,7 +2722,7 @@ impl App {
                 crate::model::tab::GridRowAlignment::Bottom,
             )],
             Id::ResultsOpenRecordView => vec![Action::OpenRecordView],
-            Id::ResultsCopyCell => vec![Action::CopyGridCell],
+            Id::ResultsCopyCell | Id::RelationCopyCell => vec![Action::CopyGridCell],
             Id::ResultsCopyRow => vec![Action::CopyGridRow {
                 include_headers: false,
             }],
