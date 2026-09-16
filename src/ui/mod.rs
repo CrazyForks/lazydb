@@ -4935,10 +4935,18 @@ fn render_overlay(
             console_id,
         } => {
             const MAX_VISIBLE_ROWS: usize = 16;
-            let visible_count = candidates.len().min(MAX_VISIBLE_ROWS);
-            let height = (visible_count as u16).saturating_add(6).clamp(8, 24);
+            let height = (candidates.len().min(MAX_VISIBLE_ROWS) as u16)
+                .saturating_add(5)
+                .clamp(8, 24);
             let popup = centered(area, 68, height);
             frame.render_widget(Clear, popup);
+            let block = panel_block(" TARGET SELECTOR ", true, theme);
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            let visible_count = candidates
+                .len()
+                .min(MAX_VISIBLE_ROWS)
+                .min(usize::from(inner.height.saturating_sub(3)));
             let current = app
                 .tabs
                 .iter()
@@ -4949,10 +4957,7 @@ fn render_overlay(
                 .saturating_sub(visible_count.saturating_sub(1))
                 .min(candidates.len().saturating_sub(visible_count));
             let end = start.saturating_add(visible_count);
-            let mut lines = vec![Line::from(Span::styled(
-                " EXECUTION TARGET ",
-                theme.title(true),
-            ))];
+            let mut lines = Vec::with_capacity(visible_count.saturating_add(3));
             lines.extend(
                 candidates[start..end]
                     .iter()
@@ -4965,14 +4970,15 @@ fn render_overlay(
                         } else {
                             ""
                         };
-                        let profile_label = app
+                        let profile = app
                             .profiles
                             .iter()
-                            .find(|profile| profile.id == target.profile_id)
+                            .find(|profile| profile.id == target.profile_id);
+                        let profile_label = profile
                             .map(|profile| format!("{}: ", sanitize_terminal_text(&profile.name)))
                             .unwrap_or_default();
-                        let label = format!(
-                            "{marker} {profile_label}{}{}{}",
+                        let target_label = format!(
+                            "{}{}{}",
                             sanitize_terminal_text(&target.database),
                             target
                                 .schema
@@ -4981,61 +4987,78 @@ fn render_overlay(
                                 .unwrap_or_default(),
                             current_marker,
                         );
-                        Line::from(Span::styled(
-                            truncate_to_cells(&label, popup.width.saturating_sub(2) as usize),
-                            if index == *selected {
+                        let background = if index == *selected {
+                            theme.selection
+                        } else {
+                            theme.surface_raised
+                        };
+                        let text_style = if index == *selected {
+                            Style::new()
+                                .fg(theme.text)
+                                .bg(background)
+                                .add_modifier(Modifier::BOLD)
+                        } else if current == Some(target) {
+                            Style::new().fg(theme.accent).bg(background)
+                        } else {
+                            Style::new().fg(theme.text).bg(background)
+                        };
+                        let icon = profile.map(|profile| icons.database(profile.kind));
+                        let icon_width = icon.map_or(0, |icon| usize::from(icon.cell_width()));
+                        let prefix = format!("{marker} {profile_label}");
+                        let text_width = usize::from(inner.width)
+                            .saturating_sub(usize::from(prefix.cell_width()))
+                            .saturating_sub(icon_width.saturating_add(1));
+                        let mut spans = vec![Span::styled(prefix, text_style)];
+                        if let Some(profile) = profile {
+                            spans.push(Span::styled(
+                                format!("{} ", icons.database(profile.kind)),
                                 Style::new()
-                                    .fg(theme.text)
-                                    .bg(theme.selection)
-                                    .add_modifier(Modifier::BOLD)
-                            } else if current == Some(target) {
-                                Style::new().fg(theme.accent)
-                            } else {
-                                Style::new().fg(theme.text)
-                            },
-                        ))
+                                    .fg(icons.database_color(profile.kind))
+                                    .bg(background),
+                            ));
+                        }
+                        spans.push(Span::styled(
+                            truncate_to_cells(&target_label, text_width),
+                            text_style,
+                        ));
+                        Line::from(spans)
                     }),
             );
             lines.push(Line::raw(""));
-            lines.push(Line::raw(
-                "j/k or Up/Down select  Enter confirm  Esc cancel",
+            lines.push(shortcut_hints::line(
+                &[
+                    ShortcutHint::new("j/k or Up/Down", "select"),
+                    ShortcutHint::new("Enter", "confirm"),
+                    ShortcutHint::new("Esc", "cancel"),
+                ],
+                inner.width,
+                theme,
+                theme.surface_raised,
             ));
             lines.push(Line::from(Span::styled(
                 " Cancel ",
                 Style::new().fg(theme.text).bg(theme.surface_raised),
             )));
-            let cancel_y = popup.y.saturating_add(4 + visible_count as u16);
-            if cancel_y < popup.bottom() {
+            let cancel_y = inner.y.saturating_add(visible_count as u16 + 2);
+            if inner.width > 0 && cancel_y < inner.bottom() {
                 state.hit_regions.push(HitRegion {
-                    area: Rect::new(
-                        popup.x.saturating_add(1),
-                        cancel_y,
-                        popup.width.saturating_sub(2),
-                        1,
-                    ),
+                    area: Rect::new(inner.x, cancel_y, inner.width, 1),
                     target: HitTarget::TargetSelectorCancel,
                 });
             }
             for (offset, _) in candidates[start..end].iter().enumerate() {
                 let index = start + offset;
-                let row = popup.y.saturating_add(2 + offset as u16);
-                if row < popup.bottom() {
+                let row = inner.y.saturating_add(offset as u16);
+                if inner.width > 0 && row < inner.bottom() {
                     state.hit_regions.push(HitRegion {
-                        area: Rect::new(
-                            popup.x.saturating_add(1),
-                            row,
-                            popup.width.saturating_sub(2),
-                            1,
-                        ),
+                        area: Rect::new(inner.x, row, inner.width, 1),
                         target: HitTarget::TargetSelectorRow(index),
                     });
                 }
             }
             frame.render_widget(
-                Paragraph::new(lines)
-                    .block(panel_block(" TARGET SELECTOR ", true, theme))
-                    .style(Style::new().fg(theme.text).bg(theme.surface_raised)),
-                popup,
+                Paragraph::new(lines).style(Style::new().fg(theme.text).bg(theme.surface_raised)),
+                inner,
             );
         }
         Overlay::DatabaseSelector(selector) => {
