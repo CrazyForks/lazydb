@@ -6031,24 +6031,41 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
 }
 
 pub fn apply_startup_action(app: &mut App, selected: Option<Uuid>) {
-    if let Some(action) = startup_action(app, selected) {
+    if let Some(action) = startup_action(selected) {
         app.update(action);
     }
 }
 
 fn apply_startup_action_with_runtime(app: &mut App, runtime: &mut Runtime, selected: Option<Uuid>) {
-    if let Some(action) = startup_action(app, selected) {
+    if let Some(action) = startup_action(selected) {
         apply_action(app, runtime, action);
     }
 }
 
-fn startup_action(app: &App, selected: Option<Uuid>) -> Option<Action> {
-    selected
-        .map(|profile_id| Action::RequestProfileConnect { profile_id })
-        .or_else(|| {
-            app.active_console_opt()
-                .map(|_| Action::PrepareActiveConsole)
-        })
+fn startup_action(selected: Option<Uuid>) -> Option<Action> {
+    selected.map(|profile_id| Action::RequestProfileConnect { profile_id })
+}
+
+#[cfg(test)]
+mod startup_console_connection_tests {
+    use super::startup_action;
+    use crate::action::Action;
+    use uuid::Uuid;
+
+    #[test]
+    fn startup_without_explicit_profile_does_not_prepare_a_restored_console() {
+        assert_eq!(startup_action(None), None);
+    }
+
+    #[test]
+    fn startup_with_explicit_profile_requests_that_profile() {
+        let profile_id = Uuid::new_v4();
+
+        assert_eq!(
+            startup_action(Some(profile_id)),
+            Some(Action::RequestProfileConnect { profile_id })
+        );
+    }
 }
 
 fn apply_action(app: &mut App, runtime: &mut Runtime, action: Action) {

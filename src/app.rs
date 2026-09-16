@@ -5737,7 +5737,7 @@ impl App {
                     self.record_active_location();
                     self.clear_active_data_query_focus();
                     self.active_tab = index;
-                    self.normalize_focus();
+                    self.normalize_focus_after_tab_switch();
                     return self.prepare_active_tab();
                 }
                 Vec::new()
@@ -5766,6 +5766,7 @@ impl App {
                     };
                     return Vec::new();
                 }
+                let previous_focus = self.focus;
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -5775,7 +5776,7 @@ impl App {
                     self.focus.next()
                 };
                 self.normalize_focus();
-                Vec::new()
+                self.prepare_console_after_focus_change(previous_focus)
             }
             Action::FocusPrevious => {
                 self.clear_active_data_query_focus();
@@ -5801,6 +5802,7 @@ impl App {
                     };
                     return Vec::new();
                 }
+                let previous_focus = self.focus;
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -5810,13 +5812,14 @@ impl App {
                     self.focus.previous()
                 };
                 self.normalize_focus();
-                Vec::new()
+                self.prepare_console_after_focus_change(previous_focus)
             }
             Action::Focus(focus) => {
                 self.clear_active_data_query_focus();
+                let previous_focus = self.focus;
                 self.focus = focus;
                 self.normalize_focus();
-                Vec::new()
+                self.prepare_console_after_focus_change(previous_focus)
             }
             Action::TogglePaneMaximized => {
                 self.pane_maximized = !self.pane_maximized;
@@ -9483,6 +9486,7 @@ impl App {
                 position,
                 revision,
             } => {
+                let previous_focus = self.focus;
                 if matches!(
                     self.editor.mode(session_id),
                     Ok(EditorMode::VisualChar)
@@ -9507,6 +9511,7 @@ impl App {
                         self.clear_completion_request();
                         self.active_console_mut().completion = None;
                     }
+                    return self.prepare_console_after_focus_change(previous_focus);
                 }
                 Vec::new()
             }
@@ -13671,9 +13676,10 @@ impl App {
             }
             Action::GridSelect { row, column } => {
                 self.clear_active_data_query_focus();
+                let previous_focus = self.focus;
                 self.focus = Focus::Results;
                 self.select_grid(row, column);
-                Vec::new()
+                self.prepare_console_after_focus_change(previous_focus)
             }
             Action::ExplorerToggle => self.toggle_explorer_selected(),
             Action::ExplorerExpand => self.expand_explorer_selected(),
@@ -15124,6 +15130,17 @@ impl App {
             return Vec::new();
         }
         self.request_connection_target_for_editor_target(target, tab.id)
+    }
+
+    fn prepare_console_after_focus_change(&mut self, previous_focus: Focus) -> Vec<Command> {
+        if previous_focus == Focus::Explorer
+            && matches!(self.focus, Focus::Editor | Focus::Results)
+            && self.active_console_opt().is_some()
+        {
+            self.prepare_active_console_target()
+        } else {
+            Vec::new()
+        }
     }
 
     fn request_clear_outcome(&mut self) -> Vec<Command> {
