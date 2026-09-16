@@ -5790,13 +5790,14 @@ impl App {
             }
             Action::FocusNext => {
                 self.clear_active_data_query_focus();
+                let previous_focus = self.focus;
                 if self.focus == Focus::Explorer
                     && let Some(WorkspaceTab::RedisBrowser(tab)) =
                         self.tabs.get_mut(self.active_tab)
                 {
                     self.focus = Focus::Results;
                     tab.focus = crate::model::redis_browser::RedisBrowserFocus::Keys;
-                    return Vec::new();
+                    return self.prepare_active_tab_after_focus_change(previous_focus);
                 }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
                     && self.focus == Focus::Results
@@ -5812,7 +5813,6 @@ impl App {
                     };
                     return Vec::new();
                 }
-                let previous_focus = self.focus;
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -5822,17 +5822,18 @@ impl App {
                     self.focus.next()
                 };
                 self.normalize_focus();
-                self.prepare_console_after_focus_change(previous_focus)
+                self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::FocusPrevious => {
                 self.clear_active_data_query_focus();
+                let previous_focus = self.focus;
                 if self.focus == Focus::Explorer
                     && let Some(WorkspaceTab::RedisBrowser(tab)) =
                         self.tabs.get_mut(self.active_tab)
                 {
                     self.focus = Focus::Results;
                     tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
-                    return Vec::new();
+                    return self.prepare_active_tab_after_focus_change(previous_focus);
                 }
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
                     && self.focus == Focus::Results
@@ -5848,7 +5849,6 @@ impl App {
                     };
                     return Vec::new();
                 }
-                let previous_focus = self.focus;
                 self.focus = if self.active_console_opt().is_none() {
                     match self.focus {
                         Focus::Explorer => Focus::Results,
@@ -5858,14 +5858,14 @@ impl App {
                     self.focus.previous()
                 };
                 self.normalize_focus();
-                self.prepare_console_after_focus_change(previous_focus)
+                self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::Focus(focus) => {
                 self.clear_active_data_query_focus();
                 let previous_focus = self.focus;
                 self.focus = focus;
                 self.normalize_focus();
-                self.prepare_console_after_focus_change(previous_focus)
+                self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::TogglePaneMaximized => {
                 self.pane_maximized = !self.pane_maximized;
@@ -9557,7 +9557,7 @@ impl App {
                         self.clear_completion_request();
                         self.active_console_mut().completion = None;
                     }
-                    return self.prepare_console_after_focus_change(previous_focus);
+                    return self.prepare_active_tab_after_focus_change(previous_focus);
                 }
                 Vec::new()
             }
@@ -13535,11 +13535,12 @@ impl App {
                 Vec::new()
             }
             Action::RedisFocusPane(focus) => {
+                let previous_focus = self.focus;
                 self.focus = Focus::Results;
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.focus = focus;
                 }
-                Vec::new()
+                self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::RedisKeysViewportChanged { tab_id, rows } => {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) =
@@ -13769,7 +13770,7 @@ impl App {
                 let previous_focus = self.focus;
                 self.focus = Focus::Results;
                 self.select_grid(row, column);
-                self.prepare_console_after_focus_change(previous_focus)
+                self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::ExplorerToggle => self.toggle_explorer_selected(),
             Action::ExplorerExpand => self.expand_explorer_selected(),
@@ -15222,15 +15223,24 @@ impl App {
         self.request_connection_target_for_editor_target(target, tab.id)
     }
 
-    fn prepare_console_after_focus_change(&mut self, previous_focus: Focus) -> Vec<Command> {
-        if previous_focus == Focus::Explorer
-            && matches!(self.focus, Focus::Editor | Focus::Results)
-            && self.active_console_opt().is_some()
+    fn prepare_active_tab_after_focus_change(&mut self, previous_focus: Focus) -> Vec<Command> {
+        if previous_focus != Focus::Explorer
+            || !matches!(self.focus, Focus::Editor | Focus::Results)
         {
-            self.prepare_active_console_target()
-        } else {
-            Vec::new()
+            return Vec::new();
         }
+        if self.active_console_opt().is_some() {
+            return self.prepare_active_console_target();
+        }
+        if self.focus == Focus::Results
+            && matches!(
+                self.tabs.get(self.active_tab),
+                Some(WorkspaceTab::RedisBrowser(_))
+            )
+        {
+            return self.ensure_redis_browser_loaded(self.active_tab, false);
+        }
+        Vec::new()
     }
 
     fn request_clear_outcome(&mut self) -> Vec<Command> {

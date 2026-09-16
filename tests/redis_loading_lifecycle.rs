@@ -3,8 +3,11 @@ use lazydb::{
     app::App,
     db::redis::types::RedisTarget,
     model::{
-        execution_target::ExecutionTarget, keyspace::KeyspaceStatus,
-        redis_browser::RedisBrowserTab, tab::WorkspaceTab, workspace::ConnectionStatus,
+        execution_target::ExecutionTarget,
+        keyspace::KeyspaceStatus,
+        redis_browser::{RedisBrowserFocus, RedisBrowserTab},
+        tab::WorkspaceTab,
+        workspace::{ConnectionStatus, Focus},
     },
 };
 use uuid::Uuid;
@@ -20,6 +23,127 @@ fn connected_app(profile_id: Uuid, database: u32) -> App {
     });
     app.connection.status = ConnectionStatus::Connected;
     app
+}
+
+fn offline_redis_focus_app() -> (App, ExecutionTarget) {
+    let profile =
+        lazydb::profile::import_connection_url("redis://localhost:6379/0", Some("restored-cache"))
+            .unwrap()
+            .profile;
+    let target = ExecutionTarget {
+        profile_id: profile.id,
+        database: "3".into(),
+        schema: None,
+    };
+    let mut app = App::new(vec![profile]);
+    let mut tab = RedisBrowserTab::new(
+        Uuid::from_u128(100),
+        RedisTarget {
+            profile_id: target.profile_id,
+            database: 3,
+        },
+    );
+    tab.keyspace.pattern = b"user:*".to_vec();
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab));
+    app.active_tab = 0;
+    app.focus = Focus::Explorer;
+    (app, target)
+}
+
+#[test]
+fn focusing_an_offline_redis_browser_requests_connection_for_its_target() {
+    for (action, expected_focus) in [
+        (Action::FocusNext, RedisBrowserFocus::Keys),
+        (Action::FocusPrevious, RedisBrowserFocus::Preview),
+        (Action::Focus(Focus::Results), RedisBrowserFocus::Keys),
+        (
+            Action::RedisFocusPane(RedisBrowserFocus::Preview),
+            RedisBrowserFocus::Preview,
+        ),
+    ] {
+        let (mut app, target) = offline_redis_focus_app();
+        let commands = app.update(action);
+
+        assert_eq!(app.focus, Focus::Results);
+        assert!(matches!(
+            &app.tabs[app.active_tab],
+            WorkspaceTab::RedisBrowser(tab) if tab.focus == expected_focus
+        ));
+        assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(command, Command::Connect { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, Command::ScanRedisKeys(_)))
+        );
+    }
+}
+
+#[test]
+fn focusing_an_offline_redis_browser_scans_and_builds_its_key_tree_after_connecting() {
+    let (mut app, target) = offline_redis_focus_app();
+    let connect = app
+        .update(Action::FocusNext)
+        .into_iter()
+        .find_map(|command| match command {
+            Command::Connect { generation, .. } => Some(generation),
+            _ => None,
+        })
+        .expect("focus should request a connection");
+    let tab_id = app.tabs[app.active_tab].id();
+
+    let scan = app
+        .update(Action::ConnectionSucceeded {
+            profile_id: target.profile_id,
+            generation: connect,
+            server: lazydb::db::ServerInfo {
+                kind: lazydb::profile::DatabaseKind::Redis,
+                version: "7.2".into(),
+                database: target.database.clone(),
+                current_user: None,
+            },
+            mutation_capabilities: Default::default(),
+        })
+        .into_iter()
+        .find_map(|command| match command {
+            Command::ScanRedisKeys(request) => Some(request),
+            _ => None,
+        })
+        .expect("connection success should start the Redis scan");
+
+    assert_eq!(scan.identity.owner_id, tab_id);
+    assert_eq!(scan.identity.target.database, 3);
+    assert_eq!(scan.pattern, b"user:*".to_vec());
+
+    app.update(Action::RedisKeysLoaded(
+        lazydb::db::redis::types::KeyScanBatch {
+            identity: scan.identity,
+            keys: vec![b"user:1".to_vec()],
+            next: lazydb::db::redis::types::ScanPosition::Complete,
+        },
+    ));
+
+    let tab_index = app
+        .tabs
+        .iter()
+        .position(|tab| tab.id() == tab_id)
+        .expect("Redis Browser tab should remain available");
+    let WorkspaceTab::RedisBrowser(tab) = &app.tabs[tab_index] else {
+        panic!("expected Redis Browser tab");
+    };
+    assert!(
+        tab.tree
+            .contains(&lazydb::model::redis_key_tree::KeyTreeNodeId::Key(
+                b"user:1".to_vec()
+            ))
+    );
+    assert_eq!(tab.keyspace.keys[0].key, b"user:1".to_vec());
 }
 
 #[test]
