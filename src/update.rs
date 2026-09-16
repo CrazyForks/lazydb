@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use clap::ValueEnum;
+use crossterm::style::Stylize;
 use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -323,6 +324,10 @@ pub async fn run(args: crate::cli::UpdateArgs, _config: Option<PathBuf>) -> anyh
         &SystemUpdateHttpClient::default(),
     )
     .await;
+    let mut display_context = UpdateDisplayContext {
+        previous_version: report.current_version.clone(),
+        ..Default::default()
+    };
     if !args.check
         && report.manager == InstallationManager::Native
         && report.status == "update_available"
@@ -348,11 +353,16 @@ pub async fn run(args: crate::cli::UpdateArgs, _config: Option<PathBuf>) -> anyh
         report.current_version = Some(version);
         report.status = "updated".to_owned();
         report.action = None;
+        display_context.applied_in_this_run = true;
     }
     if args.json {
         return Ok(serde_json::to_string(&report)?);
     }
-    Ok(format_update_report(&report))
+    Ok(format_update_report(
+        &report,
+        &display_context,
+        output_style(),
+    ))
 }
 
 async fn inspect_local_installation<P, S, H>(
@@ -726,12 +736,191 @@ fn manager_action(manager: InstallationManager, _channel: UpdateChannel) -> Opti
     }
 }
 
-fn format_update_report(report: &UpdateReport) -> String {
-    let action = report.action.as_deref().unwrap_or("none");
-    format!(
-        "lazydb update: {} (manager: {:?}, channel: {:?}, action: {action})",
-        report.status, report.manager, report.channel
-    )
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum UpdateOutputStyle {
+    #[default]
+    Plain,
+    Styled,
+}
+
+#[derive(Default)]
+struct UpdateDisplayContext {
+    previous_version: Option<String>,
+    applied_in_this_run: bool,
+}
+
+fn output_style() -> UpdateOutputStyle {
+    let is_terminal = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+    let dumb_terminal = std::env::var("TERM").is_ok_and(|term| term == "dumb");
+    output_style_for(is_terminal, no_color, dumb_terminal)
+}
+
+fn output_style_for(is_terminal: bool, no_color: bool, dumb_terminal: bool) -> UpdateOutputStyle {
+    if is_terminal && !no_color && !dumb_terminal {
+        UpdateOutputStyle::Styled
+    } else {
+        UpdateOutputStyle::Plain
+    }
+}
+
+fn format_update_report(
+    report: &UpdateReport,
+    context: &UpdateDisplayContext,
+    style: UpdateOutputStyle,
+) -> String {
+    let (marker, title, color) = match report.status.as_str() {
+        "updated" if context.applied_in_this_run => ("✓", "LazyDB updated successfully", "green"),
+        "updated" => ("✓", "LazyDB update is already installed", "green"),
+        "up_to_date" if versions_match(report) => ("✓", "LazyDB is already up to date", "green"),
+        "up_to_date" => ("[OK]", "No LazyDB update needed", "green"),
+        "update_available" => ("↑", "A LazyDB update is available", "cyan"),
+        "manager_action_required" if report.manager != InstallationManager::Unknown => {
+            ("!", manager_title(report.manager), "yellow")
+        }
+        "manager_action_required" => ("!", "Manual update required for LazyDB", "yellow"),
+        "error" => ("✗", "Could not check for LazyDB updates", "red"),
+        _ => ("?", "LazyDB update status", "yellow"),
+    };
+    let marker = match style {
+        UpdateOutputStyle::Plain => plain_marker(marker),
+        UpdateOutputStyle::Styled => marker,
+    };
+    let title = match style {
+        UpdateOutputStyle::Plain => format!("{marker} {title}"),
+        UpdateOutputStyle::Styled => match color {
+            "green" => format!("{}", format!("{marker} {title}").green().bold()),
+            "cyan" => format!("{}", format!("{marker} {title}").cyan().bold()),
+            "yellow" => format!("{}", format!("{marker} {title}").yellow().bold()),
+            "red" => format!("{}", format!("{marker} {title}").red().bold()),
+            _ => format!("{marker} {title}"),
+        },
+    };
+    let mut lines = vec![title];
+
+    match report.status.as_str() {
+        "updated" if context.applied_in_this_run => {
+            push_version_line(
+                &mut lines,
+                "Version",
+                context.previous_version.as_deref(),
+                report.current_version.as_deref(),
+            );
+        }
+        "updated" => push_version_line(
+            &mut lines,
+            "Installed",
+            report.current_version.as_deref(),
+            None,
+        ),
+        "up_to_date" if versions_match(report) => {
+            push_value_line(&mut lines, "Version", report.current_version.as_deref());
+        }
+        "up_to_date" => {
+            push_value_line(&mut lines, "Installed", report.current_version.as_deref());
+            push_value_line(
+                &mut lines,
+                "Channel latest",
+                report.target_version.as_deref(),
+            );
+        }
+        "update_available" => {
+            push_version_line(
+                &mut lines,
+                "Version",
+                report.current_version.as_deref(),
+                report.target_version.as_deref(),
+            );
+            push_value_line(&mut lines, "Run", Some(update_command(report.channel)));
+        }
+        "manager_action_required" => {
+            push_value_line(&mut lines, "Current", report.current_version.as_deref());
+        }
+        _ => {}
+    }
+    push_value_line(&mut lines, "Channel", Some(channel_name(report.channel)));
+    match report.status.as_str() {
+        "manager_action_required" => {
+            let label = matches!(
+                report.manager,
+                InstallationManager::Homebrew | InstallationManager::Cargo
+            )
+            .then_some("Run")
+            .unwrap_or("Next step");
+            push_value_line(&mut lines, label, report.action.as_deref());
+        }
+        "error" => push_value_line(&mut lines, "Reason", report.action.as_deref()),
+        status if status != "update_available" && status != "updated" => {
+            push_value_line(&mut lines, "Next step", report.action.as_deref());
+            if status != "up_to_date" {
+                push_value_line(&mut lines, "Status", Some(status));
+            }
+        }
+        _ => {}
+    }
+    lines.join("\n")
+}
+
+fn versions_match(report: &UpdateReport) -> bool {
+    let (Some(current), Some(target)) = (
+        report.current_version.as_deref(),
+        report.target_version.as_deref(),
+    ) else {
+        return false;
+    };
+    Version::parse(current).ok() == Version::parse(target).ok() && Version::parse(current).is_ok()
+}
+
+fn plain_marker(marker: &str) -> &str {
+    match marker {
+        "✓" => "[OK]",
+        "↑" => "[INFO]",
+        "!" => "[WARN]",
+        "✗" => "[ERROR]",
+        _ => marker,
+    }
+}
+
+fn push_value_line(lines: &mut Vec<String>, label: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        lines.push(format!("  {label:<13}{value}"));
+    }
+}
+
+fn push_version_line(
+    lines: &mut Vec<String>,
+    label: &str,
+    current: Option<&str>,
+    target: Option<&str>,
+) {
+    match (
+        current.filter(|value| !value.is_empty()),
+        target.filter(|value| !value.is_empty()),
+    ) {
+        (Some(current), Some(target)) => lines.push(format!("  {label:<13}{current} -> {target}")),
+        (Some(current), None) => push_value_line(lines, label, Some(current)),
+        (None, Some(target)) => push_value_line(lines, "Target", Some(target)),
+        (None, None) => {}
+    }
+}
+
+fn update_command(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::Stable => "lazydb update",
+        UpdateChannel::Beta => "lazydb update --channel beta",
+    }
+}
+
+fn manager_title(manager: InstallationManager) -> &'static str {
+    match manager {
+        InstallationManager::Homebrew => "Update LazyDB using Homebrew",
+        InstallationManager::Npm => "Update LazyDB using npm",
+        InstallationManager::Deb => "Update LazyDB using the Debian package manager",
+        InstallationManager::Rpm => "Update LazyDB using the RPM package manager",
+        InstallationManager::Arch => "Update LazyDB using the Arch package manager",
+        InstallationManager::Cargo => "Update LazyDB using Cargo",
+        _ => "Manual update required for LazyDB",
+    }
 }
 
 pub(crate) struct UpdateLock {
@@ -1575,6 +1764,107 @@ mod tests {
         assert_eq!(value["channel"], "stable");
         assert_eq!(value["status"], "manager_action_required");
         assert_eq!(value["action"], "brew upgrade yelog/tap/lazydb");
+    }
+
+    fn display_report(status: &str) -> UpdateReport {
+        UpdateReport {
+            schema: 1,
+            manager: InstallationManager::Native,
+            channel: UpdateChannel::Stable,
+            current_version: Some("1.2.3".into()),
+            target_version: Some("1.3.0".into()),
+            status: status.into(),
+            action: None,
+        }
+    }
+
+    #[test]
+    fn update_report_distinguishes_applied_and_preinstalled_updates() {
+        let report = UpdateReport {
+            current_version: Some("1.3.0".into()),
+            ..display_report("updated")
+        };
+        let applied = format_update_report(
+            &report,
+            &UpdateDisplayContext {
+                previous_version: Some("1.2.3".into()),
+                applied_in_this_run: true,
+            },
+            UpdateOutputStyle::Plain,
+        );
+        assert!(applied.contains("LazyDB updated successfully"));
+        assert!(applied.contains("1.2.3 -> 1.3.0"));
+
+        let installed = format_update_report(
+            &report,
+            &UpdateDisplayContext::default(),
+            UpdateOutputStyle::Plain,
+        );
+        assert!(installed.contains("LazyDB update is already installed"));
+        assert!(!installed.contains("successfully"));
+        assert!(!installed.contains("->"));
+    }
+
+    #[test]
+    fn update_report_renders_readable_status_summaries() {
+        let latest = UpdateReport {
+            target_version: Some("1.2.3".into()),
+            ..display_report("up_to_date")
+        };
+        let output = format_update_report(
+            &latest,
+            &UpdateDisplayContext::default(),
+            UpdateOutputStyle::Plain,
+        );
+        assert!(output.contains("already up to date"));
+        assert!(output.contains("Version"));
+        assert!(!output.contains("action: none"));
+
+        let available = UpdateReport {
+            channel: UpdateChannel::Beta,
+            ..display_report("update_available")
+        };
+        let output = format_update_report(
+            &available,
+            &UpdateDisplayContext::default(),
+            UpdateOutputStyle::Plain,
+        );
+        assert!(output.contains("A LazyDB update is available"));
+        assert!(output.contains("lazydb update --channel beta"));
+        assert!(!output.contains("successfully"));
+
+        let error = UpdateReport {
+            action: Some("connection timed out".into()),
+            ..display_report("error")
+        };
+        let output = format_update_report(
+            &error,
+            &UpdateDisplayContext::default(),
+            UpdateOutputStyle::Plain,
+        );
+        assert!(output.contains("Could not check for LazyDB updates"));
+        assert!(output.contains("connection timed out"));
+        assert!(output.contains("[ERROR]"));
+    }
+
+    #[test]
+    fn output_style_disables_ansi_for_non_tty_or_opt_out() {
+        assert_eq!(
+            output_style_for(false, false, false),
+            UpdateOutputStyle::Plain
+        );
+        assert_eq!(
+            output_style_for(true, true, false),
+            UpdateOutputStyle::Plain
+        );
+        assert_eq!(
+            output_style_for(true, false, true),
+            UpdateOutputStyle::Plain
+        );
+        assert_eq!(
+            output_style_for(true, false, false),
+            UpdateOutputStyle::Styled
+        );
     }
 
     #[test]
