@@ -6860,7 +6860,8 @@ fn target_selector_renders_real_target_and_navigation_hint() {
     app.update(Action::OpenTargetSelector);
     let output = render(&app, 120, 36);
 
-    assert!(output.contains("EXECUTION TARGET"));
+    assert_eq!(output.matches("TARGET SELECTOR").count(), 1);
+    assert!(!output.contains("EXECUTION TARGET"));
     assert!(output.contains(":memory:.main"));
     assert!(output.contains("current"));
     assert!(output.contains("Enter confirm"));
