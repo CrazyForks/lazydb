@@ -116,6 +116,7 @@ pub enum HitTarget {
         node: crate::model::redis_key_tree::KeyTreeNodeId,
     },
     RedisFindInput(Uuid),
+    RedisValueFilter(Uuid),
     RedisPreviewFormat(Uuid),
     RedisPreviewWrap(Uuid),
     RedisPreviewFocus(Uuid),

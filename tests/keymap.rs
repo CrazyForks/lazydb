@@ -238,6 +238,16 @@ fn redis_table_preview_routes_motion_to_the_shared_grid() {
         keymap.map(key(KeyCode::Char(']')), &app),
         Some(Action::GridResizeColumn(1))
     );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('y')), &app),
+        Some(Action::CopyGridCell)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('/')), &app),
+        Some(Action::RedisValueFilterFocus {
+            tab_id: Uuid::from_u128(36)
+        })
+    );
     assert_eq!(keymap.map(key(KeyCode::Char('W')), &app), None);
 }
 

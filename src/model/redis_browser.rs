@@ -77,6 +77,13 @@ pub struct RedisKeyFindState {
     pub expanded: std::collections::HashSet<KeyTreeNodeId>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RedisValueFilterState {
+    pub draft: TextInput,
+    pub applied: String,
+    pub editing: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedisBrowserTab {
     pub id: Uuid,
@@ -104,6 +111,7 @@ pub struct RedisBrowserTab {
     pub preview_content_rows: usize,
     pub preview_grid: DataGridState,
     pub value_page_loading: bool,
+    pub value_filter: RedisValueFilterState,
 }
 
 impl RedisBrowserTab {
@@ -130,11 +138,47 @@ impl RedisBrowserTab {
             preview_content_rows: 0,
             preview_grid: DataGridState::default(),
             value_page_loading: false,
+            value_filter: RedisValueFilterState::default(),
         }
     }
 
     pub fn reset_preview_grid(&mut self) {
         self.preview_grid = DataGridState::default();
+    }
+
+    pub fn preview_table(&self) -> Option<crate::value_preview::table::RedisTable> {
+        let RedisValuePageState::Ready(page) = &self.value_page else {
+            return None;
+        };
+        Some(
+            crate::value_preview::table::from_page(&page.value)
+                .filtered(&self.value_filter.applied),
+        )
+    }
+
+    pub fn begin_value_filter(&mut self) {
+        self.value_filter
+            .draft
+            .set(self.value_filter.applied.clone());
+        self.value_filter.editing = true;
+    }
+
+    pub fn cancel_value_filter(&mut self) {
+        self.value_filter
+            .draft
+            .set(self.value_filter.applied.clone());
+        self.value_filter.editing = false;
+    }
+
+    pub fn submit_value_filter(&mut self) {
+        self.value_filter.applied = self.value_filter.draft.value().to_owned();
+        self.value_filter.editing = false;
+        self.preview_grid.selected_row = 0;
+        self.preview_grid.row_offset = 0;
+        self.clamp_preview_grid(
+            self.preview_table().map_or(0, |table| table.rows.len()),
+            self.preview_table().map_or(0, |table| table.columns.len()),
+        );
     }
 
     pub fn clamp_preview_grid(&mut self, row_count: usize, column_count: usize) {
@@ -209,9 +253,11 @@ impl RedisBrowserTab {
     /// should use this only for explicit actions such as Enter or a double
     /// click, not for cursor movement.
     pub fn open_key(&mut self, key: RedisKeyId) {
-        let previous_key = self.opened_key.as_ref().map(|key| &key.key);
-        if previous_key != Some(&key.key) {
+        let different_key = self.opened_key.as_ref() != Some(&key);
+        if different_key {
             self.format.reset_auto();
+            self.value_filter = RedisValueFilterState::default();
+            self.reset_preview_grid();
         }
         self.opened_key = Some(key.clone());
         self.preview_generation = self.preview_generation.saturating_add(1);
@@ -231,6 +277,8 @@ impl RedisBrowserTab {
         self.content = RedisPreviewContentState::Empty;
         self.preview_scroll = 0;
         self.value_page_loading = false;
+        self.value_filter = RedisValueFilterState::default();
+        self.reset_preview_grid();
     }
 
     pub fn preview_generation(&self) -> Option<u64> {

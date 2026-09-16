@@ -285,16 +285,20 @@ pub fn render(
             wrap_area,
         );
     }
-    if tab.format.view() == crate::value_preview::ValueView::Table
-        && let RedisValuePageState::Ready(page) = &tab.value_page
-    {
-        let table = crate::value_preview::table::from_page(&page.value);
+    let table_view = tab.format.view() == crate::value_preview::ValueView::Table;
+    if table_view {
+        render_table_filter(frame, value_area, tab, ui, theme);
+    }
+    if table_view && let RedisValuePageState::Ready(page) = &tab.value_page {
+        let table = tab
+            .preview_table()
+            .unwrap_or_else(|| crate::value_preview::table::from_page(&page.value));
         let result = redis_table_result(&table);
         let grid_area = Rect::new(
             value_area.x,
-            value_area.y,
+            value_area.y.saturating_add(2),
             value_area.width,
-            value_area.height.saturating_sub(1),
+            value_area.height.saturating_sub(3),
         );
         super::data_grid::render(
             frame,
@@ -313,16 +317,51 @@ pub fn render(
         );
         let status_area = Rect::new(
             grid_area.x,
-            grid_area.bottom().saturating_sub(1),
+            value_area.bottom().saturating_sub(1),
             grid_area.width,
             1,
         );
-        render_value_page_status(frame, status_area, tab, ui, theme, result.rows.len());
+        let loaded_rows = crate::value_preview::table::from_page(&page.value)
+            .rows
+            .len();
+        render_value_page_status(
+            frame,
+            status_area,
+            tab,
+            ui,
+            theme,
+            result.rows.len(),
+            loaded_rows,
+        );
         ui.redis_preview_viewport_rows = Some((
             tab.id,
             grid_area.height.saturating_sub(2) as usize,
             result.rows.len() + 1,
         ));
+        return;
+    }
+    if table_view {
+        let body = Rect::new(
+            value_area.x,
+            value_area.y.saturating_add(2),
+            value_area.width,
+            value_area.height.saturating_sub(2),
+        );
+        let message = match &tab.value_page {
+            RedisValuePageState::Loading { key } => {
+                format!("Loading {}", display_bytes(&key.key))
+            }
+            RedisValuePageState::Failed { key, message } => {
+                format!("{}\n{}", display_bytes(&key.key), message)
+            }
+            RedisValuePageState::Empty => "Select a key to preview".to_owned(),
+            RedisValuePageState::Ready(_) => "No rows".to_owned(),
+        };
+        frame.render_widget(
+            Paragraph::new(message).style(Style::new().fg(theme.muted).bg(theme.surface)),
+            body,
+        );
+        ui.redis_preview_viewport_rows = Some((tab.id, body.height as usize, 1));
         return;
     }
     let gutter = app
@@ -397,6 +436,7 @@ fn render_value_page_status(
     ui: &mut crate::ui::UiState,
     theme: Theme,
     row_count: usize,
+    loaded_rows: usize,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -410,10 +450,16 @@ fn render_value_page_status(
     };
     let start = tab.preview_grid.row_offset.saturating_add(1);
     let end = (start + tab.preview_grid.viewport_rows.max(1)).min(row_count);
-    let text = if row_count == 0 {
-        format!("0 loaded · {state}")
+    let text = if tab.value_filter.applied.is_empty() {
+        if loaded_rows == 0 {
+            format!("0 loaded · {state}")
+        } else {
+            format!("Rows {start}–{end} · {loaded_rows} loaded · {state}")
+        }
+    } else if row_count == 0 {
+        format!("0 matched / {loaded_rows} loaded · {state}")
     } else {
-        format!("Rows {start}–{end} · {row_count} loaded · {state}")
+        format!("Rows {start}–{end} · {row_count} matched / {loaded_rows} loaded · {state}")
     };
     frame.render_widget(
         Paragraph::new(text).style(Style::new().fg(theme.muted).bg(theme.surface)),
@@ -427,6 +473,58 @@ fn render_value_page_status(
             target: crate::ui::HitTarget::RedisPreviewLoadMore(tab.id),
         });
     }
+}
+
+fn render_table_filter(
+    frame: &mut Frame<'_>,
+    value_area: Rect,
+    tab: &crate::model::redis_browser::RedisBrowserTab,
+    ui: &mut super::UiState,
+    theme: Theme,
+) {
+    if value_area.height < 2 || value_area.width == 0 {
+        return;
+    }
+    let area = Rect::new(value_area.x, value_area.y, value_area.width, 2);
+    ui.hit_regions.push(crate::ui::HitRegion {
+        area,
+        target: crate::ui::HitTarget::RedisValueFilter(tab.id),
+    });
+    let field = Rect::new(area.x, area.y, area.width, 1);
+    let prefix = "FILTER  ";
+    let offset = super::text_input_horizontal_offset(field, prefix, &tab.value_filter.draft);
+    super::register_input_selection_target(
+        ui,
+        super::text_selection::InputSelectionTarget::RedisValueFilter(tab.id),
+        field,
+        prefix,
+        &tab.value_filter.draft,
+        offset,
+    );
+    super::query_bar::render_query_field(
+        frame,
+        field,
+        "FILTER",
+        &tab.value_filter.draft,
+        &[],
+        true,
+        tab.value_filter.editing,
+        offset,
+        theme,
+        ui,
+    );
+    frame.render_widget(
+        Paragraph::new("─".repeat(area.width as usize)).style(
+            Style::new()
+                .fg(if tab.value_filter.editing {
+                    theme.accent
+                } else {
+                    theme.border
+                })
+                .bg(theme.surface),
+        ),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
 }
 
 fn redis_table_result(
