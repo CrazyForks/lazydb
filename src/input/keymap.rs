@@ -1148,6 +1148,58 @@ impl Keymap {
                     KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
                     event,
                 ];
+                let redis_direction =
+                    if self.bindings.matches_sequence("focus-pane-left", &sequence) {
+                        Some(true)
+                    } else if self
+                        .bindings
+                        .matches_sequence("focus-pane-right", &sequence)
+                    {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                if let Some(is_left) = redis_direction
+                    && let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                        app.tabs.get(app.active_tab)
+                    && matches!(app.focus, Focus::Explorer | Focus::Results)
+                {
+                    let action = match (app.focus, tab.focus, is_left) {
+                        (Focus::Explorer, _, true) | (Focus::Results, _, false)
+                            if app.focus == Focus::Explorer && is_left
+                                || app.focus == Focus::Results
+                                    && tab.focus
+                                        == crate::model::redis_browser::RedisBrowserFocus::Preview
+                                    && !is_left =>
+                        {
+                            None
+                        }
+                        (Focus::Explorer, _, false) => Some(Action::RedisFocusPane(
+                            crate::model::redis_browser::RedisBrowserFocus::Keys,
+                        )),
+                        (
+                            Focus::Results,
+                            crate::model::redis_browser::RedisBrowserFocus::Keys,
+                            true,
+                        ) => Some(Action::Focus(Focus::Explorer)),
+                        (
+                            Focus::Results,
+                            crate::model::redis_browser::RedisBrowserFocus::Keys,
+                            false,
+                        ) => Some(Action::RedisFocusPane(
+                            crate::model::redis_browser::RedisBrowserFocus::Preview,
+                        )),
+                        (
+                            Focus::Results,
+                            crate::model::redis_browser::RedisBrowserFocus::Preview,
+                            true,
+                        ) => Some(Action::RedisFocusPane(
+                            crate::model::redis_browser::RedisBrowserFocus::Keys,
+                        )),
+                        _ => None,
+                    };
+                    return action;
+                }
                 let command = if self.bindings.matches_sequence("focus-pane-left", &sequence)
                     && matches!(app.focus, Focus::Editor | Focus::Results)
                 {
@@ -1237,10 +1289,11 @@ impl Keymap {
             && matches!(
                 app.tabs.get(app.active_tab),
                 Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
-                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
-                        && tab.find.as_ref().is_none_or(|find| {
-                            find.phase != crate::model::redis_browser::RedisFindPhase::Editing
-                        })
+                    if (tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                        || (tab.focus == crate::model::redis_browser::RedisBrowserFocus::Keys
+                            && tab.find.as_ref().is_none_or(|find| {
+                                find.phase != crate::model::redis_browser::RedisFindPhase::Editing
+                            })))
             )
         {
             self.set_pending(Pending::Window { count: 1 }, app);

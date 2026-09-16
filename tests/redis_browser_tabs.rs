@@ -517,6 +517,10 @@ fn selecting_a_key_does_not_open_a_preview_but_explicit_open_does() {
         app.tabs.last().unwrap(),
         WorkspaceTab::RedisBrowser(tab) if matches!(tab.value_page, RedisValuePageState::Loading { .. })
     ));
+    assert!(matches!(
+        app.tabs.last().unwrap(),
+        WorkspaceTab::RedisBrowser(tab) if tab.focus == lazydb::model::redis_browser::RedisBrowserFocus::Preview
+    ));
 }
 
 #[test]
