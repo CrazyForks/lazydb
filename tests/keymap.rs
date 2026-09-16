@@ -87,6 +87,56 @@ fn redis_keys_routes_before_generic_results_navigation_and_supports_find() {
 }
 
 #[test]
+fn redis_keys_o_toggles_selected_group_before_results_bindings() {
+    use lazydb::db::redis::types::{RedisKeyId, RedisTarget};
+    use lazydb::model::redis_browser::RedisBrowserTab;
+    use lazydb::model::redis_key_tree::KeyTreeNodeId;
+
+    let mut app = App::new(Vec::new());
+    let target = RedisTarget {
+        profile_id: Uuid::from_u128(101),
+        database: 0,
+    };
+    let mut tab = RedisBrowserTab::new(Uuid::from_u128(102), target.clone());
+    let prefix = KeyTreeNodeId::Prefix(b"users:".to_vec());
+    tab.tree.rebuild(&[
+        RedisKeyId {
+            target: target.clone(),
+            key: b"users:1".to_vec(),
+        },
+        RedisKeyId {
+            target,
+            key: b"users:2".to_vec(),
+        },
+    ]);
+    tab.select(Some(prefix.clone()));
+    let tab_id = tab.id;
+    app.tabs.push(WorkspaceTab::RedisBrowser(tab));
+    app.active_tab = app.tabs.len() - 1;
+    app.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+
+    for expanded in [true, false] {
+        let action = keymap.map(key(KeyCode::Char('o')), &app).unwrap();
+        assert_eq!(
+            action,
+            Action::RedisToggleNode {
+                tab_id,
+                node: prefix.clone()
+            }
+        );
+        assert!(app.update(action).is_empty());
+        let WorkspaceTab::RedisBrowser(tab) = &app.tabs[app.active_tab] else {
+            panic!("expected Redis browser tab");
+        };
+        assert_eq!(tab.tree.expanded.contains(&prefix), expanded);
+        assert_eq!(tab.tree.selected.as_ref(), Some(&prefix));
+        assert!(tab.opened_key.is_none());
+        assert_eq!(tab.preview_generation, 0);
+    }
+}
+
+#[test]
 fn redis_keys_use_h_and_l_for_tree_depth_navigation() {
     let mut app = App::new(Vec::new());
     app.tabs.push(WorkspaceTab::RedisBrowser(

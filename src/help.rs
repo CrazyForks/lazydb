@@ -573,6 +573,7 @@ pub enum HelpShortcutId {
     RedisKeysFind,
     RedisKeysExpand,
     RedisKeysCollapse,
+    RedisKeysToggle,
     RedisKeysOpen,
     RedisKeysCopy,
     RedisKeysCreate,
@@ -694,6 +695,7 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | RedisKeysOpen
         | RedisKeysExpand
         | RedisKeysCollapse
+        | RedisKeysToggle
         | RedisPreviewPage
         | RedisPreviewTableCopy
         | RedisFindCancel
@@ -1667,10 +1669,17 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         display
     ),
     row!(
+        RedisKeysToggle,
+        [RedisKeys, RedisKeysFindConfirmed],
+        "o",
+        "toggle the selected Redis key group",
+        display
+    ),
+    row!(
         RedisKeysOpen,
         [RedisKeys, RedisKeysFindConfirmed],
         "Enter",
-        "open the selected Redis key",
+        "open the selected Redis key or toggle its group",
         display
     ),
     row!(
