@@ -1606,7 +1606,9 @@ impl Keymap {
             return None;
         }
 
-        if (is_sql_grid_focus(app) || is_read_only_grid_focus(app))
+        if (is_sql_grid_focus(app)
+            || is_read_only_grid_focus(app)
+            || is_redis_table_grid_focus(app))
             && (event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT)
         {
             match event.code {
@@ -1987,6 +1989,33 @@ impl Keymap {
                 Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
             )
         {
+            if event.modifiers.is_empty()
+                && event.code == KeyCode::Char('/')
+                && is_redis_table_grid_focus(app)
+            {
+                let tab_id = app.tabs[app.active_tab].id();
+                return Some(Action::RedisValueFilterFocus { tab_id });
+            }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                        && tab.format.view() == crate::value_preview::ValueView::Table
+                        && tab.value_filter.editing
+            ) {
+                if let Some(edit) = map_text_input_edit(event) {
+                    return Some(Action::RedisValueFilterEdit(edit));
+                }
+                return match event.code {
+                    KeyCode::Enter if event.modifiers.is_empty() => {
+                        Some(Action::RedisValueFilterSubmit)
+                    }
+                    KeyCode::Esc if event.modifiers.is_empty() => {
+                        Some(Action::RedisValueFilterCancel)
+                    }
+                    _ => None,
+                };
+            }
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
                 app.tabs.get(app.active_tab)
                 && let Some(find) = tab.find.as_ref()
@@ -3001,6 +3030,16 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
     if app.overlay.is_some() {
         return Vec::new();
     }
+    if matches!(
+        app.tabs.get(app.active_tab),
+        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+            if app.focus == Focus::Results
+                && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                && tab.format.view() == crate::value_preview::ValueView::Table
+                && tab.value_filter.editing
+    ) {
+        return vec![Action::RedisValueFilterPaste(value)];
+    }
     if is_relation_data_focus(app) {
         return vec![Action::RelationPaste];
     }
@@ -3149,6 +3188,17 @@ fn is_read_only_grid_focus(app: &App) -> bool {
             app.tabs.get(app.active_tab),
             Some(crate::model::tab::WorkspaceTab::Dashboard(tab))
                 if !tab.process_filter_active
+        )
+}
+
+fn is_redis_table_grid_focus(app: &App) -> bool {
+    app.focus == Focus::Results
+        && matches!(
+            app.tabs.get(app.active_tab),
+            Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                if tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+                    && !tab.value_filter.editing
         )
 }
 

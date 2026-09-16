@@ -15,6 +15,23 @@ pub struct RedisTableRow {
     pub row_key: Vec<u8>,
 }
 
+impl RedisTable {
+    /// Return the rows whose complete, display-safe cell text contains the
+    /// keyword.  Filtering is deliberately local to the already loaded page.
+    pub fn filtered(mut self, keyword: &str) -> Self {
+        if keyword.is_empty() {
+            return self;
+        }
+        let keyword = keyword.to_lowercase();
+        self.rows.retain(|row| {
+            row.cells
+                .iter()
+                .any(|cell| cell.to_lowercase().contains(&keyword))
+        });
+        self
+    }
+}
+
 pub fn from_page(value: &RedisPageValue) -> RedisTable {
     match value {
         RedisPageValue::String(value) => RedisTable {
@@ -98,5 +115,57 @@ fn display(value: &[u8]) -> String {
         text.to_owned()
     } else {
         value.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RedisTable;
+
+    #[test]
+    fn keyword_filter_is_case_insensitive_and_preserves_row_identity() {
+        let table = RedisTable {
+            columns: vec!["Field".into(), "Value".into()],
+            rows: vec![
+                super::RedisTableRow {
+                    cells: vec!["first".into(), "ordinary".into()],
+                    identity: vec![b"first".to_vec(), b"ordinary".to_vec()],
+                    row_key: b"first".to_vec(),
+                },
+                super::RedisTableRow {
+                    cells: vec!["second".into(), "Needle value".into()],
+                    identity: vec![b"second".to_vec(), b"Needle value".to_vec()],
+                    row_key: b"second".to_vec(),
+                },
+            ],
+        };
+
+        let filtered = table.filtered("needle");
+        assert_eq!(filtered.columns, vec!["Field", "Value"]);
+        assert_eq!(filtered.rows.len(), 1);
+        assert_eq!(filtered.rows[0].row_key, b"second");
+        assert_eq!(filtered.rows[0].identity[1], b"Needle value");
+    }
+
+    #[test]
+    fn empty_keyword_filter_returns_all_rows_and_literal_text_is_not_regex() {
+        let table = RedisTable {
+            columns: vec!["Value".into()],
+            rows: vec![
+                super::RedisTableRow {
+                    cells: vec!["a.*b".into()],
+                    identity: vec![b"a.*b".to_vec()],
+                    row_key: b"a.*b".to_vec(),
+                },
+                super::RedisTableRow {
+                    cells: vec!["axb".into()],
+                    identity: vec![b"axb".to_vec()],
+                    row_key: b"axb".to_vec(),
+                },
+            ],
+        };
+
+        assert_eq!(table.clone().filtered("").rows.len(), 2);
+        assert_eq!(table.filtered(".*").rows.len(), 1);
     }
 }

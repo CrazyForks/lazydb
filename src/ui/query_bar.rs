@@ -195,7 +195,7 @@ pub(crate) fn render(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_query_field(
+pub(crate) fn render_query_field(
     frame: &mut Frame<'_>,
     area: Rect,
     label: &str,

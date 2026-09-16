@@ -72,6 +72,7 @@ pub struct InputHitMap {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputSelectionTarget {
     DataQuery(crate::model::data_query::DataQueryInput),
+    RedisValueFilter(uuid::Uuid),
     Profile(crate::ui::ProfileField),
     ProfileUrl,
     Catalog(crate::action::CatalogEditorCursorTarget),

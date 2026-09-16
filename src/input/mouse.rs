@@ -679,6 +679,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::RedisFindInput(_) => Some(Action::RedisFocusPane(
                     crate::model::redis_browser::RedisBrowserFocus::Keys,
                 )),
+                HitTarget::RedisValueFilter(tab_id) => {
+                    Some(Action::RedisValueFilterFocus { tab_id })
+                }
                 HitTarget::RedisPreviewFormat(_) => Some(Action::RedisPreviewCycleFormat),
                 HitTarget::RedisPreviewWrap(_) => Some(Action::RedisPreviewToggleWrap),
                 HitTarget::RedisPreviewFocus(_) => Some(Action::RedisFocusPane(
@@ -1196,6 +1199,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::RedisKeyNode { .. } => Some(Focus::Results),
         HitTarget::RedisKeyToggle { .. } => Some(Focus::Results),
         HitTarget::RedisFindInput(_) => Some(Focus::Results),
+        HitTarget::RedisValueFilter(_) => Some(Focus::Results),
         HitTarget::RedisPreviewFormat(_) => Some(Focus::Results),
         HitTarget::RedisPreviewWrap(_) => Some(Focus::Results),
         HitTarget::RedisPreviewFocus(_) => Some(Focus::Results),

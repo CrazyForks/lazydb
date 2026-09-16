@@ -3694,6 +3694,11 @@ impl App {
                     | Action::ActivateSqlEditor(_)
                     | Action::RedisCopyKey
                     | Action::RedisDeleteKey
+                    | Action::RedisValueFilterFocus { .. }
+                    | Action::RedisValueFilterEdit(_)
+                    | Action::RedisValueFilterPaste(_)
+                    | Action::RedisValueFilterSubmit
+                    | Action::RedisValueFilterCancel
             )
             && !((self.is_active_relation_tab()
                 || matches!(
@@ -4030,6 +4035,17 @@ impl App {
                             self.refresh_active_data_query_completion();
                         }
                     }
+                    crate::ui::text_selection::InputSelectionTarget::RedisValueFilter(tab_id) => {
+                        if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                            self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                            && tab.format.view() == crate::value_preview::ValueView::Table
+                        {
+                            tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                            tab.begin_value_filter();
+                            tab.value_filter.draft.begin_selection(cursor);
+                            self.focus = Focus::Results;
+                        }
+                    }
                     crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
                         if field == crate::model::profile_manager::ProfileField::Password {
                             return Vec::new();
@@ -4190,6 +4206,13 @@ impl App {
                                 DataQueryInput::OrderBy => &mut query.order_by_input,
                             };
                             value.extend_selection(cursor);
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RedisValueFilter(tab_id) => {
+                        if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                            self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                        {
+                            tab.value_filter.draft.extend_selection(cursor);
                         }
                     }
                     crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
@@ -4371,6 +4394,29 @@ impl App {
                             .and_then(|query| match input {
                                 DataQueryInput::Where => query.where_input.selected_text(),
                                 DataQueryInput::OrderBy => query.order_by_input.selected_text(),
+                            })
+                            .map(str::to_owned);
+                        if let Some(text) = text {
+                            return vec![Command::WriteClipboard(ClipboardPayload {
+                                description: format!(
+                                    "Text selection: {} chars",
+                                    text.chars().count()
+                                ),
+                                text,
+                                sensitive: false,
+                            })];
+                        }
+                    }
+                    crate::ui::text_selection::InputSelectionTarget::RedisValueFilter(tab_id) => {
+                        let text = self
+                            .tabs
+                            .iter()
+                            .find(|tab| tab.id() == tab_id)
+                            .and_then(|tab| match tab {
+                                WorkspaceTab::RedisBrowser(tab) => {
+                                    tab.value_filter.draft.selected_text()
+                                }
+                                _ => None,
                             })
                             .map(str::to_owned);
                         if let Some(text) = text {
@@ -13628,6 +13674,50 @@ impl App {
             }
             Action::RedisFindNext => self.move_redis_find(1),
             Action::RedisFindPrevious => self.move_redis_find(-1),
+            Action::RedisValueFilterFocus { tab_id } => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+                {
+                    tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+                    tab.begin_value_filter();
+                }
+                Vec::new()
+            }
+            Action::RedisValueFilterEdit(edit) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+                    && tab.value_filter.editing
+                {
+                    tab.value_filter.draft.apply(edit);
+                }
+                Vec::new()
+            }
+            Action::RedisValueFilterPaste(value) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.value_filter.editing
+                {
+                    tab.value_filter.draft.paste(value);
+                }
+                Vec::new()
+            }
+            Action::RedisValueFilterSubmit => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.value_filter.editing
+                {
+                    tab.submit_value_filter();
+                }
+                Vec::new()
+            }
+            Action::RedisValueFilterCancel => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.value_filter.editing
+                {
+                    tab.cancel_value_filter();
+                }
+                Vec::new()
+            }
             Action::ExplorerToggleNode(id) => {
                 let expandable = self
                     .explorer
@@ -17940,6 +18030,13 @@ impl App {
                     }
                 }
             }
+            crate::ui::text_selection::InputSelectionTarget::RedisValueFilter(tab_id) => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == *tab_id)
+                {
+                    tab.value_filter.draft.clear_selection();
+                }
+            }
             crate::ui::text_selection::InputSelectionTarget::Profile(field) => {
                 if let Some(input) = self
                     .profile_manager
@@ -19728,17 +19825,30 @@ impl App {
         let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
             return Vec::new();
         };
-        let table = crate::value_preview::table::from_page(&page.value);
-        let Some(source) = table.rows.get(row).and_then(|row| row.identity.get(column)) else {
+        let table = tab
+            .preview_table()
+            .unwrap_or_else(|| crate::value_preview::table::from_page(&page.value));
+        let Some(selected_row) = table.rows.get(row) else {
             return Vec::new();
         };
-        let automatic = crate::value_preview::detect::default_format(source, false);
-        let display =
-            crate::ui::redis_value::format_bytes_value(source, automatic).unwrap_or_else(|_| {
-                String::from_utf8(source.clone()).unwrap_or_else(|_| {
-                    source.iter().map(|byte| format!("\\x{byte:02x}")).collect()
-                })
-            });
+        let (display, clipboard) = if let Some(source) = selected_row.identity.get(column) {
+            let automatic = crate::value_preview::detect::default_format(source, false);
+            let display = crate::ui::redis_value::format_bytes_value(source, automatic)
+                .unwrap_or_else(|_| {
+                    String::from_utf8(source.clone()).unwrap_or_else(|_| {
+                        source.iter().map(|byte| format!("\\x{byte:02x}")).collect()
+                    })
+                });
+            (
+                display,
+                crate::ui::redis_value::display_bytes_lossless(source),
+            )
+        } else {
+            let Some(display) = selected_row.cells.get(column) else {
+                return Vec::new();
+            };
+            (display.clone(), display.clone())
+        };
         let title = table
             .columns
             .get(column)
@@ -19748,7 +19858,7 @@ impl App {
             tab.preview_editor_id,
             self.editor_revision(tab.preview_editor_id),
             display,
-            crate::ui::redis_value::display_bytes_lossless(source),
+            clipboard,
             None,
         );
         self.update(Action::OpenTextDetail(request))
@@ -21080,7 +21190,9 @@ impl App {
             {
                 match &tab.value_page {
                     crate::model::redis_browser::RedisValuePageState::Ready(page) => {
-                        let table = crate::value_preview::table::from_page(&page.value);
+                        let table = tab
+                            .preview_table()
+                            .unwrap_or_else(|| crate::value_preview::table::from_page(&page.value));
                         (table.rows.len(), table.columns.len())
                     }
                     _ => (0, 0),
@@ -21160,7 +21272,9 @@ impl App {
                 else {
                     return None;
                 };
-                let table = crate::value_preview::table::from_page(&page.value);
+                let table = tab
+                    .preview_table()
+                    .unwrap_or_else(|| crate::value_preview::table::from_page(&page.value));
                 let row_index = tab.preview_grid.selected_row;
                 let row = table.rows.get(row_index)?;
                 let columns = table
@@ -21172,10 +21286,14 @@ impl App {
                     })
                     .collect();
                 let values = row
-                    .identity
+                    .cells
                     .iter()
-                    .map(|value| {
-                        CellValue::Text(crate::ui::redis_value::display_bytes_lossless(value))
+                    .enumerate()
+                    .map(|(column, cell)| {
+                        CellValue::Text(row.identity.get(column).map_or_else(
+                            || cell.clone(),
+                            |value| crate::ui::redis_value::display_bytes_lossless(value),
+                        ))
                     })
                     .collect();
                 Some((columns, values, row_index, table.rows.len()))

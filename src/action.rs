@@ -1251,6 +1251,13 @@ pub enum Action {
     RedisFindCancel,
     RedisFindNext,
     RedisFindPrevious,
+    RedisValueFilterFocus {
+        tab_id: Uuid,
+    },
+    RedisValueFilterEdit(crate::model::text_input::TextInputEdit),
+    RedisValueFilterPaste(String),
+    RedisValueFilterSubmit,
+    RedisValueFilterCancel,
     GridMove {
         rows: isize,
         columns: isize,
