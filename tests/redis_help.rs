@@ -16,6 +16,13 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn window(code: char) -> [KeyEvent; 2] {
+    [
+        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+        key(KeyCode::Char(code)),
+    ]
+}
+
 fn redis_app(focus: RedisBrowserFocus) -> App {
     let mut app = App::new(Vec::new());
     app.tabs
@@ -93,4 +100,71 @@ fn redis_keys_ctrl_w_width_commands_target_the_inner_pane() {
             delta: 1,
         }))
     );
+}
+
+#[test]
+fn redis_ctrl_w_horizontal_navigation_visits_explorer_keys_preview() {
+    let mut app = redis_app(RedisBrowserFocus::Preview);
+    app.focus = Focus::Explorer;
+    let mut keymap = Keymap::default();
+
+    for (event, expected) in [
+        (window('l'), RedisBrowserFocus::Keys),
+        (window('l'), RedisBrowserFocus::Preview),
+    ] {
+        assert_eq!(keymap.map(event[0], &app), None);
+        let action = keymap.map(event[1], &app).expect("focus action");
+        app.update(action);
+        assert_eq!(app.focus, Focus::Results);
+        assert!(matches!(
+            &app.tabs[app.active_tab],
+            WorkspaceTab::RedisBrowser(tab) if tab.focus == expected
+        ));
+    }
+
+    for (event, expected) in [
+        (window('h'), RedisBrowserFocus::Keys),
+        (window('h'), RedisBrowserFocus::Keys),
+    ] {
+        assert_eq!(keymap.map(event[0], &app), None);
+        let action = keymap.map(event[1], &app);
+        if let Some(action) = action {
+            app.update(action);
+        }
+        assert!(matches!(
+            &app.tabs[app.active_tab],
+            WorkspaceTab::RedisBrowser(tab) if tab.focus == expected
+        ));
+    }
+    assert_eq!(app.focus, Focus::Explorer);
+}
+
+#[test]
+fn redis_ctrl_w_horizontal_edges_consume_the_sequence_without_wrapping() {
+    let mut app = redis_app(RedisBrowserFocus::Preview);
+    app.focus = Focus::Results;
+    let mut keymap = Keymap::default();
+
+    assert_eq!(keymap.map(window('l')[0], &app), None);
+    assert_eq!(keymap.map(window('l')[1], &app), None);
+    assert!(
+        keymap
+            .sequence_state(&app, std::time::Instant::now())
+            .is_none()
+    );
+    assert_eq!(app.focus, Focus::Results);
+    assert!(matches!(
+        &app.tabs[app.active_tab],
+        WorkspaceTab::RedisBrowser(tab) if tab.focus == RedisBrowserFocus::Preview
+    ));
+
+    app.focus = Focus::Explorer;
+    assert_eq!(keymap.map(window('h')[0], &app), None);
+    assert_eq!(keymap.map(window('h')[1], &app), None);
+    assert!(
+        keymap
+            .sequence_state(&app, std::time::Instant::now())
+            .is_none()
+    );
+    assert_eq!(app.focus, Focus::Explorer);
 }

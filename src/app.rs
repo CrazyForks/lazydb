@@ -19380,28 +19380,40 @@ impl App {
         tab_id: Uuid,
         node: crate::model::redis_key_tree::KeyTreeNodeId,
     ) -> Vec<Command> {
-        let Some(WorkspaceTab::RedisBrowser(tab)) =
-            self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
-        else {
-            return Vec::new();
+        let active_tab = self
+            .tabs
+            .get(self.active_tab)
+            .is_some_and(|tab| tab.id() == tab_id);
+        let (key, generation) = {
+            let Some(WorkspaceTab::RedisBrowser(tab)) =
+                self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+            else {
+                return Vec::new();
+            };
+            if !matches!(node, crate::model::redis_key_tree::KeyTreeNodeId::Key(_))
+                || !tab.tree.contains(&node)
+            {
+                return Vec::new();
+            }
+            let key = match &node {
+                crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => key.clone(),
+                crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_) => return Vec::new(),
+            };
+            tab.select(Some(node));
+            tab.open_key(crate::db::redis::types::RedisKeyId {
+                target: tab.target.clone(),
+                key: key.clone(),
+            });
+            tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+            let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview
+            else {
+                return Vec::new();
+            };
+            (key.clone(), tab.preview_generation)
         };
-        if !matches!(node, crate::model::redis_key_tree::KeyTreeNodeId::Key(_))
-            || !tab.tree.contains(&node)
-        {
-            return Vec::new();
+        if active_tab {
+            self.focus = Focus::Results;
         }
-        let key = match &node {
-            crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => key.clone(),
-            crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_) => return Vec::new(),
-        };
-        tab.select(Some(node));
-        tab.open_key(crate::db::redis::types::RedisKeyId {
-            target: tab.target.clone(),
-            key,
-        });
-        let crate::model::redis_browser::RedisPreviewState::Loading { key } = &tab.preview else {
-            return Vec::new();
-        };
         self.redis_preview_schedulers
             .entry(tab_id)
             .or_insert_with(|| {
@@ -19411,7 +19423,7 @@ impl App {
             })
             .select(crate::db::redis::preview_scheduler::PreviewRequest {
                 tab_id,
-                generation: tab.preview_generation,
+                generation,
                 key: key.clone(),
             });
         Vec::new()
