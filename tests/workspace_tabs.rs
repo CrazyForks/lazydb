@@ -105,7 +105,7 @@ fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
 }
 
 #[test]
-fn restored_active_console_can_prepare_its_target_without_explicit_startup_selection() {
+fn restored_active_console_stays_offline_without_explicit_startup_selection() {
     let profile = import_connection_url(":memory:", Some("restored"))
         .unwrap()
         .profile;
@@ -135,19 +135,149 @@ fn restored_active_console_can_prepare_its_target_without_explicit_startup_selec
     };
     let mut app = App::new(vec![profile.clone()]);
     app.restore_workspace(snapshot, None);
+    app.focus = Focus::Explorer;
 
     lazydb::runtime::apply_startup_action(&mut app, None);
 
     assert_eq!(app.active_console().id, console_id);
     assert_eq!(
         app.connection.status,
-        lazydb::model::workspace::ConnectionStatus::Connecting
+        lazydb::model::workspace::ConnectionStatus::Disconnected
     );
-    assert_eq!(
-        app.connection.pending_target.as_ref().unwrap().profile_id,
-        profile.id
-    );
+    assert!(app.connection.pending_target.is_none());
+    assert_eq!(app.focus, Focus::Explorer);
     assert_eq!(app.active_editor_text().unwrap(), "select 42");
+}
+
+#[test]
+fn restored_active_console_connects_when_editor_focus_is_entered() {
+    let profile = import_connection_url(":memory:", Some("restored"))
+        .unwrap()
+        .profile;
+    let console_id = Uuid::new_v4();
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&profile);
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(console_id),
+            consoles: vec![PersistedConsole {
+                id: console_id,
+                name: "restored".into(),
+                sql_file: format!("{console_id}.sql").into(),
+                target: Some(target.clone()),
+                transaction_mode: TransactionMode::Auto,
+                open: true,
+            }],
+            tabs: vec![PersistedTab::Console { console_id }],
+        }],
+        active_console: Uuid::nil(),
+        consoles: Vec::new(),
+        tabs: Vec::new(),
+        sql: vec![(console_id, "select 42".into())],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile]);
+    app.restore_workspace(snapshot, None);
+    app.focus = Focus::Explorer;
+
+    let commands = app.update(Action::Focus(Focus::Editor));
+
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, Command::Connect { .. }))
+            .count(),
+        1
+    );
+}
+
+fn restored_console_for_focus_test() -> (App, lazydb::model::execution_target::ExecutionTarget) {
+    let profile = import_connection_url(":memory:", Some("restored"))
+        .unwrap()
+        .profile;
+    let console_id = Uuid::new_v4();
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&profile);
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(console_id),
+            consoles: vec![PersistedConsole {
+                id: console_id,
+                name: "restored".into(),
+                sql_file: format!("{console_id}.sql").into(),
+                target: Some(target.clone()),
+                transaction_mode: TransactionMode::Auto,
+                open: true,
+            }],
+            tabs: vec![PersistedTab::Console { console_id }],
+        }],
+        active_console: Uuid::nil(),
+        consoles: Vec::new(),
+        tabs: Vec::new(),
+        sql: vec![(console_id, "select 42".into())],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile]);
+    app.restore_workspace(snapshot, None);
+    app.focus = Focus::Explorer;
+    (app, target)
+}
+
+#[test]
+fn restored_active_console_connects_when_results_focus_is_entered() {
+    let (mut app, target) = restored_console_for_focus_test();
+
+    let commands = app.update(Action::Focus(Focus::Results));
+
+    assert_eq!(app.focus, Focus::Results);
+    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, Command::Connect { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn focus_cycle_enters_restored_console_and_connects_once() {
+    for action in [Action::FocusNext, Action::FocusPrevious] {
+        let (mut app, target) = restored_console_for_focus_test();
+
+        let commands = app.update(action);
+
+        assert!(matches!(app.focus, Focus::Editor | Focus::Results));
+        assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| matches!(command, Command::Connect { .. }))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn activating_restored_console_tab_enters_editor_and_connects() {
+    let (mut app, target) = restored_console_for_focus_test();
+
+    let commands = app.update(Action::ActivateTab(0));
+
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| matches!(command, Command::Connect { .. }))
+            .count(),
+        1
+    );
 }
 
 #[test]
