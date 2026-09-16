@@ -5004,9 +5004,10 @@ fn render_overlay(
                         };
                         let icon = profile.map(|profile| icons.database(profile.kind));
                         let icon_width = icon.map_or(0, |icon| usize::from(icon.cell_width()));
-                        let prefix = format!("{marker} {profile_label}");
+                        let prefix = format!("{marker} ");
                         let text_width = usize::from(inner.width)
                             .saturating_sub(usize::from(prefix.cell_width()))
+                            .saturating_sub(usize::from(profile_label.cell_width()))
                             .saturating_sub(icon_width.saturating_add(1));
                         let mut spans = vec![Span::styled(prefix, text_style)];
                         if let Some(profile) = profile {
@@ -5017,6 +5018,7 @@ fn render_overlay(
                                     .bg(background),
                             ));
                         }
+                        spans.push(Span::styled(profile_label, text_style));
                         spans.push(Span::styled(
                             truncate_to_cells(&target_label, text_width),
                             text_style,
