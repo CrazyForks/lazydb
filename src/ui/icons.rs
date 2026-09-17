@@ -242,7 +242,7 @@ impl IconSet {
             IconMode::NerdFont => match kind {
                 DatabaseKind::Postgres => dev::DEV_POSTGRESQL,
                 DatabaseKind::MySql => dev::DEV_MYSQL,
-                DatabaseKind::MariaDb => dev::DEV_MYSQL,
+                DatabaseKind::MariaDb => dev::DEV_MARIADB,
                 DatabaseKind::Oracle => md::MD_DATABASE,
                 DatabaseKind::SqlServer => md::MD_DATABASE,
                 DatabaseKind::Sqlite => dev::DEV_SQLITE,
