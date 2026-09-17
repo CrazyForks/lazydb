@@ -13126,6 +13126,8 @@ impl App {
                             tab.value_edit_baseline = Some(text.clone());
                             self.editor.open_value(tab.preview_editor_id, &text);
                         } else {
+                            tab.value_edit_baseline = None;
+                            tab.value_edit_revision = 0;
                             self.editor.open_read_only(tab.preview_editor_id, &text);
                         }
                     }

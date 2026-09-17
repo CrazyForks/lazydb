@@ -266,6 +266,10 @@ impl RedisBrowserTab {
             self.value_filter = RedisValueFilterState::default();
             self.reset_preview_grid();
         }
+        // A text edit baseline belongs to this preview generation and must
+        // never be compared with the next key's read-only content.
+        self.value_edit_baseline = None;
+        self.value_edit_revision = 0;
         self.opened_key = Some(key.clone());
         self.preview_generation = self.preview_generation.saturating_add(1);
         self.preview = RedisPreviewState::Loading { key: key.clone() };
