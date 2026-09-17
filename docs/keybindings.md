@@ -259,6 +259,7 @@ open and input is blocked until the result arrives.
 | `o` | Open line below |
 | `x`, Delete | Delete character |
 | `u` / `Ctrl-r` | Undo/redo |
+| `yy` | Copy the current editor line |
 | `Ctrl-o` / `Ctrl-i` (`Tab`) | Jump to the previous / next saved editor position; counts are supported |
 | `>>` / `<<` | Indent or unindent the current line |
 | `^` | Move to the first non-blank character without selecting text |
@@ -274,6 +275,12 @@ open and input is blocked until the result arrives.
 | `[` then `t`, `]` then `t` | Tab aliases |
 | `?` | Open contextual Help |
 | `Space ?` | Open editor Help through EditorLeader |
+
+The non-Table Redis VALUE view uses the same Vim motions, modes, search, and
+command prompt as the SQL Editor. Its title shows `VALUE NORMAL`, `VALUE
+INSERT`, or the active Visual/Replace mode; the cursor is a block in Normal
+and Visual modes and a bar in Insert mode. Search (`/`/`?`) and commands (`:`)
+appear on the bottom line of the VALUE panel.
 
 When text exceeds the editor viewport, a vertical scrollbar is drawn on the
 right border and a horizontal scrollbar on the bottom border. Clicking a track

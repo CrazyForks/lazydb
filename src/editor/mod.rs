@@ -665,6 +665,12 @@ impl EditorWorkspace {
         Ok(mode_from_key_manager(&session.keys))
     }
 
+    pub(crate) fn prompt_active(&self, id: Uuid) -> bool {
+        self.prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.owner == id)
+    }
+
     pub(crate) fn position(&self, id: Uuid) -> Result<EditorPosition, EditorError> {
         let session = self
             .sessions
@@ -1123,7 +1129,12 @@ impl EditorWorkspace {
             return self.render_preview_snapshot(id, viewport, language);
         }
         let width = viewport.width.max(1);
-        if session.preview_document.borrow().is_none() {
+        if session
+            .preview_document
+            .borrow()
+            .as_ref()
+            .is_none_or(|(revision, _)| *revision != session.revision)
+        {
             let _ = self.render_preview_snapshot(id, viewport, language)?;
         }
         let document = session
@@ -1796,24 +1807,28 @@ impl EditorWorkspace {
             cursor_screen_cell,
             selections,
             selection_cells,
-            prompt: self.prompt.as_ref().map(|prompt| EditorPromptSnapshot {
-                kind: prompt.kind,
-                prefix: match prompt.kind {
-                    EditorPromptKind::SearchForward => "/".to_owned(),
-                    EditorPromptKind::SearchBackward => "?".to_owned(),
-                    EditorPromptKind::Command => ":".to_owned(),
-                },
-                text: project_editor_line(prompt.input.value()).text,
-                cursor: project_editor_line(prompt.input.value())
-                    .source_to_display_cells
-                    .get(prompt.input.cursor())
-                    .copied()
-                    .unwrap_or_default(),
-                error: prompt
-                    .error
-                    .as_deref()
-                    .map(|error| project_editor_line(error).text),
-            }),
+            prompt: self
+                .prompt
+                .as_ref()
+                .filter(|prompt| prompt.owner == id)
+                .map(|prompt| EditorPromptSnapshot {
+                    kind: prompt.kind,
+                    prefix: match prompt.kind {
+                        EditorPromptKind::SearchForward => "/".to_owned(),
+                        EditorPromptKind::SearchBackward => "?".to_owned(),
+                        EditorPromptKind::Command => ":".to_owned(),
+                    },
+                    text: project_editor_line(prompt.input.value()).text,
+                    cursor: project_editor_line(prompt.input.value())
+                        .source_to_display_cells
+                        .get(prompt.input.cursor())
+                        .copied()
+                        .unwrap_or_default(),
+                    error: prompt
+                        .error
+                        .as_deref()
+                        .map(|error| project_editor_line(error).text),
+                }),
             semantic_diagnostics: Vec::new(),
         })
     }
@@ -2194,19 +2209,22 @@ impl EditorWorkspace {
             .ok_or(EditorError::MissingSession(id))?
             .capability
             == EditorSessionCapability::ReadOnly;
+        if self.prompt_active(id) {
+            return self.press_prompt(id, key);
+        }
+        if self.prompt.is_some() {
+            return Ok(());
+        }
         if read_only
             && matches!(
                 key,
-                EditorKey::Character('i' | 'a' | 'o' | 'O' | 'R' | 'Q' | ':')
+                EditorKey::Character('i' | 'a' | 'o' | 'O' | 'R' | 'Q')
                     | EditorKey::Undo
                     | EditorKey::Redo
                     | EditorKey::Control('r')
             )
         {
             return Ok(());
-        }
-        if self.prompt.is_some() {
-            return self.press_prompt(id, key);
         }
         let mode = self.mode(id)?;
         if key == EditorKey::Control('w')
@@ -2356,13 +2374,13 @@ impl EditorWorkspace {
                 Ok(())
             }
             (EditorMode::Normal, EditorKey::Character('?')) => {
-                self.start_prompt(EditorPromptKind::SearchBackward)
+                self.start_prompt(id, EditorPromptKind::SearchBackward)
             }
             (EditorMode::Normal, EditorKey::Character('/')) => {
-                self.start_prompt(EditorPromptKind::SearchForward)
+                self.start_prompt(id, EditorPromptKind::SearchForward)
             }
             (EditorMode::Normal, EditorKey::Character(':')) => {
-                self.start_prompt(EditorPromptKind::Command)
+                self.start_prompt(id, EditorPromptKind::Command)
             }
             (EditorMode::Normal, EditorKey::Character('n')) => self.repeat_search(id, false),
             (EditorMode::Normal, EditorKey::Character('N')) => self.repeat_search(id, true),
@@ -3245,8 +3263,11 @@ impl EditorWorkspace {
         }
     }
 
-    fn start_prompt(&mut self, kind: EditorPromptKind) -> Result<(), EditorError> {
-        self.prompt = Some(PromptSession::new(kind));
+    fn start_prompt(&mut self, id: Uuid, kind: EditorPromptKind) -> Result<(), EditorError> {
+        if !self.sessions.contains_key(&id) {
+            return Err(EditorError::MissingSession(id));
+        }
+        self.prompt = Some(PromptSession::new(id, kind));
         Ok(())
     }
 
@@ -3348,10 +3369,23 @@ impl EditorWorkspace {
                 if raw.trim_start().chars().next().is_some_and(|character| {
                     matches!(character, '.' | '$' | '%' | 's' | '<' | '0'..='9')
                 }) {
+                    if self.sessions.get(&id).is_some_and(|session| {
+                        session.capability == EditorSessionCapability::ReadOnly
+                    }) {
+                        self.prompt = Some(PromptSession {
+                            owner: id,
+                            kind: EditorPromptKind::Command,
+                            input: raw.as_str().into(),
+                            error: Some("cannot modify a read-only value".to_owned()),
+                            history_index: None,
+                        });
+                        return Ok(());
+                    }
                     match self.start_substitute(id, &raw) {
                         Ok(()) => {}
                         Err(error) => {
                             self.prompt = Some(PromptSession {
+                                owner: id,
                                 kind: EditorPromptKind::Command,
                                 input: raw.as_str().into(),
                                 error: Some(error.to_string()),
@@ -3363,6 +3397,7 @@ impl EditorWorkspace {
                     self.effects.push(effect);
                 } else {
                     self.prompt = Some(PromptSession {
+                        owner: id,
                         kind: EditorPromptKind::Command,
                         input: raw.as_str().into(),
                         error: Some("unknown or invalid Ex command".to_owned()),
@@ -3378,6 +3413,7 @@ impl EditorWorkspace {
                 self.last_search_backward = kind == EditorPromptKind::SearchBackward;
                 if !self.search(id, &raw, self.last_search_backward)? {
                     self.prompt = Some(PromptSession {
+                        owner: id,
                         kind,
                         input: raw.as_str().into(),
                         error: Some("pattern not found".to_owned()),

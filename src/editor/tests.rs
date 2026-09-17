@@ -4,6 +4,7 @@ use crate::model::editor::{
     EditorHighlightKind, EditorMode, EditorPosition, EditorPromptKind, EditorSelectionShape,
     EditorViewport,
 };
+use crate::model::editor_language::EditorLanguage;
 
 use super::{EditorEffect, EditorKey, EditorWorkspace, decode_editor_text, encode_editor_text};
 
@@ -62,6 +63,44 @@ fn redis_value_session_supports_vim_editing_search_yank_paste_undo_redo_and_save
         .drain_effects()
         .iter()
         .any(|effect| matches!(effect, EditorEffect::SaveRequested { console_id, .. } if *console_id == id)));
+}
+
+#[test]
+fn redis_value_wrapped_preview_refreshes_after_undo() {
+    let id = Uuid::new_v4();
+    let mut workspace = EditorWorkspace::new();
+    workspace.open_value(
+        id,
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten",
+    );
+    let viewport = EditorViewport {
+        width: 80,
+        height: 24,
+    };
+
+    workspace
+        .render_wrapped_preview_snapshot(id, viewport, EditorLanguage::Plain, true)
+        .unwrap();
+    workspace.press(id, EditorKey::Character('G')).unwrap();
+    workspace.press(id, EditorKey::Character('o')).unwrap();
+    workspace.press(id, EditorKey::Enter).unwrap();
+    workspace.press(id, EditorKey::Character('x')).unwrap();
+    workspace.press(id, EditorKey::Escape).unwrap();
+    workspace
+        .render_wrapped_preview_snapshot(id, viewport, EditorLanguage::Plain, true)
+        .unwrap();
+
+    workspace.press(id, EditorKey::Character('u')).unwrap();
+    let snapshot = workspace
+        .render_wrapped_preview_snapshot(id, viewport, EditorLanguage::Plain, true)
+        .unwrap();
+
+    assert_eq!(
+        workspace.text(id).unwrap(),
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten"
+    );
+    assert_eq!(snapshot.logical_line_count, 10);
+    assert!(snapshot.lines.iter().all(|line| line.line < 10));
 }
 
 fn insert_text(workspace: &mut EditorWorkspace, id: Uuid, text: &str) {

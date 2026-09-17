@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
+use crate::model::editor::EditorMode;
 use crate::model::redis_browser::RedisValuePageState;
 use crate::{
     app::App,
@@ -233,7 +234,24 @@ pub fn render(
             header_area,
         );
     }
-    let value_block = super::panel_block(" VALUE ", preview_focused, theme);
+    let table_view = tab.format.view() == crate::value_preview::ValueView::Table;
+    let value_block = if table_view {
+        super::panel_block(" VALUE ", preview_focused, theme)
+    } else {
+        let value_mode = app
+            .active_read_only_editor_mode()
+            .unwrap_or(EditorMode::Normal);
+        let mode_label = match value_mode {
+            EditorMode::Normal => "NORMAL",
+            EditorMode::Insert => "INSERT",
+            EditorMode::Replace => "REPLACE",
+            EditorMode::VisualChar => "VISUAL",
+            EditorMode::VisualLine => "VISUAL LINE",
+            EditorMode::VisualBlock => "VISUAL BLOCK",
+        };
+        super::panel_block("", preview_focused, theme)
+            .title_top(Line::raw(format!(" VALUE {mode_label} ")).left_aligned())
+    };
     let value_outer = value_area;
     ui.hit_regions.push(crate::ui::HitRegion {
         area: value_outer,
@@ -245,7 +263,6 @@ pub fn render(
         " f:{} ▾ ",
         preview_format_label(tab.format.selected, tab.format.automatic)
     );
-    let table_view = tab.format.view() == crate::value_preview::ValueView::Table;
     let wrap_label = if table_view {
         ""
     } else if tab.preview_wrap {

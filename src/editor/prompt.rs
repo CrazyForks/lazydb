@@ -3,6 +3,7 @@ use crate::model::text_input::TextInput;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PromptSession {
+    pub(super) owner: uuid::Uuid,
     pub(super) kind: EditorPromptKind,
     pub(super) input: TextInput,
     pub(super) error: Option<String>,
@@ -10,8 +11,9 @@ pub(super) struct PromptSession {
 }
 
 impl PromptSession {
-    pub(super) fn new(kind: EditorPromptKind) -> Self {
+    pub(super) fn new(owner: uuid::Uuid, kind: EditorPromptKind) -> Self {
         Self {
+            owner,
             kind,
             input: TextInput::default(),
             error: None,
