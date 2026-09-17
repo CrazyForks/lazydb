@@ -466,6 +466,10 @@ impl MySqlAdapter {
 
     pub fn catalog_mutation_capabilities() -> CatalogMutationCapabilities {
         CatalogMutationCapabilities {
+            profile_create: vec![CatalogMutationOption {
+                object_type: CatalogObjectType::Catalog(CatalogKind::Database),
+                availability: CatalogMutationAvailability::Available,
+            }],
             create: [CatalogKind::Table, CatalogKind::View]
                 .into_iter()
                 .map(|kind| CatalogMutationOption {
@@ -639,21 +643,112 @@ impl MySqlAdapter {
                 reason: "MySQL create plans cannot include a baseline".into(),
             });
         }
-        let CatalogMutationAnchor::Group { schema, group } = &request.anchor else {
-            return Err(CatalogMutationError::InvalidAnchor {
-                reason: "MySQL table and view creation requires a group anchor",
-            });
+        if let CatalogMutationAnchor::Profile { .. } = &request.anchor {
+            if request.object_type != CatalogObjectType::Catalog(CatalogKind::Database) {
+                return Err(CatalogMutationError::UnsupportedOperation {
+                    object_type: request.object_type,
+                });
+            }
+            let crate::model::catalog_editor::CatalogDraft::Database(draft) = draft else {
+                return Err(CatalogMutationError::InvalidDraft {
+                    reason: "MySQL database creation requires a database draft".into(),
+                });
+            };
+            draft.validate()?;
+            let name = draft.name.value().trim().to_owned();
+            let database = request.current_database.clone().ok_or({
+                CatalogMutationError::InvalidAnchor {
+                    reason: "MySQL database creation requires an existing execution database",
+                }
+            })?;
+            let object = CatalogId::new(
+                request.connection.profile_id,
+                CatalogKind::Database,
+                [name.clone()],
+            );
+            return CatalogMutationPlan::new(
+                request,
+                CatalogObjectType::Catalog(CatalogKind::Database),
+                CatalogMutationExecutionMode::Autocommit,
+                CatalogMutationTarget::maintenance(database)?,
+                vec![CatalogTarget::Databases],
+                CatalogSelectionHint::Object(object),
+                None,
+                Vec::new(),
+                vec![format!("CREATE DATABASE {}", quote_identifier(&name))],
+            );
+        }
+        let (schema_anchor, group_kind, database, schema_name) = match &request.anchor {
+            CatalogMutationAnchor::Group { schema, group } => {
+                if schema.native_path.len() != 2
+                    || schema.native_path.first() != schema.native_path.get(1)
+                {
+                    return Err(CatalogMutationError::InvalidAnchor {
+                        reason: "MySQL group anchor has an invalid namespace path",
+                    });
+                }
+                (
+                    schema.clone(),
+                    *group,
+                    schema.native_path.first().cloned().unwrap_or_default(),
+                    schema.native_path.get(1).cloned().unwrap_or_default(),
+                )
+            }
+            CatalogMutationAnchor::Catalog(id)
+                if matches!(id.kind, CatalogKind::Database | CatalogKind::Schema) =>
+            {
+                if (id.kind == CatalogKind::Database && id.native_path.len() != 1)
+                    || (id.kind == CatalogKind::Schema
+                        && (id.native_path.len() != 2
+                            || id.native_path.first() != id.native_path.get(1)))
+                {
+                    return Err(CatalogMutationError::InvalidAnchor {
+                        reason: "MySQL database/schema anchor has an invalid namespace path",
+                    });
+                }
+                let database = id.native_path.first().cloned().unwrap_or_default();
+                let schema_name = if id.kind == CatalogKind::Database {
+                    database.clone()
+                } else {
+                    id.native_path.get(1).cloned().unwrap_or_default()
+                };
+                let group = match request.object_type {
+                    CatalogObjectType::Catalog(CatalogKind::Table) => ObjectGroup::Tables,
+                    CatalogObjectType::Catalog(CatalogKind::View) => ObjectGroup::Views,
+                    _ => {
+                        return Err(CatalogMutationError::InvalidAnchor {
+                            reason: "MySQL database/schema anchors support tables and views",
+                        });
+                    }
+                };
+                (
+                    CatalogId::new(
+                        id.profile_id(),
+                        CatalogKind::Schema,
+                        [database.clone(), schema_name.clone()],
+                    ),
+                    group,
+                    database,
+                    schema_name,
+                )
+            }
+            CatalogMutationAnchor::Catalog(_) => {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "MySQL table and view creation requires a database, schema, or group anchor",
+                });
+            }
+            CatalogMutationAnchor::Profile { .. } => {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "MySQL table and view creation requires a database, schema, or group anchor",
+                });
+            }
         };
-        let schema_anchor = schema.clone();
-        let group_kind = *group;
-        let database = schema.native_path.first().cloned().unwrap_or_default();
-        let schema_name = schema.native_path.get(1).cloned().unwrap_or_default();
         if database.is_empty() || schema_name.is_empty() {
             return Err(CatalogMutationError::InvalidAnchor {
                 reason: "MySQL database/schema anchor is incomplete",
             });
         }
-        let (kind, name, sql) = match (group, draft) {
+        let (kind, name, sql) = match (group_kind, draft) {
             (ObjectGroup::Tables, crate::model::catalog_editor::CatalogDraft::Table(draft)) => {
                 draft.validate()?;
                 let name = draft.name.value().trim().to_owned();

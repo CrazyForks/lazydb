@@ -600,6 +600,7 @@ impl Default for SchemaDraft {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseDraft {
+    pub database_kind: crate::profile::DatabaseKind,
     pub name: TextInput,
     pub owner: TextInput,
     pub template: TextInput,
@@ -621,6 +622,7 @@ pub struct DatabaseDraft {
 impl DatabaseDraft {
     pub fn from_definition(definition: &crate::db::catalog_mutation::DatabaseDefinition) -> Self {
         Self {
+            database_kind: crate::profile::DatabaseKind::Postgres,
             name: definition.name.clone().into(),
             owner: definition.owner.clone().into(),
             template: definition.template.clone().into(),
@@ -641,6 +643,7 @@ impl DatabaseDraft {
     }
     pub fn new(_database: impl Into<String>) -> Self {
         Self {
+            database_kind: crate::profile::DatabaseKind::Postgres,
             name: TextInput::default(),
             owner: TextInput::default(),
             template: "template0".into(),
@@ -660,6 +663,16 @@ impl DatabaseDraft {
         }
     }
     pub fn validate(&self) -> Result<(), crate::db::catalog_mutation::CatalogMutationError> {
+        if matches!(
+            self.database_kind,
+            crate::profile::DatabaseKind::MySql | crate::profile::DatabaseKind::MariaDb
+        ) {
+            return if self.name.value().trim().is_empty() {
+                Err(invalid("database name is required"))
+            } else {
+                Ok(())
+            };
+        }
         if self.name.value().trim().is_empty() || self.owner.value().trim().is_empty() {
             return Err(invalid("database name and owner are required"));
         }
@@ -686,10 +699,17 @@ impl DatabaseDraft {
             .unwrap_or(0)
     }
     pub fn focus_enabled(&self, focus: CatalogFormFocus) -> bool {
+        if matches!(
+            self.database_kind,
+            crate::profile::DatabaseKind::MySql | crate::profile::DatabaseKind::MariaDb
+        ) {
+            return matches!(focus, CatalogFormFocus::Name | CatalogFormFocus::Comment);
+        }
         self.editable_creation_options
             || !matches!(
                 focus,
-                CatalogFormFocus::Template
+                CatalogFormFocus::Owner
+                    | CatalogFormFocus::Template
                     | CatalogFormFocus::Encoding
                     | CatalogFormFocus::LocaleProvider
                     | CatalogFormFocus::Locale
@@ -3402,7 +3422,11 @@ impl CatalogEditorState {
                     crate::db::catalog::CatalogKind::Database,
                 ))
         {
-            self.draft = Some(CatalogDraft::Database(DatabaseDraft::new("")));
+            let mut draft = DatabaseDraft::new("");
+            if let Some(database_kind) = self.database_kind {
+                draft.database_kind = database_kind;
+            }
+            self.draft = Some(CatalogDraft::Database(draft));
         }
         if matches!(self.anchor, CatalogMutationAnchor::Profile { .. })
             && matches!(
@@ -3428,11 +3452,18 @@ impl CatalogEditorState {
             {
                 self.draft = Some(CatalogDraft::Schema(SchemaDraft::new()));
             }
-            if id.kind == crate::db::catalog::CatalogKind::Schema
-                && object_type == CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::Table)
+            if matches!(
+                id.kind,
+                crate::db::catalog::CatalogKind::Database | crate::db::catalog::CatalogKind::Schema
+            ) && object_type
+                == CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::Table)
             {
                 self.draft = Some(CatalogDraft::Table(TableDraft::new_for_database(
-                    id.native_path.get(1).cloned().unwrap_or_default(),
+                    id.native_path
+                        .get(1)
+                        .or_else(|| id.native_path.first())
+                        .cloned()
+                        .unwrap_or_default(),
                     self.database_kind
                         .unwrap_or(crate::profile::DatabaseKind::Postgres),
                 )));
@@ -3520,12 +3551,20 @@ impl CatalogEditorState {
                     .into();
                 self.draft = Some(CatalogDraft::Constraint(draft));
             }
-            if id.kind == crate::db::catalog::CatalogKind::Schema
-                && object_type == CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::View)
+            if matches!(
+                id.kind,
+                crate::db::catalog::CatalogKind::Database | crate::db::catalog::CatalogKind::Schema
+            ) && object_type == CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::View)
             {
                 self.draft = Some(CatalogDraft::View(ViewDraft {
                     name: TextInput::default(),
-                    schema: id.native_path.get(1).cloned().unwrap_or_default().into(),
+                    schema: id
+                        .native_path
+                        .get(1)
+                        .or_else(|| id.native_path.first())
+                        .cloned()
+                        .unwrap_or_default()
+                        .into(),
                     owner: TextInput::default(),
                     comment: TextInput::default(),
                     query: TextInput::default(),
