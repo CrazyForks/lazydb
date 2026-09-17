@@ -3507,18 +3507,24 @@ impl App {
             return self.open_relation_descriptor(descriptor, view);
         }
         let commands = self.request_connection(profile_id);
-        let Some(generation) = commands.iter().find_map(|command| match command {
-            Command::Connect {
-                profile_id: requested,
-                generation,
-                ..
-            } if *requested == profile_id => Some(*generation),
-            _ => None,
-        }) else {
-            self.notify_warning(
-                "Navigation",
-                "Cannot switch connections while a query or unresolved transaction is active",
-            );
+        if self.connection.profile_id == Some(profile_id)
+            && self.connection.status == ConnectionStatus::Connected
+            && self.active_workspace_profile == Some(profile_id)
+        {
+            let mut commands = commands;
+            commands.extend(self.open_relation_descriptor(descriptor, view));
+            return commands;
+        }
+        let generation = (self.connection.status == ConnectionStatus::Connecting
+            && self.connection.pending_profile_id == Some(profile_id)
+            && self
+                .connection
+                .pending_target
+                .as_ref()
+                .is_some_and(|target| target.profile_id == profile_id))
+        .then_some(self.connection.pending_generation)
+        .flatten();
+        let Some(generation) = generation else {
             return commands;
         };
         self.pending_navigation = Some(PendingNavigation {
