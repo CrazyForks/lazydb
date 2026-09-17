@@ -1,0 +1,27 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-lazydb_root_password}
+      MARIADB_DATABASE: lazydb_test
+      MARIADB_USER: ${MARIADB_USER:-lazydb}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-lazydb_password}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${MARIADB_HOST_PORT:-3307}:3306"
+    volumes:
+      - lazydb_mariadb_data:/var/lib/mysql
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mariadb-admin ping -h 127.0.0.1 -u root -p\"$${MARIADB_ROOT_PASSWORD}\" --silent",
+        ]
+      start_period: 30s
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  lazydb_mariadb_data:

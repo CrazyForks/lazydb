@@ -58,6 +58,9 @@ connections, consoles, tables, and navigation. See the [Omni Bar guide](docs/omn
 
 ### Installing and running LazyDB
 
+For a ready-to-use MariaDB instance with broad test data-type coverage, see the
+[MariaDB test database guide](docs/mariadb-test-database.md).
+
 Run the following on Mac or Linux to install LazyDB
 
 ```bash
