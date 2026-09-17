@@ -384,6 +384,7 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
     });
     app.update(Action::ReplaceEditor("SELECT first".into()));
     let first_tab = app.active_console().id;
+    let first_target = app.active_console().execution_target.clone();
 
     let second_generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
@@ -417,11 +418,19 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
     assert_eq!(app.active_workspace_profile, Some(first_id));
     assert_eq!(app.active_console().id, first_tab);
     assert_eq!(app.active_editor_text().unwrap(), "SELECT first");
+    assert_eq!(
+        app.tabs
+            .iter()
+            .find(|tab| tab.id() == first_tab)
+            .and_then(WorkspaceTab::as_console)
+            .and_then(|tab| tab.execution_target.clone()),
+        first_target
+    );
     assert_eq!(app.tabs.len(), 2);
 }
 
 #[test]
-fn target_selector_switches_only_after_matching_connection_success() {
+fn target_selector_binds_only_the_selected_console_before_connection_success() {
     let mut profile = memory_profile("target");
     profile.catalog_scope.databases = CatalogSelection::All;
     let profile_id = profile.id;
@@ -432,9 +441,16 @@ fn target_selector_switches_only_after_matching_connection_success() {
         schema: Some("attached".into()),
     };
     let mut app = App::new(vec![profile]);
-    app.connection.profile_id = Some(profile_id);
-    app.connection.generation = 1;
-    app.connection.status = ConnectionStatus::Connected;
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: server(":memory:"),
+        mutation_capabilities: Default::default(),
+    });
     app.connection.target = Some(default.clone());
 
     let database = CatalogEntry::database(
@@ -495,28 +511,23 @@ fn target_selector_switches_only_after_matching_connection_success() {
     assert_eq!(*selected, 1);
     app.update(Action::MoveTargetSelector(1));
     let commands = app.update(Action::ConfirmTargetSelector);
-    let generation = match commands.as_slice() {
-        [
+    let generation = commands
+        .iter()
+        .find_map(|command| match command {
             Command::Connect {
                 target, generation, ..
-            },
-        ] if target == &alias => *generation,
-        other => panic!("unexpected commands: {other:?}"),
-    };
-    assert_eq!(
-        app.active_console().execution_target.as_ref(),
-        Some(&default)
-    );
+            } if target == &alias => Some(*generation),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing alias connection command: {commands:?}"));
+    assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
 
     app.update(Action::ConnectionFailed {
         profile_id,
         generation,
         message: "switch failed".into(),
     });
-    assert_eq!(
-        app.active_console().execution_target.as_ref(),
-        Some(&default)
-    );
+    assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
     assert_eq!(app.connection.target.as_ref(), Some(&default));
     assert_eq!(
         app.explorer.normalized.profiles[&profile_id].status,
@@ -531,11 +542,21 @@ fn target_selector_switches_only_after_matching_connection_success() {
     );
 
     app.update(Action::OpenTargetSelector);
-    app.update(Action::MoveTargetSelector(1));
-    let generation = match app.update(Action::ConfirmTargetSelector).as_slice() {
-        [Command::Connect { generation, .. }] => *generation,
-        other => panic!("unexpected commands: {other:?}"),
+    let alias_index = match app.overlay.as_ref().unwrap() {
+        lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates
+            .iter()
+            .position(|candidate| candidate == &alias)
+            .unwrap(),
+        other => panic!("unexpected overlay: {other:?}"),
     };
+    let commands = app.update(Action::SelectTargetSelector(alias_index));
+    let generation = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Connect { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing retry connection command: {commands:?}"));
     let commands = app.update(Action::ConnectionSucceeded {
         profile_id,
         generation,
@@ -562,7 +583,7 @@ fn target_selector_switches_only_after_matching_connection_success() {
         catalog_epoch_before
     );
     assert!(
-        commands
+        !commands
             .iter()
             .any(|command| matches!(command, Command::PersistWorkspace { .. }))
     );
@@ -788,9 +809,13 @@ fn failed_console_target_reconnect_preserves_old_connection_and_allows_retry() {
         schema: Some("attached".into()),
     };
     let mut app = App::new(vec![profile]);
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
     app.update(Action::ConnectionSucceeded {
         profile_id,
-        generation: 1,
+        generation,
         server: server(":memory:"),
         mutation_capabilities: Default::default(),
     });
@@ -856,7 +881,7 @@ fn executing_while_console_target_is_connecting_does_not_start_a_second_connecti
 }
 
 #[test]
-fn target_selector_reconnects_when_console_target_matches_selection_but_connection_does_not() {
+fn target_selector_reconnects_when_console_target_is_selected_but_connection_does_not() {
     let mut profile = memory_profile("target-reconnect");
     profile.catalog_scope.databases = CatalogSelection::All;
     let profile_id = profile.id;
@@ -924,6 +949,7 @@ fn target_selector_reconnects_when_console_target_matches_selection_but_connecti
         commands.as_slice(),
         [Command::Connect { target, .. }] if target == &alias
     ));
+    assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
 }
 
 #[test]

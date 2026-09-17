@@ -256,7 +256,6 @@ pub struct App {
     confirmation_policy: ConfirmationPolicy,
     deferred: DeferredIntentQueue,
     resolving_deferred: Option<DeferredTransactionPrompt>,
-    pending_target_console: Option<Uuid>,
     deferred_console_activation: Option<DeferredConsoleActivation>,
     pending_editor_target_switch: Option<(Uuid, Uuid, u64)>,
     pending_executions: HashMap<Uuid, PendingExecution>,
@@ -825,7 +824,6 @@ impl App {
             confirmation_policy,
             deferred: DeferredIntentQueue::default(),
             resolving_deferred: None,
-            pending_target_console: None,
             deferred_console_activation: None,
             pending_editor_target_switch: None,
             pending_executions: HashMap::new(),
@@ -1181,31 +1179,7 @@ impl App {
                 .workspaces
                 .remove(&profile_id)
                 .unwrap_or_else(|| self.empty_workspace_for(profile_id, target.clone()));
-            let Some(profile) = self
-                .profiles
-                .iter()
-                .find(|profile| profile.id == profile_id)
-            else {
-                return commands;
-            };
-            let mut workspace = workspace;
-            for tab in &mut workspace.tabs {
-                let Some(console) = tab.as_console_mut() else {
-                    continue;
-                };
-                if console.execution_target.as_ref().is_none_or(|candidate| {
-                    candidate.profile_id != profile_id || !candidate.is_valid(profile)
-                }) {
-                    console.execution_target = Some(target.clone());
-                }
-            }
-            for record in &mut workspace.sql_editors {
-                if record.execution_target.as_ref().is_none_or(|candidate| {
-                    candidate.profile_id != profile_id || !candidate.is_valid(profile)
-                }) {
-                    record.execution_target = Some(target.clone());
-                }
-            }
+            let workspace = workspace;
             let workspace_tab_ids = workspace
                 .tabs
                 .iter()
@@ -9346,7 +9320,6 @@ impl App {
                 self.connection.pending_generation = None;
                 self.connection.pending_target = None;
                 self.pending_editor_target_switch = None;
-                self.pending_target_console = None;
                 self.connect_started_at = None;
                 self.connection.status = if self.connection.profile_id.is_some() {
                     ConnectionStatus::Connected
@@ -9403,7 +9376,6 @@ impl App {
                     self.connection.pending_generation = None;
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
-                    self.pending_target_console = None;
                     self.connect_started_at = None;
                 }
                 if active_matches && !newer_same_profile_session {
@@ -10014,53 +9986,14 @@ impl App {
                 Vec::new()
             }
             Action::OpenTargetSelector => {
-                let Some(profile) = self.active_profile().cloned().or_else(|| {
-                    self.active_workspace_profile.and_then(|profile_id| {
-                        self.profiles
-                            .iter()
-                            .find(|profile| profile.id == profile_id)
-                            .cloned()
-                    })
-                }) else {
+                let Some(console_id) = self.active_console_opt().map(|tab| tab.id) else {
                     self.notify_warning(
                         "LazyDB",
-                        "No active connection; connect before selecting a target",
+                        "No active connection; open a SQL editor before selecting a target",
                     );
                     return Vec::new();
                 };
-                if !profile.kind.is_relational() {
-                    return Vec::new();
-                }
-                if self.active_workspace_profile != Some(profile.id) || self.tabs.is_empty() {
-                    let target = self
-                        .connection
-                        .target
-                        .clone()
-                        .filter(|target| target.is_valid(&profile))
-                        .unwrap_or_else(|| ExecutionTarget::from_profile(&profile));
-                    self.activate_profile_workspace(profile.id, target);
-                }
-                let candidates = self.execution_target_candidates(&profile);
-                let Some(current) = self
-                    .active_console_opt()
-                    .and_then(|tab| tab.execution_target.as_ref())
-                else {
-                    self.notify_warning(
-                        "LazyDB",
-                        "No active console; connect before selecting a target",
-                    );
-                    return Vec::new();
-                };
-                let selected = candidates
-                    .iter()
-                    .position(|candidate| candidate == current)
-                    .unwrap_or(0);
-                self.overlay = Some(Overlay::TargetSelector {
-                    candidates,
-                    selected,
-                    console_id: None,
-                });
-                Vec::new()
+                self.update(Action::OpenConsoleTargetSelector { console_id })
             }
             Action::OpenConsoleTargetSelector { console_id } => {
                 let Some(console) = self
@@ -10213,7 +10146,6 @@ impl App {
                 let commands = self.request_connection_target(target);
                 if !commands.is_empty() {
                     // Workspace database changes must not rebind an existing Console target.
-                    self.pending_target_console = None;
                     self.pending_editor_target_switch = None;
                     self.pending_workspace_database_switch = self
                         .connection
@@ -11139,7 +11071,6 @@ impl App {
                             *pending_profile_id == profile_id && *pending_generation == generation
                         })
                         .map(|(console_id, _, _)| console_id)
-                        .or_else(|| self.pending_target_console.take())
                     && let Some(tab) = self
                         .tabs
                         .iter_mut()
@@ -11160,9 +11091,7 @@ impl App {
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
                 }
-                if let Some(console_id) = editor_target_switch
-                    .map(|(console_id, _, _)| console_id)
-                    .or(self.pending_target_console)
+                if let Some(console_id) = editor_target_switch.map(|(console_id, _, _)| console_id)
                     && let Some(tab) = self
                         .tabs
                         .iter_mut()
@@ -11250,21 +11179,6 @@ impl App {
                     let Some(tab) = tab.as_console_mut() else {
                         continue;
                     };
-                    let should_default = tab.execution_target.as_ref().is_none_or(|target| {
-                        target.profile_id == profile_id
-                            && !target.is_valid(
-                                self.profiles
-                                    .iter()
-                                    .find(|profile| profile.id == profile_id)
-                                    .expect("connected profile exists"),
-                            )
-                    });
-                    if should_default {
-                        tab.execution_target = Some(target.clone());
-                        persist_target = true;
-                        append_target_switch_log(&mut self.editor, tab, &target, switch_elapsed);
-                        tab.result_view = ResultView::Output;
-                    }
                     if tab.execution_target.as_ref() == Some(&target) {
                         tab.execution_connection = Some(ConnectionIdentity {
                             profile_id,
@@ -11586,15 +11500,13 @@ impl App {
                         .filter(|(_, pending_profile_id, pending_generation)| {
                             *pending_profile_id == profile_id && *pending_generation == generation
                         })
-                        .map(|(console_id, _, _)| console_id)
-                        .or(self.pending_target_console);
+                        .map(|(console_id, _, _)| console_id);
                     self.connection_terminal_generation =
                         self.connection_terminal_generation.max(generation);
                     self.connection.pending_profile_id = None;
                     self.connection.pending_generation = None;
                     self.connection.pending_target = None;
                     self.pending_editor_target_switch = None;
-                    self.pending_target_console = None;
                     self.pending_workspace_database_switch = None;
                     self.connection.status = if self.connection.profile_id.is_some() {
                         ConnectionStatus::Connected
@@ -11733,7 +11645,6 @@ impl App {
                     self.connection.pending_profile_id = None;
                     self.connection.pending_generation = None;
                     self.connection.pending_target = None;
-                    self.pending_target_console = None;
                     ConnectionStatus::Failed
                 } else {
                     ConnectionStatus::Failed
@@ -15865,25 +15776,6 @@ impl App {
                     .filter(|target| target.profile_id == profile_id && target.is_valid(profile))
             })
             .unwrap_or_else(|| ExecutionTarget::from_profile(profile));
-        if self.active_console_opt().is_some_and(|tab| {
-            tab.execution_target.as_ref().is_none_or(|current| {
-                current.profile_id != profile_id || !current.is_valid(profile)
-            })
-        }) {
-            self.pending_target_console = self.active_console_opt().map(|tab| tab.id);
-        }
-        if self.connection.profile_id.is_none()
-            && self.tabs.len() == 1
-            && self.active_console_opt().is_some_and(|tab| {
-                tab.generation == 0
-                    && tab
-                        .execution_target
-                        .as_ref()
-                        .is_none_or(|old| old.profile_id != profile_id)
-            })
-        {
-            self.active_console_mut().execution_target = Some(target.clone());
-        }
         self.request_connection_target(target)
     }
 
@@ -15919,7 +15811,6 @@ impl App {
             .iter()
             .any(|profile| profile.id == profile_id && target.is_valid(profile))
         {
-            self.pending_target_console = None;
             return Vec::new();
         }
         let session_request = self.sessions.request(target.clone());
@@ -16113,7 +16004,7 @@ impl App {
             return Vec::new();
         }
         if tab.execution_target.as_ref() == Some(&target) {
-            return Vec::new();
+            return self.prepare_active_console_target();
         }
         tab.execution_target = Some(target.clone());
         tab.execution_connection = None;
@@ -16318,7 +16209,6 @@ impl App {
             self.connection.pending_profile_id = None;
             self.connection.pending_generation = None;
             self.connection.pending_target = None;
-            self.pending_target_console = None;
         }
         if let Some(connection) =
             runtime_active.filter(|connection| connection.profile_id == profile_id)
@@ -23731,10 +23621,16 @@ mod tests {
             .and_then(|tab| tab.execution_target.clone());
         assert_eq!(
             current_target.as_ref().map(|target| target.profile_id),
-            Some(second_id)
+            Some(first_id)
         );
         assert_eq!(target.profile_id, first_id);
-        let commands = app.bind_console_target(console_id, target.clone());
+        let second_target = ExecutionTarget::from_profile(
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == second_id)
+                .expect("second profile should exist"),
+        );
+        let commands = app.bind_console_target(console_id, second_target.clone());
         assert!(!commands.is_empty(), "the cached console should be rebound");
         assert_eq!(
             app.tabs
@@ -23742,7 +23638,7 @@ mod tests {
                 .find(|tab| tab.id() == console_id)
                 .and_then(WorkspaceTab::as_console)
                 .and_then(|tab| tab.execution_target.as_ref()),
-            Some(&target)
+            Some(&second_target)
         );
 
         let temp = TempDir::new().unwrap();
@@ -23956,20 +23852,29 @@ mod tests {
                 .find(|profile| profile.id == first_id)
                 .unwrap(),
         );
-        assert_ne!(
+        assert_eq!(
             app.active_console_opt()
                 .and_then(|tab| tab.execution_target.as_ref()),
             Some(&target)
         );
-        let commands = app.bind_console_target(console_id, target.clone());
-        assert!(!commands.is_empty(), "console target should be rebound");
+        let second_target = ExecutionTarget::from_profile(
+            app.profiles
+                .iter()
+                .find(|profile| profile.id == second_id)
+                .unwrap(),
+        );
+        let commands = app.bind_console_target(console_id, second_target.clone());
+        assert!(
+            !commands.is_empty(),
+            "console target should be rebound explicitly"
+        );
         assert_eq!(
             app.tabs
                 .iter()
                 .find(|tab| tab.id() == console_id)
                 .and_then(WorkspaceTab::as_console)
                 .and_then(|tab| tab.execution_target.as_ref()),
-            Some(&target)
+            Some(&second_target)
         );
 
         let snapshot = app.workspace_snapshot();
@@ -23985,7 +23890,7 @@ mod tests {
                 })
                 .map(|profile| profile.profile_id)
                 .collect::<Vec<_>>(),
-            vec![first_id]
+            vec![second_id]
         );
     }
 

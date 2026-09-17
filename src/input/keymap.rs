@@ -4369,10 +4369,7 @@ mod tests {
             keymap.map(key(KeyCode::Char('y')), &relation),
             Some(Action::CopyGridCell)
         );
-        assert_eq!(
-            keymap.sequence_state(&relation, Instant::now()).is_none(),
-            true
-        );
+        assert!(keymap.sequence_state(&relation, Instant::now()).is_none());
         keymap.clear_pending();
         assert_eq!(keymap.map(key(KeyCode::Char('d')), &relation), None);
         assert_eq!(
