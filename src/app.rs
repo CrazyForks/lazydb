@@ -14610,7 +14610,9 @@ impl App {
             CatalogMutationAnchor::Group { schema, .. } => schema.native_path.first(),
             CatalogMutationAnchor::Profile { .. } => None,
         };
-        if anchor_database.is_some_and(|database| database != &target.database) {
+        if !matches!(profile.kind, DatabaseKind::MySql | DatabaseKind::MariaDb)
+            && anchor_database.is_some_and(|database| database != &target.database)
+        {
             return None;
         }
         let profile_state = self.explorer.normalized.profiles.get(&profile_id)?;
@@ -19374,6 +19376,24 @@ impl App {
                     None
                 }
             });
+        let profile_create_availability = |kind: ExplorerAddKind| {
+            if catalog_unavailability.is_some() {
+                return catalog_unavailability;
+            }
+            match kind {
+                ExplorerAddKind::Database => None,
+                ExplorerAddKind::User | ExplorerAddKind::Role => match self
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == profile_id)
+                    .map(|profile| profile.kind)
+                {
+                    Some(DatabaseKind::Postgres) => None,
+                    _ => Some("This database driver does not support role creation"),
+                },
+                _ => None,
+            }
+        };
         let availability = |reason: Option<&'static str>| match reason {
             Some(reason) => ExplorerAddAvailability::Unavailable(reason),
             None => ExplorerAddAvailability::Available,
@@ -19381,9 +19401,18 @@ impl App {
         [
             (ExplorerAddKind::Connection, None),
             (ExplorerAddKind::ConnectionGroup, None),
-            (ExplorerAddKind::Database, catalog_unavailability),
-            (ExplorerAddKind::User, catalog_unavailability),
-            (ExplorerAddKind::Role, catalog_unavailability),
+            (
+                ExplorerAddKind::Database,
+                profile_create_availability(ExplorerAddKind::Database),
+            ),
+            (
+                ExplorerAddKind::User,
+                profile_create_availability(ExplorerAddKind::User),
+            ),
+            (
+                ExplorerAddKind::Role,
+                profile_create_availability(ExplorerAddKind::Role),
+            ),
         ]
         .into_iter()
         .map(|(kind, reason)| ExplorerAddOption {
@@ -19455,6 +19484,25 @@ impl App {
             self.notify_warning(
                 "Catalog",
                 "The selected connection cannot create catalog objects",
+            );
+            return Vec::new();
+        }
+        if !self
+            .connection
+            .mutation_capabilities
+            .profile_create
+            .iter()
+            .any(|option| {
+                option.object_type == object_type
+                    && matches!(
+                        option.availability,
+                        crate::db::catalog_mutation::CatalogMutationAvailability::Available
+                    )
+            })
+        {
+            self.notify_warning(
+                "Catalog",
+                "The selected connection does not support this catalog object",
             );
             return Vec::new();
         }

@@ -749,6 +749,10 @@ fn render_database(
     owner_choices: Option<&[crate::db::catalog_mutation::CatalogOwnerChoice]>,
     picker: &crate::model::catalog_editor::OwnerPickerState,
 ) {
+    let mysql = matches!(
+        draft.database_kind,
+        crate::profile::DatabaseKind::MySql | crate::profile::DatabaseKind::MariaDb
+    );
     let mut y = area.y;
     render_catalog_section_heading(
         frame,
@@ -770,18 +774,20 @@ fn render_database(
         theme,
     );
     y = y.saturating_add(1);
-    render_catalog_text_field(
-        frame,
-        Rect::new(area.x, y, area.width, 1),
-        "Owner *",
-        &draft.owner,
-        draft.focus == CatalogFormFocus::Owner,
-        true,
-        HitTarget::CatalogEditorFormField(CatalogFormFocus::Owner),
-        ui,
-        theme,
-    );
-    y = y.saturating_add(1);
+    if !mysql {
+        render_catalog_text_field(
+            frame,
+            Rect::new(area.x, y, area.width, 1),
+            "Owner *",
+            &draft.owner,
+            draft.focus == CatalogFormFocus::Owner,
+            true,
+            HitTarget::CatalogEditorFormField(CatalogFormFocus::Owner),
+            ui,
+            theme,
+        );
+        y = y.saturating_add(1);
+    }
     render_catalog_text_field(
         frame,
         Rect::new(area.x, y, area.width, 1),
@@ -793,6 +799,10 @@ fn render_database(
         ui,
         theme,
     );
+    if mysql {
+        render_catalog_actions(frame, area, draft.focus, ui, theme);
+        return;
+    }
     y = y.saturating_add(2);
     render_catalog_section_heading(
         frame,

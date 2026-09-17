@@ -332,6 +332,12 @@ fn mysql_database_is_schema_advertises_table_and_view_creation() {
     let capabilities = MySqlAdapter::catalog_mutation_capabilities();
     assert!(
         capabilities
+            .profile_create
+            .iter()
+            .any(|option| option.object_type == CatalogObjectType::Catalog(CatalogKind::Database))
+    );
+    assert!(
+        capabilities
             .create_availability(CatalogObjectType::Catalog(CatalogKind::Table))
             .is_some()
     );
@@ -376,6 +382,72 @@ fn mysql_table_create_plan_uses_backtick_quoting() {
         plan.statements()[0],
         "CREATE TABLE `shop``db`.`line``item` (`id` BIGINT)"
     );
+}
+
+#[test]
+fn mysql_database_anchor_creates_a_table_in_the_database_namespace() {
+    let profile_id = Uuid::from_u128(18);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest::new(
+        lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        1,
+        1,
+        CatalogMutationMode::Create,
+        CatalogMutationAnchor::Catalog(CatalogId::new(profile_id, CatalogKind::Database, ["app"])),
+        CatalogObjectType::Catalog(CatalogKind::Table),
+    )
+    .unwrap()
+    .with_current_database("app");
+    let mut table = TableDraft::new_for_database("app", DatabaseKind::MariaDb);
+    table.name.set("events");
+    table.columns[0].name.set("id");
+    table.columns[0].native_type.set("INT");
+    let plan = MySqlAdapter::plan_catalog_mutation(request, CatalogDraft::Table(table), None)
+        .expect("database anchor should create a table plan");
+
+    assert_eq!(
+        plan.statements()[0],
+        "CREATE TABLE `app`.`events` (`id` INT)"
+    );
+    assert!(matches!(
+        plan.refresh.as_slice(),
+        [lazydb::db::catalog::CatalogTarget::Objects {
+            group: lazydb::db::catalog::ObjectGroup::Tables,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn mysql_profile_anchor_creates_a_database_on_an_existing_target() {
+    let profile_id = Uuid::from_u128(19);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest::new(
+        lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        1,
+        1,
+        CatalogMutationMode::Create,
+        CatalogMutationAnchor::Profile { profile_id },
+        CatalogObjectType::Catalog(CatalogKind::Database),
+    )
+    .unwrap()
+    .with_current_database("mysql");
+    let mut database = lazydb::model::catalog_editor::DatabaseDraft::new("");
+    database.database_kind = DatabaseKind::MariaDb;
+    database.name.set("reporting");
+    let plan = MySqlAdapter::plan_catalog_mutation(request, CatalogDraft::Database(database), None)
+        .expect("profile anchor should create a database plan");
+
+    assert_eq!(plan.statements()[0], "CREATE DATABASE `reporting`");
+    assert_eq!(plan.execution_target.database(), "mysql");
+    assert!(matches!(
+        plan.refresh.as_slice(),
+        [lazydb::db::catalog::CatalogTarget::Databases]
+    ));
 }
 
 #[test]

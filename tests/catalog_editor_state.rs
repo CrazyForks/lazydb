@@ -107,6 +107,21 @@ fn database_form_uses_named_focus_and_edits_name_then_owner() {
 }
 
 #[test]
+fn mysql_database_form_only_enables_native_fields() {
+    let mut draft = DatabaseDraft::new("");
+    draft.database_kind = lazydb::profile::DatabaseKind::MariaDb;
+
+    assert!(draft.focus_enabled(CatalogFormFocus::Name));
+    assert!(draft.focus_enabled(CatalogFormFocus::Comment));
+    assert!(!draft.focus_enabled(CatalogFormFocus::Owner));
+    assert!(!draft.focus_enabled(CatalogFormFocus::Template));
+    assert!(!draft.focus_enabled(CatalogFormFocus::Encoding));
+    assert!(draft.validate().is_err());
+    draft.name.set("analytics");
+    assert!(draft.validate().is_ok());
+}
+
+#[test]
 fn role_form_toggle_changes_only_the_focused_permission() {
     let mut role = lazydb::model::catalog_editor::RoleDraft::new(false);
     role.focus = CatalogFormFocus::Login;
