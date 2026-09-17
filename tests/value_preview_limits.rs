@@ -45,3 +45,19 @@ fn serialization_decoders_reject_values_over_input_budget() {
         DecodeStatus::Unsupported
     );
 }
+
+#[test]
+fn yaml_detection_respects_input_budget() {
+    let value = format!(
+        "items:\n{}",
+        (0..MAX_PREVIEW_INPUT_BYTES)
+            .map(|index| format!("  - {index}\n"))
+            .collect::<String>()
+    );
+    assert!(value.len() > MAX_PREVIEW_INPUT_BYTES);
+    assert!(
+        !lazydb::value_preview::detect::detect(value.as_bytes())
+            .iter()
+            .any(|candidate| candidate.format == PreviewFormat::YAML)
+    );
+}

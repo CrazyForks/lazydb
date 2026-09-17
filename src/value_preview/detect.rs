@@ -42,6 +42,21 @@ pub fn detect(data: &[u8]) -> Vec<FormatCandidate> {
             || super::protobuf::parse_protobuf_to_json(data).map(|_| ()),
         ));
     }
+    if data.len() <= super::MAX_PREVIEW_INPUT_BYTES
+        && std::str::from_utf8(data).is_ok()
+        && let Ok(value) = serde_yaml::from_slice::<serde_yaml::Value>(data)
+        && matches!(
+            value,
+            serde_yaml::Value::Mapping(_) | serde_yaml::Value::Sequence(_)
+        )
+    {
+        candidates.push(FormatCandidate {
+            format: PreviewFormat::YAML,
+            confidence: 90,
+            reason: "valid structured YAML",
+            status: DecodeStatus::Complete,
+        });
+    }
     if candidates.is_empty() && std::str::from_utf8(data).is_ok() {
         candidates.push(FormatCandidate {
             format: PreviewFormat::RAW,
