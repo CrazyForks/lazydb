@@ -309,7 +309,9 @@ pub struct ProfileCatalogDiscovery {
     pub fingerprint: DiscoveryFingerprint,
     pub server: ServerInfo,
     pub capabilities: CatalogCapabilities,
-    pub discovery: Result<CatalogDiscovery, String>,
+    /// `None` means this database kind has no SQL catalog discovery.
+    /// `Some(Err(_))` means discovery was attempted and failed.
+    pub discovery: Option<Result<CatalogDiscovery, String>>,
 }
 
 impl fmt::Debug for ProfileCatalogDiscovery {
@@ -321,10 +323,10 @@ impl fmt::Debug for ProfileCatalogDiscovery {
             .field("capabilities", &self.capabilities)
             .field(
                 "discovery",
-                &if self.discovery.is_ok() {
-                    "available"
-                } else {
-                    "warning"
+                &match &self.discovery {
+                    None => "not_applicable",
+                    Some(Ok(_)) => "available",
+                    Some(Err(_)) => "warning",
                 },
             )
             .finish()
@@ -1774,7 +1776,10 @@ impl ProfileManagerState {
             .as_ref()
             .and_then(|draft| match &draft.catalog_discovery {
                 CatalogDiscoveryState::Fresh(snapshot) | CatalogDiscoveryState::Stale(snapshot) => {
-                    snapshot.discovery.as_ref().ok().cloned()
+                    snapshot
+                        .discovery
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok().cloned())
                 }
                 CatalogDiscoveryState::NotRequested => None,
             })
@@ -1791,11 +1796,11 @@ impl ProfileManagerState {
         };
         let discovery = match &draft.catalog_discovery {
             CatalogDiscoveryState::Fresh(snapshot) | CatalogDiscoveryState::Stale(snapshot) => {
-                Some(snapshot.discovery.as_ref())
+                snapshot.discovery.as_ref()
             }
             CatalogDiscoveryState::NotRequested => None,
         };
-        let discovered = discovery.and_then(Result::ok);
+        let discovered = discovery.and_then(|result| result.as_ref().ok());
         let names =
             selected
                 .into_iter()
@@ -1898,29 +1903,35 @@ impl ProfileManagerState {
     fn scope_unavailable_warning(&self) -> Option<String> {
         let draft = self.draft.as_ref()?;
         match &draft.catalog_discovery {
-            CatalogDiscoveryState::Stale(snapshot) => {
-                snapshot.discovery.as_ref().err().map_or_else(
+            CatalogDiscoveryState::Stale(snapshot) => snapshot
+                .discovery
+                .as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map_or_else(
                     || Some("Discovery is stale; saved selections were preserved".into()),
                     |error| Some(format!("Catalog discovery warning: {error}")),
-                )
-            }
+                ),
             CatalogDiscoveryState::NotRequested => {
                 Some("Discovery unavailable; saved selections are shown".into())
             }
             CatalogDiscoveryState::Fresh(snapshot) => snapshot
                 .discovery
                 .as_ref()
-                .err()
+                .and_then(|result| result.as_ref().err())
                 .map(|error| format!("Catalog discovery warning: {error}"))
                 .or_else(|| {
-                    snapshot.discovery.as_ref().ok().and_then(|discovery| {
-                        (!discovery.warnings.is_empty()).then(|| {
-                            format!(
-                                "Catalog discovery warning: {}",
-                                discovery.warnings.join("; ")
-                            )
+                    snapshot
+                        .discovery
+                        .as_ref()
+                        .and_then(|result| result.as_ref().ok())
+                        .and_then(|discovery| {
+                            (!discovery.warnings.is_empty()).then(|| {
+                                format!(
+                                    "Catalog discovery warning: {}",
+                                    discovery.warnings.join("; ")
+                                )
+                            })
                         })
-                    })
                 }),
         }
     }

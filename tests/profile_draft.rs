@@ -131,7 +131,7 @@ fn discovered_postgres_scope(selected_schemas: &[&str]) -> ProfileManagerState {
             column_metadata: Default::default(),
             supports_lazy_children: false,
         },
-        discovery: Ok(lazydb::db::catalog::CatalogDiscovery {
+        discovery: Some(Ok(lazydb::db::catalog::CatalogDiscovery {
             databases: vec![lazydb::db::catalog::DiscoveredDatabase {
                 name: "moss_biz".into(),
                 schemas: ["coa", "public", "tools"]
@@ -140,7 +140,7 @@ fn discovered_postgres_scope(selected_schemas: &[&str]) -> ProfileManagerState {
                     .collect(),
             }],
             warnings: Vec::new(),
-        }),
+        })),
     });
     state.open_scope_picker();
     state
@@ -1157,7 +1157,7 @@ fn discovery_failure_warning_is_preserved_when_picker_reopens() {
             column_metadata: Default::default(),
             supports_lazy_children: false,
         },
-        discovery: Err("permission denied".into()),
+        discovery: Some(Err("permission denied".into())),
     });
     state.open_scope_picker();
     assert!(state.scope_warning().unwrap().contains("permission denied"));
@@ -1198,13 +1198,13 @@ fn discovered_and_saved_schema_rows_are_deduplicated() {
             column_metadata: Default::default(),
             supports_lazy_children: false,
         },
-        discovery: Ok(lazydb::db::catalog::CatalogDiscovery {
+        discovery: Some(Ok(lazydb::db::catalog::CatalogDiscovery {
             databases: vec![lazydb::db::catalog::DiscoveredDatabase {
                 name: "db".into(),
                 schemas: vec!["public".into()],
             }],
             warnings: Vec::new(),
-        }),
+        })),
     });
     state.open_scope_picker();
     let rows = state

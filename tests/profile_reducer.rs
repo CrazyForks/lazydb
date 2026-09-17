@@ -566,7 +566,7 @@ fn profile_test_succeeded(
         fingerprint,
         server: server(),
         capabilities: capabilities(),
-        discovery,
+        discovery: Some(discovery),
     }
 }
 
@@ -962,6 +962,56 @@ fn test_rejects_invalid_drafts_and_tracks_matching_results() {
 }
 
 #[test]
+fn profile_test_without_catalog_discovery_is_success_without_warning() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    app.update(Action::ProfileSelectDriver(DatabaseKind::Redis));
+    valid_new_profile(&mut app, "redis");
+    app.profile_manager
+        .as_mut()
+        .unwrap()
+        .draft
+        .as_mut()
+        .unwrap()
+        .database
+        .set("0");
+    let commands = app.update(Action::ProfileTest);
+    let [
+        Command::TestProfile {
+            request_id,
+            submission,
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("expected profile test command");
+    };
+
+    app.update(Action::ProfileTestSucceeded {
+        request_id: *request_id,
+        fingerprint: submission.discovery_fingerprint,
+        server: ServerInfo {
+            kind: DatabaseKind::Redis,
+            version: "7.4.11".into(),
+            database: "0".into(),
+            current_user: None,
+        },
+        capabilities: capabilities(),
+        discovery: None,
+    });
+
+    let message = &app
+        .profile_manager
+        .as_ref()
+        .unwrap()
+        .message
+        .as_ref()
+        .unwrap()
+        .text;
+    assert!(message.contains("Connection verified: 7.4.11 (0)"));
+    assert!(!message.contains("catalog discovery warning"));
+}
+
+#[test]
 fn profile_test_discovery_failure_is_success_with_a_warning_and_preserves_scope() {
     let mut app = App::new(Vec::new());
     app.update(Action::OpenProfileManager);
@@ -1015,7 +1065,7 @@ fn profile_test_discovery_failure_is_success_with_a_warning_and_preserves_scope(
     assert_eq!(snapshot.fingerprint, fingerprint);
     assert!(matches!(
         &snapshot.discovery,
-        Err(warning) if warning == "catalog permission denied"
+        Some(Err(warning)) if warning == "catalog permission denied"
     ));
 }
 

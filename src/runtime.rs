@@ -1028,35 +1028,36 @@ impl Runtime {
                 }
             };
             match DatabaseConnection::connect(&profile, password.as_ref()).await {
-                Ok(database) => match database.probe().await {
-                    Ok(server) => {
-                        let capabilities = database.catalog_capabilities();
-                        let discovery = if profile.kind == crate::profile::DatabaseKind::Redis {
-                            Err("Redis database discovery is available from the Explorer"
-                                .to_owned())
-                        } else {
-                            database
-                                .discover_catalog_scope()
-                                .await
-                                .map_err(|error| sanitize_terminal_text(&error.to_string()))
-                        };
-                        database.close().await;
-                        let _ = sender.send(Action::ProfileTestSucceeded {
-                            request_id,
-                            fingerprint: discovery_fingerprint,
-                            server,
-                            capabilities,
-                            discovery,
-                        });
+                Ok(database) => {
+                    match database.probe().await {
+                        Ok(server) => {
+                            let capabilities = database.catalog_capabilities();
+                            let discovery =
+                                if profile.kind == crate::profile::DatabaseKind::Redis {
+                                    None
+                                } else {
+                                    Some(database.discover_catalog_scope().await.map_err(|error| {
+                                        sanitize_terminal_text(&error.to_string())
+                                    }))
+                                };
+                            database.close().await;
+                            let _ = sender.send(Action::ProfileTestSucceeded {
+                                request_id,
+                                fingerprint: discovery_fingerprint,
+                                server,
+                                capabilities,
+                                discovery,
+                            });
+                        }
+                        Err(error) => {
+                            database.close().await;
+                            let _ = sender.send(Action::ProfileTestFailed {
+                                request_id,
+                                message: sanitize_terminal_text(&error.to_string()),
+                            });
+                        }
                     }
-                    Err(error) => {
-                        database.close().await;
-                        let _ = sender.send(Action::ProfileTestFailed {
-                            request_id,
-                            message: sanitize_terminal_text(&error.to_string()),
-                        });
-                    }
-                },
+                }
                 Err(error) => {
                     let _ = sender.send(Action::ProfileTestFailed {
                         request_id,

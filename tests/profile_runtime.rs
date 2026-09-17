@@ -190,7 +190,7 @@ async fn profile_test_discovers_scope_without_mutating_or_persisting_it() {
             fingerprint,
             server,
             capabilities,
-            discovery: Ok(discovery),
+            discovery: Some(Ok(discovery)),
         } => {
             assert_eq!(fingerprint, expected_fingerprint);
             assert_eq!(server.database, ":memory:");

@@ -401,7 +401,7 @@ pub enum Action {
         fingerprint: DiscoveryFingerprint,
         server: ServerInfo,
         capabilities: CatalogCapabilities,
-        discovery: Result<CatalogDiscovery, String>,
+        discovery: Option<Result<CatalogDiscovery, String>>,
     },
     ProfileTestFailed {
         request_id: u64,

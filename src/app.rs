@@ -9058,7 +9058,9 @@ impl App {
                     self.matching_profile_operation(request_id, &[ProfileOperation::Testing])
                 {
                     manager.operation = None;
-                    let warning = discovery.as_ref().err().cloned();
+                    let warning = discovery
+                        .as_ref()
+                        .and_then(|result| result.as_ref().err().cloned());
                     let version = server.version.clone();
                     let database = server.database.clone();
                     let applied = manager.draft.as_mut().is_some_and(|draft| {
@@ -9118,7 +9120,7 @@ impl App {
                             fingerprint,
                             server,
                             capabilities,
-                            discovery: Ok(discovery),
+                            discovery: Some(Ok(discovery)),
                         });
                     }
                     manager.finish_scope_discovery();
