@@ -3170,6 +3170,11 @@ fn bind_mssql_cell(query: &mut Query<'static>, value: &CellValue) -> Result<(), 
         CellValue::Float(value) => query.bind(*value),
         CellValue::Text(value) => query.bind(value.clone()),
         CellValue::Bytes(value) => query.bind(value.clone()),
+        CellValue::MySqlGeometry { .. } => {
+            return Err(TransactionError(
+                "SQL Server cannot bind a MySQL geometry value".into(),
+            ));
+        }
         CellValue::Date(value) => query.bind(*value),
         CellValue::Time(value) => query.bind(*value),
         CellValue::DateTime(value) => query.bind(*value),

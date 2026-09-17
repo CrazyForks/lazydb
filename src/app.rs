@@ -21992,6 +21992,18 @@ impl App {
         else {
             return;
         };
+        let is_geometry_column = result
+            .as_ref()
+            .and_then(|result| result.columns.get(column))
+            .is_some_and(|column| column.type_name.eq_ignore_ascii_case("GEOMETRY"));
+        if is_geometry_column || matches!(value, crate::db::value::CellValue::MySqlGeometry { .. })
+        {
+            self.notify_warning(
+                "Relation edit",
+                "MariaDB geometry values are preview-only and cannot be edited yet",
+            );
+            return;
+        }
         let is_unprovided = tab
             .edit
             .as_ref()
