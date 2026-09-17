@@ -26,10 +26,12 @@ competing with the name. Icons follow the configured Nerd Font, Unicode, or
 ASCII icon mode. `Esc` returns to the previous Omni step when a nested step is
 active and closes Omni from the root step.
 
-Opening a cached relation on another profile starts a connection switch and
-continues to that exact relation only when the matching connection attempt
-succeeds. A running query or an unresolved transaction may block the switch;
-Omni reports that condition instead of silently interrupting database work.
+Opening a cached relation on another profile switches to that profile and opens
+the exact relation. An already-connected session is reused immediately;
+otherwise navigation waits for the matching connection attempt, including an
+attempt already in progress. A running query or an unresolved transaction may
+block the switch; Omni reports that condition instead of silently interrupting
+database work.
 Offline profiles can be selected as a local filter, but remote search requires
 an active connection.
 

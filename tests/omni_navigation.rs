@@ -6,7 +6,11 @@ use lazydb::{
         ServerInfo,
         catalog::{CatalogEntry, CatalogId, CatalogKind, OptionalMetadata, QualifiedName},
     },
-    model::{omni::OmniItemId, relation::RelationView, workspace::ConnectionStatus},
+    model::{
+        omni::OmniItemId,
+        relation::RelationView,
+        workspace::{ConnectionStatus, Focus},
+    },
     profile::{DatabaseKind, import_connection_url},
 };
 use uuid::Uuid;
@@ -91,6 +95,124 @@ fn selecting_cross_profile_relation_resumes_only_after_matching_connection_succe
         lazydb::model::tab::WorkspaceTab::Relation(tab)
             if tab.descriptor.key.object_id == target_table
                 && tab.view == RelationView::Data
+    )));
+}
+
+#[test]
+fn selecting_cached_relation_from_another_connected_profile_opens_immediately() {
+    let first = import_connection_url("sqlite::memory:", Some("first"))
+        .unwrap()
+        .profile;
+    let second = import_connection_url("sqlite:/tmp/second.db", Some("second"))
+        .unwrap()
+        .profile;
+    let first_id = first.id;
+    let second_id = second.id;
+    let mut app = App::new(vec![first, second]);
+
+    let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id: first_id,
+        generation: first_generation,
+        server: server(DatabaseKind::Sqlite),
+        mutation_capabilities: Default::default(),
+    });
+    let target_table = add_table(&mut app, first_id, "agreement");
+
+    let second_generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id: second_id,
+        generation: second_generation,
+        server: server(DatabaseKind::Sqlite),
+        mutation_capabilities: Default::default(),
+    });
+    assert_eq!(app.connection.profile_id, Some(second_id));
+
+    app.update(Action::OpenOmni);
+    app.omni.as_mut().unwrap().selected = Some(OmniItemId::Catalog(target_table.clone()));
+    let commands = app.update(Action::OmniConfirm);
+
+    assert!(app.omni.is_none());
+    assert_eq!(app.connection.profile_id, Some(first_id));
+    assert!(app.tabs.iter().any(|tab| matches!(
+        tab,
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if tab.descriptor.key.object_id == target_table
+                && tab.descriptor.key.profile_id == first_id
+                && tab.view == RelationView::Data
+    )));
+    assert!(matches!(app.focus, Focus::Results));
+    assert!(!commands.iter().any(|command| matches!(
+        command,
+        Command::Connect { profile_id, .. } if *profile_id == first_id
+    )));
+}
+
+#[test]
+fn selecting_relation_with_existing_connection_attempt_waits_without_reconnecting() {
+    let target = import_connection_url("sqlite::memory:", Some("target"))
+        .unwrap()
+        .profile;
+    let source = import_connection_url("sqlite:/tmp/source.db", Some("source"))
+        .unwrap()
+        .profile;
+    let target_id = target.id;
+    let source_id = source.id;
+    let mut app = App::new(vec![target, source]);
+
+    let target_generation = match app.update(Action::RequestConnect(target_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    let source_generation = match app.update(Action::RequestConnect(source_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+    app.update(Action::ConnectionSucceeded {
+        profile_id: source_id,
+        generation: source_generation,
+        server: server(DatabaseKind::Sqlite),
+        mutation_capabilities: Default::default(),
+    });
+    let target_table = add_table(&mut app, target_id, "agreement");
+
+    app.update(Action::OpenOmni);
+    app.omni.as_mut().unwrap().selected = Some(OmniItemId::Catalog(target_table.clone()));
+    let commands = app.update(Action::OmniConfirm);
+
+    assert!(app.omni.is_none());
+    assert_eq!(app.connection.profile_id, Some(source_id));
+    assert!(matches!(
+        app.connection.status,
+        ConnectionStatus::Connecting
+    ));
+    assert!(!commands.iter().any(|command| matches!(
+        command,
+        Command::Connect { profile_id, .. } if *profile_id == target_id
+    )));
+    assert!(!app.tabs.iter().any(|tab| matches!(
+        tab,
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if tab.descriptor.key.object_id == target_table
+    )));
+
+    app.update(Action::ConnectionSucceeded {
+        profile_id: target_id,
+        generation: target_generation,
+        server: server(DatabaseKind::Sqlite),
+        mutation_capabilities: Default::default(),
+    });
+    assert!(app.tabs.iter().any(|tab| matches!(
+        tab,
+        lazydb::model::tab::WorkspaceTab::Relation(tab)
+            if tab.descriptor.key.object_id == target_table
+                && tab.descriptor.key.profile_id == target_id
     )));
 }
 
