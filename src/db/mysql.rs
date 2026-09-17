@@ -166,9 +166,9 @@ LIMIT 101
 "#;
 
 const MARIADB_CATALOG_SEARCH_SEQUENCE_SQL: &str = " UNION ALL \
-    SELECT 'sequence', sequence_schema, sequence_name, NULL, NULL, sequence_name, \
-           CONCAT(sequence_schema,'.',sequence_name), NULL \
-    FROM information_schema.sequences";
+    SELECT 'sequence', table_schema, table_name, NULL, NULL, table_name, \
+           CONCAT(table_schema,'.',table_name), NULL \
+    FROM information_schema.tables WHERE table_type='SEQUENCE'";
 
 pub const CATALOG_DATABASES_SQL: &str = r#"
 SELECT schema_name
@@ -1041,10 +1041,18 @@ impl MySqlAdapter {
         if matches!(
             request.key.target,
             CatalogTarget::Objects {
-                group: ObjectGroup::MaterializedViews | ObjectGroup::Sequences | ObjectGroup::Types,
+                group: ObjectGroup::MaterializedViews | ObjectGroup::Types,
                 ..
             }
-        ) {
+        ) || (self.kind != DatabaseKind::MariaDb
+            && matches!(
+                request.key.target,
+                CatalogTarget::Objects {
+                    group: ObjectGroup::Sequences,
+                    ..
+                }
+            ))
+        {
             return Err(DatabaseError::unsupported_catalog_target(
                 self.kind,
                 &request.key.target,
@@ -1563,7 +1571,7 @@ impl MySqlAdapter {
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='FUNCTION') AS functions, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.routines WHERE BINARY routine_schema=BINARY ? AND routine_type='PROCEDURE') AS procedures, \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.triggers WHERE BINARY trigger_schema=BINARY ?) AS triggers, \
-             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.sequences WHERE BINARY sequence_schema=BINARY ?) AS sequences"
+             (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='SEQUENCE') AS sequences"
         } else {
             "SELECT \
              (SELECT CAST(COUNT(*) AS CHAR) FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND table_type='BASE TABLE') AS tables, \
@@ -1687,13 +1695,13 @@ impl MySqlAdapter {
                     "trigger_name",
                 ),
                 ObjectGroup::Sequences if self.kind == DatabaseKind::MariaDb => (
-                    "information_schema.sequences",
-                    "sequence_schema",
-                    "sequence_name",
-                    "TRUE",
+                    "information_schema.tables",
+                    "table_schema",
+                    "table_name",
+                    "table_type='SEQUENCE'",
                     CatalogKind::Sequence,
                     "sequence",
-                    "sequence_name",
+                    "table_name",
                 ),
                 _ => {
                     return Err(DatabaseError::unsupported_catalog_target(
@@ -1717,6 +1725,7 @@ impl MySqlAdapter {
                 "table_comment AS comment, NULL AS owner_name"
             }
             ObjectGroup::Triggers => "NULL AS comment, event_object_table AS owner_name",
+            ObjectGroup::Sequences => "NULL AS comment, NULL AS owner_name",
             _ => "routine_comment AS comment, NULL AS owner_name",
         };
         let select = format!(
