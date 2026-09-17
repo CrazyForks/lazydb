@@ -55,14 +55,8 @@ async fn mariadb_value_matrix_preserves_binary_json_decimal_and_empty_columns() 
         result.rows[0][0].clipboard_text(),
         "12345678901234567890.12345678901234567890"
     );
-    assert!(matches!(
-        result.rows[0][1],
-        CellValue::Bytes(_) | CellValue::Text(_)
-    ));
-    assert!(matches!(
-        result.rows[0][2],
-        CellValue::Text(_) | CellValue::Bytes(_)
-    ));
+    assert!(matches!(result.rows[0][1], CellValue::Bytes(_)));
+    assert!(matches!(result.rows[0][2], CellValue::Text(_)));
     assert_eq!(result.rows[0][3], CellValue::Unsigned(u64::MAX));
 
     let empty = database
@@ -76,6 +70,49 @@ async fn mariadb_value_matrix_preserves_binary_json_decimal_and_empty_columns() 
     {
         assert_eq!(empty_result.rows.len(), 0);
         assert_eq!(empty_result.columns[0].name, "amount");
+    }
+    database.close().await;
+}
+
+#[tokio::test]
+async fn mariadb_geometry_values_are_previewed_as_wkt() {
+    let Some(url) = support::mariadb_test_url() else {
+        return;
+    };
+    let imported = import_connection_url(&url, Some("MariaDB geometry values")).unwrap();
+    let database =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap();
+    let result = database
+        .execute(
+            "SELECT ST_GeomFromText('GEOMETRYCOLLECTION(POINT(0 0),LINESTRING(0 0,1 1))'), \
+                    ST_GeomFromText('LINESTRING(0 0,1 1,2 1)'), \
+                    ST_GeomFromText('POLYGON((0 0,0 1,1 1,1 0,0 0))'), \
+                    ST_GeomFromText('MULTIPOINT(0 0,1 1)'), \
+                    ST_GeomFromText('MULTILINESTRING((0 0,1 1),(2 2,3 3))'), \
+                    ST_GeomFromText('MULTIPOLYGON(((0 0,0 1,1 1,1 0,0 0)))'), \
+                    ST_GeomFromText('GEOMETRYCOLLECTION(POINT(1 1),LINESTRING(2 2,3 3))')",
+        )
+        .await
+        .unwrap()
+        .result_sets
+        .into_iter()
+        .find(|result| !result.columns.is_empty())
+        .expect("spatial result set");
+    let row = &result.rows[0];
+    let expected = [
+        "GEOMETRYCOLLECTION(POINT(0 0),LINESTRING(0 0,1 1))",
+        "LINESTRING(0 0,1 1,2 1)",
+        "POLYGON((0 0,0 1,1 1,1 0,0 0))",
+        "MULTIPOINT((0 0),(1 1))",
+        "MULTILINESTRING((0 0,1 1),(2 2,3 3))",
+        "MULTIPOLYGON(((0 0,0 1,1 1,1 0,0 0)))",
+        "GEOMETRYCOLLECTION(POINT(1 1),LINESTRING(2 2,3 3))",
+    ];
+    for (value, expected) in row.iter().zip(expected) {
+        assert_eq!(value.clipboard_text(), expected);
+        assert!(matches!(value, CellValue::MySqlGeometry { .. }));
     }
     database.close().await;
 }

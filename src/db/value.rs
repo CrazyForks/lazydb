@@ -10,6 +10,7 @@ pub enum CellValue {
     Float(f64),
     Text(String),
     Bytes(Vec<u8>),
+    MySqlGeometry { bytes: Vec<u8>, wkt: String },
     Date(NaiveDate),
     Time(NaiveTime),
     DateTime(NaiveDateTime),
@@ -42,6 +43,7 @@ impl CellValue {
                 }
                 text
             }
+            Self::MySqlGeometry { wkt, .. } => wkt.clone(),
             Self::Date(value) => value.format("%Y-%m-%d").to_string(),
             Self::Time(value) => format_time(*value),
             Self::DateTime(value) => format_datetime(*value),
@@ -59,6 +61,7 @@ impl CellValue {
             Self::Float(value) => CellPreview::complete(value.to_string(), 1),
             Self::Text(value) => preview_text(value, max_len),
             Self::Bytes(value) => preview_bytes(value, max_len),
+            Self::MySqlGeometry { wkt, .. } => preview_text(wkt, max_len),
             Self::Date(value) => preview_text(&value.format("%Y-%m-%d").to_string(), max_len),
             Self::Time(value) => preview_text(&format_time(*value), max_len),
             Self::DateTime(value) => preview_text(&format_datetime(*value), max_len),
@@ -171,6 +174,18 @@ mod tests {
 
         assert_eq!(preview.text, "0x0001...");
         assert_eq!(preview.original_len, 4);
+    }
+
+    #[test]
+    fn mysql_geometry_preview_uses_wkt_but_keeps_complete_copy_text() {
+        let value = CellValue::MySqlGeometry {
+            bytes: vec![0, 0, 0, 0],
+            wkt: "POINT(116.397 39.908)".into(),
+        };
+        assert_eq!(value.clipboard_text(), "POINT(116.397 39.908)");
+        assert_eq!(value.preview(5).text, "POINT...");
+        assert_eq!(value.preview(5).original_len, 21);
+        assert!(value.preview(5).truncated);
     }
 
     #[test]

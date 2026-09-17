@@ -3554,6 +3554,11 @@ fn bind_cell<'q>(
         CellValue::Float(value) => query.bind(*value),
         CellValue::Text(value) => query.bind(value.clone()),
         CellValue::Bytes(value) => query.bind(value.clone()),
+        CellValue::MySqlGeometry { .. } => {
+            return Err(TransactionError(
+                "SQLite cannot bind a MySQL geometry value".into(),
+            ));
+        }
         CellValue::Date(value) => query.bind(value.format("%Y-%m-%d").to_string()),
         CellValue::Time(value) => query.bind(value.format("%H:%M:%S%.f").to_string()),
         CellValue::DateTime(value) => query.bind(value.format("%Y-%m-%d %H:%M:%S%.f").to_string()),

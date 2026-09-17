@@ -8,7 +8,7 @@ use futures_util::TryStreamExt;
 use secrecy::{ExposeSecret, SecretString};
 use sqlx::{
     AssertSqlSafe, Column, Connection, Either, Executor, MySqlPool, Row, SqlSafeStr, Statement,
-    TypeInfo, ValueRef,
+    Type, TypeInfo, ValueRef,
     mysql::{
         MySql, MySqlConnectOptions, MySqlConnection, MySqlPoolOptions, MySqlRow, MySqlSslMode,
     },
@@ -53,6 +53,8 @@ use super::{
     value::CellValue,
 };
 use crate::model::dashboard::MetricKey;
+
+mod geometry;
 
 pub const CATALOG_TABLES_SQL: &str = r#"
 SELECT table_schema, table_name, table_type
@@ -3747,6 +3749,7 @@ fn bind_cell<'q>(
         CellValue::Float(value) => query.bind(*value),
         CellValue::Text(value) => query.bind(value.clone()),
         CellValue::Bytes(value) => query.bind(value.clone()),
+        CellValue::MySqlGeometry { bytes, .. } => query.bind(bytes.clone()),
         CellValue::Date(value) => query.bind(*value),
         CellValue::Time(value) => query.bind(*value),
         CellValue::DateTime(value) => query.bind(*value),
@@ -3856,6 +3859,27 @@ fn decode_cell(row: &MySqlRow, index: usize) -> CellValue {
         return CellValue::Null;
     }
     let type_name = raw.type_info().name().to_ascii_uppercase();
+    if type_name == "GEOMETRY" {
+        return row
+            .try_get_unchecked::<Vec<u8>, _>(index)
+            .map(
+                |bytes| match crate::db::mysql::geometry::mysql_geometry_wkt(&bytes) {
+                    Some(wkt) => CellValue::MySqlGeometry { bytes, wkt },
+                    None => CellValue::Bytes(bytes),
+                },
+            )
+            .unwrap_or_else(|error| unsupported(&type_name, &error.to_string()));
+    }
+    // MariaDB reports character JSON columns as binary BLOB values because
+    // their protocol flag is binary even when their collation is textual
+    // (for example, utf8mb4_bin). Use SQLx's compatibility check, which
+    // includes the collation, instead of relying on the lossy type name.
+    if <String as Type<MySql>>::compatible(&raw.type_info()) {
+        return row
+            .try_get_unchecked::<String, _>(index)
+            .map(CellValue::Text)
+            .unwrap_or_else(|error| unsupported(&type_name, &error.to_string()));
+    }
     if type_name.ends_with(" UNSIGNED") || matches!(type_name.as_str(), "YEAR" | "BIT") {
         return row
             .try_get_unchecked::<u64, _>(index)
