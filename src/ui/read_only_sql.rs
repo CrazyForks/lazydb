@@ -7,6 +7,7 @@ use ratatui::{
 };
 use uuid::Uuid;
 
+use crate::model::editor::EditorMode;
 use crate::model::editor::EditorRenderSnapshot;
 
 use super::{
@@ -43,8 +44,10 @@ impl ReadOnlySqlEditor<'_> {
             Layout::horizontal([Constraint::Length(gutter_width), Constraint::Min(1)]).split(inner);
         let gutter = columns[0];
         let body = columns[1];
-        let viewport_height = usize::from(body.height);
-        register_text_selection_target(state, self.session_id, body, self.snapshot);
+        let prompt_height = usize::from(self.snapshot.prompt.is_some());
+        let viewport_height = usize::from(body.height).saturating_sub(prompt_height);
+        let selection_body = Rect::new(body.x, body.y, body.width, viewport_height as u16);
+        register_text_selection_target(state, self.session_id, selection_body, self.snapshot);
         frame.render_widget(self.block, area);
         if self.show_line_numbers {
             for (row, line) in self.snapshot.lines.iter().take(viewport_height).enumerate() {
@@ -112,12 +115,37 @@ impl ReadOnlySqlEditor<'_> {
                 1,
             )),
         );
-        if self.focused
+        if let Some(prompt) = self.snapshot.prompt.as_ref() {
+            let prompt_y = body.bottom().saturating_sub(1);
+            let prompt_text = match prompt.error.as_deref() {
+                Some(error) => format!("{}{}  [{}]", prompt.prefix, prompt.text, error),
+                None => format!("{}{}", prompt.prefix, prompt.text),
+            };
+            frame.render_widget(
+                Paragraph::new(prompt_text).style(Style::new().fg(theme.accent).bg(theme.surface)),
+                Rect::new(body.x, prompt_y, body.width, 1),
+            );
+            if self.focused {
+                let cursor_x = body
+                    .x
+                    .saturating_add(prompt.prefix.chars().count() as u16)
+                    .saturating_add(prompt.cursor as u16)
+                    .min(body.right().saturating_sub(1));
+                state.cursor = Some(CursorSpec {
+                    position: Position::new(cursor_x, prompt_y),
+                    style: CursorStyle::Bar,
+                });
+            }
+        } else if self.focused
             && let Some((x, y)) = self.snapshot.cursor_screen_cell
         {
             state.cursor = Some(CursorSpec {
                 position: Position::new(body.x.saturating_add(x), body.y.saturating_add(y)),
-                style: CursorStyle::Block,
+                style: match self.snapshot.mode {
+                    EditorMode::Insert => CursorStyle::Bar,
+                    EditorMode::Replace => CursorStyle::Underline,
+                    _ => CursorStyle::Block,
+                },
             });
         }
     }

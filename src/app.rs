@@ -1375,6 +1375,20 @@ impl App {
         self.editor.is_editable(session_id).unwrap_or(false)
     }
 
+    pub(crate) fn editor_prompt_active(&self, session_id: Uuid) -> bool {
+        self.editor.prompt_active(session_id)
+    }
+
+    pub(crate) fn active_redis_preview_prompt_active(&self) -> bool {
+        matches!(
+            self.tabs.get(self.active_tab),
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if self.focus == Focus::Results
+                    && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    && self.editor_prompt_active(tab.preview_editor_id)
+        )
+    }
+
     fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
         match self.tabs.get(self.active_tab) {
             Some(WorkspaceTab::RedisBrowser(tab)) if session_id == tab.preview_editor_id => {

@@ -197,6 +197,19 @@ impl Keymap {
                 _ => None,
             };
         }
+        if app.active_redis_preview_prompt_active()
+            && let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
+                app.tabs.get(app.active_tab)
+        {
+            return Some(if app.editor_is_editable(tab.preview_editor_id) {
+                Action::EditorKey(event)
+            } else {
+                Action::ReadOnlyEditorKey {
+                    session_id: tab.preview_editor_id,
+                    event,
+                }
+            });
+        }
         if matches!(app.overlay, Some(Overlay::SqlHistory(_))) {
             self.pending = None;
             if let Some(crate::model::workspace::Overlay::SqlHistory(view)) = app.overlay.as_ref()
@@ -1351,6 +1364,11 @@ impl Keymap {
                                 find.phase != crate::model::redis_browser::RedisFindPhase::Editing
                             })))
             )
+            && !matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab))
+                    if app.editor_prompt_active(tab.preview_editor_id)
+            )
         {
             self.set_pending(Pending::Window { count: 1 }, app);
             return None;
@@ -1371,6 +1389,7 @@ impl Keymap {
                 && app
                     .active_read_only_editor_mode()
                     .is_none_or(|mode| mode == EditorMode::Normal)
+                && !app.active_redis_preview_prompt_active()
             {
                 self.set_pending(Pending::RedisPreviewLeader, app);
                 return None;
