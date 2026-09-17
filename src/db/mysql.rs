@@ -2900,7 +2900,7 @@ impl TransactionBackend for MySqlTransactionBackend {
                         }
                     })
                     .collect::<Vec<String>>();
-                let sql = if supplied.is_empty() {
+                let mut sql = if supplied.is_empty() {
                     format!("INSERT INTO {quoted_table} () VALUES ()")
                 } else {
                     format!(
@@ -2909,6 +2909,22 @@ impl TransactionBackend for MySqlTransactionBackend {
                         expressions.join(", ")
                     )
                 };
+                let returning = self.adapter.kind == DatabaseKind::MariaDb;
+                if returning {
+                    if columns.is_empty() {
+                        return Err(TransactionError(
+                            "MariaDB insert mutation has no relation columns".into(),
+                        ));
+                    }
+                    sql.push_str(" RETURNING ");
+                    sql.push_str(
+                        &columns
+                            .iter()
+                            .map(|(name, _, _)| quote_identifier(name))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
                 let mut query = sqlx::query(AssertSqlSafe(sql));
                 for value in &insert.values {
                     match value {
@@ -2916,6 +2932,16 @@ impl TransactionBackend for MySqlTransactionBackend {
                         InputValue::Null => query = query.bind(Option::<String>::None),
                         InputValue::Value(value) => query = bind_cell(query, value)?,
                     }
+                }
+                if returning {
+                    let row = query
+                        .fetch_one(&mut *self.connection)
+                        .await
+                        .map_err(|error| TransactionError(error.to_string()))?;
+                    return Ok(MutationResult::Inserted {
+                        row: decode_row(&row),
+                        version: None,
+                    });
                 }
                 let result = query
                     .execute(&mut *self.connection)
@@ -4040,13 +4066,112 @@ fn decode_error(error: sqlx::Error) -> DatabaseError {
 
 #[cfg(test)]
 mod tests {
+    use super::MySqlAdapter;
     use super::{
         MySqlConstraintPart, MySqlIndexPart, PROBE_SQL, assemble_relation_ddl,
         group_constraint_parts, group_index_parts, relation_kind, relation_path,
         search_catalog_kind,
     };
     use crate::db::catalog::{CatalogId, CatalogKind, DdlProvenance};
+    use crate::db::mutation::{
+        InputValue, InsertRowMutation, MetadataFingerprint, MutationResult, RelationMutation,
+        RelationMutationRequest,
+    };
+    use crate::db::transaction::TransactionBackend;
+    use crate::db::value::CellValue;
+    use crate::identity::ConnectionIdentity;
+    use crate::model::execution_target::ExecutionTarget;
+    use crate::model::relation::RelationKey;
+    use crate::model::relation_edit::EditableRowId;
+    use crate::profile::import_connection_url;
     use uuid::Uuid;
+
+    fn mariadb_test_url() -> Option<String> {
+        match std::env::var("LAZYDB_TEST_MARIADB_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(url),
+            Ok(_) | Err(std::env::VarError::NotPresent) => {
+                if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+                    panic!("LAZYDB_TEST_MARIADB_URL is required for MariaDB integration tests");
+                }
+                eprintln!("SKIP: LAZYDB_TEST_MARIADB_URL is not set");
+                None
+            }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("LAZYDB_TEST_MARIADB_URL is not valid Unicode")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mariadb_insert_returning_returns_generated_row_for_explicit_null_key() {
+        let Some(url) = mariadb_test_url() else {
+            return;
+        };
+        let imported = import_connection_url(&url, Some("MariaDB insert returning")).unwrap();
+        let adapter =
+            MySqlAdapter::connect(&imported.profile, imported.transient_password.as_ref())
+                .await
+                .unwrap();
+        let table = format!("lazydb_insert_returning_{}", Uuid::new_v4().simple());
+        adapter
+            .execute(&format!(
+                "CREATE TABLE `{table}` (id INT PRIMARY KEY AUTO_INCREMENT, value VARCHAR(32) DEFAULT 'server-default') ENGINE=InnoDB"
+            ))
+            .await
+            .unwrap();
+
+        let database = imported.profile.database.clone().unwrap();
+        let relation = CatalogId::new(
+            imported.profile.id,
+            CatalogKind::Table,
+            [database.clone(), database.clone(), table.clone()],
+        );
+        let metadata = MetadataFingerprint {
+            relation: table.clone(),
+            columns: vec![
+                ("id".into(), "int".into(), false),
+                ("value".into(), "varchar".into(), true),
+            ],
+            primary_key: vec!["id".into()],
+        };
+        let request = RelationMutationRequest {
+            tab_id: Uuid::nil(),
+            tab_generation: 1,
+            edit_generation: 1,
+            row_id: EditableRowId(1),
+            connection: ConnectionIdentity {
+                profile_id: imported.profile.id,
+                generation: 1,
+            },
+            target: ExecutionTarget::from_profile(&imported.profile),
+            relation: relation.clone(),
+            relation_key: RelationKey {
+                profile_id: imported.profile.id,
+                object_id: relation,
+            },
+            scope: imported.profile.catalog_scope.clone(),
+            metadata,
+            operation: RelationMutation::InsertRow(InsertRowMutation {
+                columns: vec![0],
+                values: vec![InputValue::Null],
+            }),
+        };
+        let mut backend = adapter.transaction_backend().await.unwrap();
+        backend.begin().await.unwrap();
+        let result = backend.relation_mutation(request).await.unwrap();
+        let MutationResult::Inserted { row, .. } = result else {
+            panic!("expected inserted row");
+        };
+        assert!(matches!(row[0], CellValue::Integer(value) if value > 0));
+        assert_eq!(row[1], CellValue::Text("server-default".into()));
+        backend.commit().await.unwrap();
+        drop(backend);
+        adapter
+            .execute(&format!("DROP TABLE `{table}`"))
+            .await
+            .unwrap();
+        adapter.close().await;
+    }
 
     #[test]
     fn probe_query_avoids_the_reserved_database_alias() {
