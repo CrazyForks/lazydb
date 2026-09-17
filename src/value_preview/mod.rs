@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod decode;
 pub mod detect;
+pub mod edit;
 pub mod java;
 pub mod php;
 pub mod pickle;

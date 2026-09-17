@@ -1237,6 +1237,21 @@ pub enum Action {
         row: usize,
         column: usize,
     },
+    /// Opens the native Redis value editor for the selected table cell/row.
+    /// The current editor uses the same typed page as the preview and keeps
+    /// the action distinct from relation-table transactions.
+    RedisPreviewEdit,
+    RedisPreviewAdd,
+    RedisPreviewDelete,
+    RedisValueSave,
+    RedisValueSaveAnyway,
+    RedisValueSaveCancel,
+    RedisUnsavedValueSave,
+    RedisUnsavedValueDiscard,
+    RedisUnsavedValueCancel,
+    RedisTableDeleteConfirm,
+    RedisTableDeleteCancel,
+    RedisTableDeleteToggleFocus,
     RedisPreviewViewportChanged {
         tab_id: Uuid,
         rows: usize,

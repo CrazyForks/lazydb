@@ -263,6 +263,9 @@ pub struct App {
     next_pending_execution_id: u64,
     pending_workspace_database_switch: Option<(Uuid, u64)>,
     pending_redis_browser_target: Option<(crate::db::redis::types::RedisTarget, u64)>,
+    pending_redis_open_key: Option<(Uuid, crate::model::redis_key_tree::KeyTreeNodeId)>,
+    pending_redis_close_tab: Option<Uuid>,
+    pending_redis_disconnect_profile: Option<Uuid>,
     pending_redis_object_create: Option<(crate::db::redis::types::RedisTarget, u64)>,
     pending_dashboard_target: Option<PendingDashboardTarget>,
     connect_started_at: Option<Instant>,
@@ -832,6 +835,9 @@ impl App {
             next_pending_execution_id: 0,
             pending_workspace_database_switch: None,
             pending_redis_browser_target: None,
+            pending_redis_open_key: None,
+            pending_redis_close_tab: None,
+            pending_redis_disconnect_profile: None,
             pending_redis_object_create: None,
             pending_dashboard_target: None,
             connect_started_at: None,
@@ -1389,6 +1395,10 @@ impl App {
     pub(crate) fn active_read_only_editor_mode(&self) -> Option<EditorMode> {
         self.active_read_only_session_id()
             .and_then(|session_id| self.editor.mode(session_id).ok())
+    }
+
+    pub(crate) fn editor_is_editable(&self, session_id: Uuid) -> bool {
+        self.editor.is_editable(session_id).unwrap_or(false)
     }
 
     fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
@@ -3674,7 +3684,16 @@ impl App {
         if self.omni.is_some() && matches!(action, Action::EditorKey(_) | Action::EditorPaste(_)) {
             return Vec::new();
         }
+        let redis_value_editor_action =
+            matches!(action, Action::EditorKey(_) | Action::EditorPaste(_))
+                && self.tabs.get(self.active_tab).is_some_and(|tab| {
+                    matches!(tab, WorkspaceTab::RedisBrowser(redis)
+                    if self.focus == Focus::Results
+                    && redis.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+                    && self.editor_is_editable(redis.preview_editor_id))
+                });
         if self.active_console_opt().is_none()
+            && !redis_value_editor_action
             && !action.is_console_management_action()
             && !matches!(
                 action,
@@ -9419,13 +9438,28 @@ impl App {
                 }
             }
             Action::EditorKey(key) => {
-                let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
+                let id = self.active_console_opt().map(|tab| tab.id).or_else(|| {
+                    self.tabs.get(self.active_tab).and_then(|tab| match tab {
+                        WorkspaceTab::RedisBrowser(tab)
+                            if self.focus == Focus::Results
+                                && tab.focus
+                                    == crate::model::redis_browser::RedisBrowserFocus::Preview
+                                && self.editor_is_editable(tab.preview_editor_id) =>
+                        {
+                            Some(tab.preview_editor_id)
+                        }
+                        _ => None,
+                    })
+                });
+                let Some(id) = id else {
                     return Vec::new();
                 };
                 if self.editor.key(id, key).is_err() {
                     return Vec::new();
                 }
-                if self.active_editor_mode() != EditorMode::Insert {
+                if self.active_console_opt().is_some()
+                    && self.active_editor_mode() != EditorMode::Insert
+                {
                     self.clear_completion_request();
                     self.active_console_mut().completion = None;
                 }
@@ -9447,13 +9481,28 @@ impl App {
                 Vec::new()
             }
             Action::EditorPaste(text) => {
-                let Some(id) = self.active_console_opt().map(|tab| tab.id) else {
+                let id = self.active_console_opt().map(|tab| tab.id).or_else(|| {
+                    self.tabs.get(self.active_tab).and_then(|tab| match tab {
+                        WorkspaceTab::RedisBrowser(tab)
+                            if self.focus == Focus::Results
+                                && tab.focus
+                                    == crate::model::redis_browser::RedisBrowserFocus::Preview
+                                && self.editor_is_editable(tab.preview_editor_id) =>
+                        {
+                            Some(tab.preview_editor_id)
+                        }
+                        _ => None,
+                    })
+                });
+                let Some(id) = id else {
                     return Vec::new();
                 };
                 if self.editor.paste(id, &text).is_err() {
                     return Vec::new();
                 }
-                if self.active_editor_mode() != EditorMode::Insert {
+                if self.active_console_opt().is_some()
+                    && self.active_editor_mode() != EditorMode::Insert
+                {
                     self.clear_completion_request();
                     self.active_console_mut().completion = None;
                 }
@@ -13112,7 +13161,15 @@ impl App {
                         }
                         let text = crate::ui::redis_value::format_page(page, format)
                             .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
-                        self.editor.open_read_only(tab.preview_editor_id, &text);
+                        if matches!(
+                            page.value,
+                            crate::db::redis::read::RedisPageValue::String(_)
+                        ) {
+                            tab.value_edit_baseline = Some(text.clone());
+                            self.editor.open_value(tab.preview_editor_id, &text);
+                        } else {
+                            self.editor.open_read_only(tab.preview_editor_id, &text);
+                        }
                     }
                 }
                 Vec::new()
@@ -13214,6 +13271,243 @@ impl App {
                 row,
                 column,
             } => self.redis_preview_cell_detail(tab_id, row, column),
+            Action::RedisPreviewEdit => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab)
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+                    && let crate::model::redis_browser::RedisValuePageState::Ready(page) =
+                        &tab.value_page
+                {
+                    let table = crate::value_preview::table::from_page(&page.value);
+                    if let Some(row) = table.rows.get(tab.preview_grid.selected_row).cloned() {
+                        self.overlay = Some(Overlay::RedisTableEditor(Box::new(
+                            crate::model::redis_table_editor::RedisTableEditorState::edit(
+                                tab.id,
+                                self.connection.active_identity().unwrap_or(
+                                    crate::identity::ConnectionIdentity {
+                                        profile_id: tab.target.profile_id,
+                                        generation: 0,
+                                    },
+                                ),
+                                tab.opened_key.clone().unwrap_or(
+                                    crate::db::redis::types::RedisKeyId {
+                                        target: tab.target.clone(),
+                                        key: Vec::new(),
+                                    },
+                                ),
+                                page.metadata.value_type,
+                                row,
+                            ),
+                        )));
+                        return Vec::new();
+                    }
+                }
+                let is_table = self.tabs.get(self.active_tab).is_some_and(|tab| {
+                    matches!(tab, WorkspaceTab::RedisBrowser(tab) if tab.format.view() == crate::value_preview::ValueView::Table)
+                });
+                if is_table {
+                    self.open_redis_object_edit()
+                } else {
+                    self.open_redis_value_editor()
+                }
+            }
+            Action::RedisPreviewAdd => {
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab)
+                    && tab.format.view() == crate::value_preview::ValueView::Table
+                {
+                    let Some(connection) = self.connection.active_identity() else {
+                        self.notify_warning("Redis", "Redis connection is not active");
+                        return Vec::new();
+                    };
+                    let columns = match tab.value_page {
+                        crate::model::redis_browser::RedisValuePageState::Ready(ref page) => {
+                            crate::value_preview::table::from_page(&page.value)
+                                .columns
+                                .len()
+                        }
+                        _ => 0,
+                    };
+                    if columns > 0 {
+                        let Some(key) = tab.opened_key.clone() else {
+                            self.notify_warning("Redis", "Open a Redis key before adding a row");
+                            return Vec::new();
+                        };
+                        self.overlay = Some(Overlay::RedisTableEditor(Box::new(
+                            crate::model::redis_table_editor::RedisTableEditorState::add(
+                                tab.id,
+                                connection,
+                                key,
+                                tab.target.clone(),
+                                match &tab.value_page {
+                                    crate::model::redis_browser::RedisValuePageState::Ready(
+                                        page,
+                                    ) => page.metadata.value_type,
+                                    _ => crate::db::redis::read::RedisType::Unknown,
+                                },
+                                columns,
+                            ),
+                        )));
+                        return Vec::new();
+                    }
+                }
+                self.open_redis_object_create()
+            }
+            Action::RedisPreviewDelete => {
+                self.open_redis_table_delete_confirm();
+                Vec::new()
+            }
+            Action::RedisValueSaveCancel => {
+                if matches!(self.overlay, Some(Overlay::RedisValueSaveConfirm { .. })) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
+            Action::RedisValueSave | Action::RedisValueSaveAnyway => {
+                let Some(Overlay::RedisValueSaveConfirm { tab_id, .. }) = self.overlay.take()
+                else {
+                    return Vec::new();
+                };
+                let Some(index) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(index) else {
+                    return Vec::new();
+                };
+                let Some(connection) = self.connection.active_identity() else {
+                    self.notify_warning("Redis", "Redis connection is not active");
+                    return Vec::new();
+                };
+                let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page
+                else {
+                    return Vec::new();
+                };
+                let Ok(text) = self.editor.text(tab.preview_editor_id) else {
+                    return Vec::new();
+                };
+                let mut editor =
+                    crate::model::redis_object_editor::RedisObjectEditorState::edit_from_page(
+                        tab_id, connection, page,
+                    );
+                editor.value.set(text);
+                self.overlay = Some(Overlay::RedisObjectEditor(Box::new(editor)));
+                self.apply_redis_object_editor()
+            }
+            Action::RedisUnsavedValueSave => {
+                let tab_id = match self.overlay.as_ref() {
+                    Some(Overlay::RedisUnsavedValueConfirm { tab_id, .. }) => *tab_id,
+                    _ => return Vec::new(),
+                };
+                self.overlay = Some(Overlay::RedisValueSaveConfirm {
+                    tab_id,
+                    revision: 0,
+                    invalid: false,
+                });
+                Vec::new()
+            }
+            Action::RedisUnsavedValueDiscard => {
+                let Some(Overlay::RedisUnsavedValueConfirm { tab_id, .. }) = self.overlay.as_ref()
+                else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter().find(|tab| tab.id() == *tab_id)
+                else {
+                    return Vec::new();
+                };
+                let Some(baseline) = tab.value_edit_baseline.clone() else {
+                    return Vec::new();
+                };
+                if self
+                    .editor
+                    .set_text(tab.preview_editor_id, &baseline)
+                    .is_err()
+                {
+                    return Vec::new();
+                }
+                self.overlay = None;
+                if let Some(tab_id) = self.pending_redis_close_tab.take() {
+                    return self.close_tab(tab_id);
+                }
+                if let Some(profile_id) = self.pending_redis_disconnect_profile.take() {
+                    return self.request_profile_disconnect(profile_id);
+                }
+                let Some((tab_id, node)) = self.pending_redis_open_key.take() else {
+                    return Vec::new();
+                };
+                self.open_redis_key(tab_id, node)
+            }
+            Action::RedisUnsavedValueCancel => {
+                self.pending_redis_open_key = None;
+                self.pending_redis_close_tab = None;
+                self.pending_redis_disconnect_profile = None;
+                self.overlay = None;
+                Vec::new()
+            }
+            Action::RedisTableDeleteCancel => {
+                if matches!(self.overlay, Some(Overlay::RedisTableDeleteConfirm(_))) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
+            Action::RedisTableDeleteToggleFocus => {
+                if let Some(Overlay::RedisTableDeleteConfirm(confirm)) = self.overlay.as_mut() {
+                    confirm.focus = match confirm.focus {
+                        crate::model::redis_table_editor::RedisTableDeleteFocus::Cancel => {
+                            crate::model::redis_table_editor::RedisTableDeleteFocus::Delete
+                        }
+                        crate::model::redis_table_editor::RedisTableDeleteFocus::Delete => {
+                            crate::model::redis_table_editor::RedisTableDeleteFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
+            }
+            Action::RedisTableDeleteConfirm => {
+                let Some(Overlay::RedisTableDeleteConfirm(confirm)) = self.overlay.take() else {
+                    return Vec::new();
+                };
+                let Some(request_id) =
+                    self.allocate_redis_request_id(confirm.key.target.profile_id)
+                else {
+                    self.notify_error("Redis", "Redis request ID exhausted");
+                    return Vec::new();
+                };
+                let operation = match confirm.row.delete_operation(confirm.value_type) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        self.notify_error("Redis", error);
+                        return Vec::new();
+                    }
+                };
+                let Some(connection) = self.connection.active_identity() else {
+                    self.notify_error("Redis", "Redis connection is not active");
+                    return Vec::new();
+                };
+                let request = crate::db::redis::mutation::RedisMutationRequest {
+                    connection,
+                    request_id,
+                    mode: crate::db::redis::mutation::RedisMutationMode::Edit,
+                    key: confirm.key.clone(),
+                };
+                let mut editor = crate::model::redis_table_editor::RedisTableEditorState::edit(
+                    confirm.tab_id,
+                    request.connection,
+                    confirm.key,
+                    confirm.value_type,
+                    confirm.row,
+                );
+                editor.request_id = request_id;
+                editor.busy = true;
+                editor.operation_override = Some(operation.clone());
+                self.overlay = Some(Overlay::RedisTableEditor(Box::new(editor)));
+                vec![Command::PlanRedisMutation {
+                    request,
+                    operation,
+                    ttl: crate::db::redis::mutation::RedisTtlMutation::Preserve,
+                    baseline: Some(crate::db::redis::mutation::RedisKeyBaseline {
+                        value_type: confirm.value_type,
+                    }),
+                }]
+            }
             Action::RedisValuePageFailed {
                 tab_id,
                 connection,
@@ -13257,7 +13551,15 @@ impl App {
                     && editor.connection == plan.request.connection
                     && editor.request_id == plan.request.request_id
                 {
-                    editor.plan_ready(plan);
+                    editor.plan_ready(plan.clone());
+                }
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut()
+                    && editor.connection == plan.request.connection
+                    && editor.request_id == plan.request.request_id
+                {
+                    editor.busy = false;
+                    editor.plan = Some(plan);
+                    editor.error = None;
                 }
                 Vec::new()
             }
@@ -13268,11 +13570,28 @@ impl App {
                 {
                     editor.plan_failed(message);
                 } else {
-                    self.notify_error("Redis", message);
+                    if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut()
+                        && editor.connection == request.connection
+                        && editor.request_id == request.request_id
+                    {
+                        editor.busy = false;
+                        editor.error = Some(message);
+                    } else {
+                        self.notify_error("Redis", message);
+                    }
                 }
                 Vec::new()
             }
             Action::RedisMutationSucceeded { plan, result } => {
+                let saved_text = match self.overlay.as_ref() {
+                    Some(Overlay::RedisObjectEditor(editor))
+                        if editor.connection == plan.request.connection
+                            && editor.request_id == plan.request.request_id =>
+                    {
+                        Some((editor.tab_id, editor.value.value().to_owned()))
+                    }
+                    _ => None,
+                };
                 if matches!(
                     self.overlay.as_ref(),
                     Some(Overlay::RedisObjectEditor(editor))
@@ -13281,7 +13600,44 @@ impl App {
                 ) {
                     self.overlay = None;
                 }
-                self.apply_redis_mutation(plan, result)
+                if matches!(self.overlay.as_ref(), Some(Overlay::RedisTableEditor(editor)) if editor.connection == plan.request.connection && editor.request_id == plan.request.request_id)
+                {
+                    self.overlay = None;
+                }
+                if let Some((tab_id, text)) = saved_text {
+                    let _ = self.editor.set_text(
+                        self.tabs
+                            .iter()
+                            .find_map(|tab| match tab {
+                                WorkspaceTab::RedisBrowser(tab) if tab.id == tab_id => {
+                                    Some(tab.preview_editor_id)
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(Uuid::nil()),
+                        &text,
+                    );
+                    if let Some(WorkspaceTab::RedisBrowser(tab)) =
+                        self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    {
+                        tab.mark_value_saved(text, 0);
+                    }
+                }
+                let mut commands = self.apply_redis_mutation(plan, result);
+                if let Some((pending_tab, node)) = self.pending_redis_open_key.take() {
+                    if self.tabs.iter().any(|tab| tab.id() == pending_tab) {
+                        commands.extend(self.open_redis_key(pending_tab, node));
+                    }
+                }
+                if let Some(tab_id) = self.pending_redis_close_tab.take() {
+                    if self.tabs.iter().any(|tab| tab.id() == tab_id) {
+                        commands.extend(self.close_tab(tab_id));
+                    }
+                }
+                if let Some(profile_id) = self.pending_redis_disconnect_profile.take() {
+                    commands.extend(self.request_profile_disconnect(profile_id));
+                }
+                commands
             }
             Action::RedisMutationFailed { plan, message } => {
                 if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
@@ -13289,6 +13645,13 @@ impl App {
                     && editor.request_id == plan.request.request_id
                 {
                     editor.plan_failed(message);
+                } else if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut()
+                    && editor.connection == plan.request.connection
+                    && editor.request_id == plan.request.request_id
+                {
+                    editor.busy = false;
+                    editor.plan = None;
+                    editor.error = Some(message);
                 } else {
                     self.notify_error("Redis", message);
                 }
@@ -13302,14 +13665,26 @@ impl App {
             Action::OpenRedisObjectEdit => self.open_redis_object_edit(),
             Action::RedisObjectEditorCancel => self.cancel_redis_object_editor(),
             Action::RedisObjectEditorFocusNext => {
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                    editor.next_field(1);
+                    return Vec::new();
+                }
                 self.redis_object_editor_move_focus(1);
                 Vec::new()
             }
             Action::RedisObjectEditorFocusPrevious => {
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                    editor.next_field(-1);
+                    return Vec::new();
+                }
                 self.redis_object_editor_move_focus(-1);
                 Vec::new()
             }
             Action::RedisObjectEditorInsert(character) => {
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                    editor.edit_focused(crate::model::text_input::TextInputEdit::Insert(character));
+                    return Vec::new();
+                }
                 self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Insert(
                     character,
                 ));
@@ -13326,6 +13701,10 @@ impl App {
                 Vec::new()
             }
             Action::RedisObjectEditorBackspace => {
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                    editor.edit_focused(crate::model::text_input::TextInputEdit::Backspace);
+                    return Vec::new();
+                }
                 self.redis_object_editor_edit(crate::model::text_input::TextInputEdit::Backspace);
                 Vec::new()
             }
@@ -13395,7 +13774,52 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::RedisObjectEditorApply => self.apply_redis_object_editor(),
+            Action::RedisObjectEditorApply => {
+                let profile_id = match self.overlay.as_ref() {
+                    Some(Overlay::RedisTableEditor(editor)) => editor.connection.profile_id,
+                    _ => return self.apply_redis_object_editor(),
+                };
+                let Some(request_id) = self.allocate_redis_request_id(profile_id) else {
+                    if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                        editor.error = Some("Redis request ID exhausted".into());
+                    }
+                    return Vec::new();
+                };
+                if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut() {
+                    if editor.busy {
+                        return Vec::new();
+                    }
+                    if let Some(plan) = editor.plan.clone() {
+                        editor.busy = true;
+                        return vec![Command::ExecuteRedisMutation(plan)];
+                    }
+                    editor.request_id = request_id;
+                    let request = match editor.request() {
+                        Ok(request) => request,
+                        Err(error) => {
+                            editor.error = Some(error);
+                            return Vec::new();
+                        }
+                    };
+                    let operation = match editor.operation() {
+                        Ok(operation) => operation,
+                        Err(error) => {
+                            editor.error = Some(error);
+                            return Vec::new();
+                        }
+                    };
+                    editor.busy = true;
+                    return vec![Command::PlanRedisMutation {
+                        request,
+                        operation,
+                        ttl: crate::db::redis::mutation::RedisTtlMutation::Preserve,
+                        baseline: Some(crate::db::redis::mutation::RedisKeyBaseline {
+                            value_type: editor.value_type,
+                        }),
+                    }];
+                }
+                Vec::new()
+            }
             Action::OpenRedisDatabase {
                 profile_id,
                 database,
@@ -13921,6 +14345,15 @@ impl App {
                         .any(|prompt| prompt.intent == DeferredIntent::Quit)
                 {
                     return Vec::new();
+                }
+                if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| {
+                    matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.opened_key.is_some())
+                }) {
+                    if self.editor.text(tab.preview_editor_id).ok().is_some_and(|text| tab.value_is_dirty(&text)) {
+                        self.pending_redis_close_tab = Some(tab.id);
+                        self.overlay = Some(Overlay::RedisUnsavedValueConfirm { tab_id: tab.id, next_key: tab.opened_key.clone().unwrap() });
+                        return Vec::new();
+                    }
                 }
                 let mut ordered_indices = Vec::with_capacity(self.tabs.len());
                 if self.active_tab < self.tabs.len() {
@@ -14802,6 +15235,21 @@ impl App {
         }
         if self.transaction_needs_exit(id) {
             return self.defer_intent(DeferredIntent::CloseTab(id), [id]);
+        }
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| tab.id() == id)
+            && tab.opened_key.is_some()
+            && self
+                .editor
+                .text(tab.preview_editor_id)
+                .ok()
+                .is_some_and(|text| tab.value_is_dirty(&text))
+        {
+            self.pending_redis_close_tab = Some(id);
+            self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
+                tab_id: id,
+                next_key: tab.opened_key.clone().expect("checked above"),
+            });
+            return Vec::new();
         }
         self.close_tab(id)
     }
@@ -16432,7 +16880,22 @@ impl App {
         let mut commands = Vec::new();
         for effect in effects {
             let action = match effect {
-                EditorEffect::Changed { .. } => {
+                EditorEffect::Changed {
+                    console_id,
+                    revision,
+                } => {
+                    if self.tabs.iter().any(|tab| {
+                        matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.preview_editor_id == console_id)
+                    }) {
+                        if let Some(WorkspaceTab::RedisBrowser(tab)) = self
+                            .tabs
+                            .iter_mut()
+                            .find(|tab| matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.preview_editor_id == console_id))
+                        {
+                            tab.value_edit_revision = revision;
+                        }
+                        continue;
+                    }
                     self.active_console_mut().semantic_diagnostics.clear();
                     if let Some(key) = self.editor_diagnostics_key() {
                         commands.push(Command::ScheduleDiagnostics(key));
@@ -16467,6 +16930,58 @@ impl App {
                     } else if let Some(key) = self.completion_key() {
                         self.set_completion_request(false, Vec::new());
                         commands.push(Command::ScheduleCompletion(key));
+                    }
+                    continue;
+                }
+                EditorEffect::SaveRequested {
+                    console_id,
+                    revision,
+                } => {
+                    if let Some(index) = self.tabs.iter().position(|tab| {
+                        matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.preview_editor_id == console_id)
+                    }) {
+                        let Ok(text) = self.editor.text(console_id) else {
+                            continue;
+                        };
+                        let (tab_id, connection, value_type, preview_format) = match self.tabs.get(index) {
+                            Some(WorkspaceTab::RedisBrowser(tab)) => {
+                                let Some(connection) = self.connection.active_identity() else {
+                                    self.notify_warning("Redis", "Redis is not connected");
+                                    continue;
+                                };
+                                (tab.id, connection, tab.value_page.clone(), tab.format.selected)
+                            }
+                            _ => continue,
+                        };
+                        let crate::model::redis_browser::RedisValuePageState::Ready(page) = value_type else {
+                            continue;
+                        };
+                        if !matches!(page.metadata.value_type, crate::db::redis::read::RedisType::String) {
+                            self.notify_warning("Redis", "Only string values can be saved from text view");
+                            continue;
+                        }
+                        let mut editor = crate::model::redis_object_editor::RedisObjectEditorState::edit_from_page(
+                            tab_id, connection, &page,
+                        );
+                        editor.value.set(text);
+                        let allow_invalid = matches!(
+                            preview_format.view,
+                            crate::value_preview::ValueView::Json
+                                | crate::value_preview::ValueView::Yaml
+                        ) && matches!(
+                            crate::value_preview::edit::validate_string(
+                                editor.value.value(),
+                                preview_format,
+                            ),
+                            crate::value_preview::edit::EditValidation::Warning(_)
+                        );
+                        self.overlay = Some(Overlay::RedisValueSaveConfirm {
+                            tab_id,
+                            revision,
+                            invalid: allow_invalid,
+                        });
+                    } else if self.tabs.iter().any(|tab| tab.id() == console_id) {
+                        self.notify_info("Editor", format!("Save requested (revision {revision})"));
                     }
                     continue;
                 }
@@ -18647,7 +19162,11 @@ impl App {
                             .unwrap_or_else(|_| crate::ui::redis_value::page_text(page)),
                         _ => String::new(),
                     };
-                    self.editor.open_read_only(session_id, &text);
+                    if tab.value_edit_baseline.is_some() {
+                        self.editor.open_value(session_id, &text);
+                    } else {
+                        self.editor.open_read_only(session_id, &text);
+                    }
                     return;
                 }
                 WorkspaceTab::Sql(tab) if tab.output_editor_id == session_id => {
@@ -19439,6 +19958,30 @@ impl App {
         tab_id: Uuid,
         node: crate::model::redis_key_tree::KeyTreeNodeId,
     ) -> Vec<Command> {
+        let requested_key = match &node {
+            crate::model::redis_key_tree::KeyTreeNodeId::Key(key) => Some(key.clone()),
+            crate::model::redis_key_tree::KeyTreeNodeId::Prefix(_) => None,
+        };
+        if let Some(next_key) = requested_key.as_ref()
+            && let Some(WorkspaceTab::RedisBrowser(tab)) =
+                self.tabs.iter().find(|tab| tab.id() == tab_id)
+            && tab.opened_key.as_ref().is_some_and(|_| {
+                self.editor
+                    .text(tab.preview_editor_id)
+                    .ok()
+                    .is_some_and(|text| tab.value_is_dirty(&text))
+            })
+        {
+            self.pending_redis_open_key = Some((tab_id, node.clone()));
+            self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
+                tab_id,
+                next_key: crate::db::redis::types::RedisKeyId {
+                    target: tab.target.clone(),
+                    key: next_key.clone(),
+                },
+            });
+            return Vec::new();
+        }
         let active_tab = self
             .tabs
             .get(self.active_tab)
@@ -19842,18 +20385,25 @@ impl App {
             if tab.tree.contains(&key_node) {
                 let tab_id = tab.id;
                 tab.select(Some(key_node));
-                preview_command = Some(tab_id);
+                tab.open_key(plan.request.key.clone());
+                preview_command = Some((tab_id, tab.preview_generation));
             }
         }
         self.notify_success("Redis", format!("{:?} mutation applied", result.value_type));
         let mut commands = Vec::new();
-        if let Some(tab_id) = preview_command {
+        if let Some((tab_id, preview_generation)) = preview_command {
             self.select_redis_key(
                 tab_id,
                 Some(crate::model::redis_key_tree::KeyTreeNodeId::Key(
                     plan.request.key.key.clone(),
                 )),
             );
+            commands.push(Command::LoadRedisValuePreview {
+                tab_id,
+                connection: plan.request.connection,
+                preview_generation,
+                key: plan.request.key.clone(),
+            });
         }
         commands.extend(self.ensure_redis_browser_loaded(index, true));
         commands
@@ -20010,12 +20560,69 @@ impl App {
         Vec::new()
     }
 
+    fn open_redis_value_editor(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            self.notify_info("Redis", "Wait for the selected value to finish loading");
+            return Vec::new();
+        };
+        if !page.complete || page.truncated {
+            self.notify_warning("Redis", "This value is not fully loaded for editing");
+            return Vec::new();
+        }
+        if !matches!(
+            page.metadata.value_type,
+            crate::db::redis::read::RedisType::String
+        ) {
+            self.notify_info("Redis", "Structured values use the Table editor");
+            return Vec::new();
+        }
+        let text = crate::ui::redis_value::format_page(page, tab.format.selected)
+            .unwrap_or_else(|_| crate::ui::redis_value::page_text(page));
+        tab.value_edit_baseline = Some(text.clone());
+        let editor_id = tab.preview_editor_id;
+        self.editor.open_value(editor_id, &text);
+        self.focus = Focus::Results;
+        tab.focus = crate::model::redis_browser::RedisBrowserFocus::Preview;
+        Vec::new()
+    }
+
+    fn open_redis_table_delete_confirm(&mut self) {
+        let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let Some(key) = tab.opened_key.clone() else {
+            return;
+        };
+        let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page else {
+            return;
+        };
+        let table = crate::value_preview::table::from_page(&page.value);
+        let Some(row) = table.rows.get(tab.preview_grid.selected_row).cloned() else {
+            return;
+        };
+        self.overlay = Some(Overlay::RedisTableDeleteConfirm(
+            crate::model::redis_table_editor::RedisTableDeleteConfirmation {
+                tab_id: tab.id,
+                key,
+                value_type: page.metadata.value_type,
+                row,
+                focus: crate::model::redis_table_editor::RedisTableDeleteFocus::Cancel,
+            },
+        ));
+    }
+
     fn cancel_redis_object_editor(&mut self) -> Vec<Command> {
         if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_ref()
             && editor.busy
         {
             self.notify_warning("Redis", "Wait for the Redis mutation to finish");
-        } else if matches!(self.overlay, Some(Overlay::RedisObjectEditor(_))) {
+        } else if matches!(
+            self.overlay,
+            Some(Overlay::RedisObjectEditor(_) | Overlay::RedisTableEditor(_))
+        ) {
             self.overlay = None;
         }
         Vec::new()
@@ -20532,6 +21139,18 @@ impl App {
     }
 
     fn request_profile_disconnect(&mut self, profile_id: Uuid) -> Vec<Command> {
+        if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.iter().find(|tab| {
+            matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.target.profile_id == profile_id)
+        }) && tab.opened_key.is_some()
+            && self.editor.text(tab.preview_editor_id).ok().is_some_and(|text| tab.value_is_dirty(&text))
+        {
+            self.pending_redis_disconnect_profile = Some(profile_id);
+            self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
+                tab_id: tab.id,
+                next_key: tab.opened_key.clone().expect("checked above"),
+            });
+            return Vec::new();
+        }
         let connection = self
             .connection
             .active_identity()

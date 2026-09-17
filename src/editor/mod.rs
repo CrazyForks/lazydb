@@ -52,6 +52,7 @@ enum ApplicationAction {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EditorEffect {
     Changed { console_id: Uuid, revision: u64 },
+    SaveRequested { console_id: Uuid, revision: u64 },
     Yanked(String),
     CopyStatement,
     CopyBuffer,
@@ -352,6 +353,12 @@ impl EditorWorkspace {
         self.open_session(id, text, EditorSessionCapability::Editable);
     }
 
+    /// Opens a value document with the same Vim editing engine as a SQL
+    /// buffer, without enabling SQL-specific effects in the caller.
+    pub(crate) fn open_value(&mut self, id: Uuid, text: &str) {
+        self.open_session(id, text, EditorSessionCapability::Editable);
+    }
+
     pub(crate) fn open_read_only(&mut self, id: Uuid, text: &str) {
         self.open_session(id, text, EditorSessionCapability::ReadOnly);
     }
@@ -433,6 +440,15 @@ impl EditorWorkspace {
 
     pub(crate) fn has_session(&self, id: Uuid) -> bool {
         self.sessions.contains_key(&id)
+    }
+
+    pub(crate) fn is_editable(&self, id: Uuid) -> Result<bool, EditorError> {
+        Ok(self
+            .sessions
+            .get(&id)
+            .ok_or(EditorError::MissingSession(id))?
+            .capability
+            == EditorSessionCapability::Editable)
     }
 
     pub(crate) fn key(&mut self, id: Uuid, event: KeyEvent) -> Result<(), EditorError> {
@@ -2320,6 +2336,23 @@ impl EditorWorkspace {
             }
             (EditorMode::Normal, EditorKey::Character('Q')) => {
                 self.effects.push(EditorEffect::Quit);
+                Ok(())
+            }
+            (EditorMode::Normal, EditorKey::Control('s'))
+            | (EditorMode::Insert | EditorMode::Replace, EditorKey::Control('s'))
+            | (
+                EditorMode::VisualChar | EditorMode::VisualLine | EditorMode::VisualBlock,
+                EditorKey::Control('s'),
+            ) => {
+                let revision = self
+                    .sessions
+                    .get(&id)
+                    .map(|session| session.revision)
+                    .unwrap_or_default();
+                self.effects.push(EditorEffect::SaveRequested {
+                    console_id: id,
+                    revision,
+                });
                 Ok(())
             }
             (EditorMode::Normal, EditorKey::Character('?')) => {

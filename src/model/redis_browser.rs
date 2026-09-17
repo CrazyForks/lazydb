@@ -104,6 +104,11 @@ pub struct RedisBrowserTab {
     pub preview_content_rows: usize,
     pub preview_grid: DataGridState,
     pub value_page_loading: bool,
+    /// Text captured when the current value was loaded.  The editor itself
+    /// owns the mutable buffer; this baseline is used by the app to avoid
+    /// treating cursor movement as a value change.
+    pub value_edit_baseline: Option<String>,
+    pub value_edit_revision: u64,
 }
 
 impl RedisBrowserTab {
@@ -130,6 +135,8 @@ impl RedisBrowserTab {
             preview_content_rows: 0,
             preview_grid: DataGridState::default(),
             value_page_loading: false,
+            value_edit_baseline: None,
+            value_edit_revision: 0,
         }
     }
 
@@ -231,6 +238,23 @@ impl RedisBrowserTab {
         self.content = RedisPreviewContentState::Empty;
         self.preview_scroll = 0;
         self.value_page_loading = false;
+        self.value_edit_baseline = None;
+        self.value_edit_revision = 0;
+    }
+
+    pub fn mark_value_saved(&mut self, text: String, revision: u64) {
+        self.value_edit_baseline = Some(text);
+        self.value_edit_revision = revision;
+    }
+
+    pub fn value_is_dirty(&self, current: &str) -> bool {
+        self.value_edit_baseline
+            .as_deref()
+            .is_some_and(|baseline| baseline != current)
+    }
+
+    pub fn can_replace_open_key(&self, current: &str, next: &RedisKeyId) -> bool {
+        self.opened_key.as_ref() != Some(next) || !self.value_is_dirty(current)
     }
 
     pub fn preview_generation(&self) -> Option<u64> {

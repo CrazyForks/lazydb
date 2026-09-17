@@ -106,6 +106,86 @@ fn redis_targeted_collection_edits_keep_other_members_and_require_expected_list_
 }
 
 #[test]
+fn redis_string_delete_plan_uses_an_expected_value() {
+    let plan = lazydb::db::redis::RedisAdapter::plan_operation(
+        request(RedisMutationMode::Edit, b"string"),
+        lazydb::db::redis::mutation::RedisMutationOperation::DeleteString {
+            expected: b"old".to_vec(),
+        },
+        lazydb::db::redis::mutation::RedisTtlMutation::Preserve,
+        Some(RedisKeyBaseline {
+            value_type: RedisType::String,
+        }),
+    )
+    .unwrap();
+    assert_eq!(plan.commands().unwrap()[0].name, "DEL");
+}
+
+#[test]
+fn redis_set_member_replace_is_atomic_and_rejects_existing_target() {
+    let plan = lazydb::db::redis::RedisAdapter::plan_operation(
+        request(RedisMutationMode::Edit, b"set"),
+        lazydb::db::redis::mutation::RedisMutationOperation::ReplaceSetMember {
+            member: b"old".to_vec(),
+            replacement: b"new".to_vec(),
+        },
+        lazydb::db::redis::mutation::RedisTtlMutation::Preserve,
+        Some(RedisKeyBaseline {
+            value_type: RedisType::Set,
+        }),
+    )
+    .unwrap();
+    assert_eq!(plan.commands().unwrap()[0].name, "EVAL");
+}
+
+#[test]
+fn redis_add_hash_field_and_sorted_set_member_use_conflict_safe_plans() {
+    let hash = lazydb::db::redis::RedisAdapter::plan_operation(
+        request(RedisMutationMode::Edit, b"hash"),
+        lazydb::db::redis::mutation::RedisMutationOperation::AddHashField {
+            field: b"new-field".to_vec(),
+            value: b"value".to_vec(),
+        },
+        lazydb::db::redis::mutation::RedisTtlMutation::Preserve,
+        Some(RedisKeyBaseline {
+            value_type: RedisType::Hash,
+        }),
+    )
+    .unwrap();
+    assert_eq!(hash.commands().unwrap()[0].name, "HSETNX");
+
+    let sorted_set = lazydb::db::redis::RedisAdapter::plan_operation(
+        request(RedisMutationMode::Edit, b"zset"),
+        lazydb::db::redis::mutation::RedisMutationOperation::AddSortedSetMember {
+            member: b"new-member".to_vec(),
+            score: "1.5".into(),
+        },
+        lazydb::db::redis::mutation::RedisTtlMutation::Preserve,
+        Some(RedisKeyBaseline {
+            value_type: RedisType::SortedSet,
+        }),
+    )
+    .unwrap();
+    assert_eq!(sorted_set.commands().unwrap()[0].name, "ZADD NX");
+}
+
+#[test]
+fn redis_add_list_element_appends_without_replacing_existing_items() {
+    let plan = lazydb::db::redis::RedisAdapter::plan_operation(
+        request(RedisMutationMode::Edit, b"list"),
+        lazydb::db::redis::mutation::RedisMutationOperation::AppendListElement {
+            value: b"new".to_vec(),
+        },
+        lazydb::db::redis::mutation::RedisTtlMutation::Preserve,
+        Some(RedisKeyBaseline {
+            value_type: RedisType::List,
+        }),
+    )
+    .unwrap();
+    assert_eq!(plan.commands().unwrap()[0].name, "RPUSH");
+}
+
+#[test]
 fn redis_edit_defaults_to_preserving_ttl_but_create_defaults_to_persistent() {
     let edit = lazydb::db::redis::RedisAdapter::plan_mutation(
         request(RedisMutationMode::Edit, b"key"),

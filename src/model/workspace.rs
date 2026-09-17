@@ -137,6 +137,17 @@ pub enum Overlay {
     ProfileManager,
     CatalogEditor,
     RedisObjectEditor(Box<crate::model::redis_object_editor::RedisObjectEditorState>),
+    RedisTableEditor(Box<crate::model::redis_table_editor::RedisTableEditorState>),
+    RedisTableDeleteConfirm(crate::model::redis_table_editor::RedisTableDeleteConfirmation),
+    RedisValueSaveConfirm {
+        tab_id: Uuid,
+        revision: u64,
+        invalid: bool,
+    },
+    RedisUnsavedValueConfirm {
+        tab_id: Uuid,
+        next_key: crate::db::redis::types::RedisKeyId,
+    },
     ProfileAccess {
         profile_id: Uuid,
         selected: usize,

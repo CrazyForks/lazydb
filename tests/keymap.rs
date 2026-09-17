@@ -239,6 +239,19 @@ fn redis_table_preview_routes_motion_to_the_shared_grid() {
         Some(Action::GridResizeColumn(1))
     );
     assert_eq!(keymap.map(key(KeyCode::Char('W')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('e')), &app),
+        Some(Action::RedisPreviewEdit)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('a')), &app),
+        Some(Action::RedisPreviewAdd)
+    );
+    assert_eq!(keymap.map(key(KeyCode::Char('d')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('d')), &app),
+        Some(Action::RedisPreviewDelete)
+    );
 }
 
 #[test]
@@ -277,6 +290,35 @@ fn redis_preview_keeps_application_controls_outside_the_editor_stream() {
         keymap.map(key(KeyCode::PageDown), &app),
         Some(Action::ReadOnlyEditorKey { .. })
     ));
+}
+
+#[test]
+fn redis_save_confirm_routes_save_and_cancel_without_leaking_to_editor() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Results;
+    app.overlay = Some(Overlay::RedisValueSaveConfirm {
+        tab_id: Uuid::from_u128(40),
+        revision: 2,
+        invalid: false,
+    });
+    let mut keymap = Keymap::default();
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::RedisValueSave)
+    );
+    app.overlay = Some(Overlay::RedisValueSaveConfirm {
+        tab_id: Uuid::from_u128(40),
+        revision: 2,
+        invalid: true,
+    });
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::RedisValueSaveAnyway)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Esc), &app),
+        Some(Action::RedisValueSaveCancel)
+    );
 }
 
 #[test]

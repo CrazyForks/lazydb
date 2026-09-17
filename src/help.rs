@@ -184,6 +184,10 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                     None => ShortcutContext::CatalogEditorBusy,
                 },
                 Overlay::RedisObjectEditor(_) => ShortcutContext::Message,
+                Overlay::RedisTableEditor(_) => ShortcutContext::Message,
+                Overlay::RedisTableDeleteConfirm(_) => ShortcutContext::DeleteConsoleConfirmation,
+                Overlay::RedisValueSaveConfirm { .. } => ShortcutContext::Message,
+                Overlay::RedisUnsavedValueConfirm { .. } => ShortcutContext::Message,
                 Overlay::SqlEditorList(list) => match list.mode {
                     SqlEditorListMode::Browse => ShortcutContext::ConsoleManager,
                     SqlEditorListMode::Search => ShortcutContext::ConsoleManagerSearch,
