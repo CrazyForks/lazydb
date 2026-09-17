@@ -13190,37 +13190,85 @@ impl App {
                 let Some(Overlay::RedisPreviewFormat { selected }) = self.overlay.take() else {
                     return Vec::new();
                 };
-                let editor_update = if let Some(WorkspaceTab::RedisBrowser(tab)) =
-                    self.tabs.get_mut(self.active_tab)
-                {
-                    if selected == 0 {
-                        tab.format.reset_auto();
-                    } else if let Some(format) =
-                        crate::model::redis_preview::FORMATS.get(selected - 1)
-                    {
-                        tab.format.select(*format);
-                    }
-                    tab.preview_scroll = 0;
-                    crate::ui::redis_value::format_page(
-                        match &tab.value_page {
-                            crate::model::redis_browser::RedisValuePageState::Ready(page) => page,
-                            _ => return Vec::new(),
-                        },
-                        tab.format.selected,
-                    )
-                    .or_else(|_| match &tab.value_page {
-                        crate::model::redis_browser::RedisValuePageState::Ready(page) => {
-                            Ok(crate::ui::redis_value::page_text(page))
-                        }
-                        _ => Err(String::new()),
-                    })
-                    .ok()
-                    .map(|text| (tab.preview_editor_id, text))
-                } else {
-                    None
+                let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab) else {
+                    return Vec::new();
                 };
-                if let Some((session_id, text)) = editor_update {
-                    let _ = self.editor.set_read_only_text(session_id, &text, false);
+                let crate::model::redis_browser::RedisValuePageState::Ready(page) = &tab.value_page
+                else {
+                    return Vec::new();
+                };
+                let page = page.clone();
+                let current_text = self.editor.text(tab.preview_editor_id).ok();
+                if current_text
+                    .as_deref()
+                    .is_some_and(|text| tab.value_is_dirty(text))
+                {
+                    self.notify_warning(
+                        "Redis",
+                        "Save or discard the current value before changing its format",
+                    );
+                    return Vec::new();
+                }
+
+                let mut next_format = tab.format;
+                if selected == 0 {
+                    next_format.reset_auto();
+                    next_format.selected = match &page.value {
+                        crate::db::redis::read::RedisPageValue::String(bytes) => {
+                            crate::value_preview::detect::default_format(bytes, false)
+                        }
+                        _ => crate::value_preview::detect::default_format(
+                            crate::ui::redis_value::page_text(&page).as_bytes(),
+                            true,
+                        ),
+                    };
+                } else if let Some(format) = crate::model::redis_preview::FORMATS.get(selected - 1)
+                {
+                    next_format.select(*format);
+                } else {
+                    return Vec::new();
+                }
+                let text = match crate::ui::redis_value::format_page(&page, next_format.selected) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        self.notify_warning("Redis", error);
+                        return Vec::new();
+                    }
+                };
+                let session_id = tab.preview_editor_id;
+                if self.editor.has_session(session_id) {
+                    if let Err(error) = self.editor.set_text(session_id, &text) {
+                        self.notify_warning("Redis", error.to_string());
+                        return Vec::new();
+                    }
+                } else if matches!(
+                    page.value,
+                    crate::db::redis::read::RedisPageValue::String(_)
+                ) {
+                    self.editor.open_value(session_id, &text);
+                } else {
+                    self.editor.open_read_only(session_id, &text);
+                }
+                let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(self.active_tab)
+                else {
+                    return Vec::new();
+                };
+                tab.format = next_format;
+                tab.preview_scroll = 0;
+                tab.content = crate::model::redis_browser::RedisPreviewContentState::Ready {
+                    key: page.metadata.key.clone(),
+                    page: page.clone(),
+                    format: next_format.selected,
+                };
+                if matches!(
+                    page.value,
+                    crate::db::redis::read::RedisPageValue::String(_)
+                ) {
+                    tab.value_edit_baseline = Some(text);
+                    tab.value_edit_revision = 0;
+                } else {
+                    tab.value_edit_baseline = None;
+                    tab.value_edit_revision = 0;
                 }
                 Vec::new()
             }
