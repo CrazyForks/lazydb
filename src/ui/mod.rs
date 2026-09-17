@@ -17,6 +17,7 @@ pub mod record_view;
 pub mod redis_browser;
 pub(crate) mod redis_dashboard;
 pub mod redis_object_editor;
+pub mod redis_table_editor;
 pub mod redis_value;
 pub mod relation;
 pub(crate) mod scrollbar;
@@ -1398,6 +1399,10 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::ProfileManager => animation::OverlayKey::ProfileManager,
         Overlay::CatalogEditor => animation::OverlayKey::CatalogEditor,
         Overlay::RedisObjectEditor(_) => animation::OverlayKey::CatalogEditor,
+        Overlay::RedisTableEditor(_) => animation::OverlayKey::CatalogEditor,
+        Overlay::RedisTableDeleteConfirm(_) => animation::OverlayKey::DeleteConsole,
+        Overlay::RedisValueSaveConfirm { .. } => animation::OverlayKey::Message,
+        Overlay::RedisUnsavedValueConfirm { .. } => animation::OverlayKey::Message,
         Overlay::ProfileAccess { .. } => animation::OverlayKey::ProfileAccess,
         Overlay::ProfileGroup(_) => animation::OverlayKey::ProfileGroup,
         Overlay::ExplorerAdd(_) => animation::OverlayKey::ExplorerAdd,
@@ -4618,6 +4623,43 @@ fn render_overlay(
         Overlay::CatalogEditor => catalog_editor::render(frame, area, app, state, theme, icons),
         Overlay::RedisObjectEditor(editor) => {
             redis_object_editor::render(frame, area, editor, app, state, theme)
+        }
+        Overlay::RedisTableEditor(editor) => {
+            redis_table_editor::render(frame, area, editor, state, theme)
+        }
+        Overlay::RedisTableDeleteConfirm(confirm) => {
+            redis_table_editor::render_delete_confirm(frame, area, confirm, theme)
+        }
+        Overlay::RedisValueSaveConfirm {
+            tab_id,
+            revision,
+            invalid,
+        } => {
+            let title = if *invalid {
+                " SAVE INVALID REDIS VALUE? "
+            } else {
+                " SAVE REDIS VALUE? "
+            };
+            render_message(
+                frame,
+                area,
+                title,
+                &format!("revision {revision} · Enter save · Esc cancel"),
+                theme,
+            );
+            let _ = tab_id;
+        }
+        Overlay::RedisUnsavedValueConfirm { next_key, .. } => {
+            render_message(
+                frame,
+                area,
+                " UNSAVED REDIS VALUE ",
+                &format!(
+                    "{} · s save · d discard · Esc cancel",
+                    crate::ui::redis_value::display_bytes_lossless(&next_key.key)
+                ),
+                theme,
+            );
         }
         Overlay::ProfileAccess {
             profile_id,

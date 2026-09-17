@@ -45,10 +45,17 @@ pub enum RedisMutationOperation {
         value: Vec<u8>,
         expected: Option<Vec<u8>>,
     },
+    DeleteString {
+        expected: Vec<u8>,
+    },
     SetHashField {
         field: Vec<u8>,
         value: Vec<u8>,
         expected: Option<Vec<u8>>,
+    },
+    AddHashField {
+        field: Vec<u8>,
+        value: Vec<u8>,
     },
     DeleteHashField {
         field: Vec<u8>,
@@ -58,6 +65,9 @@ pub enum RedisMutationOperation {
         index: i64,
         value: Vec<u8>,
         expected: Vec<u8>,
+    },
+    AppendListElement {
+        value: Vec<u8>,
     },
     DeleteListElement {
         index: i64,
@@ -69,10 +79,18 @@ pub enum RedisMutationOperation {
     RemoveSetMember {
         member: Vec<u8>,
     },
+    ReplaceSetMember {
+        member: Vec<u8>,
+        replacement: Vec<u8>,
+    },
     SetSortedSetMember {
         member: Vec<u8>,
         score: String,
         expected_score: Option<String>,
+    },
+    AddSortedSetMember {
+        member: Vec<u8>,
+        score: String,
     },
     RemoveSortedSetMember {
         member: Vec<u8>,
@@ -87,13 +105,20 @@ impl RedisMutationOperation {
     pub fn value_type(&self) -> RedisType {
         match self {
             Self::Replace(value) => value.value_type(),
-            Self::SetString { .. } => RedisType::String,
-            Self::SetHashField { .. } | Self::DeleteHashField { .. } => RedisType::Hash,
-            Self::SetListElement { .. } | Self::DeleteListElement { .. } => RedisType::List,
-            Self::AddSetMember { .. } | Self::RemoveSetMember { .. } => RedisType::Set,
+            Self::SetString { .. } | Self::DeleteString { .. } => RedisType::String,
+            Self::SetHashField { .. }
+            | Self::AddHashField { .. }
+            | Self::DeleteHashField { .. } => RedisType::Hash,
+            Self::SetListElement { .. }
+            | Self::AppendListElement { .. }
+            | Self::DeleteListElement { .. } => RedisType::List,
+            Self::AddSetMember { .. }
+            | Self::RemoveSetMember { .. }
+            | Self::ReplaceSetMember { .. } => RedisType::Set,
             Self::SetSortedSetMember { .. } | Self::RemoveSortedSetMember { .. } => {
                 RedisType::SortedSet
             }
+            Self::AddSortedSetMember { .. } => RedisType::SortedSet,
             Self::AppendStream { .. } => RedisType::Stream,
         }
     }
@@ -223,8 +248,10 @@ impl RedisMutationPlan {
         }
         match &self.operation {
             RedisMutationOperation::Replace(value) => validate_value(value)?,
-            RedisMutationOperation::SetString { .. } => {}
+            RedisMutationOperation::SetString { .. }
+            | RedisMutationOperation::DeleteString { .. } => {}
             RedisMutationOperation::SetHashField { .. }
+            | RedisMutationOperation::AddHashField { .. }
             | RedisMutationOperation::DeleteHashField { .. } => {}
             RedisMutationOperation::SetListElement { index, .. }
             | RedisMutationOperation::DeleteListElement { index, .. }
@@ -235,8 +262,10 @@ impl RedisMutationPlan {
                 });
             }
             RedisMutationOperation::AddSetMember { .. }
-            | RedisMutationOperation::RemoveSetMember { .. } => {}
+            | RedisMutationOperation::RemoveSetMember { .. }
+            | RedisMutationOperation::ReplaceSetMember { .. } => {}
             RedisMutationOperation::SetSortedSetMember { score, .. }
+            | RedisMutationOperation::AddSortedSetMember { score, .. }
             | RedisMutationOperation::RemoveSortedSetMember {
                 expected_score: Some(score),
                 ..
@@ -299,8 +328,14 @@ impl RedisMutationPlan {
             RedisMutationOperation::SetString { value, .. } => {
                 add("SET", vec![key, value.clone()]);
             }
+            RedisMutationOperation::DeleteString { .. } => {
+                add("DEL", vec![key]);
+            }
             RedisMutationOperation::SetHashField { field, value, .. } => {
                 add("HSET", vec![key, field.clone(), value.clone()]);
+            }
+            RedisMutationOperation::AddHashField { field, value } => {
+                add("HSETNX", vec![key, field.clone(), value.clone()]);
             }
             RedisMutationOperation::DeleteHashField { field, .. } => {
                 add("HDEL", vec![key, field.clone()]);
@@ -311,6 +346,9 @@ impl RedisMutationPlan {
                     vec![key, index.to_string().into_bytes(), value.clone()],
                 );
             }
+            RedisMutationOperation::AppendListElement { value } => {
+                add("RPUSH", vec![key, value.clone()]);
+            }
             RedisMutationOperation::DeleteListElement { .. } => {
                 add("EVAL", vec![b"atomic list-index delete".to_vec(), key]);
             }
@@ -320,8 +358,28 @@ impl RedisMutationPlan {
             RedisMutationOperation::RemoveSetMember { member } => {
                 add("SREM", vec![key, member.clone()]);
             }
+            RedisMutationOperation::ReplaceSetMember {
+                member,
+                replacement,
+            } => {
+                add(
+                    "EVAL",
+                    vec![
+                        b"atomic set-member replace".to_vec(),
+                        key,
+                        member.clone(),
+                        replacement.clone(),
+                    ],
+                );
+            }
             RedisMutationOperation::SetSortedSetMember { member, score, .. } => {
                 add("ZADD", vec![key, score.as_bytes().to_vec(), member.clone()]);
+            }
+            RedisMutationOperation::AddSortedSetMember { member, score } => {
+                add(
+                    "ZADD NX",
+                    vec![key, score.as_bytes().to_vec(), member.clone()],
+                );
             }
             RedisMutationOperation::RemoveSortedSetMember { member, .. } => {
                 add("ZREM", vec![key, member.clone()]);
@@ -362,6 +420,11 @@ impl RedisMutationPlan {
                 args.push(value.clone());
                 "if ARGV[4] == '1' and redis.call('GET', KEYS[1]) ~= ARGV[5] then return -1 end\nredis.call('SET', KEYS[1], ARGV[6])".to_owned()
             }
+            RedisMutationOperation::DeleteString { expected } => {
+                args.push(b"1".to_vec());
+                args.push(expected.clone());
+                "if redis.call('GET', KEYS[1]) ~= ARGV[5] then return -1 end\nredis.call('DEL', KEYS[1])".to_owned()
+            }
             RedisMutationOperation::SetHashField {
                 field,
                 value,
@@ -371,6 +434,10 @@ impl RedisMutationPlan {
                 args.extend(expected_args(expected));
                 args.push(value.clone());
                 "local exists = redis.call('HEXISTS', KEYS[1], ARGV[4]) == 1\nif ARGV[5] == '1' and (not exists or redis.call('HGET', KEYS[1], ARGV[4]) ~= ARGV[6]) then return -1 end\nredis.call('HSET', KEYS[1], ARGV[4], ARGV[7])".to_owned()
+            }
+            RedisMutationOperation::AddHashField { field, value } => {
+                args.extend([field.clone(), value.clone()]);
+                "if redis.call('HEXISTS', KEYS[1], ARGV[4]) == 1 then return -1 end\nredis.call('HSET', KEYS[1], ARGV[4], ARGV[5])".to_owned()
             }
             RedisMutationOperation::DeleteHashField { field, expected } => {
                 args.push(field.clone());
@@ -389,6 +456,10 @@ impl RedisMutationPlan {
                 ]);
                 "if redis.call('LINDEX', KEYS[1], ARGV[4]) ~= ARGV[5] then return -1 end\nredis.call('LSET', KEYS[1], ARGV[4], ARGV[6])".to_owned()
             }
+            RedisMutationOperation::AppendListElement { value } => {
+                args.push(value.clone());
+                "redis.call('RPUSH', KEYS[1], ARGV[4])".to_owned()
+            }
             RedisMutationOperation::DeleteListElement { index, expected } => {
                 args.extend([index.to_string().into_bytes(), expected.clone()]);
                 "local index = tonumber(ARGV[4])\nlocal values = redis.call('LRANGE', KEYS[1], 0, -1)\nif values[index + 1] ~= ARGV[5] then return -1 end\nredis.call('DEL', KEYS[1])\nfor i, value in ipairs(values) do if i ~= index + 1 then redis.call('RPUSH', KEYS[1], value) end end".to_owned()
@@ -400,6 +471,13 @@ impl RedisMutationPlan {
             RedisMutationOperation::RemoveSetMember { member } => {
                 args.push(member.clone());
                 "redis.call('SREM', KEYS[1], ARGV[4])".to_owned()
+            }
+            RedisMutationOperation::ReplaceSetMember {
+                member,
+                replacement,
+            } => {
+                args.extend([member.clone(), replacement.clone()]);
+                "if redis.call('SISMEMBER', KEYS[1], ARGV[4]) ~= 1 then return -1 end\nif redis.call('SISMEMBER', KEYS[1], ARGV[5]) == 1 then return -1 end\nredis.call('SREM', KEYS[1], ARGV[4])\nredis.call('SADD', KEYS[1], ARGV[5])".to_owned()
             }
             RedisMutationOperation::SetSortedSetMember {
                 member,
@@ -413,6 +491,10 @@ impl RedisMutationPlan {
                     expected_score.clone().unwrap_or_default().into_bytes(),
                 ]);
                 "if ARGV[6] == 'true' and tostring(redis.call('ZSCORE', KEYS[1], ARGV[4]) or '') ~= ARGV[7] then return -1 end\nredis.call('ZADD', KEYS[1], ARGV[5], ARGV[4])".to_owned()
+            }
+            RedisMutationOperation::AddSortedSetMember { member, score } => {
+                args.extend([member.clone(), score.as_bytes().to_vec()]);
+                "if redis.call('ZSCORE', KEYS[1], ARGV[4]) then return -1 end\nredis.call('ZADD', KEYS[1], ARGV[5], ARGV[4])".to_owned()
             }
             RedisMutationOperation::RemoveSortedSetMember {
                 member,

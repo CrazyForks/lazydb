@@ -128,6 +128,63 @@ impl Keymap {
         if let Some(Overlay::RedisObjectEditor(editor)) = app.overlay.as_ref() {
             return map_redis_object_editor(event, editor);
         }
+        if let Some(Overlay::RedisTableEditor(_editor)) = app.overlay.as_ref() {
+            if event.code == KeyCode::Esc {
+                return Some(Action::RedisObjectEditorCancel);
+            }
+            if matches!(event.code, KeyCode::Tab | KeyCode::Down) {
+                return Some(Action::RedisObjectEditorFocusNext);
+            }
+            if matches!(event.code, KeyCode::BackTab | KeyCode::Up) {
+                return Some(Action::RedisObjectEditorFocusPrevious);
+            }
+            if event.code == KeyCode::Enter {
+                return Some(Action::RedisObjectEditorApply);
+            }
+            return match event.code {
+                KeyCode::Backspace => Some(Action::RedisObjectEditorBackspace),
+                KeyCode::Delete => Some(Action::RedisObjectEditorDelete),
+                KeyCode::Left => Some(Action::RedisObjectEditorMoveLeft),
+                KeyCode::Right => Some(Action::RedisObjectEditorMoveRight),
+                KeyCode::Home => Some(Action::RedisObjectEditorMoveHome),
+                KeyCode::End => Some(Action::RedisObjectEditorMoveEnd),
+                KeyCode::Char(c) if event.modifiers.is_empty() => {
+                    Some(Action::RedisObjectEditorInsert(c))
+                }
+                _ => None,
+            };
+        }
+        if let Some(Overlay::RedisTableDeleteConfirm(confirm)) = app.overlay.as_ref() {
+            return match event.code {
+                KeyCode::Esc => Some(Action::RedisTableDeleteCancel),
+                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::RedisTableDeleteToggleFocus)
+                }
+                KeyCode::Enter
+                    if confirm.focus
+                        == crate::model::redis_table_editor::RedisTableDeleteFocus::Delete =>
+                {
+                    Some(Action::RedisTableDeleteConfirm)
+                }
+                _ => None,
+            };
+        }
+        if let Some(Overlay::RedisValueSaveConfirm { invalid, .. }) = app.overlay.as_ref() {
+            return match event.code {
+                KeyCode::Esc => Some(Action::RedisValueSaveCancel),
+                KeyCode::Enter if *invalid => Some(Action::RedisValueSaveAnyway),
+                KeyCode::Enter => Some(Action::RedisValueSave),
+                _ => None,
+            };
+        }
+        if matches!(app.overlay, Some(Overlay::RedisUnsavedValueConfirm { .. })) {
+            return match event.code {
+                KeyCode::Char('s') => Some(Action::RedisUnsavedValueSave),
+                KeyCode::Char('d') => Some(Action::RedisUnsavedValueDiscard),
+                KeyCode::Esc => Some(Action::RedisUnsavedValueCancel),
+                _ => None,
+            };
+        }
         if matches!(app.overlay, Some(Overlay::Update(_))) {
             self.pending = None;
             return match event.code {
@@ -1318,10 +1375,14 @@ impl Keymap {
                 self.set_pending(Pending::RedisPreviewLeader, app);
                 return None;
             }
-            return Some(Action::ReadOnlyEditorKey {
-                session_id: tab.preview_editor_id,
-                event,
-            });
+            return if app.editor_is_editable(tab.preview_editor_id) {
+                Some(Action::EditorKey(event))
+            } else {
+                Some(Action::ReadOnlyEditorKey {
+                    session_id: tab.preview_editor_id,
+                    event,
+                })
+            };
         }
 
         if app.focus != Focus::Editor
@@ -2060,6 +2121,17 @@ impl Keymap {
                 && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
                 && tab.format.view() == crate::value_preview::ValueView::Table
             {
+                if event.modifiers.is_empty() {
+                    match event.code {
+                        KeyCode::Char('e') => return Some(Action::RedisPreviewEdit),
+                        KeyCode::Char('a') => return Some(Action::RedisPreviewAdd),
+                        KeyCode::Char('d') => {
+                            self.set_pending(Pending::RedisPreviewLeader, app);
+                            return None;
+                        }
+                        _ => {}
+                    }
+                }
                 return map_results(event.code, app);
             }
             if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) =
@@ -2853,6 +2925,7 @@ fn map_pending(
         (Pending::RedisPreviewLeader, KeyCode::Char('f')) => Some(Action::RedisPreviewCycleFormat),
         (Pending::RedisPreviewLeader, KeyCode::Char('w')) => Some(Action::RedisPreviewToggleWrap),
         (Pending::RedisPreviewLeader, KeyCode::Char('l')) => Some(Action::RedisPreviewLoadNext),
+        (Pending::RedisPreviewLeader, KeyCode::Char('d')) => Some(Action::RedisPreviewDelete),
         (Pending::Leader, KeyCode::Char('B')) if app.active_console_opt().is_some() => {
             Some(Action::OpenConsoleTargetSelector {
                 console_id: app.active_console_opt().expect("checked above").id,
@@ -3035,6 +3108,13 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
                 && tab.value_filter.editing
     ) {
         return vec![Action::RedisValueFilterPaste(value)];
+    }
+    if let Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) = app.tabs.get(app.active_tab)
+        && app.focus == Focus::Results
+        && tab.focus == crate::model::redis_browser::RedisBrowserFocus::Preview
+        && app.editor_is_editable(tab.preview_editor_id)
+    {
+        return vec![Action::EditorPaste(value)];
     }
     if is_relation_data_focus(app) {
         return vec![Action::RelationPaste];

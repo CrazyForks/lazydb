@@ -36,6 +36,34 @@ fn fixture(text: &str) -> (EditorWorkspace, Uuid) {
     (workspace, id)
 }
 
+#[test]
+fn redis_value_session_supports_vim_editing_search_yank_paste_undo_redo_and_save() {
+    let id = Uuid::new_v4();
+    let mut workspace = EditorWorkspace::new();
+    workspace.open_value(id, "one\ntwo");
+
+    workspace.press(id, EditorKey::Character('i')).unwrap();
+    workspace.press(id, EditorKey::Character('X')).unwrap();
+    workspace.press(id, EditorKey::Escape).unwrap();
+    assert!(workspace.text(id).unwrap().contains('X'));
+
+    workspace.press(id, EditorKey::Character('/')).unwrap();
+    insert_text(&mut workspace, id, "two");
+    workspace.press(id, EditorKey::Enter).unwrap();
+    assert_eq!(workspace.mode(id).unwrap(), EditorMode::Normal);
+
+    workspace.press(id, EditorKey::Character('y')).unwrap();
+    workspace.press(id, EditorKey::Character('y')).unwrap();
+    workspace.press(id, EditorKey::Character('p')).unwrap();
+    workspace.undo(id).unwrap();
+    workspace.redo(id).unwrap();
+    workspace.press(id, EditorKey::Control('s')).unwrap();
+    assert!(workspace
+        .drain_effects()
+        .iter()
+        .any(|effect| matches!(effect, EditorEffect::SaveRequested { console_id, .. } if *console_id == id)));
+}
+
 fn insert_text(workspace: &mut EditorWorkspace, id: Uuid, text: &str) {
     for character in text.chars() {
         workspace
