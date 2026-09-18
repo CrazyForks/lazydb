@@ -75,6 +75,7 @@ pub struct Theme {
     pub row_updated: Color,
     pub row_deleted: Color,
     pub row_deleted_background: Color,
+    /// Background used to identify rows inserted during relation editing.
     pub row_inserted: Color,
 }
 
@@ -164,7 +165,7 @@ impl Theme {
             row_updated: Color::Rgb(36, 78, 102),
             row_deleted: Color::Rgb(255, 107, 122),
             row_deleted_background: Color::Rgb(44, 49, 56),
-            row_inserted: Color::Rgb(101, 167, 255),
+            row_inserted: Color::Rgb(24, 64, 46),
         }
     }
 

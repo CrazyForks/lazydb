@@ -207,7 +207,7 @@ pub(crate) fn render(
             crate::model::relation_edit::EditableRowState::Updated { .. } => None,
             crate::model::relation_edit::EditableRowState::InsertDraft
             | crate::model::relation_edit::EditableRowState::Inserted => {
-                Some(Style::new().fg(theme.row_inserted))
+                Some(Style::new().bg(theme.row_inserted))
             }
             crate::model::relation_edit::EditableRowState::Conflict { .. } => {
                 Some(Style::new().fg(theme.row_deleted))
@@ -250,6 +250,19 @@ pub(crate) fn render(
             .map(|row| row.current.as_slice())
             .unwrap_or_else(|| result.rows[grid.selected_row].as_slice());
         let y = row_y.saturating_add((grid.selected_row - row_offset) as u16);
+        let selected_row_background = if edit
+            .and_then(|session| session.rows.get(grid.selected_row))
+            .is_some_and(|row| {
+                matches!(
+                    row.state,
+                    crate::model::relation_edit::EditableRowState::InsertDraft
+                        | crate::model::relation_edit::EditableRowState::Inserted
+                )
+            }) {
+            theme.row_inserted
+        } else {
+            theme.selection
+        };
         let mut x = data_start_x(table_area, number_width);
         let buffer = frame.buffer_mut();
         for column in visible.iter() {
@@ -265,7 +278,7 @@ pub(crate) fn render(
             for cell_x in x..x.saturating_add(cell_width) {
                 buffer[(cell_x, y)]
                     .set_fg(foreground)
-                    .set_bg(theme.selection);
+                    .set_bg(selected_row_background);
                 if column.index == grid.selected_column {
                     buffer[(cell_x, y)].set_style(theme.grid_active_cell());
                 }
@@ -563,7 +576,7 @@ fn body_cells(
 }
 
 fn data_cell_style(base: Style, row_style: Option<Style>, updated: bool, theme: Theme) -> Style {
-    let style = row_style.unwrap_or(base);
+    let style = row_style.map_or(base, |row_style| base.patch(row_style));
     if updated {
         style.bg(theme.row_updated)
     } else {
@@ -867,6 +880,8 @@ mod tests {
 
     use crate::{
         db::query::{ColumnMeta, ResultSet},
+        db::value::CellValue,
+        model::relation_edit::{EditableRowState, RelationEditSession},
         ui::{HitTarget, icons::IconMode, icons::IconSet, theme::Theme},
     };
     use ratatui::{Terminal, backend::TestBackend, layout::Rect, widgets::Block};
@@ -1020,6 +1035,108 @@ mod tests {
         assert_eq!(buffer[(10, 1)].bg, theme.surface);
         assert_eq!(buffer[(17, 1)].symbol(), "│");
         assert_eq!(buffer[(17, 1)].bg, theme.surface);
+    }
+
+    #[test]
+    fn inserted_rows_paint_number_and_data_cells_with_inserted_background() {
+        for inserted_state in [EditableRowState::InsertDraft, EditableRowState::Inserted] {
+            let result = ResultSet {
+                columns: vec![
+                    ColumnMeta {
+                        name: "first".into(),
+                        type_name: "TEXT".into(),
+                    },
+                    ColumnMeta {
+                        name: "second".into(),
+                        type_name: "TEXT".into(),
+                    },
+                ],
+                rows: vec![vec![CellValue::Text("existing".into())]],
+                affected_rows: 0,
+            };
+            let mut edit = RelationEditSession::from_rows(result.rows.clone());
+            edit.insert_row(1, vec![CellValue::Null, CellValue::Text("new".into())]);
+            edit.rows[1].state = inserted_state;
+            let theme = Theme::deep_space();
+            let mut terminal = Terminal::new(TestBackend::new(30, 6)).unwrap();
+
+            terminal
+                .draw(|frame| {
+                    super::render(
+                        frame,
+                        Rect::new(0, 0, 30, 6),
+                        uuid::Uuid::nil(),
+                        &result,
+                        crate::model::tab::DataGridState::default(),
+                        &[Some(6); 2],
+                        theme,
+                        Block::default(),
+                        &mut crate::ui::UiState::new(),
+                        Some(&edit),
+                        IconSet::new(IconMode::Ascii),
+                        None,
+                        false,
+                    );
+                })
+                .unwrap();
+
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer[(0, 2)].bg, theme.row_inserted);
+            assert_eq!(buffer[(4, 2)].bg, theme.row_inserted);
+            assert_eq!(buffer[(11, 2)].bg, theme.row_inserted);
+        }
+    }
+
+    #[test]
+    fn selected_inserted_row_keeps_inserted_background_outside_active_cell() {
+        let result = ResultSet {
+            columns: vec![
+                ColumnMeta {
+                    name: "first".into(),
+                    type_name: "TEXT".into(),
+                },
+                ColumnMeta {
+                    name: "second".into(),
+                    type_name: "TEXT".into(),
+                },
+            ],
+            rows: vec![vec![CellValue::Text("existing".into())]],
+            affected_rows: 0,
+        };
+        let mut edit = RelationEditSession::from_rows(result.rows.clone());
+        edit.insert_row(1, vec![CellValue::Text("new".into()), CellValue::Null]);
+        edit.rows[1].state = EditableRowState::Inserted;
+        let theme = Theme::deep_space();
+        let mut terminal = Terminal::new(TestBackend::new(30, 6)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                super::render(
+                    frame,
+                    Rect::new(0, 0, 30, 6),
+                    uuid::Uuid::nil(),
+                    &result,
+                    crate::model::tab::DataGridState {
+                        selected_row: 1,
+                        selected_column: 0,
+                        ..Default::default()
+                    },
+                    &[Some(6); 2],
+                    theme,
+                    Block::default(),
+                    &mut crate::ui::UiState::new(),
+                    Some(&edit),
+                    IconSet::new(IconMode::Ascii),
+                    None,
+                    false,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 2)].bg, theme.row_inserted);
+        assert_eq!(buffer[(4, 2)].bg, theme.accent);
+        assert_eq!(buffer[(11, 2)].bg, theme.row_inserted);
     }
 
     #[test]
