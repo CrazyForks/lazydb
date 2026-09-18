@@ -2870,7 +2870,7 @@ impl TransactionBackend for MsSqlTransactionBackend {
                     })
                     .collect::<Vec<_>>();
                 let sql = if names.is_empty() {
-                    format!("INSERT INTO {quoted_table} DEFAULT VALUES OUTPUT inserted.*")
+                    format!("INSERT INTO {quoted_table} OUTPUT inserted.* DEFAULT VALUES")
                 } else {
                     format!(
                         "INSERT INTO {quoted_table} ({}) OUTPUT inserted.* VALUES ({})",

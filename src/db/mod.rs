@@ -15,6 +15,7 @@ pub mod oracle_client;
 pub mod postgres;
 pub mod query;
 pub mod redis;
+pub mod relation_plan;
 pub mod sqlite;
 pub mod transaction;
 pub mod value;

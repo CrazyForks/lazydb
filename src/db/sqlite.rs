@@ -3889,6 +3889,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relation_mutation_inserts_duplicate_rows_without_primary_key() {
+        let adapter = memory_adapter().await;
+        let mut backend = adapter.transaction_backend().await.unwrap();
+        backend.begin().await.unwrap();
+        backend
+            .execute("CREATE TABLE items (name TEXT, id TEXT)")
+            .await
+            .unwrap();
+
+        let mut request = mutation_request(RelationMutation::InsertRow(InsertRowMutation {
+            columns: vec![0, 1],
+            values: vec![
+                InputValue::Value(CellValue::Text("same".into())),
+                InputValue::Value(CellValue::Text("same".into())),
+            ],
+        }));
+        request.metadata = MetadataFingerprint {
+            relation: "items".into(),
+            columns: vec![
+                ("name".into(), "TEXT".into(), true),
+                ("id".into(), "TEXT".into(), true),
+            ],
+            primary_key: Vec::new(),
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                backend.relation_mutation(request.clone()).await.unwrap(),
+                super::MutationResult::Inserted {
+                    row: vec![
+                        CellValue::Text("same".into()),
+                        CellValue::Text("same".into()),
+                    ],
+                    version: None,
+                }
+            );
+        }
+        backend.commit().await.unwrap();
+        let count = backend.execute("SELECT COUNT(*) FROM items").await.unwrap();
+        assert_eq!(count.result_sets[0].rows, vec![vec![CellValue::Integer(2)]]);
+
+        backend.begin().await.unwrap();
+        request.operation = RelationMutation::InsertRow(InsertRowMutation {
+            columns: vec![0, 1],
+            values: vec![
+                InputValue::Value(CellValue::Text("rolled-back".into())),
+                InputValue::Value(CellValue::Text("rolled-back".into())),
+            ],
+        });
+        backend.relation_mutation(request).await.unwrap();
+        backend.rollback().await.unwrap();
+        let count = backend.execute("SELECT COUNT(*) FROM items").await.unwrap();
+        assert_eq!(count.result_sets[0].rows, vec![vec![CellValue::Integer(2)]]);
+        drop(backend);
+        adapter.close().await;
+    }
+
+    #[tokio::test]
     async fn connection_local_pool_disables_automatic_replacement() {
         let adapter = memory_adapter().await;
         let options = adapter.pool.options();
