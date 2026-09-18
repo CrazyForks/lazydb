@@ -1,5 +1,7 @@
+use crate::db::catalog::QualifiedName;
 use crate::db::value::CellValue;
 use crate::model::relation_edit::{EditableRowState, RelationEditSession};
+use crate::profile::DatabaseKind;
 
 /// Builds a safe, read-only review representation from the local edit session.
 /// Execution still goes through the typed mutation requests in `App::relation_save`.
@@ -9,7 +11,56 @@ pub fn preview_sql(
     columns: &[String],
     primary_key_columns: &[String],
 ) -> String {
-    let table = quote_qualified_identifier(relation);
+    preview_sql_for_kind(session, relation, None, columns, primary_key_columns)
+}
+
+pub fn preview_sql_for_kind(
+    session: &RelationEditSession,
+    relation: &str,
+    kind: Option<DatabaseKind>,
+    columns: &[String],
+    primary_key_columns: &[String],
+) -> String {
+    let parts = relation.split('.').collect::<Vec<_>>();
+    preview_sql_for_parts(session, &parts, kind, columns, primary_key_columns)
+}
+
+pub fn preview_sql_for_relation(
+    session: &RelationEditSession,
+    relation: &QualifiedName,
+    kind: DatabaseKind,
+    columns: &[String],
+    primary_key_columns: &[String],
+) -> String {
+    let mut parts = Vec::with_capacity(2);
+    match kind {
+        DatabaseKind::MySql | DatabaseKind::MariaDb => {
+            if let Some(database) = relation.database.as_deref() {
+                parts.push(database);
+            }
+        }
+        DatabaseKind::Postgres
+        | DatabaseKind::Oracle
+        | DatabaseKind::SqlServer
+        | DatabaseKind::Sqlite => {
+            if let Some(schema) = relation.schema.as_deref() {
+                parts.push(schema);
+            }
+        }
+        DatabaseKind::Redis => {}
+    }
+    parts.push(relation.object.as_str());
+    preview_sql_for_parts(session, &parts, Some(kind), columns, primary_key_columns)
+}
+
+fn preview_sql_for_parts(
+    session: &RelationEditSession,
+    relation_parts: &[&str],
+    kind: Option<DatabaseKind>,
+    columns: &[String],
+    primary_key_columns: &[String],
+) -> String {
+    let table = quote_qualified_parts(relation_parts, kind);
     let mut statements = Vec::new();
     for row in &session.rows {
         match &row.state {
@@ -21,10 +72,11 @@ pub fn preview_sql(
                     let Some(value) = row.current.get(*column) else {
                         continue;
                     };
-                    let predicate = predicate(&row.original, columns, primary_key_columns);
+                    let predicate =
+                        predicate_for_kind(&row.original, columns, primary_key_columns, kind);
                     statements.push(format!(
                         "UPDATE {table} SET {} = {} WHERE {predicate};",
-                        quote_identifier(name),
+                        quote_identifier(name, kind),
                         literal(value),
                     ));
                 }
@@ -37,14 +89,19 @@ pub fn preview_sql(
                     .collect::<Vec<_>>();
                 let names = supplied
                     .iter()
-                    .map(|(name, _)| quote_identifier(name))
+                    .map(|(name, _)| quote_identifier(name, kind))
                     .collect::<Vec<_>>();
                 let values = supplied
                     .iter()
                     .filter_map(|(_, column)| row.current.get(*column).map(literal))
                     .collect::<Vec<_>>();
                 if names.is_empty() {
-                    statements.push(format!("INSERT INTO {table} DEFAULT VALUES;"));
+                    statements.push(match kind {
+                        Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => {
+                            format!("INSERT INTO {table} () VALUES ();")
+                        }
+                        _ => format!("INSERT INTO {table} DEFAULT VALUES;"),
+                    });
                 } else {
                     statements.push(format!(
                         "INSERT INTO {table} ({}) VALUES ({});",
@@ -54,7 +111,8 @@ pub fn preview_sql(
                 }
             }
             EditableRowState::Deleted => {
-                let predicate = predicate(&row.original, columns, primary_key_columns);
+                let predicate =
+                    predicate_for_kind(&row.original, columns, primary_key_columns, kind);
                 statements.push(format!("DELETE FROM {table} WHERE {predicate};"));
             }
             _ => {}
@@ -88,7 +146,17 @@ pub fn summary(session: &RelationEditSession) -> (usize, usize, usize, usize) {
     (updated, inserted, deleted, statements)
 }
 
+#[cfg(test)]
 fn predicate(values: &[CellValue], columns: &[String], primary_key_columns: &[String]) -> String {
+    predicate_for_kind(values, columns, primary_key_columns, None)
+}
+
+fn predicate_for_kind(
+    values: &[CellValue],
+    columns: &[String],
+    primary_key_columns: &[String],
+    kind: Option<DatabaseKind>,
+) -> String {
     let indices = if primary_key_columns.is_empty() {
         (0..values.len()).collect::<Vec<_>>()
     } else {
@@ -103,7 +171,7 @@ fn predicate(values: &[CellValue], columns: &[String], primary_key_columns: &[St
     indices
         .into_iter()
         .filter_map(|index| {
-            let column = quote_identifier(columns.get(index)?);
+            let column = quote_identifier(columns.get(index)?, kind);
             let value = values.get(index)?;
             Some(match value {
                 CellValue::Null => format!("{column} IS NULL"),
@@ -114,14 +182,20 @@ fn predicate(values: &[CellValue], columns: &[String], primary_key_columns: &[St
         .join(" AND ")
 }
 
-fn quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+fn quote_identifier(value: &str, kind: Option<DatabaseKind>) -> String {
+    match kind {
+        Some(DatabaseKind::MySql | DatabaseKind::MariaDb) => {
+            format!("`{}`", value.replace('`', "``"))
+        }
+        Some(DatabaseKind::SqlServer) => format!("[{}]", value.replace(']', "]]")),
+        _ => format!("\"{}\"", value.replace('"', "\"\"")),
+    }
 }
 
-fn quote_qualified_identifier(value: &str) -> String {
-    value
-        .split('.')
-        .map(quote_identifier)
+fn quote_qualified_parts(parts: &[&str], kind: Option<DatabaseKind>) -> String {
+    parts
+        .iter()
+        .map(|part| quote_identifier(part, kind))
         .collect::<Vec<_>>()
         .join(".")
 }
@@ -161,6 +235,54 @@ mod tests {
             sql,
             "UPDATE \"items\" SET \"name\" = 'new' WHERE \"id\" = 1;"
         );
+    }
+
+    #[test]
+    fn mariadb_preview_uses_backticks_and_native_empty_insert_syntax() {
+        let mut session = RelationEditSession::default();
+        session.insert_row(0, vec![CellValue::Null]);
+        let sql = super::preview_sql_for_kind(
+            &session,
+            "test1",
+            Some(crate::profile::DatabaseKind::MariaDb),
+            &["name".into()],
+            &[],
+        );
+        assert_eq!(sql, "INSERT INTO `test1` () VALUES ();");
+    }
+
+    #[test]
+    fn mariadb_preview_quotes_embedded_backticks() {
+        let mut session = RelationEditSession::default();
+        session.insert_row(0, vec![CellValue::Null]);
+        session.update_cell(0, 0, CellValue::Text("x".into()));
+        let sql = super::preview_sql_for_kind(
+            &session,
+            "db.table",
+            Some(crate::profile::DatabaseKind::MariaDb),
+            &["na`me".into()],
+            &[],
+        );
+        assert_eq!(sql, "INSERT INTO `db`.`table` (`na``me`) VALUES ('x');");
+    }
+
+    #[test]
+    fn mariadb_preview_uses_canonical_database_and_table_identity() {
+        let mut session = RelationEditSession::default();
+        session.insert_row(0, vec![CellValue::Text("x".into())]);
+        session.update_cell(0, 0, CellValue::Text("x".into()));
+        let sql = super::preview_sql_for_relation(
+            &session,
+            &crate::db::catalog::QualifiedName {
+                database: Some("items".into()),
+                schema: Some("items".into()),
+                object: "test1".into(),
+            },
+            crate::profile::DatabaseKind::MariaDb,
+            &["name".into()],
+            &[],
+        );
+        assert_eq!(sql, "INSERT INTO `items`.`test1` (`name`) VALUES ('x');");
     }
 
     #[test]

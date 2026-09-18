@@ -2884,6 +2884,33 @@ impl TransactionBackend for MySqlTransactionBackend {
                         "MySQL insert mutation is malformed".into(),
                     ));
                 }
+                if self.adapter.kind == DatabaseKind::MySql {
+                    if request.metadata.primary_key.is_empty() {
+                        return Err(TransactionError(
+                            "MySQL inserted row has no primary key for reliable lookup".into(),
+                        ));
+                    }
+                    for name in &request.metadata.primary_key {
+                        let index = columns
+                            .iter()
+                            .position(|(column, _, _)| column == name)
+                            .ok_or_else(|| {
+                                TransactionError("MySQL primary key column is missing".into())
+                            })?;
+                        let value = insert
+                            .columns
+                            .iter()
+                            .position(|column| *column == index)
+                            .and_then(|position| insert.values.get(position));
+                        if request.metadata.primary_key.len() > 1
+                            && !matches!(value, Some(InputValue::Value(_)))
+                        {
+                            return Err(TransactionError(
+                                "MySQL inserted row has an unknown primary key value for reliable lookup".into(),
+                            ));
+                        }
+                    }
+                }
                 let supplied = insert
                     .columns
                     .iter()
@@ -2947,36 +2974,51 @@ impl TransactionBackend for MySqlTransactionBackend {
                     .execute(&mut *self.connection)
                     .await
                     .map_err(|e| TransactionError(e.to_string()))?;
-                let primary_key = request.metadata.primary_key.first().ok_or_else(|| {
-                    TransactionError("MySQL inserted row has no primary key".into())
-                })?;
-                let primary_key_index = columns
+                let primary_key_columns = request
+                    .metadata
+                    .primary_key
                     .iter()
-                    .position(|(name, _, _)| name == primary_key)
-                    .ok_or_else(|| {
-                        TransactionError("MySQL primary key column is missing".into())
-                    })?;
-                let primary_key_value = insert
-                    .columns
+                    .map(|name| {
+                        let index = columns
+                            .iter()
+                            .position(|(column, _, _)| column == name)
+                            .ok_or_else(|| {
+                                TransactionError("MySQL primary key column is missing".into())
+                            })?;
+                        let value = insert
+                            .columns
+                            .iter()
+                            .position(|column| *column == index)
+                            .and_then(|position| insert.values.get(position));
+                        Ok((name, value))
+                    })
+                    .collect::<Result<Vec<_>, TransactionError>>()?;
+                if primary_key_columns.is_empty() {
+                    return Err(TransactionError(
+                        "MySQL inserted row has no primary key".into(),
+                    ));
+                }
+                let predicates = primary_key_columns
                     .iter()
-                    .position(|index| *index == primary_key_index)
-                    .and_then(|position| insert.values.get(position));
-                let mut sql = format!(
-                    "SELECT * FROM {quoted_table} WHERE {} = ?",
-                    quote_identifier(primary_key)
+                    .map(|(name, _)| format!("{} = ?", quote_identifier(name)))
+                    .collect::<Vec<_>>();
+                let sql = format!(
+                    "SELECT * FROM {quoted_table} WHERE {}",
+                    predicates.join(" AND ")
                 );
                 let mut select = sqlx::query(AssertSqlSafe(sql));
-                select = match primary_key_value {
-                    Some(InputValue::Value(value)) => bind_cell(select, value)?,
-                    Some(InputValue::Null) => {
-                        sql = format!(
-                            "SELECT * FROM {quoted_table} WHERE {} IS NULL",
-                            quote_identifier(primary_key)
-                        );
-                        sqlx::query(AssertSqlSafe(sql))
+                for (_, value) in &primary_key_columns {
+                    match value {
+                        Some(InputValue::Value(value)) => select = bind_cell(select, value)?,
+                        // A NULL supplied for an AUTO_INCREMENT primary key is
+                        // replaced by the server. MySQL exposes that generated
+                        // value through LAST_INSERT_ID(). A non-auto-increment
+                        // primary key rejects the INSERT before this lookup.
+                        Some(InputValue::Null) | Some(InputValue::Default) | None => {
+                            select = select.bind(result.last_insert_id())
+                        }
                     }
-                    Some(InputValue::Default) | None => select.bind(result.last_insert_id()),
-                };
+                }
                 let row = select
                     .fetch_one(&mut *self.connection)
                     .await
@@ -4166,6 +4208,112 @@ mod tests {
         assert_eq!(row[1], CellValue::Text("server-default".into()));
         backend.commit().await.unwrap();
         drop(backend);
+        adapter
+            .execute(&format!("DROP TABLE `{table}`"))
+            .await
+            .unwrap();
+        adapter.close().await;
+    }
+
+    #[tokio::test]
+    async fn mariadb_keyless_text_insert_round_trip_commits_and_rolls_back() {
+        let Some(url) = mariadb_test_url() else {
+            return;
+        };
+        let imported =
+            import_connection_url(&url, Some("MariaDB keyless relation insert")).unwrap();
+        let adapter =
+            MySqlAdapter::connect(&imported.profile, imported.transient_password.as_ref())
+                .await
+                .unwrap();
+        let table = format!("lazydb_keyless_insert_{}", Uuid::new_v4().simple());
+        adapter
+            .execute(&format!(
+                "CREATE TABLE `{table}` (`name` TEXT DEFAULT NULL, `id` TEXT DEFAULT NULL) ENGINE=InnoDB"
+            ))
+            .await
+            .unwrap();
+
+        let database = imported.profile.database.clone().unwrap();
+        let relation = CatalogId::new(
+            imported.profile.id,
+            CatalogKind::Table,
+            [database.clone(), database.clone(), table.clone()],
+        );
+        let metadata = MetadataFingerprint {
+            relation: table.clone(),
+            columns: vec![
+                ("name".into(), "text".into(), true),
+                ("id".into(), "text".into(), true),
+            ],
+            primary_key: Vec::new(),
+        };
+        let request = |row_id, value: &str| RelationMutationRequest {
+            tab_id: Uuid::nil(),
+            tab_generation: 1,
+            edit_generation: 1,
+            row_id: EditableRowId(row_id),
+            connection: ConnectionIdentity {
+                profile_id: imported.profile.id,
+                generation: 1,
+            },
+            target: ExecutionTarget::from_profile(&imported.profile),
+            relation: relation.clone(),
+            relation_key: RelationKey {
+                profile_id: imported.profile.id,
+                object_id: relation.clone(),
+            },
+            scope: imported.profile.catalog_scope.clone(),
+            metadata: metadata.clone(),
+            operation: RelationMutation::InsertRow(InsertRowMutation {
+                columns: vec![0, 1],
+                values: vec![
+                    InputValue::Value(CellValue::Text(value.into())),
+                    InputValue::Value(CellValue::Text(value.into())),
+                ],
+            }),
+        };
+
+        let mut backend = adapter.transaction_backend().await.unwrap();
+        backend.begin().await.unwrap();
+        for row_id in 1..=2 {
+            let result = backend
+                .relation_mutation(request(row_id, "same"))
+                .await
+                .unwrap();
+            assert_eq!(
+                result,
+                MutationResult::Inserted {
+                    row: vec![
+                        CellValue::Text("same".into()),
+                        CellValue::Text("same".into())
+                    ],
+                    version: None,
+                }
+            );
+        }
+        backend.commit().await.unwrap();
+
+        let result = adapter
+            .execute(&format!("SELECT COUNT(*) FROM `{table}`"))
+            .await
+            .unwrap();
+        assert_eq!(result.result_sets[0].rows[0][0], CellValue::Integer(2));
+
+        backend.begin().await.unwrap();
+        backend
+            .relation_mutation(request(3, "rolled-back"))
+            .await
+            .unwrap();
+        backend.rollback().await.unwrap();
+        drop(backend);
+
+        let result = adapter
+            .execute(&format!("SELECT COUNT(*) FROM `{table}`"))
+            .await
+            .unwrap();
+        assert_eq!(result.result_sets[0].rows[0][0], CellValue::Integer(2));
+
         adapter
             .execute(&format!("DROP TABLE `{table}`"))
             .await

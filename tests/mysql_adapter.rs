@@ -129,7 +129,7 @@ fn mariadb_catalog_capabilities_add_sequences_without_changing_mysql() {
 fn mariadb_catalog_search_includes_sequence_candidates() {
     let source = include_str!("../src/db/mysql.rs");
     assert!(source.contains("MARIADB_CATALOG_SEARCH_SEQUENCE_SQL"));
-    assert!(source.contains("FROM information_schema.sequences"));
+    assert!(source.contains("FROM information_schema.tables WHERE table_type='SEQUENCE'"));
 }
 
 #[test]

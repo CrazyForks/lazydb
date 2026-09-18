@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::{
     identity::ConnectionIdentity,
     model::{execution_target::ExecutionTarget, relation::RelationKey},
-    profile::CatalogScope,
+    profile::{CatalogScope, DatabaseKind},
 };
 
 use super::{
@@ -19,6 +19,91 @@ pub struct MetadataFingerprint {
     pub relation: String,
     pub columns: Vec<(String, String, bool)>,
     pub primary_key: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationColumnMapping {
+    metadata_to_result: Vec<usize>,
+    result_to_metadata: Vec<usize>,
+}
+
+impl RelationColumnMapping {
+    pub fn metadata_to_result(&self) -> &[usize] {
+        &self.metadata_to_result
+    }
+
+    pub fn result_to_metadata(&self) -> &[usize] {
+        &self.result_to_metadata
+    }
+
+    pub fn result_column_for_metadata(&self, column: usize) -> Option<usize> {
+        self.metadata_to_result.get(column).copied()
+    }
+
+    pub fn metadata_column_for_result(&self, column: usize) -> Option<usize> {
+        self.result_to_metadata.get(column).copied()
+    }
+}
+
+pub fn relation_column_mapping(
+    metadata: &MetadataFingerprint,
+    result_columns: &[String],
+) -> Option<RelationColumnMapping> {
+    let metadata_to_result = metadata
+        .columns
+        .iter()
+        .map(|(name, _, _)| result_columns.iter().position(|column| column == name))
+        .collect::<Option<Vec<_>>>()?;
+    let mut result_to_metadata = vec![usize::MAX; result_columns.len()];
+    for (metadata_column, result_column) in metadata_to_result.iter().copied().enumerate() {
+        let slot = result_to_metadata.get_mut(result_column)?;
+        if *slot != usize::MAX {
+            return None;
+        }
+        *slot = metadata_column;
+    }
+    if result_to_metadata.contains(&usize::MAX) {
+        return None;
+    }
+    Some(RelationColumnMapping {
+        metadata_to_result,
+        result_to_metadata,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InsertResultStrategy {
+    Returning,
+    Output,
+    LookupByPrimaryKey,
+    LookupByRowId,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MutationCapability<T> {
+    Available(T),
+    Unavailable(EditDisabledReason),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelationMutationCapabilities {
+    pub insert: MutationCapability<InsertResultStrategy>,
+    pub update: MutationCapability<Vec<usize>>,
+    pub delete: MutationCapability<Vec<usize>>,
+}
+
+impl RelationMutationCapabilities {
+    pub fn allows_keyless_insert(&self) -> bool {
+        matches!(
+            self.insert,
+            MutationCapability::Available(
+                InsertResultStrategy::Returning
+                    | InsertResultStrategy::Output
+                    | InsertResultStrategy::LookupByRowId
+            )
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +122,7 @@ pub enum EditDisabledReason {
     MissingPrimaryKeyColumn(String),
     GeneratedColumn(String),
     UnsupportedRowValue,
+    UnsupportedInsertResultStrategy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +162,46 @@ pub fn metadata_fingerprint(ddl: &RelationDdl) -> MetadataFingerprint {
         relation: ddl.relation.qualified_name.object.clone(),
         columns,
         primary_key,
+    }
+}
+
+pub fn relation_mutation_capabilities(
+    kind: DatabaseKind,
+    metadata: &MetadataFingerprint,
+) -> RelationMutationCapabilities {
+    let primary_key_columns = metadata
+        .primary_key
+        .iter()
+        .map(|name| {
+            metadata
+                .columns
+                .iter()
+                .position(|(column, _, _)| column == name)
+        })
+        .collect::<Option<Vec<_>>>();
+    let existing_row_capability = match primary_key_columns {
+        Some(columns) if !columns.is_empty() => MutationCapability::Available(columns),
+        Some(_) | None => MutationCapability::Unavailable(EditDisabledReason::MissingPrimaryKey),
+    };
+    let insert_strategy = match kind {
+        DatabaseKind::Postgres | DatabaseKind::MariaDb => InsertResultStrategy::Returning,
+        DatabaseKind::SqlServer => InsertResultStrategy::Output,
+        DatabaseKind::Sqlite => InsertResultStrategy::LookupByRowId,
+        DatabaseKind::MySql if !metadata.primary_key.is_empty() => {
+            InsertResultStrategy::LookupByPrimaryKey
+        }
+        _ => InsertResultStrategy::Unsupported,
+    };
+    let insert = match insert_strategy {
+        InsertResultStrategy::Unsupported => {
+            MutationCapability::Unavailable(EditDisabledReason::UnsupportedInsertResultStrategy)
+        }
+        strategy => MutationCapability::Available(strategy),
+    };
+    RelationMutationCapabilities {
+        insert,
+        update: existing_row_capability.clone(),
+        delete: existing_row_capability,
     }
 }
 
@@ -234,8 +360,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        EditableRelationCapability, InputValue, MetadataFingerprint, editable_capability,
-        metadata_fingerprint,
+        EditableRelationCapability, InputValue, InsertResultStrategy, MetadataFingerprint,
+        MutationCapability, editable_capability, metadata_fingerprint, relation_column_mapping,
+        relation_mutation_capabilities,
     };
     use crate::{
         db::{
@@ -315,6 +442,66 @@ mod tests {
                 primary_key_columns: vec![0],
             })
         );
+    }
+
+    #[test]
+    fn mariadb_keyless_insert_is_available_but_existing_row_mutations_are_not() {
+        let metadata = MetadataFingerprint {
+            relation: "test1".into(),
+            columns: vec![
+                ("name".into(), "text".into(), true),
+                ("id".into(), "text".into(), true),
+            ],
+            primary_key: Vec::new(),
+        };
+        let capabilities = relation_mutation_capabilities(DatabaseKind::MariaDb, &metadata);
+        assert_eq!(
+            capabilities.insert,
+            MutationCapability::Available(InsertResultStrategy::Returning)
+        );
+        assert!(capabilities.allows_keyless_insert());
+        assert!(matches!(
+            capabilities.update,
+            MutationCapability::Unavailable(super::EditDisabledReason::MissingPrimaryKey)
+        ));
+        assert!(matches!(
+            capabilities.delete,
+            MutationCapability::Unavailable(super::EditDisabledReason::MissingPrimaryKey)
+        ));
+    }
+
+    #[test]
+    fn insert_result_strategy_does_not_make_mysql_keyless_insert_look_supported() {
+        let metadata = MetadataFingerprint {
+            relation: "test1".into(),
+            columns: vec![("value".into(), "text".into(), true)],
+            primary_key: Vec::new(),
+        };
+        let capabilities = relation_mutation_capabilities(DatabaseKind::MySql, &metadata);
+        assert!(!capabilities.allows_keyless_insert());
+        assert!(matches!(
+            capabilities.insert,
+            MutationCapability::Unavailable(
+                super::EditDisabledReason::UnsupportedInsertResultStrategy
+            )
+        ));
+    }
+
+    #[test]
+    fn relation_column_mapping_handles_reordered_result_columns() {
+        let metadata = MetadataFingerprint {
+            relation: "items".into(),
+            columns: vec![
+                ("name".into(), "text".into(), true),
+                ("id".into(), "integer".into(), false),
+            ],
+            primary_key: vec!["id".into()],
+        };
+        let mapping = relation_column_mapping(&metadata, &["id".into(), "name".into()]).unwrap();
+        assert_eq!(mapping.metadata_to_result(), &[1, 0]);
+        assert_eq!(mapping.result_to_metadata(), &[1, 0]);
+        assert_eq!(mapping.result_column_for_metadata(0), Some(1));
+        assert_eq!(mapping.metadata_column_for_result(0), Some(1));
     }
 
     fn relation_ddl_with_primary_key() -> RelationDdl {

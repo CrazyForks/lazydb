@@ -65,6 +65,18 @@ TZ=Asia/Shanghai
 
 ## 快速验证
 
+Relation Data 的 MariaDB mutation 回归必须使用强制数据库环境变量运行，避免无 URL 时静默跳过：
+
+```bash
+LAZYDB_REQUIRE_DATABASE_TESTS=1 \
+LAZYDB_TEST_MARIADB_URL='mariadb://lazydb:lazydb_password@127.0.0.1:3307/lazydb_test' \
+cargo test --lib mariadb_keyless_text_insert_round_trip_commits_and_rolls_back \
+  mariadb_insert_returning_returns_generated_row_for_explicit_null_key \
+  -- --nocapture --test-threads=1
+```
+
+回归覆盖无主键 `TEXT` 表的重复新增、事务提交和回滚，以及 MariaDB `INSERT ... RETURNING` 对服务器默认值/自增值的返回。测试会创建 UUID 后缀临时表，不修改下方固定 fixture 表。
+
 使用容器内的客户端执行检查：
 
 ```bash

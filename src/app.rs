@@ -14958,9 +14958,12 @@ impl App {
                         }
                         _ => Vec::new(),
                     };
-                    crate::model::relation_review::preview_sql(
+                    crate::model::relation_review::preview_sql_for_relation(
                         edit,
-                        tab.title(),
+                        &tab.descriptor.qualified_name,
+                        self.active_profile()
+                            .map(|profile| profile.kind)
+                            .unwrap_or(DatabaseKind::Sqlite),
                         &columns,
                         &primary_key_columns,
                     )
@@ -22027,17 +22030,78 @@ impl App {
             })
     }
 
+    fn relation_capabilities(&self) -> Option<crate::db::mutation::RelationMutationCapabilities> {
+        let kind = self.active_profile()?.kind;
+        let WorkspaceTab::Relation(tab) = self.tabs.get(self.active_tab)? else {
+            return None;
+        };
+        let RelationLoad::Ready(ddl) = &tab.ddl else {
+            return None;
+        };
+        Some(crate::db::mutation::relation_mutation_capabilities(
+            kind,
+            &crate::db::mutation::metadata_fingerprint(&ddl.value),
+        ))
+    }
+
+    fn relation_operation_available<T>(
+        capability: &crate::db::mutation::MutationCapability<T>,
+    ) -> bool {
+        matches!(
+            capability,
+            crate::db::mutation::MutationCapability::Available(_)
+        )
+    }
+
     fn relation_edit_cell(&mut self) {
         let database_kind = self.active_profile().map(|profile| profile.kind);
         let result = self.relation_result();
+        let row = self.active_grid_row();
+        let column = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| match tab {
+                WorkspaceTab::Relation(tab) => Some(tab.grid.selected_column),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let is_insert = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| match tab {
+                WorkspaceTab::Relation(tab) => tab
+                    .edit
+                    .as_ref()
+                    .and_then(|edit| edit.rows.get(row))
+                    .map(|row| {
+                        matches!(
+                            row.state,
+                            crate::model::relation_edit::EditableRowState::InsertDraft
+                        )
+                    }),
+                _ => None,
+            })
+            .unwrap_or(false);
+        if !is_insert
+            && self
+                .relation_capabilities()
+                .as_ref()
+                .is_some_and(|capabilities| {
+                    !Self::relation_operation_available(&capabilities.update)
+                })
+        {
+            self.notify_warning(
+                "Relation edit",
+                "Existing rows require a primary key for grid updates",
+            );
+            return;
+        }
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
             return;
         };
         if tab.view != RelationView::Data {
             return;
         }
-        let row = tab.grid.selected_row;
-        let column = tab.grid.selected_column;
         let Some(value) = tab
             .edit
             .as_ref()
@@ -22407,12 +22471,29 @@ impl App {
         ) {
             return self.load_relation_metadata_for_save(connection);
         }
-        let allow_keyless_insert = self
+        let database_kind = self
             .profiles
             .iter()
             .find(|profile| profile.id == connection.profile_id)
-            .is_some_and(|profile| profile.kind == crate::profile::DatabaseKind::Postgres);
-        let is_postgres = allow_keyless_insert;
+            .map(|profile| profile.kind);
+        let is_postgres = database_kind == Some(crate::profile::DatabaseKind::Postgres);
+        let allow_keyless_insert = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| match tab {
+                WorkspaceTab::Relation(tab) => match &tab.ddl {
+                    RelationLoad::Ready(ddl) => Some(
+                        crate::db::mutation::relation_mutation_capabilities(
+                            database_kind?,
+                            &crate::db::mutation::metadata_fingerprint(&ddl.value),
+                        )
+                        .allows_keyless_insert(),
+                    ),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap_or(false);
         let Some((keyless, has_insert, has_existing_mutation, has_unversioned_delete)) =
             self.tabs.get(self.active_tab).and_then(|tab| {
                 let WorkspaceTab::Relation(tab) = tab else {
@@ -22488,11 +22569,12 @@ impl App {
                 if columns.is_empty() {
                     return None;
                 }
-                let result_indexes = metadata
-                    .columns
+                let result_column_names = columns
                     .iter()
-                    .map(|(name, _, _)| columns.iter().position(|column| column.name == *name))
-                    .collect::<Option<Vec<_>>>()?;
+                    .map(|column| column.name.clone())
+                    .collect::<Vec<_>>();
+                let mapping =
+                    crate::db::mutation::relation_column_mapping(&metadata, &result_column_names)?;
                 let request = |row_id, operation| RelationMutationRequest {
                     tab_id: tab.id,
                     tab_generation: tab.generation,
@@ -22516,11 +22598,13 @@ impl App {
                             let pk_columns = pk_columns.as_ref()?;
                             let mut changed_columns =
                                 changed_columns.iter().copied().collect::<Vec<_>>();
-                            changed_columns.sort_by_key(|column| pk_columns.contains(column));
+                            changed_columns.sort_by_key(|column| {
+                                mapping.metadata_column_for_result(*column).is_some_and(
+                                    |metadata_column| pk_columns.contains(&metadata_column),
+                                )
+                            });
                             for column in changed_columns {
-                                let metadata_column = result_indexes
-                                    .iter()
-                                    .position(|result_column| *result_column == column)?;
+                                let metadata_column = mapping.metadata_column_for_result(column)?;
                                 requests.push(request(
                                     row.id,
                                     RelationMutation::UpdateCell(UpdateCellMutation {
@@ -22529,16 +22613,22 @@ impl App {
                                             values: pk_columns
                                                 .iter()
                                                 .filter_map(|index| {
-                                                    row.original
-                                                        .get(result_indexes[*index])
-                                                        .cloned()
+                                                    mapping
+                                                        .result_column_for_metadata(*index)
+                                                        .and_then(|result_column| {
+                                                            row.original.get(result_column).cloned()
+                                                        })
                                                 })
                                                 .collect(),
                                         },
                                         column: metadata_column,
-                                        original: row.original.get(result_indexes[column])?.clone(),
+                                        original: row
+                                            .original
+                                            .get(mapping.result_column_for_metadata(column)?)?
+                                            .clone(),
                                         value: input_value(
-                                            row.current.get(result_indexes[column])?,
+                                            row.current
+                                                .get(mapping.result_column_for_metadata(column)?)?,
                                         ),
                                     }),
                                 ));
@@ -22548,26 +22638,13 @@ impl App {
                             if metadata.primary_key.is_empty() && !allow_keyless_insert {
                                 return None;
                             }
-                            let supplied = row
-                                .supplied_columns
-                                .iter()
-                                .map(|result_column| {
-                                    result_indexes
-                                        .iter()
-                                        .position(|index| index == result_column)
-                                })
-                                .collect::<Option<Vec<_>>>()?;
-                            let values = supplied
-                                .iter()
-                                .filter_map(|column| {
-                                    row.current.get(result_indexes[*column]).map(input_value)
-                                })
-                                .collect();
+                            let planned =
+                                crate::db::relation_plan::plan_insert(row, &metadata, &mapping)?;
                             requests.push(request(
                                 row.id,
                                 RelationMutation::InsertRow(InsertRowMutation {
-                                    columns: supplied,
-                                    values,
+                                    columns: planned.columns,
+                                    values: planned.values,
                                 }),
                             ));
                         }
@@ -22580,13 +22657,20 @@ impl App {
                                     values: pk_columns
                                         .iter()
                                         .filter_map(|index| {
-                                            row.original.get(result_indexes[*index]).cloned()
+                                            mapping.result_column_for_metadata(*index).and_then(
+                                                |result_column| {
+                                                    row.original.get(result_column).cloned()
+                                                },
+                                            )
                                         })
                                         .collect(),
                                 },
-                                original: result_indexes
+                                original: mapping
+                                    .metadata_to_result()
                                     .iter()
-                                    .filter_map(|index| row.original.get(*index).cloned())
+                                    .filter_map(|result_column| {
+                                        row.original.get(*result_column).cloned()
+                                    })
                                     .collect(),
                                 version: row.version,
                             });
@@ -22622,9 +22706,14 @@ impl App {
                     }
                     _ => Vec::new(),
                 };
-                Some(crate::model::relation_review::preview_sql(
+                Some(crate::model::relation_review::preview_sql_for_relation(
                     edit,
-                    tab.title(),
+                    &tab.descriptor.qualified_name,
+                    self.profiles
+                        .iter()
+                        .find(|profile| profile.id == tab.descriptor.key.profile_id)
+                        .map(|profile| profile.kind)
+                        .unwrap_or(DatabaseKind::Sqlite),
                     &columns,
                     &primary_key_columns,
                 ))
@@ -22987,6 +23076,37 @@ impl App {
     }
 
     fn relation_delete_range(&mut self, range: std::ops::RangeInclusive<usize>) -> Vec<Command> {
+        let contains_existing_row = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|tab| match tab {
+                WorkspaceTab::Relation(tab) => tab.edit.as_ref().map(|edit| {
+                    range.clone().any(|index| {
+                        edit.rows.get(index).is_some_and(|row| {
+                            !matches!(
+                                row.state,
+                                crate::model::relation_edit::EditableRowState::InsertDraft
+                            )
+                        })
+                    })
+                }),
+                _ => None,
+            })
+            .unwrap_or(false);
+        if contains_existing_row
+            && self
+                .relation_capabilities()
+                .as_ref()
+                .is_some_and(|capabilities| {
+                    !Self::relation_operation_available(&capabilities.delete)
+                })
+        {
+            self.notify_warning(
+                "Relation edit",
+                "Existing rows require a primary key for grid deletes",
+            );
+            return Vec::new();
+        }
         if let Some(edit) = self.relation_session_mut() {
             edit.delete_rows(range);
         };
@@ -23074,6 +23194,17 @@ impl App {
         }
     }
     fn relation_paste(&mut self) -> Vec<Command> {
+        if self
+            .relation_capabilities()
+            .as_ref()
+            .is_some_and(|capabilities| !Self::relation_operation_available(&capabilities.insert))
+        {
+            self.notify_warning(
+                "Relation edit",
+                "This database driver cannot return inserted grid rows reliably",
+            );
+            return Vec::new();
+        }
         let row = self.active_grid_row();
         let Some(edit) = self.relation_session_mut() else {
             return Vec::new();
@@ -23085,6 +23216,17 @@ impl App {
         Vec::new()
     }
     fn relation_insert_row(&mut self) -> Vec<Command> {
+        if self
+            .relation_capabilities()
+            .as_ref()
+            .is_some_and(|capabilities| !Self::relation_operation_available(&capabilities.insert))
+        {
+            self.notify_warning(
+                "Relation edit",
+                "This database driver cannot return inserted grid rows reliably",
+            );
+            return Vec::new();
+        }
         let row = self.active_grid_row();
         let columns = self.relation_result().map_or(0, |r| r.columns.len());
         let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab) else {
@@ -26247,16 +26389,220 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn relation_save_allows_mariadb_insert_without_primary_key() {
+        let mut profile = import_connection_url("mariadb://localhost/items", Some("items"))
+            .unwrap()
+            .profile;
+        let profile_id = profile.id;
+        profile.catalog_scope = CatalogScope::for_profile(DatabaseKind::MariaDb, "items", None);
+        let connection = ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        };
+        let relation_id =
+            CatalogId::new(profile_id, CatalogKind::Table, ["items", "items", "test1"]);
+        let relation_key = RelationKey {
+            profile_id,
+            object_id: relation_id.clone(),
+        };
+        let mut app = App::new(vec![profile.clone()]);
+        app.connection.profile_id = Some(profile_id);
+        app.connection.generation = connection.generation;
+        app.connection.status = ConnectionStatus::Connected;
+        app.connection.target = Some(ExecutionTarget {
+            profile_id,
+            database: "items".into(),
+            schema: None,
+        });
+        let result = ResultSet {
+            columns: vec![
+                crate::db::query::ColumnMeta {
+                    name: "name".into(),
+                    type_name: "text".into(),
+                },
+                crate::db::query::ColumnMeta {
+                    name: "id".into(),
+                    type_name: "text".into(),
+                },
+            ],
+            rows: Vec::new(),
+            affected_rows: 0,
+        };
+        let mut tab = RelationTab::with_descriptor(
+            RelationDescriptor {
+                key: relation_key,
+                qualified_name: QualifiedName {
+                    database: Some("items".into()),
+                    schema: None,
+                    object: "test1".into(),
+                },
+                kind: CatalogKind::Table,
+                title: "test1".into(),
+            },
+            RelationView::Data,
+        );
+        tab.data = RelationLoad::Ready(OwnedSnapshot {
+            value: crate::db::RelationPreview {
+                sql: "SELECT * FROM test1".into(),
+                result: QueryOutcome::from_result_set(result, Duration::ZERO, Duration::ZERO),
+                pagination: crate::model::pagination::ResultPagination::from_page(
+                    crate::model::pagination::PageRequest::first(
+                        crate::model::pagination::PageSize::default(),
+                    ),
+                    0,
+                ),
+                row_versions: None,
+            },
+            attribution: SnapshotAttribution {
+                connection,
+                profile_id,
+                scope: profile.catalog_scope.clone(),
+            },
+        });
+        let mut edit = RelationEditSession::from_rows(Vec::new());
+        edit.insert_row(
+            0,
+            vec![CellValue::Text("1".into()), CellValue::Text("2".into())],
+        );
+        edit.update_cell(0, 0, CellValue::Text("1".into()));
+        edit.update_cell(0, 1, CellValue::Text("2".into()));
+        tab.edit = Some(edit);
+        tab.ddl = RelationLoad::Ready(OwnedSnapshot {
+            value: test_relation_ddl_without_primary_key(connection, relation_id),
+            attribution: SnapshotAttribution {
+                connection,
+                profile_id,
+                scope: profile.catalog_scope,
+            },
+        });
+        app.tabs.push(WorkspaceTab::Relation(tab));
+        app.active_tab = app.tabs.len() - 1;
+
+        let commands = app.update(Action::RelationCommit);
+        let [Command::RelationMutation { request }] = commands.as_slice() else {
+            panic!("expected MariaDB keyless insert command, got {commands:?}");
+        };
+        assert!(request.metadata.primary_key.is_empty());
+        assert!(matches!(
+            &request.operation,
+            RelationMutation::InsertRow(mutation)
+                if mutation.columns == vec![1, 0]
+                    && mutation.values
+                        == vec![
+                            InputValue::Value(CellValue::Text("1".into())),
+                            InputValue::Value(CellValue::Text("2".into())),
+                        ]
+        ));
+    }
+
+    #[test]
+    fn relation_save_rejects_keyless_existing_mutations_before_insert() {
+        let mut profile = import_connection_url("mariadb://localhost/items", Some("items"))
+            .unwrap()
+            .profile;
+        let profile_id = profile.id;
+        profile.catalog_scope = CatalogScope::for_profile(DatabaseKind::MariaDb, "items", None);
+        let connection = ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        };
+        let relation_id =
+            CatalogId::new(profile_id, CatalogKind::Table, ["items", "items", "test1"]);
+        let relation_key = RelationKey {
+            profile_id,
+            object_id: relation_id.clone(),
+        };
+        let mut app = App::new(vec![profile.clone()]);
+        app.connection.profile_id = Some(profile_id);
+        app.connection.generation = connection.generation;
+        app.connection.status = ConnectionStatus::Connected;
+        app.connection.target = Some(ExecutionTarget {
+            profile_id,
+            database: "items".into(),
+            schema: None,
+        });
+        let result = ResultSet {
+            columns: vec![crate::db::query::ColumnMeta {
+                name: "name".into(),
+                type_name: "text".into(),
+            }],
+            rows: vec![vec![CellValue::Text("old".into())]],
+            affected_rows: 0,
+        };
+        let mut tab = RelationTab::with_descriptor(
+            RelationDescriptor {
+                key: relation_key,
+                qualified_name: QualifiedName {
+                    database: Some("items".into()),
+                    schema: None,
+                    object: "test1".into(),
+                },
+                kind: CatalogKind::Table,
+                title: "test1".into(),
+            },
+            RelationView::Data,
+        );
+        tab.data = RelationLoad::Ready(OwnedSnapshot {
+            value: crate::db::RelationPreview {
+                sql: "SELECT * FROM test1".into(),
+                result: QueryOutcome::from_result_set(result, Duration::ZERO, Duration::ZERO),
+                pagination: crate::model::pagination::ResultPagination::from_page(
+                    crate::model::pagination::PageRequest::first(
+                        crate::model::pagination::PageSize::default(),
+                    ),
+                    1,
+                ),
+                row_versions: None,
+            },
+            attribution: SnapshotAttribution {
+                connection,
+                profile_id,
+                scope: profile.catalog_scope.clone(),
+            },
+        });
+        let mut edit = RelationEditSession::from_rows(vec![vec![CellValue::Text("old".into())]]);
+        edit.update_cell(0, 0, CellValue::Text("new".into()));
+        edit.insert_row(1, vec![CellValue::Text("insert".into())]);
+        edit.update_cell(1, 0, CellValue::Text("insert".into()));
+        tab.edit = Some(edit);
+        tab.ddl = RelationLoad::Ready(OwnedSnapshot {
+            value: test_relation_ddl_without_primary_key(connection, relation_id),
+            attribution: SnapshotAttribution {
+                connection,
+                profile_id,
+                scope: profile.catalog_scope,
+            },
+        });
+        app.tabs.push(WorkspaceTab::Relation(tab));
+        app.active_tab = app.tabs.len() - 1;
+
+        let commands = app.update(Action::RelationCommit);
+        assert!(commands.is_empty());
+        let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
+            panic!("expected relation tab");
+        };
+        assert!(tab.edit.as_ref().is_some_and(|edit| edit.has_dirty_rows()));
+    }
+
     fn test_relation_ddl(request: RelationRequest, relation_id: CatalogId) -> RelationDdl {
         let profile_id = request.connection.profile_id;
+        let path = relation_id.native_path.clone();
+        let [database, schema, object] = path.as_slice() else {
+            panic!("test relation ID must have database, schema, and object segments");
+        };
         let qualified = QualifiedName {
-            database: Some("items".into()),
-            schema: Some("main".into()),
-            object: "items".into(),
+            database: Some(database.clone()),
+            schema: Some(schema.clone()),
+            object: object.clone(),
         };
         let relation = CatalogEntry::relation(
             relation_id.clone(),
-            CatalogId::new(profile_id, CatalogKind::Schema, ["items", "main"]),
+            CatalogId::new(
+                profile_id,
+                CatalogKind::Schema,
+                [database.as_str(), schema.as_str()],
+            ),
             qualified.clone(),
             "table",
             OptionalMetadata::Unsupported,
@@ -26268,7 +26614,7 @@ mod tests {
                 CatalogId::new(
                     profile_id,
                     CatalogKind::Column,
-                    ["items", "main", "items", "id"],
+                    [database.as_str(), schema.as_str(), object.as_str(), "id"],
                 ),
                 relation_id.clone(),
                 QualifiedName {
@@ -26284,7 +26630,7 @@ mod tests {
                 CatalogId::new(
                     profile_id,
                     CatalogKind::Column,
-                    ["items", "main", "items", "name"],
+                    [database.as_str(), schema.as_str(), object.as_str(), "name"],
                 ),
                 relation_id.clone(),
                 QualifiedName {
@@ -26300,7 +26646,12 @@ mod tests {
                 CatalogId::new(
                     profile_id,
                     CatalogKind::PrimaryKey,
-                    ["items", "main", "items", "items_pkey"],
+                    [
+                        database.as_str(),
+                        schema.as_str(),
+                        object.as_str(),
+                        &format!("{object}_pkey"),
+                    ],
                 ),
                 relation_id.clone(),
                 QualifiedName {
@@ -26332,7 +26683,7 @@ mod tests {
             relation,
             children: CatalogPage::new(&catalog_request, entries, CatalogCount::Exact(3), None)
                 .unwrap(),
-            sql: "CREATE TABLE items (id integer primary key, name text)".into(),
+            sql: format!("CREATE TABLE {object} (id integer primary key, name text)"),
             provenance: DdlProvenance::NativeCatalog,
         }
     }
@@ -26341,6 +26692,11 @@ mod tests {
         connection: ConnectionIdentity,
         relation_id: CatalogId,
     ) -> RelationDdl {
+        let object = relation_id
+            .native_path
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "items".into());
         let request = RelationRequest {
             tab_id: Uuid::new_v4(),
             tab_generation: 0,
@@ -26351,7 +26707,21 @@ mod tests {
                 object_id: relation_id.clone(),
             },
             kind: RelationRequestKind::Ddl,
-            scope: CatalogScope::for_profile(DatabaseKind::Postgres, "items", Some("main")),
+            scope: CatalogScope::for_profile(
+                if relation_id.native_path.first() == relation_id.native_path.get(1) {
+                    DatabaseKind::MariaDb
+                } else {
+                    DatabaseKind::Postgres
+                },
+                relation_id
+                    .native_path
+                    .first()
+                    .map(String::as_str)
+                    .unwrap_or("items"),
+                (relation_id.native_path.first() != relation_id.native_path.get(1))
+                    .then(|| relation_id.native_path.get(1).map(String::as_str))
+                    .flatten(),
+            ),
             options: Default::default(),
             page: crate::model::pagination::PageRequest::first(
                 crate::model::pagination::PageSize::default(),
@@ -26365,7 +26735,7 @@ mod tests {
             )
         });
         ddl.children.total_count = CatalogCount::Exact(2);
-        ddl.sql = "CREATE TABLE items (id bigint NOT NULL, name text)".into();
+        ddl.sql = format!("CREATE TABLE {object} (id bigint NOT NULL, name text)");
         ddl
     }
 

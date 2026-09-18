@@ -6,6 +6,21 @@ machine.
 
 ## Driver Matrix
 
+## Relation Data Mutation Matrix
+
+Relation Data 的行操作能力与 Catalog DDL 能力分开判断。新增一行不要求表有主键；更新和删除已有行仍要求可可靠定位，当前网格使用完整主键。插入结果必须来自数据库返回或可靠回查，不能用草稿值代替服务器生成的默认值、身份值或触发器结果。
+
+| Driver | Insert result strategy | Keyless insert | Existing-row update/delete |
+| --- | --- | --- | --- |
+| PostgreSQL | `INSERT ... RETURNING` | Available | Primary key plus PostgreSQL row-version rules |
+| MariaDB 10.5+ | `INSERT ... RETURNING` | Available | Primary key |
+| Oracle MySQL | Primary-key lookup / auto-increment result | Requires reliable key metadata | Primary key |
+| SQL Server | `OUTPUT inserted.*` | Available where OUTPUT semantics are supported | Primary key |
+| SQLite rowid table | Same-connection `last_insert_rowid()` lookup | Available for ordinary rowid tables | Primary key |
+| SQLite `WITHOUT ROWID` / unsupported virtual table shape | Shape-specific strategy required | Capability-gated | Primary key |
+
+Review SQL uses the canonical catalog identity and driver identifier quoting. MariaDB/MySQL use backticks and `() VALUES ()` for an empty-column insert; PostgreSQL/SQLite retain `DEFAULT VALUES`. Review SQL is display-only; execution always uses typed, bound mutation requests.
+
 ## Catalog Mutation Matrix
 
 Catalog browsing and catalog mutation are separate contracts. A database is
