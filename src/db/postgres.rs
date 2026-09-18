@@ -2480,6 +2480,49 @@ LIMIT 2001
         let mut warnings = Vec::new();
         let mut destructive = false;
         if let Some(table) = &base {
+            let baseline_existing = table
+                .columns
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>();
+            let draft_existing = draft
+                .columns
+                .iter()
+                .filter(|row| {
+                    !matches!(
+                        row.state,
+                        DraftRowState::Added | DraftRowState::Removed { .. }
+                    )
+                })
+                .filter_map(|row| row.existing_name.as_deref())
+                .collect::<Vec<_>>();
+            let surviving = baseline_existing
+                .iter()
+                .copied()
+                .filter(|name| draft_existing.contains(name))
+                .collect::<Vec<_>>();
+            let draft_order = draft
+                .columns
+                .iter()
+                .filter(|row| !matches!(row.state, DraftRowState::Removed { .. }))
+                .collect::<Vec<_>>();
+            let draft_existing_order = draft_order
+                .iter()
+                .filter_map(|row| row.existing_name.as_deref())
+                .collect::<Vec<_>>();
+            let additions_are_at_end = draft_order
+                .iter()
+                .position(|row| matches!(row.state, DraftRowState::Added))
+                .is_none_or(|first_added| {
+                    draft_order[first_added..]
+                        .iter()
+                        .all(|row| matches!(row.state, DraftRowState::Added))
+                });
+            if surviving != draft_existing_order || !additions_are_at_end {
+                return Err(CatalogMutationError::InvalidDraft {
+                    reason: "PostgreSQL table edits cannot reorder existing columns or insert a column before an existing column".into(),
+                });
+            }
             let old_relation = relation(&table.schema, &table.name);
             let current_relation = relation(schema, name);
             if table.name != name {

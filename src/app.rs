@@ -235,6 +235,8 @@ pub struct App {
     pane_layout: PaneLayoutMetrics,
     pub overlay: Option<Overlay>,
     pub omni: Option<crate::model::omni::OmniState>,
+    help_panel_view: crate::config::HelpPanelView,
+    help_panel_session: Option<crate::model::help_panel::HelpPanelSession>,
     pub profile_manager: Option<ProfileManagerState>,
     pub catalog_editor: Option<CatalogEditorState>,
     pub system_credential_availability: crate::persistence::secrets::SecretStoreAvailability,
@@ -813,6 +815,8 @@ impl App {
             pane_layout: PaneLayoutMetrics::default(),
             overlay: None,
             omni: None,
+            help_panel_view: crate::config::HelpPanelView::Help,
+            help_panel_session: None,
             profile_manager: None,
             catalog_editor: None,
             system_credential_availability:
@@ -900,6 +904,73 @@ impl App {
         access: crate::config::ConnectionAccessDefault,
     ) {
         self.default_connection_access = access;
+    }
+
+    pub fn set_help_panel_view(&mut self, view: crate::config::HelpPanelView) {
+        self.help_panel_view = view;
+    }
+
+    fn build_help_view(&self) -> crate::help::HelpState {
+        let context = crate::help::shortcut_context(self);
+        let capabilities = crate::help::shortcut_capabilities(self);
+        crate::help::HelpState::with_bindings(context, capabilities, self.key_bindings.clone())
+    }
+
+    fn open_help_view(&mut self) {
+        let help = self.build_help_view();
+        let origin_overlay = self.overlay.take();
+        self.overlay = Some(Overlay::Help(help));
+        if origin_overlay.is_some() || self.help_panel_session.is_none() {
+            let mut session = self.help_panel_session.take().unwrap_or_default();
+            session.origin_overlay = origin_overlay;
+            self.help_panel_session = Some(session);
+        }
+    }
+
+    fn toggle_help_panel(&mut self, persist: bool) -> Vec<Command> {
+        if let Some(help) = self.overlay.take().and_then(|overlay| match overlay {
+            Overlay::Help(help) => Some(help),
+            other => {
+                self.overlay = Some(other);
+                None
+            }
+        }) {
+            let mut omni = self
+                .help_panel_session
+                .as_mut()
+                .and_then(|session| session.omni.take())
+                .unwrap_or_else(|| {
+                    self.next_omni_session = self.next_omni_session.saturating_add(1);
+                    crate::model::omni::OmniState::new(self.next_omni_session, self.omni_context())
+                });
+            let mut session = self.help_panel_session.take().unwrap_or_default();
+            omni.origin_overlay = session.origin_overlay.take();
+            session.omni = None;
+            self.help_panel_session = Some(crate::model::help_panel::HelpPanelSession {
+                origin_overlay: omni.origin_overlay.clone(),
+                help: Some(help),
+                omni: None,
+            });
+            self.omni = Some(omni);
+            self.help_panel_view = crate::config::HelpPanelView::Omni;
+            self.refresh_omni_items();
+            return persist
+                .then_some(Command::PersistHelpPanelView(self.help_panel_view))
+                .into_iter()
+                .collect();
+        }
+        if let Some(omni) = self.omni.take() {
+            let mut session = self.help_panel_session.take().unwrap_or_default();
+            session.origin_overlay = omni.origin_overlay.clone();
+            session.omni = Some(omni);
+            self.overlay = session.help.take().map(Overlay::Help);
+            self.help_panel_session = Some(session);
+            self.help_panel_view = crate::config::HelpPanelView::Help;
+        }
+        persist
+            .then_some(Command::PersistHelpPanelView(self.help_panel_view))
+            .into_iter()
+            .collect()
     }
 
     pub fn dashboard_refresh_interval_seconds(&self) -> u64 {
@@ -2538,6 +2609,7 @@ impl App {
             return Vec::new();
         }
         self.overlay = None;
+        self.help_panel_session = None;
         if let Some(command_id) = crate::commands::command_for_help(id) {
             let context = self.omni_context();
             return self.execute_semantic_command(command_id, context);
@@ -3730,6 +3802,8 @@ impl App {
             && !matches!(
                 action,
                 Action::OpenOmni
+                    | Action::ToggleHelpPanel
+                    | Action::HelpPanelSettingsWriteFailed(_)
                     | Action::OmniEdit(_)
                     | Action::OmniPaste(_)
                     | Action::OmniMove(_)
@@ -6187,6 +6261,13 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::HelpPanelSettingsWriteFailed(message) => {
+                self.notify_warning(
+                    "Settings",
+                    format!("Could not save help panel preference: {message}"),
+                );
+                Vec::new()
+            }
             Action::RestartForUpdate => {
                 let Some(inspection) = self.update_inspection().cloned() else {
                     return Vec::new();
@@ -6216,18 +6297,24 @@ impl App {
                 Vec::new()
             }
             Action::ShowHelp => {
-                let context = crate::help::shortcut_context(self);
-                let capabilities = crate::help::shortcut_capabilities(self);
-                self.overlay = Some(Overlay::Help(crate::help::HelpState::with_bindings(
-                    context,
-                    capabilities,
-                    self.key_bindings.clone(),
-                )));
+                match self.help_panel_view {
+                    crate::config::HelpPanelView::Help => self.open_help_view(),
+                    crate::config::HelpPanelView::Omni => {
+                        let help = self.build_help_view();
+                        self.overlay = Some(Overlay::Help(help));
+                        return self.toggle_help_panel(false);
+                    }
+                }
                 Vec::new()
             }
+            Action::ToggleHelpPanel => self.toggle_help_panel(true),
             Action::OpenOmni => {
+                if matches!(self.overlay, Some(Overlay::Help(_))) {
+                    return self.toggle_help_panel(true);
+                }
                 if let Some(omni) = self.omni.take() {
                     self.overlay = omni.origin_overlay;
+                    self.help_panel_session = None;
                     return Vec::new();
                 }
                 self.next_omni_session = self.next_omni_session.saturating_add(1);
@@ -6276,6 +6363,7 @@ impl App {
                         self.refresh_omni_items();
                     } else {
                         self.overlay = omni.origin_overlay;
+                        self.help_panel_session = None;
                     }
                 }
                 Vec::new()
@@ -6283,6 +6371,7 @@ impl App {
             Action::OmniDismiss => {
                 if let Some(omni) = self.omni.take() {
                     self.overlay = omni.origin_overlay;
+                    self.help_panel_session = None;
                 }
                 Vec::new()
             }
@@ -6594,6 +6683,13 @@ impl App {
             }
             Action::ExecuteHelpShortcut(id) => self.execute_help_shortcut(id),
             Action::DismissOverlay => {
+                if matches!(self.overlay, Some(Overlay::Help(_))) {
+                    self.overlay = None;
+                    if let Some(session) = self.help_panel_session.take() {
+                        self.overlay = session.origin_overlay;
+                    }
+                    return Vec::new();
+                }
                 if matches!(self.overlay, Some(Overlay::SqlHistory(_))) {
                     if let Some(Overlay::SqlHistory(view)) = self.overlay.take() {
                         self.editor.close_console(view.editor_session_id);
@@ -7795,6 +7891,28 @@ impl App {
                     .and_then(|editor| editor.draft.as_mut())
                 {
                     draft.begin_add_column_below();
+                    draft.finish_edit_group();
+                }
+                Vec::new()
+            }
+            Action::CatalogEditorAddTableColumnAbove => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.begin_add_column_above();
+                    draft.finish_edit_group();
+                }
+                Vec::new()
+            }
+            Action::CatalogEditorReorderTableColumn(delta) => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.reorder_selected_column(delta);
                     draft.finish_edit_group();
                 }
                 Vec::new()

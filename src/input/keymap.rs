@@ -110,6 +110,13 @@ impl Keymap {
             }
             return map_omni(event, app);
         }
+        if matches!(app.overlay, Some(Overlay::Help(_)))
+            && event.modifiers == KeyModifiers::NONE
+            && event.code == KeyCode::Tab
+        {
+            self.pending = None;
+            return Some(Action::ToggleHelpPanel);
+        }
         if self.bindings.matches("omni", event) {
             self.pending = None;
             return (event.kind != KeyEventKind::Repeat).then_some(Action::OpenOmni);
@@ -2796,6 +2803,9 @@ fn map_table_editor(
     }
     if event.modifiers != KeyModifiers::NONE
         && !matches!(event.code, KeyCode::Tab | KeyCode::BackTab)
+        && !(field == TableEditorFocus::Columns
+            && event.modifiers == KeyModifiers::SHIFT
+            && matches!(event.code, KeyCode::Char('A' | 'J' | 'K' | 'a' | 'j' | 'k')))
     {
         return None;
     }
@@ -2831,11 +2841,22 @@ fn map_table_editor(
         };
     }
     if field == TableEditorFocus::Columns {
+        if event.modifiers == KeyModifiers::SHIFT {
+            return match event.code {
+                KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumnAbove),
+                KeyCode::Char('j') => Some(Action::CatalogEditorReorderTableColumn(1)),
+                KeyCode::Char('k') => Some(Action::CatalogEditorReorderTableColumn(-1)),
+                _ => None,
+            };
+        }
         return match event.code {
             KeyCode::Enter => Some(Action::CatalogEditorPreview),
             KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumn),
+            KeyCode::Char('A') => Some(Action::CatalogEditorAddTableColumnAbove),
             KeyCode::Char('j') => Some(Action::CatalogEditorFieldNext),
             KeyCode::Char('k') => Some(Action::CatalogEditorFieldPrevious),
+            KeyCode::Char('J') => Some(Action::CatalogEditorReorderTableColumn(1)),
+            KeyCode::Char('K') => Some(Action::CatalogEditorReorderTableColumn(-1)),
             KeyCode::Char('e') if editor_table_has_selected_column(editor) => {
                 Some(Action::CatalogEditorOpenTableColumnDetails)
             }
@@ -3277,7 +3298,8 @@ fn map_omni(event: KeyEvent, app: &App) -> Option<Action> {
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => Some(Action::OmniDismiss),
         (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::OmniCancel),
         (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::OmniConfirm),
-        (KeyModifiers::NONE, KeyCode::Tab) => Some(Action::OmniShowActions),
+        (KeyModifiers::NONE, KeyCode::Tab) => Some(Action::ToggleHelpPanel),
+        (KeyModifiers::NONE, KeyCode::BackTab) => Some(Action::OmniShowActions),
         (KeyModifiers::NONE, KeyCode::Up) => Some(Action::OmniMove(-1)),
         (KeyModifiers::NONE, KeyCode::Down) => Some(Action::OmniMove(1)),
         (KeyModifiers::NONE, KeyCode::Char(character)) => Some(Action::OmniEdit(

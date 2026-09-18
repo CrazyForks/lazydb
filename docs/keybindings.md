@@ -94,7 +94,7 @@ Relation Data while edits or transaction restrictions are pending.
 | Keys | Behavior |
 | --- | --- |
 | `F1` | Open contextual Help |
-| `F2` | Open the global Omni action and object switcher |
+| `F2` | Open the global Omni action and object switcher; from Help, switch to Omni |
 | `F6` | Open the SQL console manager |
 | `F7` | Open SQL execution history |
 | `F8` | Open notification history |

@@ -176,6 +176,25 @@ pub enum ClipboardBackend {
 pub struct UiConfig {
     pub icons: IconMode,
     pub motion: MotionMode,
+    #[serde(default)]
+    pub help_panel: HelpPanelView,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HelpPanelView {
+    #[default]
+    Help,
+    Omni,
+}
+
+impl HelpPanelView {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Help => "help",
+            Self::Omni => "omni",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -635,6 +654,7 @@ mod tests {
 
     use super::{
         AppConfig, ClipboardBackend, ConfigError, ConnectionAccessDefault, DEFAULT_CONFIG_TOML,
+        HelpPanelView,
     };
     use crate::{cli::MotionMode, ui::icons::IconMode};
 
@@ -643,6 +663,7 @@ mod tests {
         let config = AppConfig::from_toml(DEFAULT_CONFIG_TOML).unwrap();
 
         assert_eq!(config.ui.icons, IconMode::NerdFont);
+        assert_eq!(config.ui.help_panel, HelpPanelView::Help);
         assert_eq!(config.keybindings.sequence_timeout_ms, 750);
         assert_eq!(
             config.connections.default_access,
@@ -653,6 +674,20 @@ mod tests {
         assert_eq!(config.redis.page_size, 200);
         assert_eq!(config.redis.memory_key_limit, 10_000);
         assert_eq!(config.redis.preview_debounce_ms, 100);
+    }
+
+    #[test]
+    fn help_panel_setting_defaults_for_legacy_config_and_accepts_omni() {
+        let legacy = DEFAULT_CONFIG_TOML.replace("help_panel = \"help\"\n", "");
+        assert_eq!(
+            AppConfig::from_toml(&legacy).unwrap().ui.help_panel,
+            HelpPanelView::Help
+        );
+        let omni = DEFAULT_CONFIG_TOML.replace("help_panel = \"help\"", "help_panel = \"omni\"");
+        assert_eq!(
+            AppConfig::from_toml(&omni).unwrap().ui.help_panel,
+            HelpPanelView::Omni
+        );
     }
 
     #[test]

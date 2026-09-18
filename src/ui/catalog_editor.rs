@@ -1793,7 +1793,7 @@ fn render_table(
             theme,
         );
     }
-    let hints = table_shortcut_hints(draft);
+    let hints = table_shortcut_hints(draft, compact);
     let hint_lines = shortcut_hints::lines(&hints, area.width, theme, theme.surface);
     // Keep the action row and wrapped shortcut footer inside the form's available area.
     let footer_height = hint_lines.len().max(1) as u16;
@@ -1981,9 +1981,14 @@ fn render_table(
     if show_summary {
         let summary_text = if summary.is_dirty() {
             format!(
-                "Changes  {}{} added  {} modified  {} removed",
+                "Changes  {}{}{} added  {} modified  {} removed",
                 if summary.properties_changed {
                     "table properties changed · "
+                } else {
+                    ""
+                },
+                if summary.column_order_changed {
+                    "column order changed · "
                 } else {
                     ""
                 },
@@ -2092,15 +2097,23 @@ fn render_table(
     );
 }
 
-fn table_shortcut_hints(draft: &TableDraft) -> Vec<ShortcutHint<'static>> {
+fn table_shortcut_hints(draft: &TableDraft, compact: bool) -> Vec<ShortcutHint<'static>> {
     if draft.column_editor.is_some() {
         return Vec::new();
     }
     match draft.focus {
+        TableEditorFocus::Columns if compact => vec![
+            ShortcutHint::new("A/a", "add"),
+            ShortcutHint::new("J/K", "reorder"),
+            ShortcutHint::new("dd", "delete"),
+            ShortcutHint::new("Esc", "cancel"),
+        ],
         TableEditorFocus::Columns => vec![
             ShortcutHint::new("j/k · Up/Down", "move row"),
             ShortcutHint::new("Tab/Shift-Tab", "move focus"),
             ShortcutHint::new("a", "add below"),
+            ShortcutHint::new("A", "add above"),
+            ShortcutHint::new("J/K", "reorder"),
             ShortcutHint::new("e", "edit column"),
             ShortcutHint::new("dd", "delete column"),
             ShortcutHint::new("r", "restore"),
@@ -2149,19 +2162,31 @@ fn table_column_widths(draft: &TableDraft, width: u16) -> (u16, u16, u16, u16) {
             *target = (*target).max(measured);
         }
     }
-    for column in &mut ideal {
+    for column in &mut ideal[..3] {
         *column = (*column + 2).clamp(6, 40);
     }
-    let minimum = [6usize, 6, 10, 9];
+    ideal[3] = 9;
+    let minimum = [6usize, 6, 10];
     let budget = usize::from(width.saturating_sub(7));
-    while ideal.iter().sum::<usize>() > budget {
-        let Some(index) = (0..ideal.len())
+    while ideal[..3].iter().sum::<usize>() + ideal[3] > budget {
+        let Some(index) = (0..3)
             .filter(|&index| ideal[index] > minimum[index])
             .max_by_key(|&index| ideal[index] - minimum[index])
         else {
             break;
         };
         ideal[index] -= 1;
+    }
+    if ideal[..3].iter().sum::<usize>() + ideal[3] > budget {
+        let mut remaining = budget;
+        for column in &mut ideal[..3] {
+            let value = (*column).min(remaining);
+            *column = value;
+            remaining = remaining.saturating_sub(value);
+        }
+        ideal[3] = remaining;
+    } else {
+        ideal[3] = budget.saturating_sub(ideal[..3].iter().sum());
     }
     (
         ideal[0] as u16,

@@ -822,6 +822,7 @@ pub struct TableDraft {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TableChangeSummary {
     pub properties_changed: bool,
+    pub column_order_changed: bool,
     pub added_columns: usize,
     pub modified_columns: usize,
     pub removed_columns: usize,
@@ -830,6 +831,7 @@ pub struct TableChangeSummary {
 impl TableChangeSummary {
     pub fn is_dirty(self) -> bool {
         self.properties_changed
+            || self.column_order_changed
             || self.added_columns > 0
             || self.modified_columns > 0
             || self.removed_columns > 0
@@ -1960,6 +1962,23 @@ impl TableDraft {
                 || self.constraints != baseline.constraints,
             ..TableChangeSummary::default()
         };
+        let baseline_order = baseline
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        let draft_order = self
+            .columns
+            .iter()
+            .filter(|column| !matches!(column.state, DraftRowState::Removed { .. }))
+            .filter_map(|column| column.existing_name.as_deref())
+            .collect::<Vec<_>>();
+        let baseline_surviving = baseline_order
+            .iter()
+            .copied()
+            .filter(|name| draft_order.contains(name))
+            .collect::<Vec<_>>();
+        summary.column_order_changed = baseline_surviving != draft_order;
         for column in &self.columns {
             match &column.state {
                 DraftRowState::Added => summary.added_columns += 1,
@@ -2059,6 +2078,33 @@ impl TableDraft {
     pub fn move_column(&mut self, delta: isize) {
         let last = self.columns.len().saturating_sub(1) as isize;
         self.selected_column = (self.selected_column as isize + delta).clamp(0, last) as usize;
+    }
+
+    pub fn reorder_selected_column(&mut self, delta: isize) -> bool {
+        if self.column_editor.is_some() || delta == 0 {
+            return false;
+        }
+        let Some(column) = self.columns.get(self.selected_column) else {
+            return false;
+        };
+        if matches!(column.state, DraftRowState::Removed { .. }) {
+            return false;
+        }
+        let direction = delta.signum();
+        let mut target = self.selected_column as isize + direction;
+        while target >= 0 && (target as usize) < self.columns.len() {
+            if !matches!(
+                self.columns[target as usize].state,
+                DraftRowState::Removed { .. }
+            ) {
+                let target = target as usize;
+                self.columns.swap(self.selected_column, target);
+                self.selected_column = target;
+                return true;
+            }
+            target += direction;
+        }
+        false
     }
 
     pub fn focus_next(&mut self) {
@@ -2203,14 +2249,23 @@ impl TableDraft {
         true
     }
 
+    pub fn begin_add_column_above(&mut self) {
+        let insert_at = self.selected_column.min(self.columns.len());
+        self.begin_add_column_at(insert_at);
+    }
+
     pub fn begin_add_column_below(&mut self) {
-        if self.column_editor.is_some() {
-            return;
-        }
         let insert_at = self
             .selected_column
             .min(self.columns.len().saturating_sub(1))
             .saturating_add(1);
+        self.begin_add_column_at(insert_at);
+    }
+
+    fn begin_add_column_at(&mut self, insert_at: usize) {
+        if self.column_editor.is_some() {
+            return;
+        }
         let mut column = ColumnDraft::new_added_for_database(self.database_kind);
         column.ordinal_position = self
             .columns
