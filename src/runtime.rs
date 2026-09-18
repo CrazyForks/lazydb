@@ -255,6 +255,7 @@ pub struct Runtime {
     registry: Arc<Mutex<ProfileRegistry>>,
     profile_store: ProfileStore,
     workspace_store: Option<WorkspaceStore>,
+    settings_store: Option<crate::persistence::settings::SettingsStore>,
     workspace_mutation: Arc<Mutex<()>>,
     workspace_save: Option<WorkspaceSaveQueue>,
     secret_store: Arc<dyn SecretStore>,
@@ -377,6 +378,7 @@ impl Runtime {
             })),
             profile_store,
             workspace_store: None,
+            settings_store: None,
             workspace_mutation: Arc::new(Mutex::new(())),
             workspace_save: None,
             secret_store,
@@ -435,6 +437,10 @@ impl Runtime {
         self.workspace_store = Some(store);
     }
 
+    pub fn set_settings_store(&mut self, store: crate::persistence::settings::SettingsStore) {
+        self.settings_store = Some(store);
+    }
+
     pub fn dispatch(&mut self, command: Command) {
         self.query_tasks.retain(|_, task| !task.is_finished());
         self.history_executions
@@ -457,6 +463,15 @@ impl Runtime {
         self.background_tasks.retain(|task| !task.is_finished());
         self.profile_tasks.retain(|task| !task.is_finished());
         match command {
+            Command::PersistHelpPanelView(view) => {
+                if let Some(store) = self.settings_store.as_ref()
+                    && let Err(error) = store.save_help_panel(view)
+                {
+                    let _ = self
+                        .event_sender
+                        .send(Action::HelpPanelSettingsWriteFailed(error.to_string()));
+                }
+            }
             Command::CheckSecretStoreAvailability => self.check_secret_store_availability(),
             Command::TestProfile {
                 request_id,
@@ -5725,6 +5740,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         app.restore_workspace(workspace, startup.selected);
     }
     app.set_dashboard_refresh_interval_millis(settings.dashboard_refresh_interval_millis());
+    app.set_help_panel_view(settings.ui.help_panel);
     app.set_key_bindings(settings.keybindings.key_bindings()?);
     app.reveal_startup_profile(startup.selected);
     app.focus = crate::model::workspace::Focus::Explorer;
@@ -5746,6 +5762,9 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
     ));
     runtime.set_history_store(history_store);
     runtime.set_workspace_store(workspace_store);
+    runtime.set_settings_store(crate::persistence::settings::SettingsStore::new(
+        paths.settings_file(),
+    ));
     runtime.set_clipboard_config(settings.terminal.clipboard);
     let mut terminal = TerminalSession::enter(settings.terminal.mouse != MouseMode::Off)
         .context("failed to initialize terminal")?;

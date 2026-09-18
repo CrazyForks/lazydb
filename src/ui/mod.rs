@@ -6929,6 +6929,10 @@ fn render_help(
     let title = format!(" KEYMAP // {} ", crate::help::context_name(help.context));
     let block = Block::default()
         .title(title)
+        .title_top(
+            Line::from(Span::styled(" Tab -> Omni ", Style::new().fg(theme.muted)))
+                .alignment(Alignment::Right),
+        )
         .title_style(theme.title(true))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

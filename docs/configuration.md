@@ -149,7 +149,7 @@ The complete schema and current values are best read directly in
 | Section | Settings |
 | --- | --- |
 | `terminal` | `mouse`, `color`, `clipboard.backend`, `clipboard.max_bytes` |
-| `ui` | `icons`, `motion` |
+| `ui` | `icons`, `motion`, `help_panel` |
 | `execution` | `confirmation` |
 | `connections` | `default_access` |
 | `dashboard` | `refresh_interval_seconds` |
@@ -157,6 +157,9 @@ The complete schema and current values are best read directly in
 | `updates` | `check_on_startup`, `check_interval_hours` |
 | `keybindings` | `preset`, `sequence_timeout_ms`, and grouped `global`, `leader`, `panes`, `explorer`, `results`, `editor`, `overlays` tables |
 
+Set `ui.help_panel = "help"` to open the contextual Help view first, or
+`"omni"` to open Omni first. Pressing `Tab` switches between the two views and
+updates this preference; the next Help shortcut uses the last selected view.
 Only the `vim` keybinding preset is currently supported. It denotes the full
 command and editor contract in [Keyboard Reference](keybindings.md); text-entry
 keys and modalkit's core Vim editing operations are intentionally not separate

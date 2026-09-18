@@ -18,6 +18,7 @@ max_bytes = 1000000
 [ui]
 icons = "nerd-font"
 motion = "full"
+help_panel = "help"
 
 [execution]
 confirmation = "risky"

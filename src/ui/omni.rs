@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     buffer::CellWidth,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph},
@@ -95,6 +95,10 @@ pub(super) fn render(
         .border_style(Style::new().fg(theme.accent))
         .style(Style::new().fg(theme.text).bg(theme.surface_raised))
         .title(" OMNI ")
+        .title_top(
+            Line::from(Span::styled(" Tab -> Help ", Style::new().fg(theme.muted)))
+                .alignment(Alignment::Right),
+        )
         .title_bottom(footer);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
