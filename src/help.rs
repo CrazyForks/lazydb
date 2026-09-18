@@ -60,6 +60,7 @@ pub enum ShortcutContext {
     ExecutionConfirmation,
     ManualCancelConfirmation,
     TransactionExitConfirmation,
+    TransactionReviewConfirmation,
     ClearTransactionOutcomeConfirmation,
     TargetSelector,
     DatabaseSelector,
@@ -116,6 +117,7 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::ExecutionConfirmation,
     ShortcutContext::ManualCancelConfirmation,
     ShortcutContext::TransactionExitConfirmation,
+    ShortcutContext::TransactionReviewConfirmation,
     ShortcutContext::ClearTransactionOutcomeConfirmation,
     ShortcutContext::TargetSelector,
     ShortcutContext::DatabaseSelector,
@@ -207,8 +209,8 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::TransactionExitConfirm { .. } => {
                     ShortcutContext::TransactionExitConfirmation
                 }
-                Overlay::RelationTransactionConfirm { .. } => {
-                    ShortcutContext::TransactionExitConfirmation
+                Overlay::RelationTransactionConfirm(_) => {
+                    ShortcutContext::TransactionReviewConfirmation
                 }
                 Overlay::ClearTransactionOutcome { .. } => {
                     ShortcutContext::ClearTransactionOutcomeConfirmation
@@ -512,6 +514,9 @@ pub enum HelpShortcutId {
     TransactionChoices,
     TransactionCancel,
     TransactionToggle,
+    TransactionReviewMove,
+    TransactionReviewCopy,
+    TransactionReviewToggle,
     ClearOutcomeConfirm,
     ClearOutcomeCancel,
     ClearOutcomeToggle,
@@ -631,6 +636,9 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | ExecutionConfirm
         | ManualCancelConfirm
         | TransactionChoices
+        | TransactionReviewMove
+        | TransactionReviewCopy
+        | TransactionReviewToggle
         | ClearOutcomeConfirm
         | TargetMove
         | DatabaseMove
@@ -2745,6 +2753,27 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         display
     ),
     row!(
+        TransactionReviewMove,
+        [TransactionReviewConfirmation],
+        "hjkl / gg / G / PageUp/PageDown",
+        "navigate SQL preview",
+        display
+    ),
+    row!(
+        TransactionReviewCopy,
+        [TransactionReviewConfirmation],
+        "v/V/y or mouse drag",
+        "select and copy SQL",
+        display
+    ),
+    row!(
+        TransactionReviewToggle,
+        [TransactionReviewConfirmation],
+        "Tab/Shift-Tab",
+        "focus preview or action",
+        display
+    ),
+    row!(
         ClearOutcomeConfirm,
         [ClearTransactionOutcomeConfirmation],
         "Enter",
@@ -3616,6 +3645,7 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         ShortcutContext::ExecutionConfirmation => "EXECUTION",
         ShortcutContext::ManualCancelConfirmation => "CANCELLATION",
         ShortcutContext::TransactionExitConfirmation => "TRANSACTION",
+        ShortcutContext::TransactionReviewConfirmation => "TRANSACTION REVIEW",
         ShortcutContext::ClearTransactionOutcomeConfirmation => "TRANSACTION OUTCOME",
         ShortcutContext::TargetSelector => "TARGET SELECTOR",
         ShortcutContext::DatabaseSelector => "DATABASE SELECTOR",
@@ -4298,6 +4328,7 @@ mod tests {
             ShortcutContext::ExecutionConfirmation,
             ShortcutContext::ManualCancelConfirmation,
             ShortcutContext::TransactionExitConfirmation,
+            ShortcutContext::TransactionReviewConfirmation,
             ShortcutContext::ClearTransactionOutcomeConfirmation,
             ShortcutContext::TargetSelector,
             ShortcutContext::DeleteConsoleConfirmation,
@@ -4817,6 +4848,14 @@ mod tests {
             (
                 ShortcutContext::TransactionExitConfirmation,
                 vec!["a/r/c/Enter", "Esc/n", "Tab/Left/Right"],
+            ),
+            (
+                ShortcutContext::TransactionReviewConfirmation,
+                vec![
+                    "hjkl / gg / G / PageUp/PageDown",
+                    "v/V/y or mouse drag",
+                    "Tab/Shift-Tab",
+                ],
             ),
             (
                 ShortcutContext::ClearTransactionOutcomeConfirmation,

@@ -423,6 +423,9 @@ impl EditorWorkspace {
     }
 
     pub(crate) fn close_console(&mut self, id: Uuid) {
+        if self.prompt_active(id) {
+            self.prompt = None;
+        }
         self.sessions.remove(&id);
         self.analysis_cache
             .borrow_mut()
@@ -669,6 +672,39 @@ impl EditorWorkspace {
         self.prompt
             .as_ref()
             .is_some_and(|prompt| prompt.owner == id)
+    }
+
+    pub(crate) fn has_pending_interaction(&self, id: Uuid) -> bool {
+        let Some(session) = self.sessions.get(&id) else {
+            return false;
+        };
+        self.prompt_active(id)
+            || !matches!(session.mode, EditorMode::Normal)
+            || session.pending_binding.is_some()
+            || session.pending_count.is_some()
+            || !session.current_sequence.is_empty()
+            || session.keys.get_cursor_indicator().is_some()
+    }
+
+    pub(crate) fn reset_interaction(&mut self, id: Uuid) -> Result<(), EditorError> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or(EditorError::MissingSession(id))?;
+        session.keys.reset_mode();
+        session.pending_binding = None;
+        session.pending_count = None;
+        session.current_sequence.clear();
+        session.last_sequence = None;
+        session.mode = EditorMode::Normal;
+        let prompt_owned = self
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.owner == id);
+        if prompt_owned {
+            self.prompt = None;
+        }
+        Ok(())
     }
 
     pub(crate) fn position(&self, id: Uuid) -> Result<EditorPosition, EditorError> {

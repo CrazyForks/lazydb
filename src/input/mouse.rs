@@ -133,7 +133,11 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             if matches!(
                 app.overlay,
-                Some(Overlay::TextDetail(_) | Overlay::SqlHistory(_))
+                Some(
+                    Overlay::TextDetail(_)
+                        | Overlay::SqlHistory(_)
+                        | Overlay::RelationTransactionConfirm(_),
+                )
             ) && *ui.mouse_gesture.borrow()
                 == Some(crate::ui::text_selection::GestureOwner::Text)
             {
@@ -146,6 +150,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     gesture.source,
                     crate::ui::text_selection::TextGestureSource::TextDetail
                         | crate::ui::text_selection::TextGestureSource::SqlHistory
+                        | crate::ui::text_selection::TextGestureSource::TransactionReview
                 ) || gesture.session_id != target.session_id
                 {
                     ui.cancel_mouse_gesture();
@@ -155,7 +160,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 ui.update_text_gesture(end);
                 return None;
             }
-            if app.overlay.is_some() {
+            if app.overlay.is_some()
+                && !matches!(app.overlay, Some(Overlay::RelationTransactionConfirm(_)))
+            {
                 ui.relation_resize.borrow_mut().take();
                 ui.grid_scrollbar_drag.borrow_mut().take();
                 ui.pane_resize_drag.borrow_mut().take();
@@ -292,6 +299,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 if view.mode == crate::model::sql_history_view::SqlHistoryMode::Sql
                         )
                     }
+                    crate::ui::text_selection::TextGestureSource::TransactionReview => {
+                        app.review_preview_session_id() == Some(gesture.session_id)
+                    }
                 };
                 let target_matches = target_is_current
                     && ui
@@ -378,10 +388,17 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                             crate::ui::text_selection::TextGestureSource::SqlHistory,
                         ))
                     }
+                    Overlay::RelationTransactionConfirm(review) => Some((
+                        review.editor_session_id,
+                        app.editor_revision(review.editor_session_id),
+                        crate::ui::text_selection::TextGestureSource::TransactionReview,
+                    )),
                     _ => None,
                 }
             {
-                if let Some(target) = ui.target_at(event.column, event.row).cloned() {
+                if source != crate::ui::text_selection::TextGestureSource::TransactionReview
+                    && let Some(target) = ui.target_at(event.column, event.row).cloned()
+                {
                     return match target {
                         HitTarget::TextDetailCopyAll
                             if source
@@ -412,7 +429,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         revision,
                         has_dragged: false,
                     });
-                    // Text detail is read-only; the gesture itself is the preview state.
+                    // Read-only modal editors keep the gesture as their preview state.
                     let _ = position;
                     Action::SetEditorMouseCursor {
                         session_id,
@@ -521,6 +538,17 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 return Some(Action::CatalogEditorSetCursor { target, cursor });
             }
+            let review_interactive =
+                matches!(app.overlay, Some(Overlay::RelationTransactionConfirm(_)))
+                    && (ui
+                        .text_selection_target_at(event.column, event.row)
+                        .is_some()
+                        || matches!(
+                            target,
+                            HitTarget::EditorScrollbarPage { session_id, .. }
+                                | HitTarget::EditorScrollbarThumb { session_id, .. }
+                        if app.review_preview_session_id() == Some(session_id)
+                        ));
             if let Some(overlay) = &app.overlay
                 && !matches!(
                     overlay,
@@ -528,6 +556,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 )
                 && (overlay != &Overlay::ProfileManager
                     && overlay != &Overlay::CatalogEditor
+                    && !matches!(overlay, Overlay::RelationTransactionConfirm(_))
                     && !matches!(overlay, Overlay::TargetSelector { .. })
                     && !matches!(overlay, Overlay::DatabaseSelector(_))
                     && !matches!(overlay, Overlay::TransactionMenu { .. })
@@ -535,53 +564,54 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     && !matches!(overlay, Overlay::CatalogEditorDiscardConfirm { .. })
                     && !matches!(overlay, Overlay::CatalogDropConfirm { .. })
                     && !matches!(overlay, Overlay::Update(_))
-                    || !matches!(
-                        target,
-                        HitTarget::ProfileField(_)
-                            | HitTarget::ProfileDriver(_)
-                            | HitTarget::ProfileCategory(_)
-                            | HitTarget::ProfileToggle(_)
-                            | HitTarget::ProfileScopeRow(_)
-                            | HitTarget::ProfileButton(_)
-                            | HitTarget::ProfileGroupOption(_)
-                            | HitTarget::ProfileGroupConfirm
-                            | HitTarget::ProfileGroupCancel
-                            | HitTarget::SqlEditorListSearch
-                            | HitTarget::SqlEditorListRename
-                            | HitTarget::HelpSearch
-                            | HitTarget::ProfileGroupName
-                            | HitTarget::ExplorerFind
-                            | HitTarget::ExplorerSearch
-                            | HitTarget::KeySequencePopup
-                            | HitTarget::ExplorerAddOption(_)
-                            | HitTarget::CatalogEditorField(_)
-                            | HitTarget::CatalogEditorFormField(_)
-                            | HitTarget::CatalogEditorTableField(_)
-                            | HitTarget::CatalogEditorTableColumn(_)
-                            | HitTarget::CatalogEditorAddTableColumn
-                            | HitTarget::CatalogEditorRemoveTableColumn
-                            | HitTarget::CatalogEditorReview
-                            | HitTarget::CatalogEditorCancel
-                            | HitTarget::CatalogEditorDiscardKeepEditing
-                            | HitTarget::CatalogEditorDiscardChanges
-                            | HitTarget::CatalogDropCancel
-                            | HitTarget::CatalogDropConfirm
-                            | HitTarget::CatalogEditorColumnDetailsConfirm
-                            | HitTarget::CatalogEditorColumnDetailsCancel
-                            | HitTarget::CatalogOwnerChoice(_)
-                            | HitTarget::TargetSelectorRow(_)
-                            | HitTarget::TargetSelectorCancel
-                            | HitTarget::DatabaseSelectorRow(_)
-                            | HitTarget::HeaderDatabase
-                            | HitTarget::EditorExecutionTarget
-                            | HitTarget::EditorTransactionMenu
-                            | HitTarget::TransactionMenuItem(_)
-                            | HitTarget::TransactionMenuCancel
-                            | HitTarget::TransactionExitChoice(_)
-                            | HitTarget::TransactionExitCancel
-                            | HitTarget::UpdateButton { .. }
-                            | HitTarget::OpenTextDetail(_)
-                    ))
+                    || (!review_interactive
+                        && !matches!(
+                            target,
+                            HitTarget::ProfileField(_)
+                                | HitTarget::ProfileDriver(_)
+                                | HitTarget::ProfileCategory(_)
+                                | HitTarget::ProfileToggle(_)
+                                | HitTarget::ProfileScopeRow(_)
+                                | HitTarget::ProfileButton(_)
+                                | HitTarget::ProfileGroupOption(_)
+                                | HitTarget::ProfileGroupConfirm
+                                | HitTarget::ProfileGroupCancel
+                                | HitTarget::SqlEditorListSearch
+                                | HitTarget::SqlEditorListRename
+                                | HitTarget::HelpSearch
+                                | HitTarget::ProfileGroupName
+                                | HitTarget::ExplorerFind
+                                | HitTarget::ExplorerSearch
+                                | HitTarget::KeySequencePopup
+                                | HitTarget::ExplorerAddOption(_)
+                                | HitTarget::CatalogEditorField(_)
+                                | HitTarget::CatalogEditorFormField(_)
+                                | HitTarget::CatalogEditorTableField(_)
+                                | HitTarget::CatalogEditorTableColumn(_)
+                                | HitTarget::CatalogEditorAddTableColumn
+                                | HitTarget::CatalogEditorRemoveTableColumn
+                                | HitTarget::CatalogEditorReview
+                                | HitTarget::CatalogEditorCancel
+                                | HitTarget::CatalogEditorDiscardKeepEditing
+                                | HitTarget::CatalogEditorDiscardChanges
+                                | HitTarget::CatalogDropCancel
+                                | HitTarget::CatalogDropConfirm
+                                | HitTarget::CatalogEditorColumnDetailsConfirm
+                                | HitTarget::CatalogEditorColumnDetailsCancel
+                                | HitTarget::CatalogOwnerChoice(_)
+                                | HitTarget::TargetSelectorRow(_)
+                                | HitTarget::TargetSelectorCancel
+                                | HitTarget::DatabaseSelectorRow(_)
+                                | HitTarget::HeaderDatabase
+                                | HitTarget::EditorExecutionTarget
+                                | HitTarget::EditorTransactionMenu
+                                | HitTarget::TransactionMenuItem(_)
+                                | HitTarget::TransactionMenuCancel
+                                | HitTarget::TransactionExitChoice(_)
+                                | HitTarget::TransactionExitCancel
+                                | HitTarget::UpdateButton { .. }
+                                | HitTarget::OpenTextDetail(_)
+                        )))
             {
                 return None;
             }
@@ -607,14 +637,25 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             {
                 return None;
             }
-            if app.overlay.is_none()
+            let review_text_target =
+                matches!(app.overlay, Some(Overlay::RelationTransactionConfirm(_)));
+            if (app.overlay.is_none() || review_text_target)
                 && let Some((text_target, position)) =
                     ui.text_selection_target_at(event.column, event.row)
             {
                 let revision = app.editor_revision(text_target.session_id);
+                let source = if review_text_target
+                    && app.review_preview_session_id() == Some(text_target.session_id)
+                {
+                    crate::ui::text_selection::TextGestureSource::TransactionReview
+                } else if app.overlay.is_none() {
+                    crate::ui::text_selection::TextGestureSource::Editor
+                } else {
+                    return None;
+                };
                 ui.begin_text_gesture(crate::ui::text_selection::TextGesture {
                     session_id: text_target.session_id,
-                    source: crate::ui::text_selection::TextGestureSource::Editor,
+                    source,
                     start: position,
                     end: position,
                     revision,
@@ -976,6 +1017,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollDown => {
+            if let Some(Overlay::RelationTransactionConfirm(review)) = app.overlay.as_ref()
+                && ui.text_selection_targets.iter().any(|target| {
+                    target.session_id == review.editor_session_id
+                        && target.hit_maps.iter().any(|map| {
+                            map.area
+                                .contains(ratatui::layout::Position::new(event.column, event.row))
+                        })
+                })
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: review.editor_session_id,
+                    rows: 3,
+                    columns: 0,
+                });
+            }
             if app.overlay.is_none()
                 && let Some(target) = ui.text_selection_targets.iter().find(|target| {
                     target.hit_maps.iter().any(|map| {
@@ -1043,6 +1099,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollUp => {
+            if let Some(Overlay::RelationTransactionConfirm(review)) = app.overlay.as_ref()
+                && ui.text_selection_targets.iter().any(|target| {
+                    target.session_id == review.editor_session_id
+                        && target.hit_maps.iter().any(|map| {
+                            map.area
+                                .contains(ratatui::layout::Position::new(event.column, event.row))
+                        })
+                })
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: review.editor_session_id,
+                    rows: -3,
+                    columns: 0,
+                });
+            }
             if app.overlay.is_none()
                 && let Some(target) = ui.text_selection_targets.iter().find(|target| {
                     target.hit_maps.iter().any(|map| {
@@ -1110,6 +1181,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollLeft => {
+            if let Some(Overlay::RelationTransactionConfirm(review)) = app.overlay.as_ref()
+                && ui.text_selection_targets.iter().any(|target| {
+                    target.session_id == review.editor_session_id
+                        && target.hit_maps.iter().any(|map| {
+                            map.area
+                                .contains(ratatui::layout::Position::new(event.column, event.row))
+                        })
+                })
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: review.editor_session_id,
+                    rows: 0,
+                    columns: -3,
+                });
+            }
             if app.overlay.is_some() {
                 return None;
             }
@@ -1127,6 +1213,21 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
         }
         MouseEventKind::ScrollRight => {
+            if let Some(Overlay::RelationTransactionConfirm(review)) = app.overlay.as_ref()
+                && ui.text_selection_targets.iter().any(|target| {
+                    target.session_id == review.editor_session_id
+                        && target.hit_maps.iter().any(|map| {
+                            map.area
+                                .contains(ratatui::layout::Position::new(event.column, event.row))
+                        })
+                })
+            {
+                return Some(Action::ReadOnlyEditorScroll {
+                    session_id: review.editor_session_id,
+                    rows: 0,
+                    columns: 3,
+                });
+            }
             if app.overlay.is_some() {
                 return None;
             }

@@ -3517,6 +3517,108 @@ fn relation_transaction_review_uses_ctrl_s_without_direct_rollback() {
 }
 
 #[test]
+fn transaction_review_tab_cycles_preview_and_buttons() {
+    let mut app = App::new(Vec::new());
+    let mut relation = lazydb::model::relation::RelationTab::new("users");
+    relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.transaction_review_sql = Some("SELECT 1;".into());
+    app.tabs
+        .push(lazydb::model::tab::WorkspaceTab::Relation(relation));
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::OpenTransactionControl);
+    let mut keymap = Keymap::default();
+
+    for expected in [
+        lazydb::model::transaction_review::TransactionReviewFocus::SqlPreview,
+        lazydb::model::transaction_review::TransactionReviewFocus::Commit,
+        lazydb::model::transaction_review::TransactionReviewFocus::Rollback,
+        lazydb::model::transaction_review::TransactionReviewFocus::Cancel,
+    ] {
+        assert_eq!(
+            keymap.map(key(KeyCode::Tab), &app),
+            Some(Action::TransactionReviewFocusNext)
+        );
+        app.update(Action::TransactionReviewFocusNext);
+        let Some(lazydb::model::workspace::Overlay::RelationTransactionConfirm(review)) =
+            &app.overlay
+        else {
+            panic!("review closed")
+        };
+        assert_eq!(review.focus, expected);
+    }
+}
+
+#[test]
+fn transaction_review_preview_enter_does_not_confirm_and_escape_unwinds_search() {
+    let mut app = App::new(Vec::new());
+    let mut relation = lazydb::model::relation::RelationTab::new("users");
+    relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.transaction_review_sql = Some("SELECT 1;\nSELECT 2;".into());
+    app.tabs
+        .push(lazydb::model::tab::WorkspaceTab::Relation(relation));
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::OpenTransactionControl);
+    app.update(Action::TransactionReviewFocusNext);
+
+    let mut keymap = Keymap::default();
+    let id = app.review_preview_session_id().unwrap();
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::ReadOnlyEditorKey {
+            session_id: id,
+            event: key(KeyCode::Enter),
+        })
+    );
+    app.update(Action::ReadOnlyEditorKey {
+        session_id: id,
+        event: key(KeyCode::Char('/')),
+    });
+    assert!(app.review_preview_has_pending_interaction());
+    assert_eq!(
+        keymap.map(key(KeyCode::Esc), &app),
+        Some(Action::ReadOnlyEditorKey {
+            session_id: id,
+            event: key(KeyCode::Esc),
+        })
+    );
+    app.update(Action::ReadOnlyEditorKey {
+        session_id: id,
+        event: key(KeyCode::Esc),
+    });
+    assert!(!app.review_preview_has_pending_interaction());
+    assert!(app.overlay.is_some());
+}
+
+#[test]
+fn transaction_review_prompt_paste_is_owned_by_preview_session() {
+    let mut app = App::new(Vec::new());
+    let mut relation = lazydb::model::relation::RelationTab::new("users");
+    relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.transaction_review_sql = Some("SELECT 1;".into());
+    app.tabs
+        .push(lazydb::model::tab::WorkspaceTab::Relation(relation));
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::OpenTransactionControl);
+    app.update(Action::TransactionReviewFocusNext);
+    let id = app.review_preview_session_id().unwrap();
+    app.update(Action::ReadOnlyEditorKey {
+        session_id: id,
+        event: key(KeyCode::Char('/')),
+    });
+
+    assert_eq!(
+        lazydb::input::keymap::map_paste("users".into(), &app),
+        vec![Action::TransactionReviewPromptPaste("users".into())]
+    );
+    app.update(Action::TransactionReviewPromptPaste("users".into()));
+    assert!(app.review_preview_has_pending_interaction());
+    assert!(matches!(
+        app.overlay,
+        Some(lazydb::model::workspace::Overlay::RelationTransactionConfirm(_))
+    ));
+}
+
+#[test]
 fn relation_help_executes_space_tc_transaction_control() {
     let mut app = App::new(Vec::new());
     let mut relation = lazydb::model::relation::RelationTab::new("users");
@@ -3539,7 +3641,7 @@ fn relation_help_executes_space_tc_transaction_control() {
     ));
     assert!(matches!(
         app.overlay,
-        Some(lazydb::model::workspace::Overlay::RelationTransactionConfirm { .. })
+        Some(lazydb::model::workspace::Overlay::RelationTransactionConfirm(_))
     ));
 }
 

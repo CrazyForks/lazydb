@@ -199,6 +199,7 @@ pub enum TextGestureSource {
     Editor,
     TextDetail,
     SqlHistory,
+    TransactionReview,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -35,6 +35,25 @@ pub fn render_actions(
     focused: usize,
     theme: Theme,
 ) -> Vec<DialogActionArea> {
+    render_actions_with_focus(frame, area, buttons, Some(focused), theme)
+}
+
+pub fn render_actions_without_focus(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    buttons: &[DialogButton<'_>],
+    theme: Theme,
+) -> Vec<DialogActionArea> {
+    render_actions_with_focus(frame, area, buttons, None, theme)
+}
+
+fn render_actions_with_focus(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    buttons: &[DialogButton<'_>],
+    focused: Option<usize>,
+    theme: Theme,
+) -> Vec<DialogActionArea> {
     if buttons.is_empty() || area.height == 0 || area.width == 0 {
         return Vec::new();
     }
@@ -57,10 +76,10 @@ pub fn render_actions(
             if y >= area.bottom() {
                 break;
             }
-            let label = format_button(button.label, index == focused);
+            let label = format_button(button.label, focused == Some(index));
             let width = label.width().min(area.width as usize) as u16;
             let row = Rect::new(area.x, y, width, 1);
-            render_button(frame, row, &label, *button, index == focused, theme);
+            render_button(frame, row, &label, *button, focused == Some(index), theme);
             if button.enabled {
                 hit_regions.push(DialogActionArea { index, area: row });
             }
@@ -72,10 +91,10 @@ pub fn render_actions(
         .x
         .saturating_add(area.width.saturating_sub(total_width) / 2);
     for (index, button) in buttons.iter().enumerate() {
-        let label = format_button(button.label, index == focused);
+        let label = format_button(button.label, focused == Some(index));
         let width = label.width() as u16;
         let row = Rect::new(x, area.y, width, 1);
-        render_button(frame, row, &label, *button, index == focused, theme);
+        render_button(frame, row, &label, *button, focused == Some(index), theme);
         if button.enabled {
             hit_regions.push(DialogActionArea { index, area: row });
         }

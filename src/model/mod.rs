@@ -41,6 +41,7 @@ pub mod tab;
 pub mod text_detail;
 pub mod text_input;
 pub mod transaction;
+pub mod transaction_review;
 pub mod update;
 pub mod workspace;
 pub mod workspace_save;

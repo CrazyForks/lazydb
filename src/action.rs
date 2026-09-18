@@ -551,6 +551,10 @@ pub enum Action {
         session_id: Uuid,
         viewport: crate::model::editor::EditorViewport,
     },
+    TransactionReviewEditorViewportChanged {
+        session_id: Uuid,
+        viewport: crate::model::editor::EditorViewport,
+    },
     EditorScroll {
         rows: isize,
         columns: isize,
@@ -593,6 +597,11 @@ pub enum Action {
     ScrollRelationTransactionReview {
         rows: isize,
     },
+    TransactionReviewFocusNext,
+    TransactionReviewFocusPrevious,
+    TransactionReviewMoveButton(isize),
+    TransactionReviewFocusPreview,
+    TransactionReviewPromptPaste(String),
     CancelActiveQuery,
     ConfirmManualCancellation,
     CancelManualCancellation,

@@ -613,7 +613,7 @@ fn relation_space_tc_no_longer_opens_the_transaction_panel() {
 
     assert!(!matches!(
         app.overlay,
-        Some(Overlay::RelationTransactionConfirm { .. })
+        Some(Overlay::RelationTransactionConfirm(_))
     ));
 }
 

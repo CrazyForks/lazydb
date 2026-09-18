@@ -33,11 +33,8 @@ fn quit_dirty_relation_opens_review() {
     assert!(!app.should_quit);
     assert!(matches!(
         app.overlay,
-        Some(Overlay::RelationTransactionConfirm {
-            tab_id,
-            choice: TransactionExitChoice::Cancel,
-            ..
-        }) if tab_id == relation_id
+        Some(Overlay::RelationTransactionConfirm(ref review)) if review.tab_id == relation_id
+            && review.focus.choice() == Some(TransactionExitChoice::Cancel)
     ));
 }
 
@@ -52,7 +49,7 @@ fn quit_reviews_non_active_relation() {
     assert_eq!(app.active_tab, 0);
     assert!(matches!(
         app.overlay,
-        Some(Overlay::RelationTransactionConfirm { tab_id, .. }) if tab_id == relation_id
+        Some(Overlay::RelationTransactionConfirm(ref review)) if review.tab_id == relation_id
     ));
 }
 
@@ -106,6 +103,45 @@ fn local_relation_rollback_rechecks_quit_and_starts_workspace_flush() {
 }
 
 #[test]
+fn keyboard_review_commit_rejects_changed_relation_edits() {
+    let mut app = App::new(Vec::new());
+    let relation = dirty_relation("users");
+    app.tabs.push(WorkspaceTab::Relation(relation));
+    app.update(Action::OpenTransactionControl);
+    app.update(Action::TransactionReviewFocusNext);
+    app.update(Action::TransactionReviewFocusNext);
+    if let WorkspaceTab::Relation(relation) = &mut app.tabs[app.active_tab] {
+        relation.edit = Some(RelationEditSession::from_rows(vec![vec![
+            lazydb::db::value::CellValue::Text("changed".into()),
+        ]]));
+    }
+
+    let commands = app.update(Action::ConfirmTransactionExit);
+    assert!(commands.is_empty());
+    assert!(app.overlay.is_none());
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn direct_review_choice_rejects_changed_relation_edits() {
+    let mut app = App::new(Vec::new());
+    app.tabs
+        .push(WorkspaceTab::Relation(dirty_relation("users")));
+    app.update(Action::OpenTransactionControl);
+    if let WorkspaceTab::Relation(relation) = &mut app.tabs[app.active_tab] {
+        relation.edit = Some(RelationEditSession::from_rows(vec![vec![
+            lazydb::db::value::CellValue::Text("changed".into()),
+        ]]));
+    }
+
+    let commands = app.update(Action::ConfirmTransactionExitChoice(
+        TransactionExitChoice::Commit,
+    ));
+    assert!(commands.is_empty());
+    assert!(app.overlay.is_none());
+}
+
+#[test]
 fn repeated_quit_does_not_replace_the_active_review() {
     let mut app = App::new(Vec::new());
     let relation = dirty_relation("users");
@@ -119,7 +155,7 @@ fn repeated_quit_does_not_replace_the_active_review() {
     assert_eq!(app.overlay, first);
     assert!(matches!(
         app.overlay,
-        Some(Overlay::RelationTransactionConfirm { tab_id, .. }) if tab_id == relation_id
+        Some(Overlay::RelationTransactionConfirm(ref review)) if review.tab_id == relation_id
     ));
 }
 

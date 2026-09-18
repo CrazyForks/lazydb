@@ -536,24 +536,9 @@ impl Keymap {
                 _ => None,
             };
         }
-        if matches!(
-            app.overlay,
-            Some(Overlay::RelationTransactionConfirm { .. })
-        ) {
+        if matches!(app.overlay, Some(Overlay::RelationTransactionConfirm(_))) {
             self.pending = None;
-            return match event.code {
-                KeyCode::Enter => Some(Action::ConfirmTransactionExit),
-                KeyCode::Esc => Some(Action::CancelTransactionExit),
-                KeyCode::Tab | KeyCode::Right => Some(Action::ToggleTransactionExitChoice),
-                KeyCode::BackTab | KeyCode::Left => {
-                    Some(Action::TogglePreviousTransactionExitChoice)
-                }
-                KeyCode::Up => Some(Action::ScrollRelationTransactionReview { rows: -1 }),
-                KeyCode::Down => Some(Action::ScrollRelationTransactionReview { rows: 1 }),
-                KeyCode::PageUp => Some(Action::ScrollRelationTransactionReview { rows: -10 }),
-                KeyCode::PageDown => Some(Action::ScrollRelationTransactionReview { rows: 10 }),
-                _ => None,
-            };
+            return map_transaction_review(event, app);
         }
         if matches!(app.overlay, Some(Overlay::ClearTransactionOutcome { .. })) {
             self.pending = None;
@@ -3072,6 +3057,12 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
     }) {
         return vec![Action::SqlHistorySearchPaste(value)];
     }
+    if let Some(Overlay::RelationTransactionConfirm(review)) = app.overlay.as_ref()
+        && review.focus == crate::model::transaction_review::TransactionReviewFocus::SqlPreview
+        && app.editor_prompt_active(review.editor_session_id)
+    {
+        return vec![Action::TransactionReviewPromptPaste(value)];
+    }
     if app.overlay == Some(Overlay::CatalogEditor) {
         let editor = app.catalog_editor.as_ref();
         let editable_table = editor.is_some_and(|editor| {
@@ -3512,6 +3503,53 @@ fn normalize_shift_tab(mut event: KeyEvent) -> KeyEvent {
         event.modifiers.remove(KeyModifiers::SHIFT);
     }
     event
+}
+
+fn map_transaction_review(event: KeyEvent, app: &App) -> Option<Action> {
+    let preview_focused = app
+        .overlay
+        .as_ref()
+        .and_then(|overlay| match overlay {
+            Overlay::RelationTransactionConfirm(review) => Some(
+                review.focus
+                    == crate::model::transaction_review::TransactionReviewFocus::SqlPreview,
+            ),
+            _ => None,
+        })
+        .unwrap_or(false);
+    match event.code {
+        KeyCode::Tab => Some(Action::TransactionReviewFocusNext),
+        KeyCode::BackTab => Some(Action::TransactionReviewFocusPrevious),
+        KeyCode::Esc if preview_focused && app.review_preview_has_pending_interaction() => {
+            Some(Action::ReadOnlyEditorKey {
+                session_id: app.review_preview_session_id()?,
+                event,
+            })
+        }
+        KeyCode::Esc => Some(Action::CancelTransactionExit),
+        KeyCode::Enter if !preview_focused => Some(Action::ConfirmTransactionExit),
+        KeyCode::Left if !preview_focused => Some(Action::TransactionReviewMoveButton(-1)),
+        KeyCode::Right if !preview_focused => Some(Action::TransactionReviewMoveButton(1)),
+        KeyCode::Left | KeyCode::Right if preview_focused => Some(Action::ReadOnlyEditorKey {
+            session_id: app.review_preview_session_id()?,
+            event,
+        }),
+        KeyCode::Up if !preview_focused => Some(Action::TransactionReviewFocusPrevious),
+        KeyCode::Down if !preview_focused => Some(Action::TransactionReviewFocusNext),
+        KeyCode::PageUp if preview_focused => Some(Action::ReadOnlyEditorKey {
+            session_id: app.review_preview_session_id()?,
+            event,
+        }),
+        KeyCode::PageDown if preview_focused => Some(Action::ReadOnlyEditorKey {
+            session_id: app.review_preview_session_id()?,
+            event,
+        }),
+        _ if preview_focused => Some(Action::ReadOnlyEditorKey {
+            session_id: app.review_preview_session_id()?,
+            event,
+        }),
+        _ => None,
+    }
 }
 
 fn map_single_line_text_input_edit(event: KeyEvent) -> Option<TextInputEdit> {
