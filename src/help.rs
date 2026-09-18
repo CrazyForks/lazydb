@@ -338,6 +338,8 @@ pub enum HelpShortcutId {
     NextTab,
     PreviousTabAlias,
     NextTabAlias,
+    MoveTabRight,
+    MoveTabLeft,
     OpenDashboard,
     OpenSqlHistory,
     DashboardToggleView,
@@ -1102,7 +1104,6 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         PreviousTab,
         [
-            Explorer,
             EditorNormal,
             EditorVisual,
             SqlResultsData,
@@ -1117,7 +1118,6 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         NextTab,
         [
-            Explorer,
             EditorNormal,
             EditorVisual,
             SqlResultsData,
@@ -1130,9 +1130,34 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "t"
     ),
     row!(
+        MoveTabRight,
+        [
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDdl
+        ],
+        "Ctrl-Shift-n",
+        "move tab right"
+    ),
+    row!(
+        MoveTabLeft,
+        [
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            SqlOutput,
+            RelationDataBrowse,
+            RelationDdl
+        ],
+        "Ctrl-Shift-p",
+        "move tab left"
+    ),
+    row!(
         PreviousTabAlias,
         [
-            Explorer,
             EditorNormal,
             EditorVisual,
             SqlResultsData,
@@ -1148,7 +1173,6 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         NextTabAlias,
         [
-            Explorer,
             EditorNormal,
             EditorVisual,
             SqlResultsData,
@@ -3249,6 +3273,8 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::OpenDatabaseSelector => Some("open-database-selector"),
         HelpShortcutId::NextTab => Some("next-tab"),
         HelpShortcutId::PreviousTab => Some("previous-tab"),
+        HelpShortcutId::MoveTabRight => Some("move-tab-right"),
+        HelpShortcutId::MoveTabLeft => Some("move-tab-left"),
         HelpShortcutId::CloseTab => Some("close-tab"),
         HelpShortcutId::ExplorerMoveDown => Some("explorer-move-down"),
         HelpShortcutId::ExplorerMoveUp => Some("explorer-move-up"),
@@ -5230,8 +5256,6 @@ mod tests {
             ),
             vec![
                 HelpShortcutId::ExplorerFirst,
-                HelpShortcutId::NextTab,
-                HelpShortcutId::PreviousTab,
                 HelpShortcutId::ExplorerMoveToGroup,
             ]
         );

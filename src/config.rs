@@ -42,6 +42,8 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "run-buffer",
     "next-tab",
     "previous-tab",
+    "move-tab-right",
+    "move-tab-left",
     "close-tab",
     "open-dashboard",
     "open-explorer",
@@ -838,6 +840,20 @@ mod tests {
         assert!(bindings.matches(
             "next-tab",
             KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)
+        ));
+        assert!(bindings.matches(
+            "move-tab-right",
+            KeyEvent::new(
+                KeyCode::Char('n'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+        ));
+        assert!(bindings.matches(
+            "move-tab-left",
+            KeyEvent::new(
+                KeyCode::Char('p'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
         ));
         assert!(bindings.matches_sequence(
             "next-tab",

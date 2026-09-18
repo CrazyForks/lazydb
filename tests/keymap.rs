@@ -2832,10 +2832,7 @@ fn maps_global_sequences_and_function_keys() {
     assert_eq!(keymap.map(ctrl('h'), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Esc), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Char(']')), &app), None);
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('t')), &app),
-        Some(Action::NextTab)
-    );
+    assert_eq!(keymap.map(key(KeyCode::Char('t')), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
     assert_eq!(keymap.map(key(KeyCode::Char('n')), &app), None);
     let mut keymap = Keymap::default();
@@ -3905,17 +3902,19 @@ fn explorer_g_prefix_lists_and_opens_move_to_group() {
         Some(Action::ProfileGroupOpen)
     );
 
-    for (suffix, expected) in [
-        (
-            'g',
-            Action::ExplorerSelectTarget(lazydb::model::explorer::ExplorerNodeTarget::First),
-        ),
-        ('t', Action::NextTab),
-        ('T', Action::PreviousTab),
-    ] {
+    let mut keymap = Keymap::default();
+    assert_eq!(keymap.map(key(KeyCode::Char('g')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('g')), &app),
+        Some(Action::ExplorerSelectTarget(
+            lazydb::model::explorer::ExplorerNodeTarget::First
+        ))
+    );
+
+    for suffix in ['t', 'T'] {
         let mut keymap = Keymap::default();
         assert_eq!(keymap.map(key(KeyCode::Char('g')), &app), None);
-        assert_eq!(keymap.map(key(KeyCode::Char(suffix)), &app), Some(expected));
+        assert_eq!(keymap.map(key(KeyCode::Char(suffix)), &app), None);
     }
 }
 

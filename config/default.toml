@@ -93,6 +93,10 @@ next-tab = ["Ctrl-n", "g t", "] t"]
 # Ctrl-P selects the previous tab.
 # g-T and [-t are previous-tab aliases.
 previous-tab = ["Ctrl-p", "g T", "[ t"]
+# Ctrl-Shift-N swaps the active tab with the tab on its right.
+move-tab-right = ["Ctrl-Shift-n"]
+# Ctrl-Shift-P swaps the active tab with the tab on its left.
+move-tab-left = ["Ctrl-Shift-p"]
 # Ctrl-Q closes the active tab.
 close-tab = ["Ctrl-q"]
 
