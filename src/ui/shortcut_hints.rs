@@ -94,6 +94,144 @@ pub(super) fn render(
     );
 }
 
+pub(super) fn lines(
+    hints: &[ShortcutHint<'_>],
+    width: u16,
+    theme: Theme,
+    background: Color,
+) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    if width == 0 || hints.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = Line::default();
+    let mut current_width: usize = 0;
+    for (index, hint) in hints.iter().enumerate() {
+        let separator = if index > 0 && current_width > 0 {
+            SEPARATOR
+        } else {
+            ""
+        };
+        let key = hint.key.to_string();
+        let description = hint.description.to_string();
+        let full_width = separator.cell_width() + key.cell_width() + 1 + description.cell_width();
+        if usize::from(full_width) > width {
+            if !current.spans.is_empty() {
+                lines.push(current);
+                current = Line::default();
+                current_width = 0;
+            }
+            for chunk in wrap_cells(&key, width) {
+                lines.push(Line::from(Span::styled(
+                    chunk,
+                    Style::new()
+                        .fg(theme.action)
+                        .bg(background)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            for chunk in wrap_cells(&description, width) {
+                lines.push(Line::from(Span::styled(
+                    chunk,
+                    Style::new().fg(theme.text).bg(background),
+                )));
+            }
+            continue;
+        }
+        if current_width > 0 && current_width + usize::from(full_width) > width {
+            lines.push(current);
+            current = Line::default();
+            current_width = 0;
+        }
+        if current_width > 0 {
+            current.spans.push(separator_span(theme, background));
+            current_width += usize::from(SEPARATOR.cell_width());
+        }
+        let key_style = Style::new()
+            .fg(theme.action)
+            .bg(background)
+            .add_modifier(Modifier::BOLD);
+        let text_style = Style::new().fg(theme.text).bg(background);
+        let mut remaining = width.saturating_sub(current_width);
+        let mut key_part = String::new();
+        for character in key.chars() {
+            let character_width = character.width().unwrap_or(0);
+            if character_width > remaining {
+                break;
+            }
+            key_part.push(character);
+            remaining -= character_width;
+        }
+        current.spans.push(Span::styled(key_part, key_style));
+        if remaining > 0 {
+            current
+                .spans
+                .push(Span::styled(" ", Style::new().bg(background)));
+            remaining -= 1;
+        }
+        let mut description_part = String::new();
+        for character in description.chars() {
+            let character_width = character.width().unwrap_or(0);
+            if character_width > remaining {
+                if !description_part.is_empty() {
+                    current
+                        .spans
+                        .push(Span::styled(description_part, text_style));
+                    lines.push(current);
+                    current = Line::default();
+                    description_part = String::new();
+                }
+                remaining = width;
+                if character_width > remaining {
+                    continue;
+                }
+            }
+            description_part.push(character);
+            remaining -= character_width;
+        }
+        if !description_part.is_empty() {
+            current
+                .spans
+                .push(Span::styled(description_part, text_style));
+        }
+        current_width = width.saturating_sub(remaining);
+        if current_width >= width {
+            lines.push(current);
+            current = Line::default();
+            current_width = 0;
+        }
+    }
+    if !current.spans.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn wrap_cells(value: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used > 0 && used + character_width > width {
+            chunks.push(std::mem::take(&mut chunk));
+            used = 0;
+        }
+        if character_width <= width {
+            chunk.push(character);
+            used += character_width;
+        }
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
 fn packed_count(hints: &[ShortcutHint<'_>], width: usize) -> usize {
     for count in (0..=hints.len()).rev() {
         let omitted = hints.len() - count;
@@ -148,7 +286,7 @@ fn truncate_to_cells(value: &str, width: usize) -> String {
 mod tests {
     use ratatui::style::{Color, Modifier};
 
-    use super::{ShortcutHint, line};
+    use super::{ShortcutHint, line, lines};
     use crate::{cli::ColorMode, ui::Theme};
 
     fn plain_text(line: &ratatui::text::Line<'_>) -> String {
@@ -235,6 +373,26 @@ mod tests {
             ))
             .is_empty()
         );
+    }
+
+    #[test]
+    fn lines_wraps_every_hint_without_an_omission_marker() {
+        let theme = Theme::deep_space();
+        let hints = [
+            ShortcutHint::new("j/k", "move row"),
+            ShortcutHint::new("dd", "delete column"),
+            ShortcutHint::new("Esc", "close editor"),
+        ];
+        let rendered = lines(&hints, 18, theme, theme.surface);
+        let text = rendered
+            .iter()
+            .map(plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("j/k") && text.contains("move row"));
+        assert!(text.contains("dd") && text.contains("delete column"));
+        assert!(text.contains("Esc") && text.contains("close editor"));
+        assert!(!text.contains("... (+"));
     }
 
     #[test]

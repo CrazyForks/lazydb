@@ -339,10 +339,7 @@ fn form(
                 .style(Style::new().fg(theme.error).bg(theme.surface)),
             chunks[2],
         );
-    } else if matches!(
-        editor.draft.as_ref(),
-        Some(CatalogDraft::Table(draft)) if draft.column_editor.is_some()
-    ) {
+    } else if matches!(editor.draft.as_ref(), Some(CatalogDraft::Table(_))) {
         frame.render_widget(
             Paragraph::new("").style(Style::new().bg(theme.surface)),
             chunks[2],
@@ -1762,7 +1759,7 @@ fn render_table(
             );
         }
     }
-    if compact {
+    if compact && general_focus {
         let (field, label, input) = match draft.focus {
             TableEditorFocus::General(TableGeneralField::Schema) => (
                 TableEditorFocus::General(TableGeneralField::Schema),
@@ -1796,8 +1793,13 @@ fn render_table(
             theme,
         );
     }
-    // Keep the action row and shortcut footer inside the form's available area.
-    let content_bottom = area.bottom().saturating_sub(2);
+    let hints = table_shortcut_hints(draft);
+    let hint_lines = shortcut_hints::lines(&hints, area.width, theme, theme.surface);
+    // Keep the action row and wrapped shortcut footer inside the form's available area.
+    let footer_height = hint_lines.len().max(1) as u16;
+    let footer_y = area.bottom().saturating_sub(footer_height);
+    let action_y = footer_y.saturating_sub(1);
+    let content_bottom = action_y;
     let baseline = match baseline {
         Some(crate::db::catalog_mutation::CatalogObjectDefinition::Table(definition)) => {
             Some(definition)
@@ -1808,7 +1810,7 @@ fn render_table(
     let show_summary = !compact && area.height >= 20;
     let list_bottom = content_bottom.saturating_sub(u16::from(show_summary));
     let columns_y = if compact {
-        area.y.saturating_add(2)
+        area.y.saturating_add(if columns_focus { 1 } else { 2 })
     } else {
         area.y.saturating_add(7)
     };
@@ -1824,7 +1826,8 @@ fn render_table(
     let header_y = columns_y.saturating_add(1);
     let list_start = columns_y.saturating_add(2);
     let list_capacity = list_bottom.saturating_sub(list_start);
-    let (name_width, type_width, nullable_width, comment_width) = table_column_widths(area.width);
+    let (name_width, type_width, nullable_width, comment_width) =
+        table_column_widths(draft, area.width);
     let visible_start = if list_capacity == 0 {
         0
     } else {
@@ -1849,16 +1852,26 @@ fn render_table(
                 &column.state,
                 crate::model::catalog_editor::DraftRowState::Removed { .. }
             );
+            let added = matches!(
+                &column.state,
+                crate::model::catalog_editor::DraftRowState::Added
+            );
+            let row_background = if removed {
+                theme.row_deleted_background
+            } else if added {
+                theme.row_inserted
+            } else if active {
+                theme.selection
+            } else {
+                theme.surface
+            };
             let row_style = Style::new()
-                .fg(if removed {
-                    theme.row_deleted
+                .fg(if removed { theme.muted } else { theme.text })
+                .bg(row_background)
+                .add_modifier(if removed {
+                    Modifier::DIM
                 } else {
-                    theme.text
-                })
-                .bg(if active {
-                    theme.selection
-                } else {
-                    theme.surface
+                    Modifier::empty()
                 });
             let name = truncate_cells(
                 sanitize_terminal_text(column.name.value()).if_empty("<unnamed>"),
@@ -1892,7 +1905,7 @@ fn render_table(
             let focus_marker = if active { '▌' } else { ' ' };
             let row_number = format!("{focus_marker}{state_marker}{:>1}", index + 1);
             let separator =
-                Cell::from("│").style(Style::new().fg(theme.grid_border).bg(theme.surface));
+                Cell::from("│").style(Style::new().fg(theme.grid_border).bg(row_background));
             (
                 index,
                 Row::new([
@@ -1954,7 +1967,7 @@ fn render_table(
             )
             .header(header)
             .column_spacing(0)
-            .row_highlight_style(Style::new().bg(theme.selection))
+            .row_highlight_style(Style::new())
             .highlight_symbol(""),
             Rect::new(
                 area.x,
@@ -2055,12 +2068,7 @@ fn render_table(
     let mut x = area.x;
     for (label, field, target) in actions {
         let width = label.len() as u16;
-        let action_area = Rect::new(
-            x,
-            area.bottom().saturating_sub(2),
-            width.min(area.right().saturating_sub(x)),
-            1,
-        );
+        let action_area = Rect::new(x, action_y, width.min(area.right().saturating_sub(x)), 1);
         if action_area.width == 0 {
             continue;
         }
@@ -2076,55 +2084,90 @@ fn render_table(
         );
         x = x.saturating_add(width + 3);
     }
-    let hints = if draft.column_editor.is_some() {
-        Vec::new()
-    } else {
-        match draft.focus {
-            TableEditorFocus::Columns => vec![
-                ShortcutHint::new("Up/Down", "move row"),
-                ShortcutHint::new("Tab/Shift-Tab", "move focus"),
-                ShortcutHint::new("a", "add below"),
-                ShortcutHint::new("e", "edit column"),
-                ShortcutHint::new("r", "restore"),
-                ShortcutHint::new("Esc", "close/cancel editor"),
-            ],
-            TableEditorFocus::ColumnDetails(_) => Vec::new(),
-            TableEditorFocus::Action(_) => vec![
-                ShortcutHint::new("Enter/Space", "activate"),
-                ShortcutHint::new("↑/↓", "move"),
-                ShortcutHint::new("Esc", "close/cancel editor"),
-            ],
-            TableEditorFocus::General(_) => vec![
-                ShortcutHint::new("Tab/Shift-Tab/Up/Down", "move focus"),
-                ShortcutHint::new("Enter", "preview"),
-                ShortcutHint::new("Esc", "cancel"),
-            ],
-        }
-    };
     frame.render_widget(
-        Paragraph::new(shortcut_hints::line(
-            &hints,
-            area.width,
-            theme,
-            theme.surface,
-        ))
-        .style(Style::new().bg(theme.surface))
-        .alignment(ratatui::layout::Alignment::Center),
-        Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        Paragraph::new(hint_lines)
+            .style(Style::new().bg(theme.surface))
+            .alignment(ratatui::layout::Alignment::Center),
+        Rect::new(area.x, footer_y, area.width, footer_height),
     );
 }
 
-fn table_column_widths(width: u16) -> (u16, u16, u16, u16) {
-    let available = width.saturating_sub(7);
-    let nullable = available.min(8);
-    let content = available.saturating_sub(nullable);
-    let name = content / 2;
-    let type_width = content / 5;
+fn table_shortcut_hints(draft: &TableDraft) -> Vec<ShortcutHint<'static>> {
+    if draft.column_editor.is_some() {
+        return Vec::new();
+    }
+    match draft.focus {
+        TableEditorFocus::Columns => vec![
+            ShortcutHint::new("j/k · Up/Down", "move row"),
+            ShortcutHint::new("Tab/Shift-Tab", "move focus"),
+            ShortcutHint::new("a", "add below"),
+            ShortcutHint::new("e", "edit column"),
+            ShortcutHint::new("dd", "delete column"),
+            ShortcutHint::new("r", "restore"),
+            ShortcutHint::new("Esc", "close/cancel editor"),
+        ],
+        TableEditorFocus::ColumnDetails(_) => Vec::new(),
+        TableEditorFocus::Action(_) => vec![
+            ShortcutHint::new("Enter/Space", "activate"),
+            ShortcutHint::new("↑/↓", "move"),
+            ShortcutHint::new("Esc", "close/cancel editor"),
+        ],
+        TableEditorFocus::General(_) => vec![
+            ShortcutHint::new("Tab/Shift-Tab/Up/Down", "move focus"),
+            ShortcutHint::new("Enter", "preview"),
+            ShortcutHint::new("Esc", "cancel"),
+        ],
+    }
+}
+
+fn table_column_widths(draft: &TableDraft, width: u16) -> (u16, u16, u16, u16) {
+    let mut ideal = [
+        "NAME".width(),
+        "TYPE".width(),
+        "NULLABLE".width(),
+        "COMMENT".width(),
+    ];
+    for column in &draft.columns {
+        let values = [
+            sanitize_terminal_text(column.name.value())
+                .if_empty("<unnamed>")
+                .width(),
+            sanitize_terminal_text(column.native_type.value()).width(),
+            if matches!(
+                column.state,
+                crate::model::catalog_editor::DraftRowState::Removed { .. }
+            ) {
+                "REMOVED".width()
+            } else if column.nullable {
+                "NULL".width()
+            } else {
+                "NOT NULL".width()
+            },
+            sanitize_terminal_text(column.comment.value()).width(),
+        ];
+        for (target, measured) in ideal.iter_mut().zip(values) {
+            *target = (*target).max(measured);
+        }
+    }
+    for column in &mut ideal {
+        *column = (*column + 2).clamp(6, 40);
+    }
+    let minimum = [6usize, 6, 10, 9];
+    let budget = usize::from(width.saturating_sub(7));
+    while ideal.iter().sum::<usize>() > budget {
+        let Some(index) = (0..ideal.len())
+            .filter(|&index| ideal[index] > minimum[index])
+            .max_by_key(|&index| ideal[index] - minimum[index])
+        else {
+            break;
+        };
+        ideal[index] -= 1;
+    }
     (
-        name,
-        type_width,
-        nullable,
-        content.saturating_sub(name + type_width),
+        ideal[0] as u16,
+        ideal[1] as u16,
+        ideal[2] as u16,
+        ideal[3] as u16,
     )
 }
 

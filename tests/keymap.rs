@@ -1015,6 +1015,19 @@ fn table_editor_keymap_dispatches_by_focus_region() {
         Some(Action::CatalogEditorFieldNext)
     );
     assert_eq!(
+        keymap.map(key(KeyCode::Char('j')), &app),
+        Some(Action::CatalogEditorFieldNext)
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('k')), &app),
+        Some(Action::CatalogEditorFieldPrevious)
+    );
+    assert_eq!(keymap.map(key(KeyCode::Char('d')), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('d')), &app),
+        Some(Action::CatalogEditorRemoveTableColumn)
+    );
+    assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
         Some(Action::CatalogEditorPreview)
     );

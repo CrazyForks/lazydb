@@ -45,6 +45,7 @@ use lazydb::{
     persistence::secrets::keyring_ref,
     profile::{DatabaseKind, Environment, import_connection_url},
     sql::{CompletionCandidate, CompletionKind, CompletionScore, TextRange},
+    ui::theme::Theme,
     ui::{
         self, HitTarget, PaneResizeDrag, ProfileButton, UiState,
         icons::{IconMode, IconSet},
@@ -952,6 +953,24 @@ fn table_editor_marks_removed_columns_and_exposes_restore_action() {
     }
     assert!(output.contains("REMOVED"), "{output}");
     assert!(output.contains("Restore Column"), "{output}");
+    let removed_row = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorTableColumn(0))
+        .expect("removed column hit region");
+    let added_row = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorTableColumn(1))
+        .expect("added column hit region");
+    assert_eq!(
+        buffer[(removed_row.area.x + 4, removed_row.area.y)].bg,
+        Theme::deep_space().row_deleted_background
+    );
+    assert_eq!(
+        buffer[(added_row.area.x + 4, added_row.area.y)].bg,
+        Theme::deep_space().row_inserted
+    );
     assert!(
         state
             .hit_regions
