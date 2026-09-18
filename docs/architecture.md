@@ -15,14 +15,14 @@ Crossterm input / DB events
         Runtime
            |
 DatabaseConnection enum
-   |          |          |
-Postgres   MySQL      SQLite
+    |          |          |          |          |          |          |
+ Postgres   MySQL    MariaDB     Oracle   SQL Server  SQLite     Redis
 ```
 
 The monitoring dashboard is a separate workspace tab. Its native read-only
-queries live in the concrete PostgreSQL/MySQL adapters, while the dashboard
-model owns typed snapshots, elapsed-time counter rates, time-bounded history,
-and process filtering. Runtime schedules single-flight metric and process
+queries live in the concrete PostgreSQL/MySQL/MariaDB/Redis adapters, while the
+dashboard model owns typed snapshots, elapsed-time counter rates, time-bounded
+history, and process filtering. Runtime schedules single-flight metric and process
 loads and tags every result with the dashboard tab generation and its bound
 `ConnectionIdentity`; results are checked against that session, not against the
 globally projected active connection.
@@ -205,16 +205,19 @@ schema changes only rewrite derived visibility.
 
 ## Database Boundary
 
-`DatabaseConnection` dispatches to concrete `PostgresAdapter`, `MySqlAdapter`, or
-`SqliteAdapter`; MariaDB uses the MySQL-compatible adapter with a distinct product
-kind. This is intentionally not SQLx `AnyPool`: native catalog, type,
-SSL, DDL, cancellation, and transaction behavior must remain visible.
+`DatabaseConnection` dispatches to concrete PostgreSQL, MySQL/MariaDB, Oracle,
+SQL Server, SQLite, and Redis adapters; MariaDB uses the MySQL-compatible
+adapter with a distinct product kind. This is intentionally not SQLx `AnyPool`:
+native catalog, type, SSL, DDL, cancellation, transaction, and key-value
+behavior must remain visible.
 
 Catalog requests use bounded keyset pages (maximum page size 500), with separate
 targets for databases, schemas, groups, objects, and relation children. The
 PostgreSQL adapter requires server version 12 or newer; the Oracle MySQL catalog
- adapter requires 8.0.13 or newer; the MariaDB-compatible catalog requires 10.5
- or newer. SQLite
+adapter requires 8.0.13 or newer; the MariaDB-compatible catalog requires 10.5
+or newer; SQL Server requires 2012 or newer; Oracle uses the native client and
+targets Oracle 12c or newer; Redis uses a logical database number rather than a
+relational catalog. SQLite
 supports metadata from native schema tables and loads each page inside a
 transaction that is rolled back afterward. SQLite deliberately uses a single
 physical pool connection, and catalog operations do not write database state.
@@ -325,8 +328,16 @@ handle, and lifecycle/health checks. It does not parse SQL, connect to
 databases, or store credentials. The launched LazyDB process provides the same
 Profile Manager and keyring behavior as a direct CLI session.
 
+Workspace manifests and SQL files are persisted atomically in the normal save
+path. A failed quit-save offers retry, discard-and-quit, or cancel-quit; an
+automatic recovery bundle for partially unreadable workspace data remains a
+separate follow-up.
+
 ## Remaining Architectural Work
 
-- Persist console manifests and SQL files atomically.
-- Replace complete result collection with bounded row batches and viewport storage.
-- Add a conservative mutation planner for stable-key single-table previews.
+- Expand operation-level relation mutation capabilities and round-trip coverage
+  for the currently gated drivers and complex table shapes.
+- Replace complete result collection with bounded row batches and viewport
+  storage for very large arbitrary SQL result sets.
+- Add a first-class query-plan/`EXPLAIN` workflow, SSH tunneling, and import/
+  export surfaces without weakening the existing write-safety boundaries.

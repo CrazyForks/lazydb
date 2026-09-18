@@ -6,6 +6,22 @@ machine.
 
 ## Driver Matrix
 
+The static driver contract is split into interaction model, catalog/DDL,
+relation-data editing, transactions, cancellation, and monitoring. `Available`
+means the adapter advertises the operation before connection; permissions,
+server-version checks, missing metadata, and profile read-only state can still
+disable it at runtime.
+
+| Driver | Interaction model | Catalog / DDL | Relation data editing | Transactions | Cancellation | Monitoring |
+| --- | --- | --- | --- | --- | --- | --- |
+| PostgreSQL | Relational | Available; broad catalog editor | Available when metadata and permissions allow | AUTO/MANUAL | Native cancellation | Metrics and bounded process list |
+| MySQL | Relational | Available; table/view catalog mutation | Insert requires reliable primary-key lookup; update/delete require primary key | AUTO/MANUAL | Supported | Metrics and bounded process list |
+| MariaDB | Relational | Available; table/view mutation plus version-gated sequences | Insert supports `RETURNING`, including keyless insert; update/delete require primary key | AUTO/MANUAL | Supported | Metrics and bounded process list |
+| Oracle | Relational | Available; table/view/sequence DDL and catalog mutation slices | Not advertised | AUTO/MANUAL | Not advertised | Not implemented |
+| SQL Server | Relational | Available; table/view mutation; complex children gated | Insert supports `OUTPUT`; update/delete require primary key | AUTO/MANUAL | Session close; open transaction rolls back | Not supported |
+| SQLite | Relational | Available; table/view DDL and catalog mutation | Rowid-table insert lookup; update/delete require primary key; table shape is gated | AUTO/MANUAL | Progress handler / close | Not applicable |
+| Redis | Key-value | No SQL catalog or DDL | Native key/value and collection mutation, separate from relation grid | No SQL transaction UI | Not applicable | Read-only `INFO` metrics |
+
 ## Relation Data Mutation Matrix
 
 Relation Data 的行操作能力与 Catalog DDL 能力分开判断。新增一行不要求表有主键；更新和删除已有行仍要求可可靠定位，当前网格使用完整主键。插入结果必须来自数据库返回或可靠回查，不能用草稿值代替服务器生成的默认值、身份值或触发器结果。
@@ -14,7 +30,7 @@ Relation Data 的行操作能力与 Catalog DDL 能力分开判断。新增一�
 | --- | --- | --- | --- |
 | PostgreSQL | `INSERT ... RETURNING` | Available | Primary key plus PostgreSQL row-version rules |
 | MariaDB 10.5+ | `INSERT ... RETURNING` | Available | Primary key |
-| Oracle MySQL | Primary-key lookup / auto-increment result | Requires reliable key metadata | Primary key |
+| MySQL | Primary-key lookup / auto-increment result | Requires reliable key metadata | Primary key |
 | SQL Server | `OUTPUT inserted.*` | Available where OUTPUT semantics are supported | Primary key |
 | SQLite rowid table | Same-connection `last_insert_rowid()` lookup | Available for ordinary rowid tables | Primary key |
 | SQLite `WITHOUT ROWID` / unsupported virtual table shape | Shape-specific strategy required | Capability-gated | Primary key |
@@ -77,11 +93,12 @@ mutation protocols even though they share the same Explorer action contract.
 
 ## Monitoring Dashboard
 
-The connection dashboard is available for PostgreSQL, MySQL, and MariaDB. It
-collects read-only status counters, connection gauges, and a bounded process
-list. SQLite reports monitoring as unsupported because it has no server-wide
-activity catalog. Samples remain in memory for the active workspace tab and
-are not persisted. Counter rates use the elapsed time between valid samples;
+The connection dashboard is available for PostgreSQL, MySQL, MariaDB, and Redis.
+It collects read-only status counters and connection gauges; PostgreSQL, MySQL,
+and MariaDB also expose a bounded process list. SQLite and Oracle report
+monitoring as unsupported, while SQL Server's dashboard and process metrics are
+currently gated. Samples remain in memory for the active workspace tab and are
+not persisted. Counter rates use the elapsed time between valid samples;
 the first sample, missing fields, resets, restarts, and failed polls create a
 history gap rather than a fabricated rate.
 
@@ -97,6 +114,7 @@ queries or terminate sessions.
 | Oracle | Profile/URL recognition, native connect/probe, basic query, catalog, preview, DDL, and generated result pagination implemented for Oracle 12c+; advanced contract pending | Service + owner/schema | Tables, views, sequences, columns, indexes, primary/unique/check constraints | Type family, defaults, numeric precision/scale, character length; advanced LOB metadata pending |
 | SQL Server | SQL Server 2012 or newer | Database + schema | Tables, views, functions, procedures, sequences, triggers; relation children include columns, indexes, keys, and foreign keys | Type family, defaults, identity, computed/generated expressions, numeric precision/scale, character length, collation, comments, and rowversion metadata |
 | SQLite | SQLite metadata support through native schema tables; no server-version gate | Database + attached schema aliases | Tables, views, triggers | Default expressions and hidden-column metadata; unsupported fields are represented as unsupported |
+| Redis | Redis server; logical database selected by profile | Logical database + key namespace | Keys and native collection metadata | Key type, TTL, memory, and value-shape metadata; relational catalog fields are not applicable |
 
 PostgreSQL, MySQL, MariaDB, and SQLite advertise lazy children. SQLite opens a pool with
 exactly one physical connection; SQL Server loads its supported catalog groups

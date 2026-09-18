@@ -77,8 +77,9 @@ valid.
 ## Current implementation boundary
 
 The stdio server, document lifecycle, UTF-16 conversion, offline completion,
-syntax diagnostics, static MyBatis extraction, and conservative dynamic-tag
-handling are implemented and covered by protocol/integration tests. The
-profile-backed catalog loader is still a separate follow-up: the current
-server uses an in-process single-flight cache with an empty offline snapshot,
-so it must not claim table or column completion from a live connection yet.
+syntax diagnostics, static MyBatis extraction, conservative dynamic-tag
+handling, and profile-backed catalog completion are implemented and covered by
+protocol/integration tests. Catalog completion is loaded lazily through the
+selected project/profile scope; if no usable profile is available, the server
+falls back to offline SQL completion. The language server never executes user
+SQL or performs database-backed diagnostics.

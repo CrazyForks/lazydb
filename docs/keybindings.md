@@ -7,9 +7,9 @@ input mapper and editor.
 
 The built-in configuration selects this complete contract with
 `keybindings.preset = "vim"` in [`config/default.toml`](../config/default.toml).
-The current release supports the Vim preset as a whole rather than arbitrary
-per-command rebinding. The global command bindings listed in
-The grouped keybinding tables are the current exception and accept single key
+The current release supports the Vim preset as a whole. Application-level
+commands in the grouped keybinding tables can be overridden, while the editor's
+core Vim/modalkit bindings remain fixed. These grouped tables accept single key
 events or space-separated key sequences. They are organized as `global`,
 `leader`, `panes`, `explorer`, `results`, `editor`, and `overlays` according to
 the active panel. `keybindings.sequence_timeout_ms`
@@ -95,6 +95,10 @@ Relation Data while edits or transaction restrictions are pending.
 | --- | --- |
 | `F1` | Open contextual Help |
 | `F2` | Open the global Omni action and object switcher |
+| `F6` | Open the SQL console manager |
+| `F7` | Open SQL execution history |
+| `F8` | Open notification history |
+| `F9` | Open the Update Center |
 | `?` | Open Help outside Editor search/input states |
 | `Ctrl-c` | Quit globally; context-specific cancellation may also be offered by its modal |
 | `Ctrl-Shift-s` | Release mouse capture for terminal-native text selection; press `Esc` to return |
@@ -166,6 +170,12 @@ from display strings.
 | Record View `g` | `g` first field |
 
 ## Explorer
+
+Explorer navigation and catalog actions are context-sensitive. The same key can
+have a different meaning in a grid, editor, or overlay; use `F1`/`?` to see the
+currently available subset. Catalog create/edit actions are capability-aware
+and are omitted when the connected driver or selected object does not support
+them.
 
 ## Database Dashboard
 
@@ -314,21 +324,6 @@ right border and a horizontal scrollbar on the bottom border. Clicking a track
 moves by one viewport; dragging a thumb moves to an absolute offset. Mouse
 scrolling does not move the text cursor. Keyboard navigation and search reveal
 the cursor again when it leaves the visible area.
-
-### Editor Viewport Navigation
-
-| Keys | Behavior |
-| --- | --- |
-| `Ctrl-f` / `PageDown` | Scroll down one page |
-| `Ctrl-b` / `PageUp` | Scroll up one page |
-| `Ctrl-d` | Scroll down half a page |
-| `Ctrl-u` | Scroll up half a page |
-| `/`, `?`, `n`, `N` | Search and reveal matching text |
-
-The same read-only viewport controls apply to SQL Output/Plan and Relation DDL.
-In Insert/Replace mode and editor prompts, `Ctrl-u` keeps its existing
-text-editing meaning. `Ctrl-PageUp` and `Ctrl-PageDown` continue to switch
-workspace tabs.
 
 ### Insert and Replace
 

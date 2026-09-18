@@ -153,6 +153,8 @@ The complete schema and current values are best read directly in
 | `execution` | `confirmation` |
 | `connections` | `default_access` |
 | `dashboard` | `refresh_interval_seconds` |
+| `redis` | Scan/page sizes, value preview budgets, concurrency, temporary key-index, and metadata-cache limits |
+| `updates` | `check_on_startup`, `check_interval_hours` |
 | `keybindings` | `preset`, `sequence_timeout_ms`, and grouped `global`, `leader`, `panes`, `explorer`, `results`, `editor`, `overlays` tables |
 
 Only the `vim` keybinding preset is currently supported. It denotes the full
@@ -256,10 +258,24 @@ not a clipboard write and `Esc` restores capture.
 `settings.toml` for the current process. The `--config` option is also accepted by agent and
 MCP commands so they read the same profile set.
 
-Subcommand-specific options are not connection-file settings. They include
-`update --channel stable|beta`, agent `--project`, `--connection`, `--limit`,
-`--sql`, `--file`, `--write-policy`, and MCP `serve --project`, `--connection`,
-and `--write-policy`. The MCP and agent execution write policy defaults to
+Subcommand-specific options are not connection-file settings. The available
+machine-readable and operational commands are:
+
+| Command | Purpose |
+| --- | --- |
+| `lazydb version [--json]` | Print version, CLI API, revision, and driver information |
+| `lazydb capabilities [--json]` | Print the stable CLI feature/driver contract |
+| `lazydb doctor [--json] [--profile NAME]` | Check locale, drivers, and credential-store readiness without database I/O |
+| `lazydb agent connections/context/schema-search/query/describe/execute` | Run project-scoped JSON database operations |
+| `lazydb mcp serve/setup/doctor` | Start, register, or inspect the local stdio MCP server |
+| `lazydb lsp --stdio [--project PATH] [--dialect DIALECT]` | Start the SQL/MyBatis language server |
+| `lazydb update [--check] [--channel stable\|beta] [--json]` | Check or apply a native installation update |
+| `lazydb uninstall [--dry-run] [--yes] [--purge] [--json]` | Inspect or remove a native installation |
+| `lazydb migrate-home --to PATH [--dry-run] [--yes] [--json]` | Move the complete Unix application root |
+
+Agent and MCP execution options include `--project`, `--connection`, `--limit`,
+`--sql`, `--file`, and `--write-policy`; MCP `serve` also accepts `--project`
+and `--connection`. The MCP and agent execution write policy defaults to
 `deny`; see [Coding-Agent Database Access](coding-agent-access.md).
 
 ## Connection Profile Fields
@@ -271,15 +287,15 @@ The current profile file format is version `5`:
 | `id` | UUID string | Generated on creation | Stable identity used by workspace state and system credential references. Must be unique within the file. |
 | `name` | String | Derived from the database, host, or SQLite filename | Name shown in the Explorer and accepted by `--profile` and agent `--connection`. |
 | `access` | Table | `{ scope = "global" }` | Controls which projects can see a saved profile. |
-| `kind` | `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `sqlite` | Required | Database adapter to use. Oracle uses the native driver included in the default build and requires Oracle Instant Client at runtime. |
+| `kind` | `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `sqlite`, `redis` | Required | Database adapter to use. Oracle uses the native driver included in the default build and requires Oracle Instant Client at runtime; Redis is the non-relational key-value adapter. |
 | `url_format` | Kebab-case enum | Driver-specific | URL spelling used when LazyDB displays or regenerates the connection URL. |
-| `host` | String or `null` | `null` | Server hostname or address. PostgreSQL, MySQL/MariaDB, and SQL Server use this field. |
-| `port` | Integer or `null` | Driver default when imported | Server port. PostgreSQL defaults to `5432`, MySQL/MariaDB to `3306`, and SQL Server to `1433`. SQL Server profiles require an explicit TCP port when connecting. |
+| `host` | String or `null` | `null` | Server hostname or address. PostgreSQL, MySQL/MariaDB, Oracle, SQL Server, and Redis use this field. |
+| `port` | Integer or `null` | Driver default when imported | Server port. PostgreSQL defaults to `5432`, MySQL/MariaDB to `3306`, Oracle to `1521`, SQL Server to `1433`, and Redis to `6379`. SQL Server profiles require an explicit TCP port when connecting. |
 | `user` | String or `null` | `null` | Server login name. SQL Server uses SQL username/password authentication; SQLite does not use it. |
-| `database` | String or `null` | `null` | Database name for PostgreSQL, MySQL/MariaDB, or SQL Server, or the logical SQLite path value. |
+| `database` | String or `null` | `null` | Database name for PostgreSQL, MySQL/MariaDB, Oracle service, or SQL Server; logical SQLite path value; or non-negative Redis logical database number. |
 | `default_schema` | String or `null` | `null` | PostgreSQL `currentSchema`, SQL Server schema, or SQLite `main`. MySQL has no separate default-schema field. |
 | `sqlite_path` | Path or `null` | `null` | SQLite file path. It is `null` for an in-memory database. |
-| `ssl_mode` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` | TLS policy for PostgreSQL, MySQL, and SQL Server. SQLite always uses `disable`. |
+| `ssl_mode` | `disable`, `prefer`, `require`, `verify-ca`, `verify-full` | `prefer` | TLS policy for PostgreSQL, MySQL/MariaDB, Oracle, SQL Server, and Redis. SQLite always uses `disable`; Redis accepts `disable` or a TLS-enabled mode, not `prefer`. |
 | `credential_policy` | Tagged table | `{ policy = "none" }` | Where the password comes from. |
 | `read_only` | Boolean | `false` | Requests adapter-level read-only behavior. Use database grants for authorization. |
 | `environment` | `development`, `staging`, `production` | `development` | Environment label used by the UI and agent write-policy checks. |
@@ -293,9 +309,11 @@ library search paths. The selected directory must contain the ARM64
 the client directory requires restarting LazyDB.
 
 `url_format` accepts `postgres`, `postgresql`, `jdbc-postgresql` for PostgreSQL;
-`mysql`, `jdbc-mysql` for MySQL; `mariadb` for MariaDB; `jdbc-oracle` for Oracle; `sqlserver`, `mssql`, `jdbc-sqlserver` for SQL
-Server; and `sqlite`, `file-uri`, `jdbc-sqlite` for SQLite. Defaults are
-`postgresql`, `mysql`, `sqlserver`, and `sqlite` respectively.
+`mysql`, `jdbc-mysql` for MySQL; `mariadb` for MariaDB; `jdbc-oracle` for Oracle;
+`sqlserver`, `mssql`, `jdbc-sqlserver` for SQL Server; `sqlite`, `file-uri`,
+`jdbc-sqlite` for SQLite; and `redis`, `rediss` for Redis. Defaults are
+`postgresql`, `mysql`, `mariadb`, `jdbc-oracle`, `sqlserver`, `sqlite`, and
+`redis` respectively.
 
 ### Profile Access
 

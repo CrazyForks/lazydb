@@ -115,8 +115,10 @@ Use the diagnostic command before starting OpenCode:
 lazydb mcp doctor --client opencode --opencode-bin opencode2 --probe --json
 ```
 
-`--probe` verifies the local process, MCP initialization, and `tools/list`; it
-does not execute a database query. If it reports a profile parsing error,
+`--probe` starts the configured local OpenCode LazyDB server, verifies MCP
+initialization and `tools/list`, and does not execute a database query. It is
+currently implemented for OpenCode local servers only; Claude Code and Codex
+are statically inspected when selected. If it reports a profile parsing error,
 rebuild LazyDB and point the server command at that verified binary. The
 installed binary and the profiles file must support the same database drivers.
 
@@ -296,10 +298,11 @@ lazydb mcp setup --client opencode --scope user --client-config ~/.config/openco
 lazydb mcp doctor --project . --json
 ```
 
-The current `doctor --probe` flag reports that protocol probing is not yet
-implemented and does not start configured client commands. A successful static
-diagnosis confirms parsed server fields and deny policy, not client trust,
-process startup, or database connectivity. Doctor lists discovered LazyDB sources
-in file precedence order and reports duplicate definitions and disabled entries.
+`doctor --probe` adds an OpenCode local-process protocol probe to the static
+diagnosis. A successful probe confirms process startup, MCP initialization, and
+the advertised tool count, but still does not perform database I/O. Static
+diagnosis does not verify client trust, remote/managed settings, or CLI
+overrides. Doctor lists discovered LazyDB sources in file precedence order and
+reports duplicate definitions and disabled entries.
 Runtime CLI overrides, inline OpenCode configuration, remote/managed settings and
 client-specific trust decisions are not fully resolved by static inspection.

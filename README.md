@@ -4,7 +4,7 @@
 LazyDB lets you browse schemas, write and run SQL, inspect relations, manage
 connection profiles, and expose project-scoped database access to coding agents
 without leaving your terminal. It is written in Rust and supports PostgreSQL,
-Oracle MySQL, SQL Server, and SQLite.
+MySQL, MariaDB, Oracle, SQL Server, SQLite, and Redis.
 
 > **Project status:** LazyDB is currently in beta. The core database workspace,
 > connection management, SQL execution, and coding-agent interfaces are usable,
@@ -54,7 +54,10 @@ Oracle MySQL, SQL Server, and SQLite.
 ## Quickstart
 
 Press `F2` anywhere in the workspace to open the global Omni Bar for commands,
-connections, consoles, tables, and navigation. See the [Omni Bar guide](docs/omni-bar.md).
+connections, consoles, tables, and navigation. `F1` or `?` opens contextual help;
+`F6` opens the console manager; `F7` opens SQL execution history; `F8` opens
+notification history; and `F9` opens the Update Center. See the
+[Omni Bar guide](docs/omni-bar.md) and the complete [keyboard reference](docs/keybindings.md).
 
 ### Installing and running LazyDB
 
@@ -202,19 +205,25 @@ chmod +x "$HOME/.local/bin/lazydb"
 lazydb version
 ```
 
-Ensure `$HOME/.local/bin` is in `PATH`. To upgrade an offline installation,
+Ensure `$HOME/.local/bin` is in `PATH`. To upgrade a manually installed binary
+offline, download and verify the new archive, extract it, and repeat the `cp`
+step with the new versioned directory. Native script installations should use
+`lazydb update` when network access is available; package-manager installations
+must be upgraded by their owning package manager.
 
 </details>
 
 ## Features
 
 - **Database Explorer:** Browse databases, schemas, tables, views, indexes,
-  foreign keys, triggers, routines, and types where supported by the driver.
-- **PostgreSQL catalog editor:** Capability-aware Explorer `a` creates supported
-  children and `e` edits directly selected objects. The implemented scope is
-  Schema, Table, Column, Index, Constraints, View, Materialized View, Sequence,
-  Database, and Role. The Role node is not present in Explorer, so existing
-  roles cannot currently be selected for editing.
+  foreign keys, triggers, routines, sequences, and types where supported by the
+  driver. Redis uses a dedicated key-space browser rather than a SQL catalog.
+- **Capability-aware catalog editor:** Explorer `a` creates supported children
+  and `e` edits directly selected objects. PostgreSQL exposes the broadest
+  catalog editor (schema, table, column, index, constraints, views,
+  materialized views, sequences, databases, and roles); Oracle, MySQL,
+  MariaDB, SQL Server, and SQLite expose their currently implemented table/view
+  and driver-specific mutation slices. Unsupported operations stay hidden.
 - **Catalog reconciliation:** Explorer `r` refreshes only the selected target;
   PostgreSQL relation identities can be rebound after an external table rename,
   while SQL catalog changes trigger a conservative database-catalog sync.
@@ -224,13 +233,27 @@ Ensure `$HOME/.local/bin` is in `PATH`. To upgrade an offline installation,
   execution, immutable previews, risk confirmation, cancellation, and read-only
   safeguards.
 - **Transactions:** Use per-console AUTO or MANUAL transactions on PostgreSQL,
-  MySQL, SQL Server, and SQLite sessions, including rollback on cancellation and
-  unknown outcome handling.
+  MySQL, MariaDB, Oracle, SQL Server, and SQLite sessions, including rollback on
+  cancellation and unknown outcome handling where the driver cannot acknowledge
+  the final state. Redis uses atomic commands and has no SQL transaction UI.
 - **Relation workspaces:** Preview relation data with a bounded 500-row limit,
-  switch between Data and DDL, and open DDL in a separate tab.
+  switch between Data and DDL, open DDL in a separate tab, and use staged
+  relation editing where the selected driver advertises it. PostgreSQL, MySQL,
+  MariaDB, SQL Server, and SQLite have adapter mutation paths with operation-
+  level checks; Oracle relation-grid mutation is not advertised. Existing-row
+  update/delete requires reliable primary-key metadata, while insert support
+  depends on the driver's returning/output/lookup strategy.
+- **Redis workspace:** Browse keys by database and prefix, preview strings and
+  collections with bounded paging, search/filter key spaces, inspect TTL and
+  metadata, and perform native key/value, collection, and TTL mutations where
+  supported.
 - **Connection profiles:** Create, test, save, edit, delete, disconnect, and
-  switch PostgreSQL, MySQL, SQL Server, and SQLite profiles. Profiles can be
-  saved, ad hoc, or scoped to the current project.
+  switch PostgreSQL, MySQL, MariaDB, Oracle, SQL Server, SQLite, and Redis
+  profiles. Profiles can be saved, ad hoc, or scoped to the current project.
+- **Monitoring dashboard:** Inspect read-only status metrics and bounded process
+  data for PostgreSQL, MySQL, and MariaDB, plus Redis instance metrics. SQLite
+  and Oracle do not yet expose dashboard metrics; Redis process rows are not
+  available; SQL Server dashboard and process metrics are gated.
 - **Credential protection:** Use local authenticated encryption by default, or
   macOS Login Keychain and Linux Secret Service when available.
 - **Coding-agent access:** Use project-aware JSON CLI commands or a local stdio
@@ -255,19 +278,27 @@ plugin configuration.
 | Database | Requirement | Catalog support |
 | --- | --- | --- |
 | PostgreSQL | 12 or newer | Databases, schemas, tables, columns, indexes, constraints, views, materialized views, sequences, functions, procedures, types; catalog editing also covers databases and roles; relation rename reconciliation uses readable `pg_class`/`pg_namespace` OIDs |
-| Oracle MySQL | 8.0.13 or newer | Databases, tables, views, functions, procedures, triggers |
+| MySQL | 8.0.13 or newer | Databases (database-as-schema), tables, columns, indexes, constraints, views, functions, procedures, and triggers; catalog table/view mutation is available, while relation grid mutation remains gated |
 | MariaDB | 10.5 or newer | Databases, tables, views, functions, procedures, triggers, and version-gated sequences; MariaDB uses a dedicated SQL dialect context |
+| Oracle | Oracle 12c or newer; native Oracle client required | Services and owner schemas, tables, views, sequences, columns, indexes, and constraints; catalog table/view/sequence mutation and relation DDL are implemented; monitoring and relation grid mutation remain gated |
 | SQL Server | SQL Server 2012 or newer | Databases, schemas, tables, views, functions, procedures, sequences, triggers, indexes, keys, foreign keys, and column metadata |
 | SQLite | Native SQLite schema support | Tables, views, indexes, foreign keys, and triggers |
+| Redis | Redis server; non-negative logical database number (server-configured) | Key-space discovery, key type/TTL metadata, strings and collections, bounded value previews, native key/value mutations, and read-only INFO metrics; no SQL catalog |
 
 MariaDB shares the MySQL-compatible transport but has its own product/version
 gates. Current support includes SQL execution, transactions, monitoring,
 database-is-schema catalog browsing, CHECK metadata, native trigger DDL, and
-sequence catalog discovery. Data-grid editing, column/index/constraint
+sequence catalog discovery. Relation grid editing, column/index/constraint
 mutation, routine/event management, system-versioned history operations, and
 MariaDB-specific authentication options remain gated. See the complete
 [database capability matrix](docs/database-capabilities.md) for metadata,
 paging, relation DDL, and version details.
+
+Oracle uses the native Oracle client rather than SQLx. The default build includes
+the Oracle adapter, but a working Oracle Instant Client is still required at
+runtime. Redis is a supported non-relational driver with a separate browser and
+native command model; SQL Editor, SQL transactions, and relational catalog DDL
+do not apply to Redis.
 
 ## Coding-Agent Access
 
@@ -332,8 +363,22 @@ names; visible aliases such as `u.` load their relation columns on demand.
 The exact path syntax follows the selected profile dialect. SQL Server supports
 three-part names, MySQL folds its database/schema mirror, SQLite uses attached
 database names such as `main`, and PostgreSQL does not present ordinary
-cross-database paths. Profile `catalog_scope` and database permissions remain
-the visibility boundary.
+cross-database paths. MariaDB follows the MySQL database-as-schema model;
+Oracle uses service/owner scope; Redis completion is not SQL identifier
+completion. Profile `catalog_scope` and database permissions remain the
+visibility boundary.
+
+Run the standalone server with:
+
+```bash
+lazydb lsp --stdio --project . --dialect postgres
+```
+
+The LSP provides offline SQL/MyBatis syntax diagnostics and completion, plus
+profile-backed catalog completion when a project/profile can be resolved. It
+does not execute SQL or infer application-language types. See the
+[SQL language-server notes](docs/sql-language-server.md) for the protocol
+boundary and troubleshooting details.
 
 The footer and help view show contextual controls for the active context and mode. See the
 complete [keyboard reference](docs/keybindings.md) for the operational contract,
@@ -397,15 +442,30 @@ Read the complete [Configuration Guide](docs/configuration.md) for every command
 option, configuration and workspace file, connection-profile field, default value,
 project scope, password provider, TLS mode, and read-only behavior.
 
+The CLI also exposes machine-readable `version`, `capabilities`, and `doctor`
+commands, the JSON `agent` interface, `mcp serve/setup/doctor`, `lsp --stdio`,
+native `update`, safe `uninstall`, and `migrate-home`. Use `--json` on the
+commands that document a JSON report contract. Agent and MCP writes default to
+denied; see [Coding-Agent Database Access](docs/coding-agent-access.md).
+
 ## Current Limitations
 
-The following capabilities are not available yet:
+The following capabilities are not available yet or are intentionally gated:
 
-- Persistent console recovery and console renaming
-- Staged grid editing, optimistic conflict detection, insert, and delete
+- Automatic recovery-bundle export for a corrupted or partially unreadable
+  workspace; normal console/tab persistence and console renaming are supported
+- Oracle relation-grid editing and any relation operation whose adapter cannot
+  reliably return or locate the affected row; relation operations remain
+  capability-gated by metadata, permissions, driver strategy, and snapshot
+  freshness
 - Query plans
 - SSH tunneling
 - Import and export
+- Windows Integrated Authentication, Kerberos, Entra authentication, Named
+  Instances, and SQL Browser discovery for SQL Server
+- SQL Server dashboard/process metrics and several specialized SQL Server types
+- Advanced Oracle LOB metadata and Oracle cancellation; cancelling Oracle work
+  is not advertised as a cancellable operation
 
 SQL Server currently uses SQL username/password authentication over an explicit
 TCP host and port. Windows Integrated Authentication, Kerberos, Entra
@@ -426,6 +486,10 @@ notes for current priorities and version-specific changes.
 | Database capability matrix | [`docs/database-capabilities.md`](docs/database-capabilities.md) |
 | Keyboard reference | [`docs/keybindings.md`](docs/keybindings.md) |
 | Coding-agent and MCP access | [`docs/coding-agent-access.md`](docs/coding-agent-access.md) |
+| Omni Bar | [`docs/omni-bar.md`](docs/omni-bar.md) |
+| Redis browser and value preview | [`docs/redis-browser.md`](docs/redis-browser.md), [`docs/redis-value-preview.md`](docs/redis-value-preview.md) |
+| SQL language server | [`docs/sql-language-server.md`](docs/sql-language-server.md) |
+| Architecture | [`docs/architecture.md`](docs/architecture.md) |
 | Product design | [`docs/plans/2026-08-24-lazydb-design.md`](docs/plans/2026-08-24-lazydb-design.md) |
 
 ## Development
