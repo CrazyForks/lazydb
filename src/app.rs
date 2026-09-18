@@ -7895,6 +7895,28 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::CatalogEditorAddTableColumnAbove => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.begin_add_column_above();
+                    draft.finish_edit_group();
+                }
+                Vec::new()
+            }
+            Action::CatalogEditorReorderTableColumn(delta) => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.reorder_selected_column(delta);
+                    draft.finish_edit_group();
+                }
+                Vec::new()
+            }
             Action::CatalogEditorRemoveTableColumn => {
                 if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
                     .catalog_editor

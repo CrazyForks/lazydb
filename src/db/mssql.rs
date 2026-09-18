@@ -414,6 +414,22 @@ impl MsSqlAdapter {
                     Some(CatalogObjectDefinition::Table(_)),
                     crate::model::catalog_editor::CatalogDraft::Table(draft),
                 ) => {
+                    if draft.columns.iter().any(|column| {
+                        !matches!(
+                            column.state,
+                            crate::model::catalog_editor::DraftRowState::Added
+                        ) || !column.name.value().trim().is_empty()
+                    }) && draft.columns.iter().any(|column| {
+                        !matches!(
+                            column.state,
+                            crate::model::catalog_editor::DraftRowState::Existing { .. }
+                        ) || column.existing_name.as_deref() != Some(column.name.value().trim())
+                    }) {
+                        return Err(CatalogMutationError::InvalidDraft {
+                            reason: "SQL Server table edits currently support only table renaming"
+                                .into(),
+                        });
+                    }
                     let new_name = draft.name.value().trim();
                     if new_name.is_empty() {
                         return Err(CatalogMutationError::InvalidDraft {

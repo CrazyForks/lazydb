@@ -632,6 +632,92 @@ fn table_column_focus_is_continuous_with_the_main_form() {
 }
 
 #[test]
+fn table_column_reordering_preserves_identity_and_tracks_order_changes() {
+    let definition = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "public".into(),
+        name: "items".into(),
+        owner: "owner".into(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(None),
+        columns: ["id", "name", "email"]
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, name)| lazydb::db::catalog_mutation::ColumnDefinition {
+                    name: name.into(),
+                    ordinal_position: (index + 1) as u32,
+                    native_type: "TEXT".into(),
+                    nullable: true,
+                    default_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+                    identity: lazydb::db::catalog::OptionalMetadata::Supported(None),
+                    generated_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+                    collation: lazydb::db::catalog::OptionalMetadata::Supported(None),
+                    comment: lazydb::db::catalog::OptionalMetadata::Supported(None),
+                },
+            )
+            .collect(),
+        indexes: Vec::new(),
+        constraints: Vec::new(),
+        baseline_fingerprint: "test".into(),
+    };
+    let mut draft = TableDraft::from_definition(&definition);
+    draft.focus = TableEditorFocus::Columns;
+    draft.selected_column = 1;
+    let selected_id = draft.columns[1].row_id;
+    assert!(draft.reorder_selected_column(1));
+    assert_eq!(
+        draft
+            .columns
+            .iter()
+            .map(|column| column.name.value())
+            .collect::<Vec<_>>(),
+        ["id", "email", "name"]
+    );
+    assert_eq!(draft.columns[draft.selected_column].row_id, selected_id);
+    let summary = draft.change_summary(Some(&definition));
+    assert!(summary.column_order_changed);
+    assert!(summary.is_dirty());
+    assert!(!draft.reorder_selected_column(1));
+    assert!(draft.reorder_selected_column(-1));
+    let summary = draft.change_summary(Some(&definition));
+    assert!(!summary.column_order_changed);
+    assert!(!summary.is_dirty());
+}
+
+#[test]
+fn table_column_add_above_is_atomic_until_confirmed() {
+    let mut draft = TableDraft::new("public");
+    draft.columns[0].name.set("existing");
+    draft.columns[0].native_type.set("TEXT");
+    draft.selected_column = 0;
+    draft.begin_add_column_above();
+    assert_eq!(
+        draft.column_editor.as_ref().unwrap().target,
+        lazydb::model::catalog_editor::TableColumnEditTarget::New { insert_at: 0 }
+    );
+    draft.cancel_column_details();
+    assert_eq!(draft.columns.len(), 1);
+    draft.begin_add_column_above();
+    draft.column_editor.as_mut().unwrap().draft.name.set("new");
+    draft
+        .column_editor
+        .as_mut()
+        .unwrap()
+        .draft
+        .native_type
+        .set("TEXT");
+    assert!(draft.confirm_column_details());
+    assert_eq!(
+        draft
+            .columns
+            .iter()
+            .map(|column| column.name.value())
+            .collect::<Vec<_>>(),
+        ["new", "existing"]
+    );
+}
+
+#[test]
 fn table_columns_move_between_existing_columns_before_general_or_add() {
     let mut draft = TableDraft::new("public");
     draft.begin_add_column_below();
