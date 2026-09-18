@@ -191,6 +191,7 @@ struct EditorSession {
     keys: VimKeyManager,
     pending_binding: Option<PendingBinding>,
     pending_count: Option<u32>,
+    pending_vim_character: bool,
     current_sequence: Vec<EditorKey>,
     last_sequence: Option<Vec<EditorKey>>,
     mode: EditorMode,
@@ -394,6 +395,7 @@ impl EditorWorkspace {
                 keys,
                 pending_binding: None,
                 pending_count: None,
+                pending_vim_character: false,
                 current_sequence: Vec::new(),
                 last_sequence: None,
                 mode,
@@ -694,6 +696,7 @@ impl EditorWorkspace {
         session.keys.reset_mode();
         session.pending_binding = None;
         session.pending_count = None;
+        session.pending_vim_character = false;
         session.current_sequence.clear();
         session.last_sequence = None;
         session.mode = EditorMode::Normal;
@@ -2279,6 +2282,17 @@ impl EditorWorkspace {
             if self
                 .sessions
                 .get(&id)
+                .is_some_and(|session| session.pending_vim_character)
+            {
+                self.sessions
+                    .get_mut(&id)
+                    .ok_or(EditorError::MissingSession(id))?
+                    .pending_vim_character = false;
+                return self.input_vim_key(id, key);
+            }
+            if self
+                .sessions
+                .get(&id)
                 .is_some_and(|session| session.pending_count.is_none())
                 && let EditorKey::Character(character @ '1'..='9') = key
             {
@@ -2390,6 +2404,23 @@ impl EditorWorkspace {
             }
             (EditorMode::Normal, EditorKey::Character('Q')) => {
                 self.effects.push(EditorEffect::Quit);
+                Ok(())
+            }
+            (
+                EditorMode::Normal,
+                EditorKey::Character(character @ ('f' | 'F' | 'r' | 't' | 'T')),
+            ) if self
+                .sessions
+                .get(&id)
+                .is_none_or(|session| session.pending_binding.is_none()) =>
+            {
+                self.input_vim_key(id, EditorKey::Character(character))?;
+                if self.mode(id)? == EditorMode::Normal {
+                    self.sessions
+                        .get_mut(&id)
+                        .ok_or(EditorError::MissingSession(id))?
+                        .pending_vim_character = true;
+                }
                 Ok(())
             }
             (EditorMode::Normal, EditorKey::Control('s'))
