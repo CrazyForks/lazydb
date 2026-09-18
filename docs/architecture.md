@@ -65,7 +65,7 @@ ancestor-preserving tree projection with highlighted matches; locating one merge
 only its real ancestor chain and object into the normalized tree, leaving lazy-page
 completion state unchanged.
 
-The Omni Bar is a top-level interaction layer rendered above the workspace and
+The Help and Omni views share one top-level interaction layer rendered above the workspace and
 the current overlay. Its session owns query generations, stable result IDs, scope
 filters, origin tab/profile identity, and a short in-memory navigation history.
 Local commands, profiles, consoles, tabs, and loaded catalog entries are merged
@@ -76,9 +76,11 @@ use the validated `CatalogSearchRequest` contract. Opening a relation by
 its final intent and matching connection generation, and only resumes after that
 connection succeeds. A failed or stale connection result cannot open a target.
 
-F2 opens Omni from any keymap context. Escape unwinds its parameter steps and
-then returns to the exact underlying overlay; Ctrl-C dismisses Omni without
-quitting. Idle Profile Manager and Catalog Editor overlays can be moved into an
+The Help shortcut opens the configured Help or Omni view; `Tab` switches between
+them without changing the underlying workspace. F2 opens Omni from any keymap
+context, and from Help switches to Omni. Escape unwinds Omni parameter steps and
+then closes the unified panel at its root; Ctrl-C dismisses it without quitting.
+Idle Profile Manager and Catalog Editor overlays can be moved into an
 in-memory, owner-tagged suspended interaction and explicitly resumed. Busy
 operations and confirmation dialogs are not suspended. Suspended form state and
 credentials are not persisted. During an in-process profile switch, the global

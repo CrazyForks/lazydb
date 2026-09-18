@@ -109,6 +109,13 @@ impl Keymap {
             }
             return map_omni(event, app);
         }
+        if matches!(app.overlay, Some(Overlay::Help(_)))
+            && event.modifiers == KeyModifiers::NONE
+            && event.code == KeyCode::Tab
+        {
+            self.pending = None;
+            return Some(Action::ToggleHelpPanel);
+        }
         if self.bindings.matches("omni", event) {
             self.pending = None;
             return (event.kind != KeyEventKind::Repeat).then_some(Action::OpenOmni);
@@ -3185,7 +3192,8 @@ fn map_omni(event: KeyEvent, app: &App) -> Option<Action> {
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => Some(Action::OmniDismiss),
         (KeyModifiers::NONE, KeyCode::Esc) => Some(Action::OmniCancel),
         (KeyModifiers::NONE, KeyCode::Enter) => Some(Action::OmniConfirm),
-        (KeyModifiers::NONE, KeyCode::Tab) => Some(Action::OmniShowActions),
+        (KeyModifiers::NONE, KeyCode::Tab) => Some(Action::ToggleHelpPanel),
+        (KeyModifiers::NONE, KeyCode::BackTab) => Some(Action::OmniShowActions),
         (KeyModifiers::NONE, KeyCode::Up) => Some(Action::OmniMove(-1)),
         (KeyModifiers::NONE, KeyCode::Down) => Some(Action::OmniMove(1)),
         (KeyModifiers::NONE, KeyCode::Char(character)) => Some(Action::OmniEdit(

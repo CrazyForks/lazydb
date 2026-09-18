@@ -1,8 +1,10 @@
 # Omni Bar
 
 Press `F2` (or the configured `omni` shortcut) from any pane or overlay to open
-the global action and object switcher. The shortcut is also searchable as
-“open Omni search” in the Help panel.
+the global action and object switcher. The contextual Help panel and Omni share
+one modal; press `Tab` to switch between them. The Help shortcut (`F1`, `?`, or
+your configured binding) opens whichever view was last selected. The shortcut
+is also searchable as “open Omni search” in the Help panel.
 The Omni Bar searches local commands, connection profiles, SQL consoles, open
 tabs, and loaded catalog relations. With an active connection, non-command
 queries are also sent to the database catalog after the existing debounce.
@@ -14,7 +16,8 @@ queries are also sent to the database catalog after the existing debounce.
 | `@` followed by text | Find and select a connection scope |
 | `Up` / `Down` | Change the selected result |
 | `Enter` | Open the selected object or run the selected command |
-| `Tab` | Show actions for a selected catalog relation |
+| `Tab` | Switch between Help and Omni |
+| `Shift-Tab` | Show actions for a selected catalog relation |
 | `Escape` | Return one step; close Omni from the root step |
 | `Ctrl-C` | Dismiss Omni and restore the underlying interaction |
 

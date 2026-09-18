@@ -130,6 +130,7 @@ pub enum Action {
     ResetPaneSizes,
     PaneLayoutChanged(PaneLayoutMetrics),
     ShowHelp,
+    ToggleHelpPanel,
     OpenUpdateCenter,
     StartUpdateCheck {
         automatic: bool,
@@ -145,6 +146,7 @@ pub enum Action {
     },
     UpdateOverlayToggleFocus,
     UpdateOverlayConfirm,
+    HelpPanelSettingsWriteFailed(String),
     InstallUpdate,
     UpdateInstalled {
         request_id: u64,
@@ -1377,6 +1379,7 @@ pub enum CatalogEditorCursorTarget {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Command {
+    PersistHelpPanelView(crate::config::HelpPanelView),
     LoadSqlHistory {
         overlay_id: Uuid,
         generation: u64,

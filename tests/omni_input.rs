@@ -45,15 +45,14 @@ fn omni_input_and_paste_never_reach_the_underlying_editor() {
 }
 
 #[test]
-fn escape_restores_a_real_overlay_and_ctrl_c_does_not_quit() {
+fn omni_dismisses_the_unified_help_panel_and_ctrl_c_does_not_quit() {
     let mut app = App::new(Vec::new());
     app.update(Action::ShowHelp);
-    let help = app.overlay.clone();
     app.update(Action::OpenOmni);
     assert!(app.overlay.is_none());
     app.update(Action::OmniDismiss);
 
-    assert_eq!(app.overlay, help);
+    assert!(app.overlay.is_none());
     assert!(!app.should_quit);
 }
 

@@ -11,6 +11,7 @@ pub mod execution_target;
 pub mod explorer;
 pub mod explorer_actions;
 pub mod explorer_add;
+pub mod help_panel;
 pub mod keyspace;
 pub mod navigation;
 pub mod notification;
