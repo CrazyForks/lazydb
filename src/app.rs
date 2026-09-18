@@ -262,9 +262,7 @@ pub struct App {
     next_pending_execution_id: u64,
     pending_workspace_database_switch: Option<(Uuid, u64)>,
     pending_redis_browser_target: Option<(crate::db::redis::types::RedisTarget, u64)>,
-    pending_redis_open_key: Option<(Uuid, crate::model::redis_key_tree::KeyTreeNodeId)>,
-    pending_redis_close_tab: Option<Uuid>,
-    pending_redis_disconnect_profile: Option<Uuid>,
+    pending_redis_leave: Option<PendingRedisLeave>,
     pending_redis_object_create: Option<(crate::db::redis::types::RedisTarget, u64)>,
     pending_dashboard_target: Option<PendingDashboardTarget>,
     connect_started_at: Option<Instant>,
@@ -323,6 +321,16 @@ struct PendingNavigation {
     generation: u64,
     intent: crate::commands::UserIntent,
     descriptor: Option<RelationDescriptor>,
+}
+
+enum PendingRedisLeave {
+    OpenKey {
+        tab_id: Uuid,
+        node: crate::model::redis_key_tree::KeyTreeNodeId,
+    },
+    CloseTab(Uuid),
+    DisconnectProfile(Uuid),
+    Quit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -833,9 +841,7 @@ impl App {
             next_pending_execution_id: 0,
             pending_workspace_database_switch: None,
             pending_redis_browser_target: None,
-            pending_redis_open_key: None,
-            pending_redis_close_tab: None,
-            pending_redis_disconnect_profile: None,
+            pending_redis_leave: None,
             pending_redis_object_create: None,
             pending_dashboard_target: None,
             connect_started_at: None,
@@ -13440,11 +13446,42 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::RedisValueSave | Action::RedisValueSaveAnyway => {
-                let Some(Overlay::RedisValueSaveConfirm { tab_id, .. }) = self.overlay.take()
+            Action::RedisValueSaveToggleFocus => {
+                if let Some(Overlay::RedisValueSaveConfirm { focus, .. }) = self.overlay.as_mut() {
+                    *focus = (*focus + 1) % 2;
+                }
+                Vec::new()
+            }
+            Action::RedisValueSaveActivate(index) => {
+                let Some(Overlay::RedisValueSaveConfirm { invalid, .. }) = self.overlay.as_ref()
                 else {
                     return Vec::new();
                 };
+                if index != 0 {
+                    return self.update(Action::RedisValueSaveCancel);
+                }
+                if *invalid {
+                    self.update(Action::RedisValueSaveAnyway)
+                } else {
+                    self.update(Action::RedisValueSave)
+                }
+            }
+            Action::RedisValueSave | Action::RedisValueSaveAnyway => {
+                let Some(Overlay::RedisValueSaveConfirm {
+                    tab_id,
+                    focus,
+                    format,
+                    ..
+                }) = self.overlay.as_ref()
+                else {
+                    return Vec::new();
+                };
+                if *focus != 0 {
+                    return Vec::new();
+                }
+                let tab_id = *tab_id;
+                let format = *format;
+                let _ = self.overlay.take();
                 let Some(index) = self.tabs.iter().position(|tab| tab.id() == tab_id) else {
                     return Vec::new();
                 };
@@ -13462,11 +13499,20 @@ impl App {
                 let Ok(text) = self.editor.text(tab.preview_editor_id) else {
                     return Vec::new();
                 };
+                let raw_value = match crate::value_preview::edit::draft_from_string(&text, format) {
+                    Ok(crate::db::redis::mutation::RedisValueDraft::String(value)) => value,
+                    Ok(_) => unreachable!("string preview must produce string draft"),
+                    Err(error) => {
+                        self.notify_error("Redis", error);
+                        return Vec::new();
+                    }
+                };
                 let mut editor =
                     crate::model::redis_object_editor::RedisObjectEditorState::edit_from_page(
                         tab_id, connection, page,
                     );
                 editor.value.set(text);
+                editor.raw_value_override = Some(raw_value);
                 self.overlay = Some(Overlay::RedisObjectEditor(Box::new(editor)));
                 self.apply_redis_object_editor()
             }
@@ -13475,10 +13521,35 @@ impl App {
                     Some(Overlay::RedisUnsavedValueConfirm { tab_id, .. }) => *tab_id,
                     _ => return Vec::new(),
                 };
+                let Some(WorkspaceTab::RedisBrowser(tab)) =
+                    self.tabs.iter().find(|tab| tab.id() == tab_id)
+                else {
+                    return Vec::new();
+                };
+                let Ok(text) = self.editor.text(tab.preview_editor_id) else {
+                    return Vec::new();
+                };
+                let validation_error =
+                    match crate::value_preview::edit::validate_string(&text, tab.format.selected) {
+                        crate::value_preview::edit::EditValidation::Warning(error)
+                            if matches!(
+                                tab.format.selected.view,
+                                crate::value_preview::ValueView::Json
+                                    | crate::value_preview::ValueView::Yaml
+                            ) =>
+                        {
+                            Some(error)
+                        }
+                        _ => None,
+                    };
+                let invalid = validation_error.is_some();
                 self.overlay = Some(Overlay::RedisValueSaveConfirm {
                     tab_id,
-                    revision: 0,
-                    invalid: false,
+                    revision: tab.value_edit_revision,
+                    invalid,
+                    validation_error,
+                    focus: usize::from(invalid),
+                    format: tab.format.selected,
                 });
                 Vec::new()
             }
@@ -13503,23 +13574,40 @@ impl App {
                     return Vec::new();
                 }
                 self.overlay = None;
-                if let Some(tab_id) = self.pending_redis_close_tab.take() {
-                    return self.close_tab(tab_id);
+                match self.pending_redis_leave.take() {
+                    Some(PendingRedisLeave::CloseTab(tab_id)) => self.close_tab(tab_id),
+                    Some(PendingRedisLeave::DisconnectProfile(profile_id)) => {
+                        self.request_profile_disconnect(profile_id)
+                    }
+                    Some(PendingRedisLeave::OpenKey { tab_id, node }) => {
+                        self.open_redis_key(tab_id, node)
+                    }
+                    Some(PendingRedisLeave::Quit) => self.update(Action::Quit),
+                    None => Vec::new(),
                 }
-                if let Some(profile_id) = self.pending_redis_disconnect_profile.take() {
-                    return self.request_profile_disconnect(profile_id);
-                }
-                let Some((tab_id, node)) = self.pending_redis_open_key.take() else {
-                    return Vec::new();
-                };
-                self.open_redis_key(tab_id, node)
             }
             Action::RedisUnsavedValueCancel => {
-                self.pending_redis_open_key = None;
-                self.pending_redis_close_tab = None;
-                self.pending_redis_disconnect_profile = None;
+                self.pending_redis_leave = None;
                 self.overlay = None;
                 Vec::new()
+            }
+            Action::RedisUnsavedValueToggleFocus => {
+                if let Some(Overlay::RedisUnsavedValueConfirm { focus, .. }) = self.overlay.as_mut()
+                {
+                    *focus = (*focus + 1) % 3;
+                }
+                Vec::new()
+            }
+            Action::RedisUnsavedValueActivate(index) => {
+                let focus = match self.overlay.as_ref() {
+                    Some(Overlay::RedisUnsavedValueConfirm { .. }) => index,
+                    _ => return Vec::new(),
+                };
+                match focus {
+                    0 => self.update(Action::RedisUnsavedValueSave),
+                    1 => self.update(Action::RedisUnsavedValueDiscard),
+                    _ => self.update(Action::RedisUnsavedValueCancel),
+                }
             }
             Action::RedisTableDeleteCancel => {
                 if matches!(self.overlay, Some(Overlay::RedisTableDeleteConfirm(_))) {
@@ -13626,21 +13714,26 @@ impl App {
                 Vec::new()
             }
             Action::RedisMutationPlanReady(plan) => {
+                let mut commands = Vec::new();
                 if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
                     && editor.connection == plan.request.connection
                     && editor.request_id == plan.request.request_id
+                    && editor.plan.is_none()
                 {
                     editor.plan_ready(plan.clone());
+                    editor.busy = true;
+                    commands.push(Command::ExecuteRedisMutation(plan.clone()));
                 }
                 if let Some(Overlay::RedisTableEditor(editor)) = self.overlay.as_mut()
                     && editor.connection == plan.request.connection
                     && editor.request_id == plan.request.request_id
+                    && editor.plan.is_none()
                 {
-                    editor.busy = false;
-                    editor.plan = Some(plan);
+                    editor.busy = true;
+                    commands.push(Command::ExecuteRedisMutation(plan));
                     editor.error = None;
                 }
-                Vec::new()
+                commands
             }
             Action::RedisMutationPlanFailed { request, message } => {
                 if let Some(Overlay::RedisObjectEditor(editor)) = self.overlay.as_mut()
@@ -13703,18 +13796,24 @@ impl App {
                     }
                 }
                 let mut commands = self.apply_redis_mutation(plan, result);
-                if let Some((pending_tab, node)) = self.pending_redis_open_key.take() {
-                    if self.tabs.iter().any(|tab| tab.id() == pending_tab) {
-                        commands.extend(self.open_redis_key(pending_tab, node));
+                if let Some(leave) = self.pending_redis_leave.take() {
+                    match leave {
+                        PendingRedisLeave::OpenKey { tab_id, node }
+                            if self.tabs.iter().any(|tab| tab.id() == tab_id) =>
+                        {
+                            commands.extend(self.open_redis_key(tab_id, node));
+                        }
+                        PendingRedisLeave::CloseTab(tab_id)
+                            if self.tabs.iter().any(|tab| tab.id() == tab_id) =>
+                        {
+                            commands.extend(self.close_tab(tab_id));
+                        }
+                        PendingRedisLeave::DisconnectProfile(profile_id) => {
+                            commands.extend(self.request_profile_disconnect(profile_id));
+                        }
+                        PendingRedisLeave::Quit => commands.extend(self.update(Action::Quit)),
+                        _ => {}
                     }
-                }
-                if let Some(tab_id) = self.pending_redis_close_tab.take() {
-                    if self.tabs.iter().any(|tab| tab.id() == tab_id) {
-                        commands.extend(self.close_tab(tab_id));
-                    }
-                }
-                if let Some(profile_id) = self.pending_redis_disconnect_profile.take() {
-                    commands.extend(self.request_profile_disconnect(profile_id));
                 }
                 commands
             }
@@ -14474,8 +14573,8 @@ impl App {
                     matches!(tab, WorkspaceTab::RedisBrowser(redis) if redis.opened_key.is_some())
                 }) {
                     if self.editor.text(tab.preview_editor_id).ok().is_some_and(|text| tab.value_is_dirty(&text)) {
-                        self.pending_redis_close_tab = Some(tab.id);
-                        self.overlay = Some(Overlay::RedisUnsavedValueConfirm { tab_id: tab.id, next_key: tab.opened_key.clone().unwrap() });
+                        self.pending_redis_leave = Some(PendingRedisLeave::Quit);
+                        self.overlay = Some(Overlay::RedisUnsavedValueConfirm { tab_id: tab.id, next_key: tab.opened_key.clone().unwrap(), focus: 2 });
                         return Vec::new();
                     }
                 }
@@ -15498,10 +15597,11 @@ impl App {
                 .ok()
                 .is_some_and(|text| tab.value_is_dirty(&text))
         {
-            self.pending_redis_close_tab = Some(id);
+            self.pending_redis_leave = Some(PendingRedisLeave::CloseTab(id));
             self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
                 tab_id: id,
                 next_key: tab.opened_key.clone().expect("checked above"),
+                focus: 2,
             });
             return Vec::new();
         }
@@ -17250,21 +17350,26 @@ impl App {
                             tab_id, connection, &page,
                         );
                         editor.value.set(text);
-                        let allow_invalid = matches!(
-                            preview_format.view,
-                            crate::value_preview::ValueView::Json
-                                | crate::value_preview::ValueView::Yaml
-                        ) && matches!(
-                            crate::value_preview::edit::validate_string(
-                                editor.value.value(),
-                                preview_format,
-                            ),
-                            crate::value_preview::edit::EditValidation::Warning(_)
-                        );
+                        let validation_error = match crate::value_preview::edit::validate_string(
+                            editor.value.value(),
+                            preview_format,
+                        ) {
+                            crate::value_preview::edit::EditValidation::Warning(error)
+                                if matches!(
+                                    preview_format.view,
+                                    crate::value_preview::ValueView::Json
+                                        | crate::value_preview::ValueView::Yaml
+                                ) => Some(error),
+                            _ => None,
+                        };
+                        let invalid = validation_error.is_some();
                         self.overlay = Some(Overlay::RedisValueSaveConfirm {
                             tab_id,
                             revision,
-                            invalid: allow_invalid,
+                            invalid,
+                            validation_error,
+                            focus: usize::from(invalid),
+                            format: preview_format,
                         });
                     } else if self.tabs.iter().any(|tab| tab.id() == console_id) {
                         self.notify_info("Editor", format!("Save requested (revision {revision})"));
@@ -20311,13 +20416,17 @@ impl App {
                     .is_some_and(|text| tab.value_is_dirty(&text))
             })
         {
-            self.pending_redis_open_key = Some((tab_id, node.clone()));
+            self.pending_redis_leave = Some(PendingRedisLeave::OpenKey {
+                tab_id,
+                node: node.clone(),
+            });
             self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
                 tab_id,
                 next_key: crate::db::redis::types::RedisKeyId {
                     target: tab.target.clone(),
                     key: next_key.clone(),
                 },
+                focus: 2,
             });
             return Vec::new();
         }
@@ -21496,10 +21605,11 @@ impl App {
         }) && tab.opened_key.is_some()
             && self.editor.text(tab.preview_editor_id).ok().is_some_and(|text| tab.value_is_dirty(&text))
         {
-            self.pending_redis_disconnect_profile = Some(profile_id);
+            self.pending_redis_leave = Some(PendingRedisLeave::DisconnectProfile(profile_id));
             self.overlay = Some(Overlay::RedisUnsavedValueConfirm {
                 tab_id: tab.id,
                 next_key: tab.opened_key.clone().expect("checked above"),
+                focus: 2,
             });
             return Vec::new();
         }

@@ -310,20 +310,26 @@ fn redis_save_confirm_routes_save_and_cancel_without_leaking_to_editor() {
         tab_id: Uuid::from_u128(40),
         revision: 2,
         invalid: false,
+        validation_error: None,
+        focus: 0,
+        format: lazydb::value_preview::PreviewFormat::RAW,
     });
     let mut keymap = Keymap::default();
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
-        Some(Action::RedisValueSave)
+        Some(Action::RedisValueSaveActivate(0))
     );
     app.overlay = Some(Overlay::RedisValueSaveConfirm {
         tab_id: Uuid::from_u128(40),
         revision: 2,
         invalid: true,
+        validation_error: Some("invalid JSON".into()),
+        focus: 0,
+        format: lazydb::value_preview::PreviewFormat::JSON,
     });
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
-        Some(Action::RedisValueSaveAnyway)
+        Some(Action::RedisValueSaveActivate(0))
     );
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
