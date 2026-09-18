@@ -14,11 +14,167 @@ use crate::{
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Position, Rect},
-    style::Style,
-    text::Line,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+struct CellEditorColumnContext {
+    name: String,
+    type_label: String,
+    default: String,
+    comment: String,
+}
+
+fn cell_editor_column_context(
+    app: &App,
+    tab: &crate::model::relation::RelationTab,
+    column_index: usize,
+) -> CellEditorColumnContext {
+    let result_column = match &tab.data {
+        RelationLoad::Ready(snapshot) => snapshot.value.result.result_sets.last(),
+        RelationLoad::Loading { previous, .. }
+        | RelationLoad::Failed { previous, .. }
+        | RelationLoad::Cancelled { previous } => previous
+            .as_ref()
+            .and_then(|snapshot| snapshot.value.result.result_sets.last()),
+        RelationLoad::Empty => None,
+    }
+    .and_then(|result| result.columns.get(column_index));
+
+    let fallback_name = format!("Column {}", column_index + 1);
+    let name = result_column
+        .map(|column| sanitize_terminal_text(&column.name))
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback_name);
+    let fallback_type = result_column
+        .map(|column| sanitize_terminal_text(&column.type_name))
+        .filter(|type_name| !type_name.is_empty())
+        .unwrap_or_else(|| "Unavailable".to_owned());
+
+    let entry = app
+        .explorer
+        .completion_indexes
+        .get(&tab.descriptor.key.profile_id)
+        .and_then(|index| {
+            index
+                .relation_columns(&tab.descriptor.key.object_id)
+                .find(|entry| entry.qualified_name.object == name)
+        })
+        .or_else(|| match &tab.ddl {
+            RelationLoad::Ready(snapshot) => snapshot.value.children.entries.iter().find(|entry| {
+                entry.kind == crate::db::catalog::CatalogKind::Column
+                    && entry.qualified_name.object == name
+            }),
+            _ => None,
+        });
+
+    let (type_label, default, comment) = entry.map_or_else(
+        || {
+            (
+                fallback_type.clone(),
+                "Unavailable".to_owned(),
+                "Unavailable".to_owned(),
+            )
+        },
+        |entry| {
+            let (type_label, default) = match &entry.metadata {
+                crate::db::catalog::CatalogMetadata::Column(metadata) => {
+                    let type_label = if metadata.native_type.trim().is_empty() {
+                        fallback_type.clone()
+                    } else {
+                        format!(
+                            "{} · {}",
+                            sanitize_terminal_text(&metadata.native_type),
+                            if metadata.nullable {
+                                "NULLABLE"
+                            } else {
+                                "NOT NULL"
+                            }
+                        )
+                    };
+                    let default = match &metadata.default_expression {
+                        crate::db::catalog::OptionalMetadata::Unsupported => {
+                            "Not supported".to_owned()
+                        }
+                        crate::db::catalog::OptionalMetadata::Supported(value) => value
+                            .as_deref()
+                            .map(sanitize_terminal_text)
+                            .unwrap_or_else(|| "None".to_owned()),
+                    };
+                    (type_label, default)
+                }
+                _ => (fallback_type.clone(), "Unavailable".to_owned()),
+            };
+            let comment = match &entry.comment {
+                crate::db::catalog::OptionalMetadata::Unsupported => "Not supported".to_owned(),
+                crate::db::catalog::OptionalMetadata::Supported(value) => value
+                    .as_deref()
+                    .map(sanitize_terminal_text)
+                    .unwrap_or_else(|| "None".to_owned()),
+            };
+            (type_label, default, comment)
+        },
+    );
+
+    CellEditorColumnContext {
+        name,
+        type_label,
+        default,
+        comment,
+    }
+}
+
+fn render_cell_metadata(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    column: &CellEditorColumnContext,
+    theme: Theme,
+) {
+    let style = Style::new().fg(theme.text).add_modifier(Modifier::BOLD);
+    frame.render_widget(
+        Paragraph::new(column.type_label.as_str()).style(style),
+        area,
+    );
+}
+
+fn render_cell_metadata_line(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    label: &str,
+    value: &str,
+    theme: Theme,
+) {
+    let value = truncate_cell_text(value, usize::from(area.width).saturating_sub(8));
+    let line = Line::from(vec![
+        Span::styled(format!("{label:<8}"), Style::new().fg(theme.muted)),
+        Span::styled(value, Style::new().fg(theme.text)),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn truncate_cell_text(value: &str, width: usize) -> String {
+    let value = value.replace(['\n', '\r', '\t'], " ");
+    if UnicodeWidthStr::width(value.as_str()) <= width {
+        return value;
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut output = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if used + character_width > width - 1 {
+            break;
+        }
+        output.push(character);
+        used += character_width;
+    }
+    output.push('…');
+    output
+}
 
 pub(crate) fn render(
     frame: &mut Frame<'_>,
@@ -61,7 +217,8 @@ pub(crate) fn render(
     {
         let popup_width = area.width.min(72);
         let json = editor.input.json_buffer();
-        let popup_height = area.height.min(if json.is_some() { 17 } else { 8 });
+        let column = cell_editor_column_context(app, tab, editor.column);
+        let popup_height = area.height.min(if json.is_some() { 22 } else { 16 });
         let popup = Rect::new(
             area.x
                 .saturating_add(area.width.saturating_sub(popup_width) / 2),
@@ -71,7 +228,8 @@ pub(crate) fn render(
             popup_height,
         );
         frame.render_widget(ratatui::widgets::Clear, popup);
-        let block = panel_block(" CELL EDITOR ", true, theme);
+        let title = format!(" EDIT · {} ", column.name);
+        let block = panel_block(&title, true, theme);
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         state.cursor = None;
@@ -94,22 +252,30 @@ pub(crate) fn render(
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
             ])
             .split(inner);
+        render_cell_metadata(frame, sections[0], &column, theme);
+        render_cell_metadata_line(frame, sections[1], "Default", &column.default, theme);
+        render_cell_metadata_line(frame, sections[2], "Comment", &column.comment, theme);
         let presence_label = match editor.input.presence() {
             crate::model::cell_editor::CellEditorPresence::Unprovided => "DEFAULT (unprovided)",
             crate::model::cell_editor::CellEditorPresence::Null => "NULL (explicit)",
-            crate::model::cell_editor::CellEditorPresence::Value => "VALUE / TEMPLATE",
+            crate::model::cell_editor::CellEditorPresence::Value => "",
         };
-        frame.render_widget(
-            Paragraph::new(presence_label).style(Style::new().fg(theme.accent)),
-            sections[0],
-        );
+        if !presence_label.is_empty() {
+            frame.render_widget(
+                Paragraph::new(presence_label).style(Style::new().fg(theme.accent)),
+                sections[3],
+            );
+        }
         let content_area = Rect::new(
-            sections[1].x,
-            sections[1].y,
-            sections[1].width,
-            inner.bottom().saturating_sub(sections[1].y),
+            sections[4].x,
+            sections[4].y,
+            sections[4].width,
+            sections[4].height,
         );
         if let Some(json) = json {
             let row_id = tab
@@ -136,13 +302,13 @@ pub(crate) fn render(
                 );
             }
         } else if is_boolean {
-            render_boolean_editor(frame, sections[1], editor, theme);
+            render_boolean_editor(frame, content_area, editor, theme);
             frame.render_widget(
                 Paragraph::new(
                     "Left/Right  Space  t/f  Alt-N NULL  Alt-D DEFAULT  Alt-V use value",
                 )
                 .style(Style::new().fg(theme.muted)),
-                sections[2],
+                sections[6],
             );
         } else if let crate::model::cell_editor::CellEditorBuffer {
             content:
@@ -153,7 +319,7 @@ pub(crate) fn render(
             ..
         } = &editor.input
         {
-            render_text_input(frame, sections[1], "", draft.input(), theme.base(), state);
+            render_text_input(frame, content_area, "", draft.input(), theme.base(), state);
             if let Some(row_id) = tab
                 .edit
                 .as_ref()
@@ -166,16 +332,16 @@ pub(crate) fn render(
                         row_id,
                         column: editor.column,
                     },
-                    sections[1],
+                    content_area,
                     "",
                     draft.input(),
-                    super::text_input_horizontal_offset(sections[0], "", draft.input()),
+                    super::text_input_horizontal_offset(content_area, "", draft.input()),
                 );
             }
             if let Some(label) = draft.calendar_label() {
                 frame.render_widget(
                     Paragraph::new(label).style(Style::new().fg(theme.muted)),
-                    sections[2],
+                    sections[5],
                 );
             }
             frame.render_widget(
@@ -183,10 +349,10 @@ pub(crate) fn render(
                     "Left/Right field  [/] month  Alt-N NULL  Alt-D DEFAULT  Alt-V use value",
                 )
                 .style(Style::new().fg(theme.muted)),
-                sections[3],
+                sections[6],
             );
         } else if let Some(input) = editor.input.input() {
-            render_text_input(frame, sections[1], "", input, theme.base(), state);
+            render_text_input(frame, content_area, "", input, theme.base(), state);
             if let Some(row_id) = tab
                 .edit
                 .as_ref()
@@ -199,27 +365,36 @@ pub(crate) fn render(
                         row_id,
                         column: editor.column,
                     },
-                    sections[1],
+                    content_area,
                     "",
                     input,
-                    super::text_input_horizontal_offset(sections[0], "", input),
+                    super::text_input_horizontal_offset(content_area, "", input),
                 );
             }
+            frame.render_widget(
+                Paragraph::new(
+                    "Enter apply  Esc cancel  Alt-N NULL  Alt-D DEFAULT  Alt-V use value",
+                )
+                .style(Style::new().fg(theme.muted)),
+                sections[6],
+            );
         } else if editor.input.is_unprovided() {
             frame.render_widget(
                 Paragraph::new("DEFAULT (unprovided)").style(Style::new().fg(theme.muted)),
-                sections[0],
+                sections[4],
             );
         } else if editor.input.is_null() {
             frame.render_widget(
                 Paragraph::new("NULL (explicit)").style(Style::new().fg(theme.muted)),
-                sections[0],
+                sections[4],
             );
         }
-        if let Some(error) = &editor.error {
+        if json.is_none()
+            && let Some(error) = &editor.error
+        {
             frame.render_widget(
                 Paragraph::new(Line::from(error.as_str()).style(Style::new().fg(theme.error))),
-                sections[4],
+                sections[7],
             );
         }
     }
@@ -1437,7 +1612,7 @@ mod tests {
         assert_eq!(
             state.cursor,
             Some(super::super::CursorSpec {
-                position: ratatui::layout::Position::new(7, 5),
+                position: ratatui::layout::Position::new(7, 6),
                 style: super::super::CursorStyle::Bar,
             })
         );
@@ -1506,7 +1681,7 @@ mod tests {
 
         let cursor = state.cursor.expect("JSON cursor");
         assert!(cursor.position.y < 21);
-        assert_eq!(cursor.position.y, 9);
+        assert_eq!(cursor.position.y, 10);
     }
 
     #[test]
