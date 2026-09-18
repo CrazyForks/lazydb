@@ -1390,6 +1390,9 @@ impl App {
     }
 
     fn mouse_session_focus(&self, session_id: Uuid) -> Option<Focus> {
+        if self.review_preview_session_id() == Some(session_id) {
+            return Some(Focus::Results);
+        }
         match self.tabs.get(self.active_tab) {
             Some(WorkspaceTab::RedisBrowser(tab)) if session_id == tab.preview_editor_id => {
                 Some(Focus::Results)
@@ -3091,7 +3094,7 @@ impl App {
             Overlay::ExecutionConfirm { .. }
             | Overlay::TransactionExitConfirm { .. }
             | Overlay::ManualCancelConfirm { .. }
-            | Overlay::RelationTransactionConfirm { .. }
+            | Overlay::RelationTransactionConfirm(_)
             | Overlay::ClearTransactionOutcome { .. }
             | Overlay::CatalogDropConfirm { .. }
             | Overlay::CatalogEditorDestructiveConfirm { .. }
@@ -3674,6 +3677,17 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) -> Vec<Command> {
+        let review_session = self.review_preview_session_id();
+        let commands = self.update_inner(action);
+        if let Some(id) = review_session
+            && self.review_preview_session_id() != Some(id)
+        {
+            self.editor.close_console(id);
+        }
+        commands
+    }
+
+    fn update_inner(&mut self, action: Action) -> Vec<Command> {
         if self.omni.is_some() && matches!(action, Action::EditorKey(_) | Action::EditorPaste(_)) {
             return Vec::new();
         }
@@ -6456,6 +6470,27 @@ impl App {
                     vec![Command::WriteClipboard(ClipboardPayload {
                         description: format!(
                             "SQL History selection: {} chars",
+                            text.chars().count()
+                        ),
+                        text,
+                        sensitive: false,
+                    })]
+                }
+                crate::ui::text_selection::TextGestureSource::TransactionReview => {
+                    if self.review_preview_session_id() != Some(session_id)
+                        || self.editor.revision(session_id).ok() != Some(revision)
+                    {
+                        return Vec::new();
+                    }
+                    let Ok(text) = self.editor.mouse_range_text(session_id, start, end) else {
+                        return Vec::new();
+                    };
+                    if text.is_empty() {
+                        return Vec::new();
+                    }
+                    vec![Command::WriteClipboard(ClipboardPayload {
+                        description: format!(
+                            "Transaction review selection: {} chars",
                             text.chars().count()
                         ),
                         text,
@@ -9505,11 +9540,32 @@ impl App {
                 self.apply_editor_effects(CompletionAfterEdit::Schedule)
             }
             Action::ReadOnlyEditorKey { session_id, event } => {
+                if self.review_preview_session_id().is_some()
+                    && self.review_preview_session_id() != Some(session_id)
+                {
+                    return Vec::new();
+                }
                 self.ensure_read_only_session(session_id);
                 if self.editor.key(session_id, event).is_err() {
                     return Vec::new();
                 }
                 self.apply_editor_effects(CompletionAfterEdit::Suppress)
+            }
+            Action::TransactionReviewPromptPaste(text) => {
+                let Some(Overlay::RelationTransactionConfirm(review)) = self.overlay.as_ref()
+                else {
+                    return Vec::new();
+                };
+                if review.focus
+                    != crate::model::transaction_review::TransactionReviewFocus::SqlPreview
+                    || !self.editor.prompt_active(review.editor_session_id)
+                {
+                    return Vec::new();
+                }
+                if self.editor.paste(review.editor_session_id, &text).is_err() {
+                    return Vec::new();
+                }
+                Vec::new()
             }
             Action::ReadOnlyEditorScroll {
                 session_id,
@@ -9644,6 +9700,15 @@ impl App {
                 viewport,
             } => {
                 let _ = self.editor.sync_output_viewport(session_id, viewport);
+                Vec::new()
+            }
+            Action::TransactionReviewEditorViewportChanged {
+                session_id,
+                viewport,
+            } => {
+                if self.review_preview_session_id() == Some(session_id) {
+                    let _ = self.editor.set_viewport(session_id, viewport);
+                }
                 Vec::new()
             }
             Action::GridViewportChanged(viewport) => {
@@ -9820,14 +9885,27 @@ impl App {
                 Vec::new()
             }
             Action::ScrollRelationTransactionReview { rows } => {
-                if let Some(Overlay::RelationTransactionConfirm { preview_offset, .. }) =
-                    self.overlay.as_mut()
-                {
-                    if rows.is_negative() {
-                        *preview_offset = preview_offset.saturating_sub(rows.unsigned_abs());
-                    } else {
-                        *preview_offset = preview_offset.saturating_add(rows as usize);
-                    }
+                if let Some(id) = self.review_preview_session_id() {
+                    let _ = self.editor.scroll(id, rows, 0);
+                }
+                Vec::new()
+            }
+            Action::TransactionReviewFocusNext => {
+                self.change_transaction_review_focus(false);
+                Vec::new()
+            }
+            Action::TransactionReviewFocusPrevious => {
+                self.change_transaction_review_focus(true);
+                Vec::new()
+            }
+            Action::TransactionReviewMoveButton(delta) => {
+                self.move_transaction_review_button(delta);
+                Vec::new()
+            }
+            Action::TransactionReviewFocusPreview => {
+                if let Some(Overlay::RelationTransactionConfirm(review)) = self.overlay.as_mut() {
+                    review.focus =
+                        crate::model::transaction_review::TransactionReviewFocus::SqlPreview;
                 }
                 Vec::new()
             }
@@ -9917,83 +9995,35 @@ impl App {
                 Vec::new()
             }
             Action::ConfirmTransactionExit => {
+                if let Some(Overlay::RelationTransactionConfirm(review)) = &self.overlay {
+                    return review
+                        .focus
+                        .choice()
+                        .map_or_else(Vec::new, |choice| self.resolve_relation_review(choice));
+                }
                 let overlay = self.overlay.take();
-                let (choice, relation_prompt, relation_tab_id, relation_snapshot) = match overlay {
+                match overlay {
                     Some(Overlay::TransactionExitConfirm { prompt, choice }) => {
                         self.overlay = Some(Overlay::TransactionExitConfirm { prompt, choice });
-                        return self.resolve_transaction_exit(choice);
+                        self.resolve_transaction_exit(choice)
                     }
-                    Some(Overlay::RelationTransactionConfirm {
-                        tab_id,
-                        prompt,
-                        choice,
-                        edit_snapshot,
-                        ..
-                    }) => (choice, prompt, Some(tab_id), edit_snapshot),
-                    _ => return Vec::new(),
-                };
-                {
-                    if choice == TransactionExitChoice::Commit
-                        && self
-                            .tabs
-                            .iter()
-                            .find(|tab| Some(tab.id()) == relation_tab_id)
-                            .and_then(|tab| match tab {
-                                WorkspaceTab::Relation(tab) => {
-                                    tab.edit.as_ref().map(|edit| format!("{edit:?}"))
-                                }
-                                _ => None,
-                            })
-                            .as_ref()
-                            != relation_snapshot.as_ref()
-                    {
-                        self.notify_warning(
-                            "Relation",
-                            "The reviewed edits changed; review the changes again before committing",
-                        );
-                        return Vec::new();
+                    other => {
+                        self.overlay = other;
+                        Vec::new()
                     }
-                    let commands = match choice {
-                        TransactionExitChoice::Commit => {
-                            self.relation_commit_for_tab(true, relation_tab_id)
-                        }
-                        TransactionExitChoice::Rollback => {
-                            self.relation_commit_for_tab(false, relation_tab_id)
-                        }
-                        TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
-                            Vec::new()
-                        }
-                    };
-                    self.finish_relation_deferred(relation_prompt, choice, commands)
                 }
             }
-            Action::ConfirmTransactionExitChoice(choice) => match self.overlay.take() {
-                Some(Overlay::RelationTransactionConfirm { tab_id, prompt, .. }) => {
-                    let commands = match choice {
-                        TransactionExitChoice::Commit => {
-                            self.relation_commit_for_tab(true, Some(tab_id))
-                        }
-                        TransactionExitChoice::Rollback => {
-                            self.relation_commit_for_tab(false, Some(tab_id))
-                        }
-                        TransactionExitChoice::Cancel | TransactionExitChoice::Abandon => {
-                            Vec::new()
-                        }
-                    };
-                    self.finish_relation_deferred(prompt, choice, commands)
-                }
-                other => {
-                    self.overlay = other;
+            Action::ConfirmTransactionExitChoice(choice) => {
+                if self.review_preview_session_id().is_some() {
+                    self.resolve_relation_review(choice)
+                } else {
                     self.resolve_transaction_exit(choice)
                 }
-            },
+            }
             Action::CancelTransactionExit => {
-                if matches!(
-                    self.overlay,
-                    Some(Overlay::RelationTransactionConfirm { .. })
-                ) {
+                if matches!(self.overlay, Some(Overlay::RelationTransactionConfirm(_))) {
                     let prompt = match self.overlay.take() {
-                        Some(Overlay::RelationTransactionConfirm { prompt, .. }) => prompt,
+                        Some(Overlay::RelationTransactionConfirm(review)) => review.prompt,
                         _ => None,
                     };
                     if let Some(prompt) = prompt {
@@ -10004,10 +10034,7 @@ impl App {
                 self.resolve_transaction_exit(TransactionExitChoice::Cancel)
             }
             Action::ToggleTransactionExitChoice => {
-                if let Some(
-                    Overlay::TransactionExitConfirm { choice, .. }
-                    | Overlay::RelationTransactionConfirm { choice, .. },
-                ) = self.overlay.as_mut()
+                if let Some(Overlay::TransactionExitConfirm { choice, .. }) = self.overlay.as_mut()
                 {
                     *choice = match choice {
                         TransactionExitChoice::Commit => TransactionExitChoice::Rollback,
@@ -10020,10 +10047,7 @@ impl App {
                 Vec::new()
             }
             Action::TogglePreviousTransactionExitChoice => {
-                if let Some(
-                    Overlay::TransactionExitConfirm { choice, .. }
-                    | Overlay::RelationTransactionConfirm { choice, .. },
-                ) = self.overlay.as_mut()
+                if let Some(Overlay::TransactionExitConfirm { choice, .. }) = self.overlay.as_mut()
                 {
                     *choice = match choice {
                         TransactionExitChoice::Commit => TransactionExitChoice::Cancel,
@@ -14405,7 +14429,7 @@ impl App {
                     self.overlay,
                     Some(
                         Overlay::TransactionExitConfirm { .. }
-                            | Overlay::RelationTransactionConfirm { .. }
+                            | Overlay::RelationTransactionConfirm(_)
                     )
                 ) {
                     return Vec::new();
@@ -14969,19 +14993,144 @@ impl App {
         } else {
             tab.transaction_review_sql.clone().unwrap_or_default()
         };
-        self.overlay = Some(Overlay::RelationTransactionConfirm {
+        let review = crate::model::transaction_review::TransactionReviewState {
             tab_id,
             prompt: (_intent != DeferredIntent::Stay).then_some(DeferredTransactionPrompt {
                 target: DeferredTransactionTarget::Relation(tab_id),
                 transaction_generation: tab.transaction_generation,
                 intent: _intent,
             }),
-            choice: TransactionExitChoice::Cancel,
+            focus: Default::default(),
+            editor_session_id: Uuid::new_v4(),
+            dialect: self
+                .profiles
+                .iter()
+                .find(|profile| profile.id == tab.descriptor.key.profile_id)
+                .map(|profile| match profile.kind {
+                    DatabaseKind::Postgres => SqlDialect::Postgres,
+                    DatabaseKind::MySql | DatabaseKind::MariaDb => SqlDialect::MySql,
+                    DatabaseKind::Sqlite => SqlDialect::Sqlite,
+                    DatabaseKind::SqlServer => SqlDialect::SqlServer,
+                    _ => SqlDialect::Generic,
+                })
+                .unwrap_or(SqlDialect::Generic),
             sql,
-            preview_offset: 0,
             edit_snapshot: tab.edit.as_ref().map(|edit| format!("{edit:?}")),
-        });
+            transaction_generation: tab.transaction_generation,
+        };
+        self.editor
+            .open_read_only(review.editor_session_id, &review.sql);
+        self.overlay = Some(Overlay::RelationTransactionConfirm(review));
         Vec::new()
+    }
+
+    pub fn review_preview_session_id(&self) -> Option<Uuid> {
+        match &self.overlay {
+            Some(Overlay::RelationTransactionConfirm(review)) => Some(review.editor_session_id),
+            _ => None,
+        }
+    }
+
+    pub fn review_preview_has_pending_interaction(&self) -> bool {
+        self.review_preview_session_id()
+            .is_some_and(|id| self.editor.has_pending_interaction(id))
+    }
+
+    fn change_transaction_review_focus(&mut self, previous: bool) {
+        let Some(Overlay::RelationTransactionConfirm(review)) = self.overlay.as_mut() else {
+            return;
+        };
+        review.focus = if previous {
+            review.focus.previous()
+        } else {
+            review.focus.next()
+        };
+        if review.focus != crate::model::transaction_review::TransactionReviewFocus::SqlPreview {
+            let _ = self.editor.reset_interaction(review.editor_session_id);
+        }
+    }
+
+    fn move_transaction_review_button(&mut self, delta: isize) {
+        let Some(Overlay::RelationTransactionConfirm(review)) = self.overlay.as_mut() else {
+            return;
+        };
+        if review.focus == crate::model::transaction_review::TransactionReviewFocus::SqlPreview {
+            return;
+        }
+        review.focus = match (review.focus, delta.signum()) {
+            (crate::model::transaction_review::TransactionReviewFocus::Commit, -1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Cancel
+            }
+            (crate::model::transaction_review::TransactionReviewFocus::Rollback, -1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Commit
+            }
+            (crate::model::transaction_review::TransactionReviewFocus::Cancel, -1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Rollback
+            }
+            (crate::model::transaction_review::TransactionReviewFocus::Commit, 1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Rollback
+            }
+            (crate::model::transaction_review::TransactionReviewFocus::Rollback, 1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Cancel
+            }
+            (crate::model::transaction_review::TransactionReviewFocus::Cancel, 1) => {
+                crate::model::transaction_review::TransactionReviewFocus::Commit
+            }
+            (focus, _) => focus,
+        };
+    }
+
+    pub fn transaction_review_snapshot(
+        &self,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(Overlay::RelationTransactionConfirm(review)) = &self.overlay else {
+            return Err(EditorError::MissingSession(Uuid::nil()));
+        };
+        self.editor.render_snapshot_with_dialect_and_statement(
+            review.editor_session_id,
+            viewport,
+            review.dialect,
+            None,
+        )
+    }
+
+    fn resolve_relation_review(&mut self, choice: TransactionExitChoice) -> Vec<Command> {
+        let Some(Overlay::RelationTransactionConfirm(review)) = self.overlay.take() else {
+            return Vec::new();
+        };
+        self.editor.close_console(review.editor_session_id);
+        let current = self.tabs.iter().find_map(|tab| match tab {
+            WorkspaceTab::Relation(tab) if tab.id == review.tab_id => Some(tab),
+            _ => None,
+        });
+        if choice != TransactionExitChoice::Cancel
+            && current.is_none_or(|tab| {
+                tab.transaction_generation != review.transaction_generation
+                    || (choice == TransactionExitChoice::Commit
+                        && tab.edit.as_ref().map(|edit| format!("{edit:?}"))
+                            != review.edit_snapshot)
+            })
+        {
+            if let Some(prompt) = review.prompt {
+                self.cancel_deferred(prompt.intent);
+            }
+            self.notify_warning(
+                "Relation",
+                "The reviewed edits changed; review the changes again before committing",
+            );
+            return Vec::new();
+        }
+        let commands = match choice {
+            TransactionExitChoice::Commit => {
+                self.relation_commit_for_tab(true, Some(review.tab_id))
+            }
+            TransactionExitChoice::Rollback => {
+                self.relation_commit_for_tab(false, Some(review.tab_id))
+            }
+            _ => Vec::new(),
+        };
+        self.finish_relation_deferred(review.prompt, choice, commands)
     }
 
     fn show_next_deferred(&mut self) {
@@ -16942,6 +17091,50 @@ impl App {
         let effects = self.editor.drain_effects();
         let mut commands = Vec::new();
         for effect in effects {
+            if let Some(review_id) = self.review_preview_session_id()
+                && matches!(
+                    &effect,
+                    EditorEffect::Changed { console_id, .. }
+                        | EditorEffect::SaveRequested { console_id, .. }
+                        if *console_id == review_id
+                )
+            {
+                continue;
+            }
+            if self.review_preview_session_id().is_some()
+                && matches!(
+                    &effect,
+                    EditorEffect::RunCurrent
+                        | EditorEffect::RunAll
+                        | EditorEffect::FormatCurrent
+                        | EditorEffect::CloseConsole
+                        | EditorEffect::DeleteConsole
+                        | EditorEffect::OpenSqlEditorList
+                        | EditorEffect::OpenNotificationHistory
+                        | EditorEffect::FocusPane(_)
+                        | EditorEffect::FocusNext
+                        | EditorEffect::ResizePane(_)
+                        | EditorEffect::ResetPaneSizes
+                        | EditorEffect::TogglePaneMaximized
+                        | EditorEffect::NextTab
+                        | EditorEffect::PreviousTab
+                        | EditorEffect::ShowHelp
+                        | EditorEffect::ToggleTransaction
+                        | EditorEffect::SetTransactionModeRequested { .. }
+                        | EditorEffect::TransactionControl
+                        | EditorEffect::Commit
+                        | EditorEffect::Rollback
+                        | EditorEffect::ClearTransactionOutcome
+                        | EditorEffect::SetConnectionTarget(_)
+                        | EditorEffect::SetDatabaseTarget(_)
+                        | EditorEffect::SetSchemaTarget(_)
+                        | EditorEffect::OpenTargetSelector
+                        | EditorEffect::OpenDatabaseSelector
+                        | EditorEffect::Quit
+                )
+            {
+                continue;
+            }
             let action = match effect {
                 EditorEffect::Changed {
                     console_id,
@@ -24246,6 +24439,40 @@ fn relation_grid_dimensions(load: &RelationLoad<crate::db::RelationPreview>) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transaction_review_session_is_independent_and_released_on_replacement() {
+        let mut app = super::App::new(Vec::new());
+        let mut tab = crate::model::relation::RelationTab::new("review");
+        tab.transaction_state = crate::model::transaction::TransactionState::Active;
+        tab.transaction_review_sql = Some("SELECT 1;".into());
+        let ddl_id = tab.ddl_editor_id;
+        app.editor
+            .open_read_only(ddl_id, "CREATE TABLE review (id INT);");
+        app.tabs
+            .push(crate::model::tab::WorkspaceTab::Relation(tab));
+        app.active_tab = app.tabs.len() - 1;
+        app.update(crate::action::Action::OpenTransactionControl);
+        let id = app.review_preview_session_id().unwrap();
+        assert_ne!(id, ddl_id);
+        assert!(!app.editor.is_editable(id).unwrap());
+        assert_eq!(
+            app.editor.mode(id).unwrap(),
+            crate::model::editor::EditorMode::Normal
+        );
+        assert_eq!(app.editor.text(id).unwrap(), "SELECT 1;");
+        app.update(crate::action::Action::CancelTransactionExit);
+        assert!(!app.editor.has_session(id));
+        assert_eq!(
+            app.editor.text(ddl_id).unwrap(),
+            "CREATE TABLE review (id INT);"
+        );
+        app.update(crate::action::Action::OpenTransactionControl);
+        assert_ne!(app.review_preview_session_id(), Some(id));
+        let second = app.review_preview_session_id().unwrap();
+        app.update(crate::action::Action::ShowHelp);
+        assert!(!app.editor.has_session(second));
+    }
+
     use std::time::Duration;
 
     use uuid::Uuid;

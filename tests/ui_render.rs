@@ -5618,9 +5618,10 @@ fn relation_transaction_review_generates_local_sql_before_saving() {
         app.tabs.push(WorkspaceTab::Relation(relation));
         app.active_tab = app.tabs.len() - 1;
         assert!(app.update(Action::OpenTransactionControl).is_empty());
-        let Some(Overlay::RelationTransactionConfirm { sql, .. }) = &app.overlay else {
+        let Some(Overlay::RelationTransactionConfirm(review)) = &app.overlay else {
             panic!("expected transaction review");
         };
+        let sql = &review.sql;
         assert!(sql.contains(expected), "{sql}");
         assert!(!sql.contains("STALE SQL"));
         let output = render(&app, 120, 36);
@@ -5650,17 +5651,16 @@ fn relation_transaction_review_preserves_active_sql_and_explains_missing_preview
 #[test]
 fn relation_transaction_review_renders_highlighted_sql_and_survives_small_terminals() {
     let mut app = fixture();
-    let relation = RelationTab::new("review_target");
-    let tab_id = relation.id;
+    let mut relation = RelationTab::new("review_target");
+    relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.transaction_review_sql =
+        Some("UPDATE \"users\" SET \"name\" = 'new' WHERE \"id\" = 1;".into());
     app.tabs.push(WorkspaceTab::Relation(relation));
-    app.overlay = Some(Overlay::RelationTransactionConfirm {
-        tab_id,
-        prompt: None,
-        choice: lazydb::model::transaction::TransactionExitChoice::Cancel,
-        sql: "UPDATE \"users\" SET \"name\" = 'new' WHERE \"id\" = 1;".into(),
-        preview_offset: 0,
-        edit_snapshot: None,
-    });
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::OpenTransactionControl);
+    if let WorkspaceTab::Relation(tab) = &mut app.tabs[app.active_tab] {
+        tab.transaction_state = lazydb::model::transaction::TransactionState::Idle;
+    }
 
     let (output, _) = render_with_state(&app, 120, 36);
     assert!(output.contains("TRANSACTION REVIEW"), "{output}");
@@ -5713,7 +5713,7 @@ fn relation_transaction_review_renders_highlighted_sql_and_survives_small_termin
 
 #[test]
 fn relation_transaction_review_distinguishes_database_transaction_states() {
-    use lazydb::model::transaction::{TransactionExitChoice, TransactionState};
+    use lazydb::model::transaction::TransactionState;
 
     for (transaction_state, label) in [
         (TransactionState::Active, "ACTIVE TRANSACTION"),
@@ -5722,15 +5722,10 @@ fn relation_transaction_review_distinguishes_database_transaction_states() {
         let mut app = fixture();
         let mut relation = RelationTab::new("review_target");
         relation.transaction_state = transaction_state;
-        app.overlay = Some(Overlay::RelationTransactionConfirm {
-            tab_id: relation.id,
-            prompt: None,
-            choice: TransactionExitChoice::Rollback,
-            sql: "ROLLBACK;".into(),
-            preview_offset: 0,
-            edit_snapshot: None,
-        });
+        relation.transaction_review_sql = Some("ROLLBACK;".into());
         app.tabs.push(WorkspaceTab::Relation(relation));
+        app.active_tab = app.tabs.len() - 1;
+        app.update(Action::OpenTransactionControl);
 
         let output = render(&app, 120, 36);
         assert!(output.contains(label), "{output}");

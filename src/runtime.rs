@@ -6255,6 +6255,17 @@ fn sync_ddl_editor_viewport(app: &mut App, runtime: &mut Runtime, area: ratatui:
 }
 
 fn sync_editor_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    if let Some((session_id, viewport)) = state.transaction_review_viewport {
+        apply_action(
+            app,
+            runtime,
+            Action::TransactionReviewEditorViewportChanged {
+                session_id,
+                viewport,
+            },
+        );
+        return;
+    }
     let Some(viewport) = state.editor_viewport else {
         return;
     };

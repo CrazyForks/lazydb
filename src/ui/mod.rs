@@ -307,6 +307,7 @@ pub struct UiState {
     pub hit_regions: Vec<HitRegion>,
     pub editor_viewport: Option<EditorViewport>,
     pub output_viewport: Option<(Uuid, EditorViewport)>,
+    pub transaction_review_viewport: Option<(Uuid, EditorViewport)>,
     pub completion_popup: Option<Rect>,
     pub grid_viewport: Option<DataGridViewport>,
     pub grid_horizontal_scroll: Option<GridHorizontalScrollTargets>,
@@ -448,6 +449,7 @@ impl UiState {
             hit_regions: Vec::new(),
             editor_viewport: None,
             output_viewport: None,
+            transaction_review_viewport: None,
             completion_popup: None,
             grid_viewport: None,
             grid_horizontal_scroll: None,
@@ -1000,6 +1002,7 @@ fn render_with_state_at(
     state.hit_regions.clear();
     state.editor_viewport = None;
     state.output_viewport = None;
+    state.transaction_review_viewport = None;
     state.completion_popup = None;
     state.grid_viewport = None;
     state.grid_horizontal_scroll = None;
@@ -1412,9 +1415,7 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::ExecutionConfirm { .. } => animation::OverlayKey::ExecutionConfirm,
         Overlay::ManualCancelConfirm { .. } => animation::OverlayKey::ManualCancelConfirm,
         Overlay::TransactionExitConfirm { .. } => animation::OverlayKey::TransactionExitConfirm,
-        Overlay::RelationTransactionConfirm { .. } => {
-            animation::OverlayKey::RelationTransactionConfirm
-        }
+        Overlay::RelationTransactionConfirm(_) => animation::OverlayKey::RelationTransactionConfirm,
         Overlay::ClearTransactionOutcome { .. } => animation::OverlayKey::ClearTransactionOutcome,
         Overlay::TransactionMenu { .. } => animation::OverlayKey::TransactionMenu,
         Overlay::TargetSelector { .. } => animation::OverlayKey::TargetSelector,
@@ -4744,13 +4745,12 @@ fn render_overlay(
         Overlay::TransactionExitConfirm { prompt, choice } => {
             render_transaction_exit_overlay(frame, area, app, prompt, *choice, theme, state);
         }
-        Overlay::RelationTransactionConfirm {
-            tab_id,
-            choice,
-            sql,
-            preview_offset,
-            ..
-        } => {
+        Overlay::RelationTransactionConfirm(review) => {
+            let tab_id = &review.tab_id;
+            let choice = review
+                .focus
+                .choice()
+                .unwrap_or(crate::model::transaction::TransactionExitChoice::Cancel);
             use crate::model::transaction::TransactionExitChoice;
             let popup = centered(
                 area,
@@ -4824,31 +4824,33 @@ fn render_overlay(
                 .title(" SQL preview ")
                 .title_style(muted)
                 .style(Style::new().bg(theme.surface));
-            let preview_area = preview_block.inner(sections[1]);
-            frame.render_widget(preview_block, sections[1]);
-            let preview = sql_preview::lines(
-                sql,
-                app.sql_dialect(),
-                preview_area.width.saturating_sub(4) as usize,
-                theme,
-            );
-            let preview_lines = preview
-                .into_iter()
-                .skip(*preview_offset)
-                .take(preview_area.height as usize)
-                .collect::<Vec<_>>();
-            frame.render_widget(
-                Paragraph::new(preview_lines).style(Style::new().fg(theme.text).bg(theme.surface)),
-                preview_area,
-            );
-            if sql.trim().is_empty() {
+            let preview_inner = preview_block.inner(sections[1]);
+            let viewport = crate::model::editor::EditorViewport {
+                width: preview_inner.width as usize,
+                height: preview_inner.height as usize,
+            };
+            state.transaction_review_viewport = Some((review.editor_session_id, viewport));
+            if let Ok(snapshot) = app.transaction_review_snapshot(viewport) {
+                crate::ui::read_only_sql::ReadOnlySqlEditor {
+                    session_id: review.editor_session_id,
+                    snapshot: &snapshot,
+                    block: preview_block.clone(),
+                    focused: review.focus
+                        == crate::model::transaction_review::TransactionReviewFocus::SqlPreview,
+                    show_line_numbers: true,
+                }
+                .render(frame, sections[1], theme, state);
+            } else {
+                frame.render_widget(preview_block, sections[1]);
+            }
+            if review.sql.trim().is_empty() {
                 frame.render_widget(
                     Paragraph::new(
                         "SQL preview unavailable: no review SQL could be generated or recovered.",
                     )
                     .style(Style::new().fg(theme.warning).bg(theme.surface))
                     .wrap(Wrap { trim: true }),
-                    preview_area,
+                    preview_inner,
                 );
             }
             let footer = Layout::vertical([
@@ -4874,29 +4876,30 @@ fn render_overlay(
                 TransactionExitChoice::Rollback => 1,
                 _ => 2,
             };
-            let actions = dialog::render_actions(
-                frame,
-                footer[1],
-                &[
-                    dialog::DialogButton {
-                        label: "Commit",
-                        tone: dialog::DialogTone::Normal,
-                        enabled: true,
-                    },
-                    dialog::DialogButton {
-                        label: "Rollback",
-                        tone: dialog::DialogTone::Danger,
-                        enabled: true,
-                    },
-                    dialog::DialogButton {
-                        label: "Cancel",
-                        tone: dialog::DialogTone::Normal,
-                        enabled: true,
-                    },
-                ],
-                selected,
-                theme,
-            );
+            let buttons = [
+                dialog::DialogButton {
+                    label: "Commit",
+                    tone: dialog::DialogTone::Normal,
+                    enabled: true,
+                },
+                dialog::DialogButton {
+                    label: "Rollback",
+                    tone: dialog::DialogTone::Danger,
+                    enabled: true,
+                },
+                dialog::DialogButton {
+                    label: "Cancel",
+                    tone: dialog::DialogTone::Normal,
+                    enabled: true,
+                },
+            ];
+            let actions = if review.focus
+                == crate::model::transaction_review::TransactionReviewFocus::SqlPreview
+            {
+                dialog::render_actions_without_focus(frame, footer[1], &buttons, theme)
+            } else {
+                dialog::render_actions(frame, footer[1], &buttons, selected, theme)
+            };
             for action in actions {
                 state.hit_regions.push(HitRegion {
                     area: action.area,
@@ -4913,8 +4916,8 @@ fn render_overlay(
                 &[
                     shortcut_hints::ShortcutHint::new("Enter", "confirm"),
                     shortcut_hints::ShortcutHint::new("Esc", "cancel"),
-                    shortcut_hints::ShortcutHint::new("Tab/Shift-Tab", "choose"),
-                    shortcut_hints::ShortcutHint::new("Up/Down", "scroll"),
+                    shortcut_hints::ShortcutHint::new("Tab/Shift-Tab", "focus"),
+                    shortcut_hints::ShortcutHint::new("hjkl/v/y", "preview"),
                 ],
                 theme,
                 theme.surface_raised,

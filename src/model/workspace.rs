@@ -180,14 +180,7 @@ pub enum Overlay {
         prompt: DeferredTransactionPrompt,
         choice: TransactionExitChoice,
     },
-    RelationTransactionConfirm {
-        tab_id: Uuid,
-        prompt: Option<DeferredTransactionPrompt>,
-        choice: TransactionExitChoice,
-        sql: String,
-        preview_offset: usize,
-        edit_snapshot: Option<String>,
-    },
+    RelationTransactionConfirm(super::transaction_review::TransactionReviewState),
     ClearTransactionOutcome {
         console_id: Uuid,
         connection: ConnectionIdentity,

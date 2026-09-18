@@ -70,6 +70,46 @@ fn text_target(session_id: Uuid) -> TextSelectionTarget {
 }
 
 #[test]
+fn transaction_review_mouse_selection_uses_modal_session_source() {
+    let mut app = App::new(Vec::new());
+    let mut relation = lazydb::model::relation::RelationTab::new("users");
+    relation.transaction_state = lazydb::model::transaction::TransactionState::Active;
+    relation.transaction_review_sql = Some("SELECT 1;\nSELECT 2;".into());
+    app.tabs
+        .push(lazydb::model::tab::WorkspaceTab::Relation(relation));
+    app.active_tab = app.tabs.len() - 1;
+    app.update(Action::OpenTransactionControl);
+    let session_id = app.review_preview_session_id().unwrap();
+    let mut ui = UiState::new();
+    ui.text_selection_targets.push(text_target(session_id));
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(0, 0, 40, 20),
+        target: HitTarget::Focus(Focus::Results),
+    });
+
+    assert!(matches!(
+        map_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 11, 5), &ui, &app),
+        Some(Action::SetEditorMouseCursor { session_id: id, .. }) if id == session_id
+    ));
+    assert!(
+        map_mouse(
+            mouse(MouseEventKind::Drag(MouseButton::Left), 18, 5),
+            &ui,
+            &app
+        )
+        .is_none()
+    );
+    assert!(matches!(
+        map_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 18, 5), &ui, &app),
+        Some(Action::CompleteMouseTextSelection {
+            source: TextGestureSource::TransactionReview,
+            session_id: id,
+            ..
+        }) if id == session_id
+    ));
+}
+
+#[test]
 fn mouse_down_drag_up_routes_selection_for_each_text_source() {
     let sources = ["sql-editor", "output", "plan", "relation-ddl"];
     for source in sources {

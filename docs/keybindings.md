@@ -652,6 +652,16 @@ running; Tab/Left/Right changes the choice.
 `a` abandons, `r` rolls back, `c` commits, and Enter confirms the selected
 choice. Esc/n cancels; Tab/Left/Right changes the choice.
 
+### Transaction Review SQL Preview
+
+Relation Transaction Review starts with Cancel focused. Tab cycles through
+`SQL preview → Commit → Rollback → Cancel`; Shift-Tab cycles in reverse. When
+the SQL preview is focused, `hjkl`, word motions, counts, `gg/G`,
+Ctrl-u/d/b/f, and PageUp/PageDown navigate the read-only Vim editor. `/` and
+`?` search, `v`/`V`/Ctrl-v select, and `y` or a mouse drag copies the original
+SQL text. Esc first leaves search or Visual mode; a second Esc cancels the
+review. The preview is read-only and cannot execute or modify the workspace.
+
 ### Clear Transaction Outcome
 
 Enter/y clears the unknown outcome. Esc/n/q cancels.
