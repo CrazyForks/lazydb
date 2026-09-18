@@ -115,6 +115,8 @@ pub enum Action {
     ActivateSqlEditor(Uuid),
     NextTab,
     PreviousTab,
+    MoveTabRight,
+    MoveTabLeft,
     ActivateTab(usize),
     FocusNext,
     FocusPrevious,

@@ -50,6 +50,58 @@ fn workspace_tabs_expose_common_identity() {
 }
 
 #[test]
+fn moving_tabs_preserves_active_identity_and_focus() {
+    let mut app = App::new(Vec::new());
+    app.tabs = vec![
+        WorkspaceTab::Sql(ConsoleTab::new("first")),
+        WorkspaceTab::Sql(ConsoleTab::new("second")),
+        WorkspaceTab::Sql(ConsoleTab::new("third")),
+    ];
+    app.active_tab = 1;
+    app.focus = Focus::Results;
+    let active_id = app.tabs[app.active_tab].id();
+    let first_id = app.tabs[0].id();
+    let third_id = app.tabs[2].id();
+
+    assert!(app.update(Action::MoveTabRight).is_empty());
+    assert_eq!(app.tabs[app.active_tab].id(), active_id);
+    assert_eq!(
+        app.tabs.iter().map(WorkspaceTab::id).collect::<Vec<_>>(),
+        vec![first_id, third_id, active_id]
+    );
+    assert_eq!(app.focus, Focus::Results);
+
+    assert!(app.update(Action::MoveTabLeft).is_empty());
+    assert_eq!(app.tabs[app.active_tab].id(), active_id);
+    assert_eq!(app.active_tab, 1);
+    assert_eq!(app.focus, Focus::Results);
+}
+
+#[test]
+fn moving_tabs_at_edges_is_a_noop() {
+    let mut app = App::new(Vec::new());
+    app.tabs = vec![
+        WorkspaceTab::Sql(ConsoleTab::new("first")),
+        WorkspaceTab::Sql(ConsoleTab::new("second")),
+    ];
+    let ids = app.tabs.iter().map(WorkspaceTab::id).collect::<Vec<_>>();
+
+    app.active_tab = 0;
+    assert!(app.update(Action::MoveTabLeft).is_empty());
+    assert_eq!(
+        app.tabs.iter().map(WorkspaceTab::id).collect::<Vec<_>>(),
+        ids
+    );
+
+    app.active_tab = 1;
+    assert!(app.update(Action::MoveTabRight).is_empty());
+    assert_eq!(
+        app.tabs.iter().map(WorkspaceTab::id).collect::<Vec<_>>(),
+        ids
+    );
+}
+
+#[test]
 fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
     use lazydb::persistence::workspace::WorkspaceStore;
 

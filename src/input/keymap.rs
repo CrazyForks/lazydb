@@ -1059,11 +1059,19 @@ impl Keymap {
             return Some(Action::FocusPrevious);
         }
 
-        if self.bindings.matches("next-tab", event) {
-            return Some(Action::NextTab);
-        }
-        if self.bindings.matches("previous-tab", event) {
-            return Some(Action::PreviousTab);
+        if tab_shortcuts_have_focus(app) {
+            if matches_tab_binding(&self.bindings, "move-tab-right", event) {
+                return Some(Action::MoveTabRight);
+            }
+            if matches_tab_binding(&self.bindings, "move-tab-left", event) {
+                return Some(Action::MoveTabLeft);
+            }
+            if self.bindings.matches("next-tab", event) {
+                return Some(Action::NextTab);
+            }
+            if self.bindings.matches("previous-tab", event) {
+                return Some(Action::PreviousTab);
+            }
         }
         if self.bindings.matches("close-tab", event) {
             return Some(Action::CloseActiveTab);
@@ -1737,7 +1745,7 @@ impl Keymap {
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(action);
             }
-            if event.modifiers == KeyModifiers::CONTROL {
+            if event.modifiers == KeyModifiers::CONTROL && tab_shortcuts_have_focus(app) {
                 match event.code {
                     KeyCode::PageDown => return Some(Action::NextTab),
                     KeyCode::PageUp => return Some(Action::PreviousTab),
@@ -2266,6 +2274,37 @@ impl Keymap {
         self.pending = None;
         was_visible
     }
+}
+
+fn tab_shortcuts_have_focus(app: &App) -> bool {
+    matches!(app.focus, Focus::Editor | Focus::Results) && app.tabs.get(app.active_tab).is_some()
+}
+
+fn matches_tab_binding(
+    bindings: &crate::config::KeyBindings,
+    command: &str,
+    event: KeyEvent,
+) -> bool {
+    if bindings.matches(command, event) {
+        return true;
+    }
+    if event.modifiers != (KeyModifiers::CONTROL | KeyModifiers::SHIFT) {
+        return false;
+    }
+    let KeyCode::Char(character) = event.code else {
+        return false;
+    };
+    let alternate = if character.is_ascii_lowercase() {
+        character.to_ascii_uppercase()
+    } else if character.is_ascii_uppercase() {
+        character.to_ascii_lowercase()
+    } else {
+        return false;
+    };
+    bindings.matches(
+        command,
+        KeyEvent::new(KeyCode::Char(alternate), event.modifiers),
+    )
 }
 
 fn map_configured_navigation(
@@ -2970,7 +3009,9 @@ fn map_pending(
         (Pending::Goto, code) => {
             let prefix = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE);
             let event = KeyEvent::new(code, KeyModifiers::NONE);
-            if bindings.matches_sequence("next-tab", &[prefix, event]) {
+            if !tab_shortcuts_have_focus(app) {
+                None
+            } else if bindings.matches_sequence("next-tab", &[prefix, event]) {
                 Some(Action::NextTab)
             } else if bindings.matches_sequence("previous-tab", &[prefix, event]) {
                 Some(Action::PreviousTab)
@@ -2981,16 +3022,16 @@ fn map_pending(
         (Pending::Previous, code) => {
             let prefix = KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE);
             let event = KeyEvent::new(code, KeyModifiers::NONE);
-            bindings
-                .matches_sequence("previous-tab", &[prefix, event])
-                .then_some(Action::PreviousTab)
+            (tab_shortcuts_have_focus(app)
+                && bindings.matches_sequence("previous-tab", &[prefix, event]))
+            .then_some(Action::PreviousTab)
         }
         (Pending::Next, code) => {
             let prefix = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
             let event = KeyEvent::new(code, KeyModifiers::NONE);
-            bindings
-                .matches_sequence("next-tab", &[prefix, event])
-                .then_some(Action::NextTab)
+            (tab_shortcuts_have_focus(app)
+                && bindings.matches_sequence("next-tab", &[prefix, event]))
+            .then_some(Action::NextTab)
         }
         (Pending::Leader, KeyCode::Char('t')) => None,
         (Pending::RelationDelete, KeyCode::Char('d')) => Some(Action::RelationDeleteCurrent),
@@ -4266,8 +4307,12 @@ mod tests {
     }
 
     #[test]
-    fn control_tab_shortcuts_and_close_other_tabs_map_globally() {
-        let app = App::new(Vec::new());
+    fn control_tab_shortcuts_work_only_in_workspace_panes() {
+        let mut app = App::new(Vec::new());
+        app.tabs.push(crate::model::tab::WorkspaceTab::Sql(
+            crate::model::tab::ConsoleTab::new("test"),
+        ));
+        app.active_tab = 0;
         let mut keymap = Keymap::default();
 
         assert_eq!(keymap.map(control_key('n'), &app), Some(Action::NextTab));
@@ -4275,6 +4320,22 @@ mod tests {
             keymap.map(control_key('p'), &app),
             Some(Action::PreviousTab)
         );
+        assert_eq!(
+            keymap.map(control_shift_key('n'), &app),
+            Some(Action::MoveTabRight)
+        );
+        assert_eq!(
+            keymap.map(control_shift_key('p'), &app),
+            Some(Action::MoveTabLeft)
+        );
+
+        app.focus = Focus::Explorer;
+        assert_eq!(keymap.map(control_key('n'), &app), None);
+        assert_eq!(keymap.map(control_key('p'), &app), None);
+        assert_eq!(keymap.map(control_shift_key('n'), &app), None);
+        assert_eq!(keymap.map(control_shift_key('p'), &app), None);
+
+        app.focus = Focus::Editor;
         assert_eq!(
             keymap.map(control_key('q'), &app),
             Some(Action::CloseActiveTab)
@@ -4292,6 +4353,64 @@ mod tests {
                 &app
             ),
             Some(Action::CloseOtherTabs)
+        );
+    }
+
+    #[test]
+    fn tab_aliases_and_page_navigation_work_only_in_workspace_panes() {
+        let mut app = App::new(Vec::new());
+        app.tabs.push(crate::model::tab::WorkspaceTab::Relation(
+            crate::model::relation::RelationTab::new("test"),
+        ));
+        app.active_tab = 0;
+        let mut keymap = Keymap::default();
+
+        app.focus = Focus::Results;
+        keymap.map(key(KeyCode::Char('g')), &app);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('t')), &app),
+            Some(Action::NextTab)
+        );
+        keymap.map(key(KeyCode::Char('[')), &app);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('t')), &app),
+            Some(Action::PreviousTab)
+        );
+        keymap.map(key(KeyCode::Char(']')), &app);
+        assert_eq!(
+            keymap.map(key(KeyCode::Char('t')), &app),
+            Some(Action::NextTab)
+        );
+
+        assert_eq!(
+            keymap.map(
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
+                &app
+            ),
+            Some(Action::NextTab)
+        );
+        assert_eq!(
+            keymap.map(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL), &app),
+            Some(Action::PreviousTab)
+        );
+
+        app.focus = Focus::Explorer;
+        keymap.map(key(KeyCode::Char('g')), &app);
+        assert_eq!(keymap.map(key(KeyCode::Char('t')), &app), None);
+        keymap.map(key(KeyCode::Char('[')), &app);
+        assert_eq!(keymap.map(key(KeyCode::Char('t')), &app), None);
+        keymap.map(key(KeyCode::Char(']')), &app);
+        assert_eq!(keymap.map(key(KeyCode::Char('t')), &app), None);
+        assert_eq!(
+            keymap.map(
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
+                &app
+            ),
+            None
+        );
+        assert_eq!(
+            keymap.map(KeyEvent::new(KeyCode::PageUp, KeyModifiers::CONTROL), &app),
+            None
         );
     }
 

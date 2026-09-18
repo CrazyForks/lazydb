@@ -163,7 +163,8 @@ keys and modalkit's core Vim editing operations are intentionally not separate
 application settings. The grouped keybinding tables contain `help`, `omni`,
 `quit`, `notification-history`,
 `focus-next-pane`, `focus-previous-pane`, `run-statement`, `run-buffer`,
-`next-tab`, `previous-tab`, and `close-tab`. Each value is a list of key
+`next-tab`, `previous-tab`, `move-tab-right`, `move-tab-left`, and `close-tab`.
+Each value is a list of key
 events or space-separated key sequences such as `F2`, `Ctrl-c`, `Shift-Tab`,
 or `g t`; empty lists unbind a command. `omni` opens the global Omni Bar and
 defaults to `F2`. The current Leader commands are

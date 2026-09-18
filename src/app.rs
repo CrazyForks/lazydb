@@ -1250,6 +1250,23 @@ impl App {
         }
     }
 
+    fn move_active_tab(&mut self, right: bool) {
+        let current = self.active_tab;
+        if current >= self.tabs.len() {
+            return;
+        }
+        let neighbor = if right {
+            current.checked_add(1)
+        } else {
+            current.checked_sub(1)
+        };
+        let Some(neighbor) = neighbor.filter(|index| *index < self.tabs.len()) else {
+            return;
+        };
+        self.tabs.swap(current, neighbor);
+        self.active_tab = neighbor;
+    }
+
     fn clear_active_data_query_focus(&mut self) {
         if let Some(query) = self.active_data_query_mut() {
             match query.focus {
@@ -2537,6 +2554,8 @@ impl App {
             Id::NextTab => vec![Action::NextTab],
             Id::PreviousTabAlias => vec![Action::PreviousTab],
             Id::NextTabAlias => vec![Action::NextTab],
+            Id::MoveTabRight => vec![Action::MoveTabRight],
+            Id::MoveTabLeft => vec![Action::MoveTabLeft],
             Id::OpenDashboard => vec![Action::OpenDashboard],
             Id::DashboardToggleView => vec![Action::DashboardSetPage(
                 match self.tabs.get(self.active_tab) {
@@ -5803,6 +5822,14 @@ impl App {
                     .unwrap_or(self.tabs.len() - 1);
                 self.normalize_focus_after_tab_switch();
                 self.prepare_active_tab()
+            }
+            Action::MoveTabRight => {
+                self.move_active_tab(true);
+                Vec::new()
+            }
+            Action::MoveTabLeft => {
+                self.move_active_tab(false);
+                Vec::new()
             }
             Action::ActivateTab(index) => {
                 if index < self.tabs.len() {
