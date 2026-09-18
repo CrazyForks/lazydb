@@ -733,12 +733,13 @@ mod sql_history_kind_cache_tests {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DisconnectedWorkspace {
-    NoProfiles,
-    NoActiveConnection,
+enum WorkspaceEmptyState {
+    Profiles,
+    ActiveConnection,
+    OpenTabs,
 }
 
-impl DisconnectedWorkspace {
+impl WorkspaceEmptyState {
     fn for_app(app: &App) -> Option<Self> {
         if app
             .active_console_opt()
@@ -747,32 +748,34 @@ impl DisconnectedWorkspace {
         {
             return None;
         }
-        (app.connection.status == ConnectionStatus::Disconnected
-            && app.sessions.iter().next().is_none())
-        .then_some({
-            if app.profiles.is_empty() {
-                Self::NoProfiles
+        if app.connection.status == ConnectionStatus::Disconnected
+            && app.sessions.iter().next().is_none()
+        {
+            return Some(if app.profiles.is_empty() {
+                Self::Profiles
             } else {
-                Self::NoActiveConnection
-            }
-        })
+                Self::ActiveConnection
+            });
+        }
+        app.tabs.is_empty().then_some(Self::OpenTabs)
     }
 
     const fn title(self) -> &'static str {
         match self {
-            Self::NoProfiles => "NO CONNECTIONS YET",
-            Self::NoActiveConnection => "NO ACTIVE CONNECTION",
+            Self::Profiles => "NO CONNECTIONS YET",
+            Self::ActiveConnection => "NO ACTIVE CONNECTION",
+            Self::OpenTabs => "NO OPEN TABS",
         }
     }
 
     const fn instruction(self, compact: bool) -> &'static str {
         match (self, compact) {
-            (Self::NoProfiles, false) => "Select NEW in Explorer, then press Enter.",
-            (Self::NoActiveConnection, false) => {
-                "Select a connection in Explorer, then press Enter."
-            }
-            (Self::NoProfiles, true) => "Select NEW in Explorer; press Enter.",
-            (Self::NoActiveConnection, true) => "Select a connection; press Enter.",
+            (Self::Profiles, false) => "Select NEW in Explorer, then press Enter.",
+            (Self::ActiveConnection, false) => "Select a connection in Explorer, then press Enter.",
+            (Self::OpenTabs, false) => "Open a tab from Explorer or the console list.",
+            (Self::Profiles, true) => "Select NEW in Explorer; press Enter.",
+            (Self::ActiveConnection, true) => "Select a connection; press Enter.",
+            (Self::OpenTabs, true) => "Open a tab from Explorer or consoles.",
         }
     }
 }
@@ -785,7 +788,7 @@ const LAZYDB_ASCII: [&str; 5] = [
     " L A       AZZZZZ  Y   DDDD  BBBB ",
 ];
 
-fn disconnected_workspace_area(layout: AppLayout) -> Option<Rect> {
+fn workspace_empty_area(layout: AppLayout) -> Option<Rect> {
     [
         layout.tabs,
         layout.editor,
@@ -803,10 +806,10 @@ fn disconnected_workspace_area(layout: AppLayout) -> Option<Rect> {
     })
 }
 
-fn render_disconnected_workspace(
+fn render_empty_workspace(
     frame: &mut Frame<'_>,
     area: Rect,
-    workspace: DisconnectedWorkspace,
+    workspace: WorkspaceEmptyState,
     theme: Theme,
 ) {
     if area.is_empty() {
@@ -966,10 +969,11 @@ fn render_with_state_at(
         app.pane_sizes,
         app.pane_maximized,
     );
+    let empty_workspace = WorkspaceEmptyState::for_app(app);
     let editor_rendered = !is_relation
         && !is_dashboard
         && !is_redis_browser
-        && DisconnectedWorkspace::for_app(app).is_none()
+        && empty_workspace.is_none()
         && layout.editor.is_some();
     let redis_layout = is_redis_browser
         .then(|| {
@@ -987,6 +991,9 @@ fn render_with_state_at(
                     .as_ref()
                     .and_then(layout::RedisBrowserLayout::resize_region)
                     .is_none(),
+                PaneSplit::EditorHeight => {
+                    !editor_rendered || layout.pane_resize_region(drag.split).is_none()
+                }
                 split => layout.pane_resize_region(split).is_none(),
             });
     if pane_drag_invalid {
@@ -1107,9 +1114,9 @@ fn render_with_state_at(
             });
             render_explorer(frame, area, app, theme, state, icons);
         }
-        if let Some(workspace) = DisconnectedWorkspace::for_app(app) {
-            if let Some(area) = disconnected_workspace_area(layout) {
-                render_disconnected_workspace(frame, area, workspace, theme);
+        if let Some(workspace) = empty_workspace {
+            if let Some(area) = workspace_empty_area(layout) {
+                render_empty_workspace(frame, area, workspace, theme);
             }
         } else {
             if let Some(area) = layout.editor {
