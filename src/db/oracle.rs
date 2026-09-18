@@ -334,6 +334,24 @@ impl OracleAdapter {
         let old_name = object.native_path.get(2).cloned().unwrap_or_default();
         let (kind, new_name, statements) = match (baseline, draft) {
             (CatalogObjectDefinition::Table(_), CatalogDraft::Table(draft)) => {
+                if draft.columns.iter().any(|column| {
+                    !matches!(
+                        column.state,
+                        crate::model::catalog_editor::DraftRowState::Added
+                    ) || !column.name.value().trim().is_empty()
+                }) && draft.columns.iter().any(|column| {
+                    !matches!(
+                        column.state,
+                        crate::model::catalog_editor::DraftRowState::Existing { .. }
+                    ) || column.existing_name.as_deref() != Some(column.name.value().trim())
+                }) {
+                    return Err(
+                        super::catalog_mutation::CatalogMutationError::InvalidDraft {
+                            reason: "Oracle table edits currently support only table renaming"
+                                .into(),
+                        },
+                    );
+                }
                 let new_name = draft.name.value().trim().to_owned();
                 if new_name.is_empty() {
                     return Err(

@@ -332,6 +332,8 @@ pub enum Action {
     CatalogEditorCancelTableColumnDetails,
     CatalogEditorMoveTableColumn(isize),
     CatalogEditorAddTableColumn,
+    CatalogEditorAddTableColumnAbove,
+    CatalogEditorReorderTableColumn(isize),
     CatalogEditorRemoveTableColumn,
     CatalogEditorRestoreTableColumn,
     CatalogEditorToggleTableColumnNullable,

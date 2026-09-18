@@ -2634,6 +2634,30 @@ fn sqlite_table_requires_rebuild(
     {
         return true;
     }
+    let baseline_order = baseline
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    let draft_order = draft
+        .columns
+        .iter()
+        .filter(|column| {
+            !matches!(
+                column.state,
+                crate::model::catalog_editor::DraftRowState::Removed { .. }
+            )
+        })
+        .filter_map(|column| column.existing_name.as_deref())
+        .collect::<Vec<_>>();
+    let baseline_surviving = baseline_order
+        .iter()
+        .copied()
+        .filter(|name| draft_order.contains(name))
+        .collect::<Vec<_>>();
+    if baseline_surviving != draft_order {
+        return true;
+    }
     for row in &draft.columns {
         if matches!(
             row.state,

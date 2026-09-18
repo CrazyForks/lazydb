@@ -56,6 +56,27 @@ use crate::model::dashboard::MetricKey;
 
 mod geometry;
 
+fn mysql_column_definition(
+    column: &crate::model::catalog_editor::ColumnDraft,
+) -> Result<String, CatalogMutationError> {
+    let name = column.name.value().trim();
+    let native_type = column.native_type.value().trim();
+    if name.is_empty() || native_type.is_empty() {
+        return Err(CatalogMutationError::InvalidDraft {
+            reason: "MySQL column name and type are required".into(),
+        });
+    }
+    let mut definition = format!("{} {}", quote_identifier(name), native_type);
+    if !column.nullable {
+        definition.push_str(" NOT NULL");
+    }
+    if !column.default_expression.value().trim().is_empty() {
+        definition.push_str(" DEFAULT ");
+        definition.push_str(column.default_expression.value().trim());
+    }
+    Ok(definition)
+}
+
 pub const CATALOG_TABLES_SQL: &str = r#"
 SELECT table_schema, table_name, table_type
 FROM information_schema.tables
@@ -572,7 +593,7 @@ impl MySqlAdapter {
                     statements,
                 );
             }
-            let Some(CatalogObjectDefinition::Table(_)) = baseline else {
+            let Some(CatalogObjectDefinition::Table(table)) = baseline else {
                 return Err(CatalogMutationError::StaleState);
             };
             let crate::model::catalog_editor::CatalogDraft::Table(draft) = draft else {
@@ -596,7 +617,105 @@ impl MySqlAdapter {
                     reason: "MySQL table name is required".into(),
                 });
             }
-            if new_name == old_name {
+            draft.validate()?;
+            let mut statements = Vec::new();
+            if new_name != old_name {
+                statements.push(format!(
+                    "RENAME TABLE {}.{} TO {}.{}",
+                    quote_identifier(&schema_sql),
+                    quote_identifier(&old_name_sql),
+                    quote_identifier(&schema_sql),
+                    quote_identifier(new_name)
+                ));
+            }
+            let mut current = table
+                .columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect::<Vec<_>>();
+            for row in &draft.columns {
+                if let crate::model::catalog_editor::DraftRowState::Removed { .. } = row.state {
+                    if let Some(name) = row.existing_name.as_deref() {
+                        statements.push(format!(
+                            "ALTER TABLE {}.{} DROP COLUMN {}",
+                            quote_identifier(&schema_sql),
+                            quote_identifier(new_name),
+                            quote_identifier(name)
+                        ));
+                        current.retain(|column| column != name);
+                    }
+                    continue;
+                }
+                let target_index = draft
+                    .columns
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, row))
+                    .unwrap_or(0);
+                let previous = draft
+                    .columns
+                    .iter()
+                    .take(target_index)
+                    .rev()
+                    .find(|candidate| {
+                        !matches!(
+                            candidate.state,
+                            crate::model::catalog_editor::DraftRowState::Removed { .. }
+                        )
+                    })
+                    .map(|candidate| candidate.name.value().trim().to_owned());
+                let desired_index = previous
+                    .as_ref()
+                    .and_then(|name| current.iter().position(|current_name| current_name == name))
+                    .map_or(0, |index| index + 1);
+                let position_sql = previous.as_ref().map_or_else(
+                    || " FIRST".to_owned(),
+                    |name| format!(" AFTER {}", quote_identifier(name)),
+                );
+                let definition = mysql_column_definition(row)?;
+                if let Some(existing_name) = row.existing_name.as_deref() {
+                    let old = table
+                        .columns
+                        .iter()
+                        .find(|column| column.name == existing_name);
+                    let needs_change = old.is_none_or(|old| {
+                        old.name != row.name.value().trim()
+                            || old.native_type != row.native_type.value().trim()
+                            || old.nullable != row.nullable
+                            || current.iter().position(|name| name == existing_name)
+                                != Some(desired_index)
+                    });
+                    if let Some(index) = current.iter().position(|name| name == existing_name) {
+                        current.remove(index);
+                    }
+                    if needs_change {
+                        statements.push(format!(
+                            "ALTER TABLE {}.{} CHANGE COLUMN {} {}{}",
+                            quote_identifier(&schema_sql),
+                            quote_identifier(new_name),
+                            quote_identifier(existing_name),
+                            definition,
+                            position_sql
+                        ));
+                    }
+                    current.insert(
+                        desired_index.min(current.len()),
+                        row.name.value().trim().to_owned(),
+                    );
+                } else {
+                    statements.push(format!(
+                        "ALTER TABLE {}.{} ADD COLUMN {}{}",
+                        quote_identifier(&schema_sql),
+                        quote_identifier(new_name),
+                        definition,
+                        position_sql
+                    ));
+                    current.insert(
+                        desired_index.min(current.len()),
+                        row.name.value().trim().to_owned(),
+                    );
+                }
+            }
+            if statements.is_empty() {
                 return Err(CatalogMutationError::NoChanges);
             }
             let new_object = CatalogId::new(
@@ -624,15 +743,9 @@ impl MySqlAdapter {
                     group: ObjectGroup::Tables,
                 }],
                 CatalogSelectionHint::Object(new_object),
-                None,
+                Some(table.baseline_fingerprint),
                 Vec::new(),
-                vec![format!(
-                    "RENAME TABLE {}.{} TO {}.{}",
-                    quote_identifier(&schema_sql),
-                    quote_identifier(&old_name_sql),
-                    quote_identifier(&schema_sql),
-                    quote_identifier(new_name)
-                )],
+                statements,
             );
         }
         if request.mode != crate::db::catalog_mutation::CatalogMutationMode::Create {

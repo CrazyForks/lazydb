@@ -2796,6 +2796,9 @@ fn map_table_editor(
     }
     if event.modifiers != KeyModifiers::NONE
         && !matches!(event.code, KeyCode::Tab | KeyCode::BackTab)
+        && !(field == TableEditorFocus::Columns
+            && event.modifiers == KeyModifiers::SHIFT
+            && matches!(event.code, KeyCode::Char('A' | 'J' | 'K' | 'a' | 'j' | 'k')))
     {
         return None;
     }
@@ -2831,11 +2834,22 @@ fn map_table_editor(
         };
     }
     if field == TableEditorFocus::Columns {
+        if event.modifiers == KeyModifiers::SHIFT {
+            return match event.code {
+                KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumnAbove),
+                KeyCode::Char('j') => Some(Action::CatalogEditorReorderTableColumn(1)),
+                KeyCode::Char('k') => Some(Action::CatalogEditorReorderTableColumn(-1)),
+                _ => None,
+            };
+        }
         return match event.code {
             KeyCode::Enter => Some(Action::CatalogEditorPreview),
             KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumn),
+            KeyCode::Char('A') => Some(Action::CatalogEditorAddTableColumnAbove),
             KeyCode::Char('j') => Some(Action::CatalogEditorFieldNext),
             KeyCode::Char('k') => Some(Action::CatalogEditorFieldPrevious),
+            KeyCode::Char('J') => Some(Action::CatalogEditorReorderTableColumn(1)),
+            KeyCode::Char('K') => Some(Action::CatalogEditorReorderTableColumn(-1)),
             KeyCode::Char('e') if editor_table_has_selected_column(editor) => {
                 Some(Action::CatalogEditorOpenTableColumnDetails)
             }
