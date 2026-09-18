@@ -7851,6 +7851,97 @@ fn offline_console_renders_the_complete_workspace() {
 }
 
 #[test]
+fn closing_last_tab_restores_empty_workspace_and_reopens_console() {
+    let mut app = fixture();
+    let connection = app.connection.active_identity();
+    let session_count = app.sessions.iter().count();
+    let tab_id = app.active_console().id;
+
+    let (before, _) = render_with_state(&app, 120, 36);
+    assert!(before.contains("DATA"), "{before}");
+    assert!(before.contains("OUTPUT"), "{before}");
+
+    app.update(Action::CloseTab(tab_id));
+
+    let (empty, state) = render_with_state(&app, 120, 36);
+    assert!(empty.contains("NO OPEN TABS"), "{empty}");
+    assert!(!empty.contains("DATA"), "{empty}");
+    assert!(!empty.contains("OUTPUT"), "{empty}");
+    assert!(!empty.contains("no result"), "{empty}");
+    assert!(!empty.contains("SQL EDITOR"), "{empty}");
+    assert!(app.tabs.is_empty());
+    assert_eq!(app.focus, Focus::Explorer);
+    assert_eq!(app.connection.active_identity(), connection);
+    assert_eq!(app.sessions.iter().count(), session_count);
+    assert!(state.editor_viewport.is_none());
+    assert!(state.output_viewport.is_none());
+    assert!(state.grid_viewport.is_none());
+    assert!(state.cursor.is_none());
+    assert!(!state.hit_regions.iter().any(|region| matches!(
+        region.target,
+        HitTarget::Focus(Focus::Editor)
+            | HitTarget::Focus(Focus::Results)
+            | HitTarget::ResultView(_)
+            | HitTarget::PaneResize(PaneSplit::EditorHeight)
+    )));
+    assert!(
+        state
+            .hit_regions
+            .iter()
+            .any(|region| region.target == HitTarget::Focus(Focus::Explorer))
+    );
+
+    app.update(Action::NewConsole);
+    let (reopened, reopened_state) = render_with_state(&app, 120, 36);
+    assert!(!reopened.contains("NO OPEN TABS"), "{reopened}");
+    assert!(reopened.contains("SQL EDITOR"), "{reopened}");
+    assert!(reopened.contains("DATA"), "{reopened}");
+    assert!(reopened.contains("OUTPUT"), "{reopened}");
+    assert!(reopened_state.editor_viewport.is_some());
+}
+
+#[test]
+fn empty_workspace_keeps_empty_state_when_connection_status_changes() {
+    let mut app = fixture();
+    let tab_id = app.active_console().id;
+    app.update(Action::CloseTab(tab_id));
+    app.connection.status = ConnectionStatus::Disconnected;
+
+    let (output, state) = render_with_state(&app, 120, 36);
+
+    assert!(output.contains("NO OPEN TABS"), "{output}");
+    assert!(!output.contains("NO ACTIVE CONNECTION"), "{output}");
+    assert!(!output.contains("DATA"), "{output}");
+    assert!(!output.contains("OUTPUT"), "{output}");
+    assert!(!state.hit_regions.iter().any(|region| matches!(
+        region.target,
+        HitTarget::Focus(Focus::Editor) | HitTarget::Focus(Focus::Results)
+    )));
+}
+
+#[test]
+fn empty_workspace_respects_compact_and_tiny_layouts() {
+    let mut app = fixture();
+    let tab_id = app.active_console().id;
+    app.update(Action::CloseTab(tab_id));
+
+    let (wide, _) = render_with_state(&app, 180, 40);
+    assert!(wide.contains("NO OPEN TABS"), "{wide}");
+    assert!(!wide.contains("DATA"), "{wide}");
+    assert!(!wide.contains("OUTPUT"), "{wide}");
+
+    let (compact, _) = render_with_state(&app, 80, 24);
+    assert!(!compact.contains("DATA"), "{compact}");
+    assert!(!compact.contains("OUTPUT"), "{compact}");
+    assert!(!compact.contains("SQL EDITOR"), "{compact}");
+
+    let tiny = render(&app, 40, 10);
+    assert!(tiny.contains("TERMINAL TOO SMALL"), "{tiny}");
+    assert!(!tiny.contains("DATA"), "{tiny}");
+    assert!(!tiny.contains("OUTPUT"), "{tiny}");
+}
+
+#[test]
 fn disconnected_workspace_keeps_actionable_copy_at_compact_sizes() {
     let no_profiles = App::new(Vec::new());
     let no_profiles_output = render(&no_profiles, 80, 24);
