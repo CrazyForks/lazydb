@@ -31,6 +31,7 @@ enum Pending {
     Goto,
     LeaderTransaction,
     RedisPreviewLeader,
+    CatalogColumnDelete { selected_column: usize },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -327,8 +328,7 @@ impl Keymap {
             return map_profile_manager(event, app);
         }
         if matches!(app.overlay, Some(Overlay::CatalogEditor)) {
-            self.pending = None;
-            return map_catalog_editor(event, app);
+            return map_catalog_editor_with_pending(self, event, app);
         }
         if is_relation_cell_editor(app) {
             self.pending = None;
@@ -1140,6 +1140,15 @@ impl Keymap {
                 tab_id,
                 ..
             } = self.pending.take().unwrap();
+            if matches!(pending, Pending::CatalogColumnDelete { .. }) {
+                if event.kind == KeyEventKind::Press
+                    && event.modifiers.is_empty()
+                    && event.code == KeyCode::Char('d')
+                {
+                    return Some(Action::CatalogEditorRemoveTableColumn);
+                }
+                return map_catalog_editor(event, app);
+            }
             if pending == Pending::EditorLeader {
                 if app.focus == Focus::Editor && app.active_editor_mode() == EditorMode::Normal {
                     if event.modifiers.is_empty() && event.code == KeyCode::Char('t') {
@@ -2547,6 +2556,71 @@ fn map_catalog_editor(event: KeyEvent, app: &App) -> Option<Action> {
     }
 }
 
+fn map_catalog_editor_with_pending(
+    keymap: &mut Keymap,
+    event: KeyEvent,
+    app: &App,
+) -> Option<Action> {
+    let valid_column_delete = keymap.pending.as_ref().is_some_and(|pending| {
+        matches!(pending.pending, Pending::CatalogColumnDelete { .. })
+            && pending_is_valid(
+                pending,
+                app,
+                Instant::now(),
+                keymap.generation,
+                keymap.sequence_timeout,
+            )
+    });
+    if valid_column_delete {
+        if event.kind == KeyEventKind::Press
+            && event.modifiers.is_empty()
+            && event.code == KeyCode::Char('d')
+        {
+            keymap.pending = None;
+            return Some(Action::CatalogEditorRemoveTableColumn);
+        }
+        keymap.pending = None;
+    } else {
+        keymap.pending = None;
+    }
+
+    if event.kind == KeyEventKind::Press
+        && event.modifiers.is_empty()
+        && event.code == KeyCode::Char('d')
+        && is_catalog_columns_focus(app)
+    {
+        let selected_column = catalog_selected_column(app).unwrap_or_default();
+        keymap.continue_pending(
+            Pending::CatalogColumnDelete { selected_column },
+            app.focus,
+            app.active_editor_mode(),
+            app.tabs
+                .get(app.active_tab)
+                .map_or(Uuid::nil(), |tab| tab.id()),
+            false,
+        );
+        return None;
+    }
+
+    map_catalog_editor(event, app)
+}
+
+fn is_catalog_columns_focus(app: &App) -> bool {
+    matches!(
+        app.catalog_editor.as_ref().and_then(|editor| editor.draft.as_ref()),
+        Some(crate::model::catalog_editor::CatalogDraft::Table(draft))
+            if draft.focus == crate::model::catalog_editor::TableEditorFocus::Columns
+                && draft.column_editor.is_none()
+    )
+}
+
+fn catalog_selected_column(app: &App) -> Option<usize> {
+    match app.catalog_editor.as_ref()?.draft.as_ref()? {
+        crate::model::catalog_editor::CatalogDraft::Table(draft) => Some(draft.selected_column),
+        _ => None,
+    }
+}
+
 fn map_redis_object_editor(
     event: KeyEvent,
     editor: &crate::model::redis_object_editor::RedisObjectEditorState,
@@ -2753,6 +2827,8 @@ fn map_table_editor(
         return match event.code {
             KeyCode::Enter => Some(Action::CatalogEditorPreview),
             KeyCode::Char('a') => Some(Action::CatalogEditorAddTableColumn),
+            KeyCode::Char('j') => Some(Action::CatalogEditorFieldNext),
+            KeyCode::Char('k') => Some(Action::CatalogEditorFieldPrevious),
             KeyCode::Char('e') if editor_table_has_selected_column(editor) => {
                 Some(Action::CatalogEditorOpenTableColumnDetails)
             }
@@ -2897,7 +2973,7 @@ fn pending_is_valid(
     generation: u64,
     sequence_timeout: Duration,
 ) -> bool {
-    now.saturating_duration_since(pending.started_at) < sequence_timeout
+    let base_valid = now.saturating_duration_since(pending.started_at) < sequence_timeout
         && pending.focus == app.focus
         && pending.editor_mode == app.active_editor_mode()
         && pending.generation == generation
@@ -2907,7 +2983,15 @@ fn pending_is_valid(
             .get(app.active_tab)
             .map_or(pending.tab_id == Uuid::nil(), |tab| {
                 pending.tab_id == tab.id()
-            })
+            });
+    base_valid
+        && match pending.pending {
+            Pending::CatalogColumnDelete { selected_column } => {
+                is_catalog_columns_focus(app)
+                    && catalog_selected_column(app) == Some(selected_column)
+            }
+            _ => true,
+        }
 }
 
 fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, String)> {
@@ -2935,6 +3019,7 @@ fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, Str
         Pending::Goto => Some((ShortcutPrefix::Goto, "g".into())),
         Pending::LeaderTransaction => Some((ShortcutPrefix::EditorLeader, "Space t".into())),
         Pending::RedisPreviewLeader => Some((ShortcutPrefix::Leader, "Space".into())),
+        Pending::CatalogColumnDelete { .. } => None,
     }
 }
 
