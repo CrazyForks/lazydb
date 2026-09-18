@@ -48,6 +48,7 @@ pub struct RedisObjectEditorState {
     pub busy: bool,
     pub error: Option<String>,
     pub plan: Option<RedisMutationPlan>,
+    pub raw_value_override: Option<Vec<u8>>,
 }
 
 impl RedisObjectEditorState {
@@ -69,6 +70,7 @@ impl RedisObjectEditorState {
             busy: false,
             error: None,
             plan: None,
+            raw_value_override: None,
         }
     }
 
@@ -106,6 +108,7 @@ impl RedisObjectEditorState {
             busy: false,
             error: None,
             plan: None,
+            raw_value_override: None,
         }
     }
 
@@ -222,7 +225,11 @@ impl RedisObjectEditorState {
 
     pub fn value_draft(&self) -> Result<RedisValueDraft, String> {
         match self.value_type {
-            RedisType::String => Ok(RedisValueDraft::String(parse_bytes(self.value.value())?)),
+            RedisType::String => Ok(RedisValueDraft::String(
+                self.raw_value_override
+                    .clone()
+                    .map_or_else(|| parse_bytes(self.value.value()), Ok)?,
+            )),
             RedisType::Hash => Ok(RedisValueDraft::Hash(parse_pairs(self.value.value())?)),
             RedisType::List => Ok(RedisValueDraft::List(parse_lines(self.value.value())?)),
             RedisType::Set => Ok(RedisValueDraft::Set(parse_lines(self.value.value())?)),

@@ -166,22 +166,29 @@ impl Keymap {
                 {
                     Some(Action::RedisTableDeleteConfirm)
                 }
+                KeyCode::Enter => Some(Action::RedisTableDeleteCancel),
                 _ => None,
             };
         }
-        if let Some(Overlay::RedisValueSaveConfirm { invalid, .. }) = app.overlay.as_ref() {
+        if let Some(Overlay::RedisValueSaveConfirm { focus, .. }) = app.overlay.as_ref() {
             return match event.code {
                 KeyCode::Esc => Some(Action::RedisValueSaveCancel),
-                KeyCode::Enter if *invalid => Some(Action::RedisValueSaveAnyway),
-                KeyCode::Enter => Some(Action::RedisValueSave),
+                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::RedisValueSaveToggleFocus)
+                }
+                KeyCode::Enter => Some(Action::RedisValueSaveActivate(*focus)),
                 _ => None,
             };
         }
-        if matches!(app.overlay, Some(Overlay::RedisUnsavedValueConfirm { .. })) {
+        if let Some(Overlay::RedisUnsavedValueConfirm { focus, .. }) = app.overlay.as_ref() {
             return match event.code {
                 KeyCode::Char('s') => Some(Action::RedisUnsavedValueSave),
                 KeyCode::Char('d') => Some(Action::RedisUnsavedValueDiscard),
                 KeyCode::Esc => Some(Action::RedisUnsavedValueCancel),
+                KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::RedisUnsavedValueToggleFocus)
+                }
+                KeyCode::Enter => Some(Action::RedisUnsavedValueActivate(*focus)),
                 _ => None,
             };
         }

@@ -143,10 +143,14 @@ pub enum Overlay {
         tab_id: Uuid,
         revision: u64,
         invalid: bool,
+        validation_error: Option<String>,
+        focus: usize,
+        format: crate::value_preview::PreviewFormat,
     },
     RedisUnsavedValueConfirm {
         tab_id: Uuid,
         next_key: crate::db::redis::types::RedisKeyId,
+        focus: usize,
     },
     ProfileAccess {
         profile_id: Uuid,

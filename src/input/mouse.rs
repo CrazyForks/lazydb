@@ -738,6 +738,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     column,
                 }),
                 HitTarget::RedisPreviewLoadMore(_) => Some(Action::RedisPreviewLoadNext),
+                HitTarget::RedisValueSaveAction(index) => {
+                    Some(Action::RedisValueSaveActivate(index))
+                }
+                HitTarget::RedisUnsavedValueAction(index) => {
+                    Some(Action::RedisUnsavedValueActivate(index))
+                }
                 HitTarget::ResultCell { row, column } => Some(Action::GridSelect { row, column }),
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::Omni => None,
@@ -1306,6 +1312,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::RedisPreviewFocus(_) => Some(Focus::Results),
         HitTarget::RedisPreviewTableCell { .. } => Some(Focus::Results),
         HitTarget::RedisPreviewLoadMore(_) => Some(Focus::Results),
+        HitTarget::RedisValueSaveAction(_) | HitTarget::RedisUnsavedValueAction(_) => None,
         HitTarget::ResultCell { .. }
         | HitTarget::ToggleResultView
         | HitTarget::ResultView(_)

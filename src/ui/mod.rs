@@ -127,6 +127,8 @@ pub enum HitTarget {
         column: usize,
     },
     RedisPreviewLoadMore(Uuid),
+    RedisValueSaveAction(usize),
+    RedisUnsavedValueAction(usize),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,
@@ -4635,30 +4637,153 @@ fn render_overlay(
             tab_id,
             revision,
             invalid,
+            validation_error,
+            focus,
+            ..
         } => {
-            let title = if *invalid {
-                " SAVE INVALID REDIS VALUE? "
-            } else {
-                " SAVE REDIS VALUE? "
-            };
-            render_message(
+            let popup = centered(area, 76, 12.min(area.height));
+            let inner = dialog::render_frame(
                 frame,
-                area,
-                title,
-                &format!("revision {revision} · Enter save · Esc cancel"),
+                popup,
+                if *invalid {
+                    " SAVE INVALID REDIS VALUE? "
+                } else {
+                    " SAVE REDIS VALUE? "
+                },
+                theme,
+            );
+            let mut lines = vec![Line::from(Span::styled(
+                format!("Revision {revision}"),
+                theme.title(true),
+            ))];
+            if let Some(error) = validation_error {
+                lines.push(Line::from(Span::styled(
+                    error.clone(),
+                    Style::new().fg(theme.warning),
+                )));
+                lines.push(Line::raw("The current text will be saved as-is."));
+            } else {
+                lines.push(Line::raw("Save the edited Redis value?"));
+            }
+            dialog::render_body(
+                frame,
+                Rect::new(
+                    inner.x,
+                    inner.y,
+                    inner.width,
+                    inner.height.saturating_sub(3),
+                ),
+                lines,
+                theme,
+            );
+            let buttons = if *invalid {
+                [
+                    dialog::DialogButton {
+                        label: "Save anyway",
+                        tone: dialog::DialogTone::Danger,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Back to edit",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                ]
+            } else {
+                [
+                    dialog::DialogButton {
+                        label: "Save",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: true,
+                    },
+                ]
+            };
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &buttons,
+                *focus,
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: HitTarget::RedisValueSaveAction(action.index),
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   Esc cancel",
                 theme,
             );
             let _ = tab_id;
         }
-        Overlay::RedisUnsavedValueConfirm { next_key, .. } => {
-            render_message(
+        Overlay::RedisUnsavedValueConfirm {
+            next_key, focus, ..
+        } => {
+            let popup = centered(area, 82, 12.min(area.height));
+            let inner = dialog::render_frame(frame, popup, " UNSAVED REDIS VALUE ", theme);
+            dialog::render_body(
                 frame,
-                area,
-                " UNSAVED REDIS VALUE ",
-                &format!(
-                    "{} · s save · d discard · Esc cancel",
-                    crate::ui::redis_value::display_bytes_lossless(&next_key.key)
+                Rect::new(
+                    inner.x,
+                    inner.y,
+                    inner.width,
+                    inner.height.saturating_sub(3),
                 ),
+                vec![
+                    Line::from(Span::styled(
+                        "Local edits have not been saved.",
+                        theme.title(true),
+                    )),
+                    Line::from(format!(
+                        "Target: {}",
+                        crate::ui::redis_value::display_bytes_lossless(&next_key.key)
+                    )),
+                    Line::raw("Choose how to continue."),
+                ],
+                theme,
+            );
+            let buttons = [
+                dialog::DialogButton {
+                    label: "Save",
+                    tone: dialog::DialogTone::Normal,
+                    enabled: true,
+                },
+                dialog::DialogButton {
+                    label: "Discard",
+                    tone: dialog::DialogTone::Danger,
+                    enabled: true,
+                },
+                dialog::DialogButton {
+                    label: "Cancel",
+                    tone: dialog::DialogTone::Normal,
+                    enabled: true,
+                },
+            ];
+            let actions = dialog::render_actions(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1),
+                &buttons,
+                *focus,
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: HitTarget::RedisUnsavedValueAction(action.index),
+                });
+            }
+            dialog::render_hint(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                "Tab / Left / Right switch   Enter activate   s save   d discard   Esc cancel",
                 theme,
             );
         }
