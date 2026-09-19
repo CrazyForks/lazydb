@@ -216,12 +216,6 @@ fn startup_selection_uses_first_visible_row_before_first_frame() {
     );
     assert_eq!(
         app.explorer.normalized.visible()[1].id,
-        ExplorerNodeId::PrincipalGroup {
-            profile_id: first_id
-        }
-    );
-    assert_eq!(
-        app.explorer.normalized.visible()[2].id,
         ExplorerNodeId::Profile(second_id)
     );
 }
@@ -267,9 +261,7 @@ fn startup_selection_moves_through_visible_rows_with_explorer_keymap() {
     app.update(action);
     assert_eq!(
         app.explorer.selected_id(),
-        Some(&ExplorerNodeId::PrincipalGroup {
-            profile_id: first_id
-        })
+        Some(&ExplorerNodeId::Profile(second_id))
     );
 
     let action = keymap
@@ -321,9 +313,9 @@ fn explicit_startup_profile_stays_selected_and_revealed() {
             .expanded
             .contains(&ExplorerNodeId::Others)
     );
-    assert_eq!(app.explorer.selected, 3);
+    assert_eq!(app.explorer.selected, 2);
     assert_eq!(
-        app.explorer.normalized.visible()[3].id,
+        app.explorer.normalized.visible()[2].id,
         ExplorerNodeId::Profile(hidden_id)
     );
 }

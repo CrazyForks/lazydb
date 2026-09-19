@@ -14,7 +14,7 @@ use lazydb::{
     },
     identity::ConnectionIdentity,
     model::{
-        explorer::{ExplorerNodeId, ExplorerTreeState},
+        explorer::{ExplorerConnectionStatus, ExplorerNodeId, ExplorerTreeState},
         principal::{PrincipalDdlLoad, PrincipalDdlTab},
     },
 };
@@ -77,7 +77,9 @@ fn explorer_with_databases(profile: Uuid, names: &[&str]) -> ExplorerTreeState {
         tree.insert_subtree(vec![database_entry(profile, name)])
             .unwrap();
     }
-    explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+    let profile_state = explorer.profiles.get_mut(&profile).unwrap();
+    profile_state.catalog = tree;
+    profile_state.status = ExplorerConnectionStatus::Online;
     explorer.expanded.insert(ExplorerNodeId::Profile(profile));
     explorer
 }
