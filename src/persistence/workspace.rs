@@ -112,6 +112,7 @@ pub struct PersistedPrincipalTab {
     pub profile_id: Uuid,
     pub scope: crate::db::principal::PrincipalScope,
     pub native_id: String,
+    #[serde(rename = "principal_kind")]
     pub kind: crate::db::principal::PrincipalKind,
     pub display_name: String,
     pub native_kind: String,

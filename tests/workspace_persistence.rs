@@ -8,10 +8,36 @@ use lazydb::{
     model::relation::RelationView,
     model::transaction::TransactionMode,
     persistence::workspace::{
-        PersistedConsole, PersistedProfileWorkspace, PersistedRelationTab, PersistedTab,
-        WorkspaceError, WorkspaceSnapshot, WorkspaceStore,
+        PersistedConsole, PersistedPrincipalTab, PersistedProfileWorkspace, PersistedRelationTab,
+        PersistedTab, WorkspaceError, WorkspaceSnapshot, WorkspaceStore,
     },
 };
+
+#[test]
+fn principal_ddl_tab_serialization_keeps_discriminator_and_principal_kind_distinct() {
+    let tab = PersistedTab::PrincipalDdl(PersistedPrincipalTab {
+        id: Uuid::new_v4(),
+        profile_id: Uuid::new_v4(),
+        scope: lazydb::db::principal::PrincipalScope::Cluster,
+        native_id: "16392".into(),
+        kind: lazydb::db::principal::PrincipalKind::User,
+        display_name: "app_user".into(),
+        native_kind: "login_role".into(),
+        system: false,
+    });
+
+    let encoded = toml::to_string(&tab).unwrap();
+    assert!(encoded.contains("kind = \"principal_ddl\""));
+    assert!(encoded.contains("principal_kind = \"User\""));
+    assert_eq!(
+        encoded
+            .lines()
+            .filter(|line| line.starts_with("kind = "))
+            .count(),
+        1
+    );
+    assert_eq!(toml::from_str::<PersistedTab>(&encoded).unwrap(), tab);
+}
 
 #[test]
 fn empty_app_workspace_snapshot_is_persistable() {
