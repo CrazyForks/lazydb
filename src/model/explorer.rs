@@ -1438,10 +1438,21 @@ impl ExplorerTreeState {
             0,
             profile.catalog.roots().len(),
         );
-        if profile.kind != DatabaseKind::Redis {
+        if self.principal_group_is_visible(profile_id) {
             projection.push(ExplorerNodeId::PrincipalGroup { profile_id }, 0);
         }
         projection.rows
+    }
+
+    fn principal_group_is_visible(&self, profile_id: Uuid) -> bool {
+        self.expanded.contains(&ExplorerNodeId::Profile(profile_id))
+            && self.profiles.get(&profile_id).is_some_and(|profile| {
+                profile.kind != DatabaseKind::Redis
+                    && matches!(
+                        profile.status,
+                        ExplorerConnectionStatus::Online | ExplorerConnectionStatus::Syncing
+                    )
+            })
     }
 
     #[doc(hidden)]
@@ -1568,6 +1579,9 @@ impl ExplorerTreeState {
             child_depth,
             roots.len(),
         );
+        if !self.principal_group_is_visible(profile_id) {
+            return;
+        }
         let principal_group = ExplorerNodeId::PrincipalGroup { profile_id };
         projection.push(principal_group.clone(), child_depth);
         if self.expanded.contains(&principal_group) {
@@ -2607,7 +2621,9 @@ pub(crate) mod tests {
 
         let mut explorer = ExplorerTreeState::default();
         explorer.add_profile(profile);
-        explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+        let profile_state = explorer.profiles.get_mut(&profile).unwrap();
+        profile_state.catalog = tree;
+        profile_state.status = ExplorerConnectionStatus::Online;
         explorer.expanded.extend([
             ExplorerNodeId::Profile(profile),
             ExplorerNodeId::Catalog(database.id.clone()),

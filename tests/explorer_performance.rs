@@ -3,7 +3,9 @@ use lazydb::{
         CatalogCompleteness, CatalogCount, CatalogEntry, CatalogId, CatalogKind, ObjectGroup,
         OptionalMetadata, QualifiedName,
     },
-    model::explorer::{CatalogGroupState, CatalogTree, ExplorerNodeId, ExplorerTreeState},
+    model::explorer::{
+        CatalogGroupState, CatalogTree, ExplorerConnectionStatus, ExplorerNodeId, ExplorerTreeState,
+    },
 };
 use uuid::Uuid;
 
@@ -48,7 +50,9 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
 
     let mut explorer = ExplorerTreeState::default();
     explorer.add_profile(profile);
-    explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+    let profile_state = explorer.profiles.get_mut(&profile).unwrap();
+    profile_state.catalog = tree;
+    profile_state.status = ExplorerConnectionStatus::Online;
     explorer.expanded.extend([
         ExplorerNodeId::Profile(profile),
         ExplorerNodeId::Catalog(database.id.clone()),
@@ -106,7 +110,9 @@ fn expanded_tables_explorer(table_count: usize) -> (ExplorerTreeState, Vec<Catal
 
     let mut explorer = ExplorerTreeState::default();
     explorer.add_profile(profile);
-    explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+    let profile_state = explorer.profiles.get_mut(&profile).unwrap();
+    profile_state.catalog = tree;
+    profile_state.status = ExplorerConnectionStatus::Online;
     explorer.expanded.extend([
         ExplorerNodeId::Profile(profile),
         ExplorerNodeId::Catalog(database.id.clone()),

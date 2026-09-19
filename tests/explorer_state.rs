@@ -30,11 +30,51 @@ fn profile_order_controls_roots_independently_of_map_order() {
         visible_ids(&explorer),
         vec![
             ExplorerNodeId::Profile(first),
-            ExplorerNodeId::PrincipalGroup { profile_id: first },
             ExplorerNodeId::Profile(second),
-            ExplorerNodeId::PrincipalGroup { profile_id: second },
         ]
     );
+}
+
+#[test]
+fn principal_group_visibility_requires_open_expanded_connection() {
+    let id = Uuid::from_u128(710);
+    let profile_node = ExplorerNodeId::Profile(id);
+    let principal_group = ExplorerNodeId::PrincipalGroup { profile_id: id };
+    for status in [
+        ExplorerConnectionStatus::Offline,
+        ExplorerConnectionStatus::Linking,
+        ExplorerConnectionStatus::Failed,
+        ExplorerConnectionStatus::Online,
+        ExplorerConnectionStatus::Syncing,
+    ] {
+        for expanded in [false, true] {
+            let mut tree = ExplorerTreeState::default();
+            tree.add_profile(id);
+            tree.profiles.get_mut(&id).unwrap().status = status;
+            if expanded {
+                tree.expanded.insert(profile_node.clone());
+            } else {
+                tree.expanded.remove(&profile_node);
+            }
+            let expected = expanded
+                && matches!(
+                    status,
+                    ExplorerConnectionStatus::Online | ExplorerConnectionStatus::Syncing
+                );
+            assert_eq!(
+                tree.visible().iter().any(|row| row.id == principal_group),
+                expected,
+                "full tree: {status:?}, expanded={expanded}"
+            );
+            assert_eq!(
+                tree.visible_profile(id)
+                    .iter()
+                    .any(|row| row.id == principal_group),
+                expected,
+                "profile projection: {status:?}, expanded={expanded}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -61,13 +101,7 @@ fn other_profiles_are_hidden_under_a_collapsed_group() {
 
     assert_eq!(
         visible_ids(&explorer),
-        vec![
-            ExplorerNodeId::Profile(current),
-            ExplorerNodeId::PrincipalGroup {
-                profile_id: current
-            },
-            ExplorerNodeId::Others,
-        ]
+        vec![ExplorerNodeId::Profile(current), ExplorerNodeId::Others,]
     );
 
     explorer.select(ExplorerNodeId::Others);
@@ -76,15 +110,11 @@ fn other_profiles_are_hidden_under_a_collapsed_group() {
         visible_ids(&explorer),
         vec![
             ExplorerNodeId::Profile(current),
-            ExplorerNodeId::PrincipalGroup {
-                profile_id: current
-            },
             ExplorerNodeId::Others,
             ExplorerNodeId::Profile(other),
-            ExplorerNodeId::PrincipalGroup { profile_id: other },
         ]
     );
-    assert_eq!(explorer.visible().last().unwrap().depth, 2);
+    assert_eq!(explorer.visible().last().unwrap().depth, 1);
 }
 
 #[test]
@@ -1427,7 +1457,9 @@ fn fixture(profile: Uuid) -> Fixture {
 fn explorer_with_fixture(fixture: &Fixture) -> ExplorerTreeState {
     let mut explorer = ExplorerTreeState::default();
     explorer.add_profile(fixture.profile);
-    explorer.profiles.get_mut(&fixture.profile).unwrap().catalog = fixture.tree();
+    let profile = explorer.profiles.get_mut(&fixture.profile).unwrap();
+    profile.catalog = fixture.tree();
+    profile.status = ExplorerConnectionStatus::Online;
     explorer
 }
 

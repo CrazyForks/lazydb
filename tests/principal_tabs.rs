@@ -66,6 +66,14 @@ fn render(app: &App, width: u16, height: u16) -> String {
 }
 
 #[test]
+fn unopened_connection_does_not_render_users_and_roles() {
+    let (app, _) = app_with_profile();
+    let screen = render(&app, 120, 40);
+    assert!(screen.contains("orbital-lab"));
+    assert!(!screen.contains("Users & Roles"));
+}
+
+#[test]
 fn opening_the_same_principal_reuses_one_ddl_only_tab() {
     let (mut app, profile_id) = app_with_profile();
     let tab_count_before = app.tabs.len();
