@@ -13505,15 +13505,14 @@ impl App {
                 {
                     let table = crate::value_preview::table::from_page(&page.value);
                     if let Some(row) = table.rows.get(tab.preview_grid.selected_row).cloned() {
+                        let Some(connection) = self.redis_connection_for_target(&tab.target) else {
+                            self.notify_warning("Redis", "Redis connection is not active");
+                            return Vec::new();
+                        };
                         self.overlay = Some(Overlay::RedisTableEditor(Box::new(
                             crate::model::redis_table_editor::RedisTableEditorState::edit(
                                 tab.id,
-                                self.connection.active_identity().unwrap_or(
-                                    crate::identity::ConnectionIdentity {
-                                        profile_id: tab.target.profile_id,
-                                        generation: 0,
-                                    },
-                                ),
+                                connection,
                                 tab.opened_key.clone().unwrap_or(
                                     crate::db::redis::types::RedisKeyId {
                                         target: tab.target.clone(),
@@ -13540,7 +13539,7 @@ impl App {
                 if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(self.active_tab)
                     && tab.format.view() == crate::value_preview::ValueView::Table
                 {
-                    let Some(connection) = self.connection.active_identity() else {
+                    let Some(connection) = self.redis_connection_for_target(&tab.target) else {
                         self.notify_warning("Redis", "Redis connection is not active");
                         return Vec::new();
                     };
@@ -13629,7 +13628,7 @@ impl App {
                 let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get(index) else {
                     return Vec::new();
                 };
-                let Some(connection) = self.connection.active_identity() else {
+                let Some(connection) = self.redis_connection_for_target(&tab.target) else {
                     self.notify_warning("Redis", "Redis connection is not active");
                     return Vec::new();
                 };
@@ -13786,7 +13785,7 @@ impl App {
                         return Vec::new();
                     }
                 };
-                let Some(connection) = self.connection.active_identity() else {
+                let Some(connection) = self.redis_connection_for_target(&confirm.key.target) else {
                     self.notify_error("Redis", "Redis connection is not active");
                     return Vec::new();
                 };
@@ -17525,7 +17524,7 @@ impl App {
                         };
                         let (tab_id, connection, value_type, preview_format) = match self.tabs.get(index) {
                             Some(WorkspaceTab::RedisBrowser(tab)) => {
-                                let Some(connection) = self.connection.active_identity() else {
+                                let Some(connection) = self.redis_connection_for_target(&tab.target) else {
                                     self.notify_warning("Redis", "Redis is not connected");
                                     continue;
                                 };
@@ -20507,6 +20506,27 @@ impl App {
             return Vec::new();
         };
         let target = tab.target.clone();
+        let execution_target = ExecutionTarget {
+            profile_id: target.profile_id,
+            database: target.database.to_string(),
+            schema: None,
+        };
+        let connection = self.redis_connection_for_target(&target);
+        if connection.is_none() {
+            let commands = self.request_connection_target(execution_target);
+            if let Some(generation) = commands.iter().find_map(|command| match command {
+                Command::Connect { generation, .. } => Some(*generation),
+                _ => None,
+            }) {
+                self.pending_redis_browser_target = Some((target, generation));
+            }
+            return commands;
+        }
+        let active_matches_target = self.connection.status == ConnectionStatus::Connected
+            && self.connection.target.as_ref() == Some(&execution_target);
+        if !active_matches_target {
+            return self.request_connection_target(execution_target);
+        }
         let needs_scan = match tab.keyspace.status {
             crate::model::keyspace::KeyspaceStatus::NotLoaded => true,
             crate::model::keyspace::KeyspaceStatus::Idle => {
@@ -20523,39 +20543,7 @@ impl App {
         if !needs_scan {
             return Vec::new();
         }
-        let connection = self.connection.active_identity();
-        let Some(connection) = connection else {
-            let commands = self.request_connection_target(ExecutionTarget {
-                profile_id: target.profile_id,
-                database: target.database.to_string(),
-                schema: None,
-            });
-            if let Some(generation) = commands.iter().find_map(|command| match command {
-                Command::Connect { generation, .. } => Some(*generation),
-                _ => None,
-            }) {
-                self.pending_redis_browser_target = Some((target, generation));
-            }
-            return commands;
-        };
-        if connection.profile_id != target.profile_id
-            || self.connection.target.as_ref().is_none_or(|current| {
-                current.database != target.database.to_string() || current.schema.is_some()
-            })
-        {
-            let commands = self.request_connection_target(ExecutionTarget {
-                profile_id: target.profile_id,
-                database: target.database.to_string(),
-                schema: None,
-            });
-            if let Some(generation) = commands.iter().find_map(|command| match command {
-                Command::Connect { generation, .. } => Some(*generation),
-                _ => None,
-            }) {
-                self.pending_redis_browser_target = Some((target, generation));
-            }
-            return commands;
-        }
+        let connection = connection.expect("target connection checked above");
         let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) else {
             return Vec::new();
         };
@@ -20688,7 +20676,7 @@ impl App {
             else {
                 continue;
             };
-            let Some(connection) = self.connection.active_identity() else {
+            let Some(connection) = self.redis_connection_for_target(&request.key.target) else {
                 continue;
             };
             if let Some(scheduler) = self.redis_preview_schedulers.get_mut(&tab_id) {
@@ -20766,11 +20754,11 @@ impl App {
                 tab_id,
                 target: target.clone(),
             });
-            if let (
-                Some(connection),
-                crate::model::workspace::RedisDeleteTarget::Prefix { target, prefix },
-            ) = (self.connection.active_identity(), target)
-            {
+            if let crate::model::workspace::RedisDeleteTarget::Prefix { target, prefix } = target {
+                let Some(connection) = self.redis_connection_for_target(&target) else {
+                    self.notify_error("Redis delete", "Redis connection is not active");
+                    return Vec::new();
+                };
                 return vec![Command::DeleteRedisPrefix {
                     tab_id,
                     connection,
@@ -20801,7 +20789,11 @@ impl App {
         else {
             return Vec::new();
         };
-        let Some(connection) = self.connection.active_identity() else {
+        let redis_target = match &target {
+            crate::model::workspace::RedisDeleteTarget::Key(key) => &key.target,
+            crate::model::workspace::RedisDeleteTarget::Prefix { target, .. } => target,
+        };
+        let Some(connection) = self.redis_connection_for_target(redis_target) else {
             self.notify_error("Redis delete", "Redis connection is not active");
             return Vec::new();
         };
@@ -20981,6 +20973,10 @@ impl App {
 
     fn retry_redis_scan(&mut self) -> Vec<Command> {
         let index = self.active_tab;
+        let connection = self.tabs.get(index).and_then(|tab| match tab {
+            WorkspaceTab::RedisBrowser(tab) => self.redis_connection_for_target(&tab.target),
+            _ => None,
+        });
         if let Some(WorkspaceTab::RedisBrowser(tab)) = self.tabs.get_mut(index) {
             match tab.keyspace.status {
                 crate::model::keyspace::KeyspaceStatus::Partial => {
@@ -20990,7 +20986,7 @@ impl App {
                         }
                         _ => return Vec::new(),
                     };
-                    let Some(connection) = self.connection.active_identity() else {
+                    let Some(connection) = connection else {
                         return Vec::new();
                     };
                     let Some(identity) = tab.keyspace.start_scan(connection) else {
@@ -21071,6 +21067,28 @@ impl App {
         }
     }
 
+    fn redis_connection_for_target(
+        &self,
+        target: &crate::db::redis::types::RedisTarget,
+    ) -> Option<crate::identity::ConnectionIdentity> {
+        let execution_target = ExecutionTarget {
+            profile_id: target.profile_id,
+            database: target.database.to_string(),
+            schema: None,
+        };
+        self.sessions
+            .get(&execution_target)
+            .filter(|session| session.status == crate::model::session::SessionStatus::Connected)
+            .map(|session| session.identity)
+            .or_else(|| {
+                let identity = self.connection.active_identity()?;
+                (identity.profile_id == target.profile_id
+                    && self.connection.status == ConnectionStatus::Connected
+                    && self.connection.target.as_ref() == Some(&execution_target))
+                .then_some(identity)
+            })
+    }
+
     fn redis_profile_is_read_only(&self, profile_id: Uuid) -> bool {
         self.profiles
             .iter()
@@ -21100,18 +21118,10 @@ impl App {
         let Some((tab_id, target)) = self.redis_target_from_active_tab() else {
             return Vec::new();
         };
-        let Some(connection) = self.connection.active_identity() else {
+        let Some(connection) = self.redis_connection_for_target(&target) else {
             self.notify_warning("Redis", "Redis is not connected");
             return Vec::new();
         };
-        if connection.profile_id != target.profile_id
-            || self.connection.target.as_ref().is_none_or(|active| {
-                active.database != target.database.to_string() || active.schema.is_some()
-            })
-        {
-            self.notify_warning("Redis", "The selected Redis database is not connected");
-            return Vec::new();
-        }
         if self.redis_profile_is_read_only(target.profile_id) {
             self.notify_warning("Redis", "Redis editing requires a writable profile");
             return Vec::new();
@@ -21144,18 +21154,10 @@ impl App {
         let Some((tab_id, target)) = self.redis_target_from_active_tab() else {
             return Vec::new();
         };
-        let Some(connection) = self.connection.active_identity() else {
+        let Some(connection) = self.redis_connection_for_target(&target) else {
             self.notify_warning("Redis", "Redis is not connected");
             return Vec::new();
         };
-        if connection.profile_id != target.profile_id
-            || self.connection.target.as_ref().is_none_or(|active| {
-                active.database != target.database.to_string() || active.schema.is_some()
-            })
-        {
-            self.notify_warning("Redis", "The selected Redis database is not connected");
-            return Vec::new();
-        }
         if self.redis_profile_is_read_only(target.profile_id) {
             self.notify_warning("Redis", "Redis editing requires a writable profile");
             return Vec::new();
@@ -24995,6 +24997,65 @@ mod tests {
         profile::{CatalogScope, DatabaseKind},
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn redis_connection_for_target_prefers_cached_target_session() {
+        let redis = import_connection_url("redis://localhost:6379/0", Some("redis"))
+            .unwrap()
+            .profile;
+        let sql = import_connection_url(":memory:", Some("sql"))
+            .unwrap()
+            .profile;
+        let mut app = App::new(vec![redis.clone(), sql.clone()]);
+        let redis_target = ExecutionTarget {
+            profile_id: redis.id,
+            database: "0".into(),
+            schema: None,
+        };
+        let redis_identity = app.sessions.start_attempt(redis_target.clone()).unwrap();
+        app.sessions.accept_success(
+            redis_identity,
+            crate::db::ServerInfo {
+                kind: DatabaseKind::Redis,
+                version: "test".into(),
+                database: "0".into(),
+                current_user: None,
+            },
+            Default::default(),
+        );
+        let sql_target = ExecutionTarget {
+            profile_id: sql.id,
+            database: ":memory:".into(),
+            schema: None,
+        };
+        let sql_identity = app.sessions.start_attempt(sql_target).unwrap();
+        app.sessions.accept_success(
+            sql_identity,
+            crate::db::ServerInfo {
+                kind: DatabaseKind::Sqlite,
+                version: "test".into(),
+                database: ":memory:".into(),
+                current_user: None,
+            },
+            Default::default(),
+        );
+        app.connection.profile_id = Some(sql.id);
+        app.connection.generation = sql_identity.generation;
+        app.connection.target = Some(ExecutionTarget {
+            profile_id: sql.id,
+            database: ":memory:".into(),
+            schema: None,
+        });
+        app.connection.status = ConnectionStatus::Connected;
+
+        assert_eq!(
+            app.redis_connection_for_target(&crate::db::redis::types::RedisTarget {
+                profile_id: redis.id,
+                database: 0,
+            }),
+            Some(redis_identity)
+        );
+    }
 
     #[test]
     fn relation_failure_message_hides_internal_catalog_snapshot_wording() {

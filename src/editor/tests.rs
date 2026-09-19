@@ -66,6 +66,52 @@ fn redis_value_session_supports_vim_editing_search_yank_paste_undo_redo_and_save
 }
 
 #[test]
+fn redis_value_replace_digit_is_immediate() {
+    let id = Uuid::new_v4();
+    let mut workspace = EditorWorkspace::new();
+    workspace.open_value(id, "abc\ndef");
+    workspace.press(id, EditorKey::Escape).unwrap();
+    let revision = workspace.revision(id).unwrap();
+    workspace.drain_effects();
+
+    workspace.press(id, EditorKey::Character('r')).unwrap();
+    workspace.press(id, EditorKey::Character('2')).unwrap();
+
+    assert_eq!(workspace.text(id).unwrap(), "2bc\ndef");
+    assert!(workspace.revision(id).unwrap() > revision);
+    assert!(workspace.drain_effects().iter().any(|effect| {
+        matches!(effect, EditorEffect::Changed { console_id, .. } if *console_id == id)
+    }));
+
+    let revision = workspace.revision(id).unwrap();
+    workspace.press(id, EditorKey::Character('j')).unwrap();
+    assert_eq!(workspace.text(id).unwrap(), "2bc\ndef");
+    assert_eq!(workspace.revision(id).unwrap(), revision);
+}
+
+#[test]
+fn normal_mode_character_arguments_are_not_counts() {
+    for (command, argument, expected) in [('r', '2', "2bc"), ('f', 'b', "abc"), ('t', 'b', "abc")] {
+        let id = Uuid::new_v4();
+        let mut workspace = EditorWorkspace::new();
+        workspace.open_value(id, "abc\ndef");
+        workspace.press(id, EditorKey::Escape).unwrap();
+        workspace.press(id, EditorKey::Character(command)).unwrap();
+        workspace.press(id, EditorKey::Character(argument)).unwrap();
+        assert!(workspace.text(id).unwrap().starts_with(expected));
+    }
+}
+
+#[test]
+fn cancelled_character_argument_does_not_capture_the_next_key() {
+    let (mut workspace, id) = normal_fixture("abc");
+    workspace.press(id, EditorKey::Character('r')).unwrap();
+    workspace.press(id, EditorKey::Escape).unwrap();
+    workspace.press(id, EditorKey::Character('2')).unwrap();
+    assert_eq!(workspace.text(id).unwrap(), "abc");
+}
+
+#[test]
 fn redis_value_wrapped_preview_refreshes_after_undo() {
     let id = Uuid::new_v4();
     let mut workspace = EditorWorkspace::new();
