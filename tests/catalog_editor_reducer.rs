@@ -1033,6 +1033,11 @@ fn help_edit_shortcut_uses_direct_selection_resolution() {
     let profile_id = profile.id;
     let mut app = App::new(vec![profile]);
     app.focus = lazydb::model::workspace::Focus::Explorer;
+    app.connection.profile_id = Some(profile_id);
+    app.connection.generation = 1;
+    app.connection.status = lazydb::model::workspace::ConnectionStatus::Connected;
+    app.connection.target =
+        Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&app.profiles[0]));
     app.connection.mutation_capabilities =
         lazydb::db::postgres::PostgresAdapter::catalog_mutation_capabilities();
 

@@ -1400,6 +1400,43 @@ fn postgres_table_edit_plans_table_and_column_comment_changes_without_trimming()
 }
 
 #[test]
+fn postgres_table_edit_appends_new_columns_from_any_draft_position() {
+    let profile = Uuid::new_v4();
+    let baseline = table_definition(
+        "events",
+        vec![
+            column_definition("id", 1, None),
+            column_definition("name", 2, None),
+            column_definition("score", 3, None),
+        ],
+    );
+    let draft = table_draft(
+        "events",
+        vec![
+            column("id", Some("id")),
+            column("age", None),
+            column("name", Some("name")),
+            column("score", Some("score")),
+        ],
+    );
+    let plan = lazydb::db::postgres::PostgresAdapter::plan_catalog_mutation(
+        table_edit_request(profile),
+        draft,
+        Some(CatalogObjectDefinition::Table(baseline)),
+    )
+    .unwrap();
+    assert!(
+        plan.sql()
+            .contains("ALTER TABLE \"public\".\"events\" ADD COLUMN \"age\"")
+    );
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|warning| warning.contains("appends newly added columns"))
+    );
+}
+
+#[test]
 fn postgres_table_create_plans_comments_for_added_columns() {
     let profile = Uuid::new_v4();
     let mut draft = table_draft("events", vec![column("id", None)]);

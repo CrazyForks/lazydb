@@ -3166,9 +3166,24 @@ fn catalog_editor_capabilities(app: &App) -> (bool, bool, bool) {
             },
             _ => return (profile_edit_available, create, false),
         };
-        let capabilities = &app.connection.mutation_capabilities;
+        let session = match selected {
+            ExplorerNodeId::Catalog(id) => {
+                let database = id
+                    .native_path
+                    .first()
+                    .filter(|value| value.as_str() != "__role__")
+                    .map(String::as_str);
+                app.catalog_edit_session(profile_id, database)
+            }
+            _ => None,
+        };
         matches!(selected, ExplorerNodeId::Catalog(_))
-            && capabilities.can_edit(&anchor, entry).unwrap_or(false)
+            && session.is_some_and(|session| {
+                session
+                    .mutation_capabilities
+                    .can_edit(&anchor, entry)
+                    .unwrap_or(false)
+            })
     };
     (profile_edit_available, create, edit)
 }
