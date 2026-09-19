@@ -61,7 +61,8 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
 
     let (rows, visited_catalog_entries) = explorer.visible_with_visit_count();
     assert_eq!(visited_catalog_entries, 201);
-    assert_eq!(rows.len(), 203);
+    // One extra row is the connection-level `Users & Roles` group.
+    assert_eq!(rows.len(), 204);
 
     for schema in &schemas {
         explorer
@@ -75,7 +76,7 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
 
     let (rows, visited_catalog_entries) = explorer.visible_with_visit_count();
     assert_eq!(visited_catalog_entries, 10_101);
-    assert_eq!(rows.len(), 10_202);
+    assert_eq!(rows.len(), 10_203);
 }
 
 /// Build one fully expanded schema/Tables group holding `table_count` objects.
@@ -125,9 +126,16 @@ fn expanded_tables_group_keeps_navigation_bounded_for_nine_hundred_fifty_six_tab
     let (mut explorer, table_ids) = expanded_tables_explorer(956);
     let (rows, visits) = explorer.visible_with_visit_count();
     assert_eq!(visits, 958);
-    assert_eq!(rows.len(), 960);
+    // The connection-level `Users & Roles` group is appended last.
+    assert_eq!(rows.len(), 961);
     assert_eq!(
         rows.last().unwrap().id,
+        ExplorerNodeId::PrincipalGroup {
+            profile_id: Uuid::from_u128(1)
+        }
+    );
+    assert_eq!(
+        rows[rows.len() - 2].id,
         ExplorerNodeId::Catalog(table_ids[955].clone())
     );
 
@@ -137,7 +145,9 @@ fn expanded_tables_group_keeps_navigation_bounded_for_nine_hundred_fifty_six_tab
     }
     assert_eq!(
         explorer.selected,
-        Some(ExplorerNodeId::Catalog(table_ids[955].clone()))
+        Some(ExplorerNodeId::PrincipalGroup {
+            profile_id: Uuid::from_u128(1)
+        })
     );
 }
 

@@ -434,6 +434,7 @@ pub struct VisibleCatalogNode {
     pub metadata: Option<String>,
     pub comment: Option<String>,
     pub kind: Option<CatalogKind>,
+    pub principal: Option<crate::db::principal::PrincipalDisplayKind>,
     pub profile_kind: Option<DatabaseKind>,
     pub provenance: Option<ProfileProvenance>,
     pub placement: Option<ProfilePlacement>,
@@ -1318,6 +1319,81 @@ impl ExplorerState {
                         true,
                         None,
                     ),
+                    ExplorerNodeId::PrincipalGroup { .. } => (
+                        "Users & Roles".to_owned(),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        true,
+                        None,
+                    ),
+                    ExplorerNodeId::Principal { entry } => {
+                        let principal = profile.and_then(|profile| {
+                            profile
+                                .principals
+                                .iter()
+                                .find(|principal| principal.id == *entry)
+                        });
+                        (
+                            principal
+                                .map(|principal| principal.name.clone())
+                                .unwrap_or_else(|| "Missing principal".to_owned()),
+                            principal.map(|principal| principal.native_kind.clone()),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            false,
+                            None,
+                        )
+                    }
+                    ExplorerNodeId::PrincipalNotice { profile_id } => {
+                        let _ = profile_id;
+                        let label = profile.map_or_else(
+                            || "No users or roles".to_owned(),
+                            |profile| {
+                                if let Some(reason) = profile.principals_unsupported.as_deref() {
+                                    reason.to_owned()
+                                } else if let Some(error) = profile.principals_error.as_deref() {
+                                    error.to_owned()
+                                } else {
+                                    "No users or roles".to_owned()
+                                }
+                            },
+                        );
+                        (
+                            label, None, None, None, None, None, None, None, None, false, None,
+                        )
+                    }
+                };
+                let principal = match &row.id {
+                    ExplorerNodeId::PrincipalGroup { .. } => {
+                        Some(crate::db::principal::PrincipalDisplayKind::Group)
+                    }
+                    ExplorerNodeId::Principal { entry } => profile
+                        .and_then(|profile| {
+                            profile
+                                .principals
+                                .iter()
+                                .find(|principal| principal.id == *entry)
+                        })
+                        .map(|principal| match principal.kind {
+                            crate::db::principal::PrincipalKind::User => {
+                                crate::db::principal::PrincipalDisplayKind::User
+                            }
+                            crate::db::principal::PrincipalKind::Role => {
+                                crate::db::principal::PrincipalDisplayKind::Role
+                            }
+                        }),
+                    _ => None,
                 };
                 VisibleCatalogNode {
                     id: row.id,
@@ -1326,6 +1402,7 @@ impl ExplorerState {
                     metadata,
                     comment,
                     kind,
+                    principal,
                     profile_kind,
                     provenance,
                     connection_status,
@@ -1440,6 +1517,7 @@ impl ExplorerState {
                 | ExplorerNodeId::Profile(_)
                 | ExplorerNodeId::Catalog(_)
                 | ExplorerNodeId::Group { .. }
+                | ExplorerNodeId::PrincipalGroup { .. }
         ) {
             return false;
         }
@@ -1889,7 +1967,8 @@ mod explorer_hot_path_tests {
         let viewport = explorer.viewport(30);
 
         let converted = take_display_row_conversions();
-        assert_eq!(viewport.total_rows, 960);
+        // The connection-level `Users & Roles` group is appended last.
+        assert_eq!(viewport.total_rows, 961);
         assert!(
             converted <= 60,
             "expected only pinned and body rows, formatted {converted}"

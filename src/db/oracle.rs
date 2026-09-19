@@ -38,6 +38,9 @@ use super::query::{QueryBudget, QueryOutcome};
 use super::transaction::{TransactionBackend, TransactionError};
 use super::{DatabaseError, ErrorCategory, ServerInfo};
 use crate::db::RelationPreview;
+use crate::db::principal::{PrincipalDdl, PrincipalEntry, PrincipalPage};
+#[cfg(feature = "driver-oracle")]
+use crate::db::principal::{PrincipalId, PrincipalKind, PrincipalScope};
 use crate::profile::{ConnectionProfile, DatabaseKind};
 #[cfg(feature = "driver-oracle")]
 use crate::security::sanitize_terminal_text;
@@ -748,6 +751,133 @@ impl OracleAdapter {
             })
             .await
             .map_err(|error| oracle_task_error(error.to_string()))?
+        }
+    }
+
+    /// List users and roles visible in the connection's service/container.
+    ///
+    /// `all_users` is readable by any user; `dba_roles` needs catalog
+    /// privileges, so it falls back to the roles granted to the current user
+    /// and marks the page as incomplete instead of pretending it is exhaustive.
+    /// Credentials are never read: `DBMS_METADATA.GET_DDL('USER', ...)` embeds
+    /// `IDENTIFIED BY VALUES`, so user definitions are synthesised instead.
+    pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        #[cfg(not(feature = "driver-oracle"))]
+        {
+            Err(oracle_disabled())
+        }
+        #[cfg(feature = "driver-oracle")]
+        {
+            let connection = Arc::clone(&self.connection);
+            let database = self.database.clone();
+            let connection_id = self.connection_id;
+            tokio::task::spawn_blocking(move || {
+                let connection = connection
+                    .lock()
+                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                let mut entries = Vec::new();
+                let user_rows = connection
+                    .query("SELECT username FROM all_users ORDER BY username", &[])
+                    .map_err(|error| oracle_error_with_query(error, "all_users"))?;
+                for row in user_rows {
+                    let row = row.map_err(oracle_error)?;
+                    let name: String = row.get(0).map_err(oracle_error)?;
+                    entries.push(oracle_principal_entry(
+                        connection_id,
+                        &database,
+                        &name,
+                        PrincipalKind::User,
+                    ));
+                }
+                let (role_names, complete) = match connection
+                    .query("SELECT role FROM dba_roles ORDER BY role", &[])
+                {
+                    Ok(rows) => {
+                        let mut names = Vec::new();
+                        for row in rows {
+                            let row = row.map_err(oracle_error)?;
+                            names.push(row.get::<usize, String>(0).map_err(oracle_error)?);
+                        }
+                        (names, true)
+                    }
+                    Err(_) => {
+                        let rows = connection
+                            .query(
+                                "SELECT DISTINCT granted_role FROM user_role_privs ORDER BY granted_role",
+                                &[],
+                            )
+                            .map_err(|error| {
+                                oracle_error_with_query(error, "user_role_privs")
+                            })?;
+                        let mut names = Vec::new();
+                        for row in rows {
+                            let row = row.map_err(oracle_error)?;
+                            names.push(row.get::<usize, String>(0).map_err(oracle_error)?);
+                        }
+                        (names, false)
+                    }
+                };
+                for name in role_names {
+                    entries.push(oracle_principal_entry(
+                        connection_id,
+                        &database,
+                        &name,
+                        PrincipalKind::Role,
+                    ));
+                }
+                entries.sort_by(|left, right| {
+                    let left_key = (left.kind == PrincipalKind::Role, left.name.as_str());
+                    let right_key = (right.kind == PrincipalKind::Role, right.name.as_str());
+                    left_key
+                        .cmp(&right_key)
+                        .then_with(|| left.id.native_id.cmp(&right.id.native_id))
+                });
+                Ok(PrincipalPage {
+                    connection: crate::identity::ConnectionIdentity {
+                        profile_id: connection_id,
+                        generation: 0,
+                    },
+                    entries,
+                    complete,
+                })
+            })
+            .await
+            .map_err(|error| oracle_task_error(error.to_string()))?
+        }
+    }
+
+    pub async fn principal_ddl(
+        &self,
+        principal: &PrincipalEntry,
+    ) -> Result<PrincipalDdl, DatabaseError> {
+        #[cfg(not(feature = "driver-oracle"))]
+        {
+            let _ = principal;
+            Err(oracle_disabled())
+        }
+        #[cfg(feature = "driver-oracle")]
+        {
+            if principal.id.profile_id != self.connection_id {
+                return Err(DatabaseError::configuration(
+                    "principal does not belong to this connection",
+                ));
+            }
+            let connection = Arc::clone(&self.connection);
+            let entry = principal.clone();
+            let sql = tokio::task::spawn_blocking(move || {
+                let connection = connection
+                    .lock()
+                    .map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                let name = entry.name.clone();
+                let roles = oracle_principal_roles(&connection, &name)?;
+                Ok(oracle_principal_ddl(&entry, &roles))
+            })
+            .await
+            .map_err(|error| oracle_task_error(error.to_string()))??;
+            Ok(PrincipalDdl {
+                principal: principal.clone(),
+                sql,
+            })
         }
     }
 
@@ -1788,6 +1918,127 @@ fn oracle_catalog_entries(
     Ok(entries)
 }
 
+/// Built-in Oracle principals whose definition is system-managed.
+#[cfg(feature = "driver-oracle")]
+fn oracle_is_builtin_principal(name: &str) -> bool {
+    matches!(
+        name,
+        "PUBLIC"
+            | "SYS"
+            | "SYSTEM"
+            | "OUTLN"
+            | "DBSNMP"
+            | "XDB"
+            | "WMSYS"
+            | "CTXSYS"
+            | "MDSYS"
+            | "ORDSYS"
+            | "ORDDATA"
+            | "LBACSYS"
+            | "DVSYS"
+            | "AUDSYS"
+            | "OJVMSYS"
+            | "APPQOSSYS"
+            | "DBSFWUSER"
+            | "GSMADMIN_INTERNAL"
+            | "REMOTE_SCHEDULER_AGENT"
+            | "SYSBACKUP"
+            | "SYSDG"
+            | "SYSKM"
+            | "SYSRAC"
+            | "DBA"
+            | "CONNECT"
+            | "RESOURCE"
+            | "SELECT_CATALOG_ROLE"
+            | "EXECUTE_CATALOG_ROLE"
+            | "DELETE_CATALOG_ROLE"
+            | "EXP_FULL_DATABASE"
+            | "IMP_FULL_DATABASE"
+            | "SCHEDULER_ADMIN"
+            | "AQ_ADMINISTRATOR_ROLE"
+    ) || name.starts_with("OEM_")
+        || name.starts_with("APEX_")
+        || name.starts_with("DATAPUMP_")
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_principal_entry(
+    connection_id: uuid::Uuid,
+    database: &str,
+    name: &str,
+    kind: PrincipalKind,
+) -> PrincipalEntry {
+    // A user and a role may share a name in Oracle, so the native identity is
+    // namespaced by principal kind to keep the two distinct.
+    let prefix = match kind {
+        PrincipalKind::User => "USER",
+        PrincipalKind::Role => "ROLE",
+    };
+    PrincipalEntry {
+        id: PrincipalId {
+            profile_id: connection_id,
+            scope: PrincipalScope::Database(database.to_owned()),
+            native_id: format!("{prefix}:{name}"),
+            host: None,
+        },
+        kind,
+        name: name.to_owned(),
+        native_kind: if kind == PrincipalKind::User {
+            "user"
+        } else {
+            "role"
+        }
+        .to_owned(),
+        system: oracle_is_builtin_principal(name),
+    }
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_principal_roles(
+    connection: &oracle::Connection,
+    name: &str,
+) -> Result<Vec<String>, DatabaseError> {
+    let rows = match connection.query(
+        "SELECT granted_role FROM dba_role_privs WHERE grantee = :1 ORDER BY granted_role",
+        &[&name],
+    ) {
+        Ok(rows) => rows,
+        Err(_) => connection
+            .query(
+                "SELECT granted_role FROM user_role_privs WHERE grantee = :1 ORDER BY granted_role",
+                &[&name],
+            )
+            .map_err(|error| oracle_error_with_query(error, "user_role_privs"))?,
+    };
+    let mut roles = Vec::new();
+    for row in rows {
+        let row = row.map_err(oracle_error)?;
+        roles.push(row.get::<usize, String>(0).map_err(oracle_error)?);
+    }
+    Ok(roles)
+}
+
+#[cfg(feature = "driver-oracle")]
+fn oracle_principal_ddl(entry: &PrincipalEntry, roles: &[String]) -> String {
+    let quoted = quote_identifier(&entry.name);
+    let mut lines = Vec::new();
+    match entry.kind {
+        PrincipalKind::Role => lines.push(format!("CREATE ROLE {quoted};")),
+        PrincipalKind::User => lines.push(format!("CREATE USER {quoted};")),
+    }
+    if entry.system {
+        lines.push("-- Built-in principal; its definition is system-managed.".to_owned());
+    }
+    for role in roles {
+        lines.push(format!("GRANT {} TO {quoted};", quote_identifier(role)));
+    }
+    lines.push(
+        "-- Passwords and profile/tablespace attributes are not recoverable from the catalog."
+            .to_owned(),
+    );
+    lines.join("\n")
+}
+
 #[cfg(not(feature = "driver-oracle"))]
 fn oracle_disabled() -> DatabaseError {
     DatabaseError {
@@ -1912,6 +2163,43 @@ fn oracle_task_error(message: String) -> DatabaseError {
 #[cfg(all(test, feature = "driver-oracle"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oracle_user_ddl_never_includes_password_material() {
+        let entry = oracle_principal_entry(uuid::Uuid::nil(), "APP", "SCOTT", PrincipalKind::User);
+        let sql = oracle_principal_ddl(&entry, &["CONNECT".to_owned(), "RESOURCE".to_owned()]);
+        assert!(sql.contains("CREATE USER \"SCOTT\";"));
+        assert!(sql.contains("GRANT \"CONNECT\" TO \"SCOTT\";"));
+        assert!(sql.contains("GRANT \"RESOURCE\" TO \"SCOTT\";"));
+        assert!(sql.contains("not recoverable from the catalog"));
+        // DBMS_METADATA would embed IDENTIFIED BY VALUES; synthesis must not.
+        assert!(!sql.to_ascii_uppercase().contains("IDENTIFIED BY"), "{sql}");
+    }
+
+    #[test]
+    fn oracle_users_and_roles_with_the_same_name_keep_distinct_identities() {
+        let user = oracle_principal_entry(uuid::Uuid::nil(), "APP", "AUDITOR", PrincipalKind::User);
+        let role = oracle_principal_entry(uuid::Uuid::nil(), "APP", "AUDITOR", PrincipalKind::Role);
+        assert_ne!(user.id, role.id);
+        assert_eq!(user.id.native_id, "USER:AUDITOR");
+        assert_eq!(role.id.native_id, "ROLE:AUDITOR");
+        assert_eq!(user.id.scope, PrincipalScope::Database("APP".to_owned()));
+        assert!(!role.system);
+        let role_ddl = oracle_principal_ddl(&role, &[]);
+        assert!(role_ddl.contains("CREATE ROLE \"AUDITOR\";"));
+    }
+
+    #[test]
+    fn oracle_builtin_principals_are_flagged() {
+        assert!(oracle_is_builtin_principal("SYS"));
+        assert!(oracle_is_builtin_principal("PUBLIC"));
+        assert!(oracle_is_builtin_principal("OEM_MONITOR"));
+        assert!(oracle_is_builtin_principal("APEX_PUBLIC_USER"));
+        assert!(!oracle_is_builtin_principal("SCOTT"));
+        let entry = oracle_principal_entry(uuid::Uuid::nil(), "APP", "SYSTEM", PrincipalKind::User);
+        assert!(entry.system);
+        assert!(oracle_principal_ddl(&entry, &[]).contains("system-managed"));
+    }
 
     #[test]
     fn oracle_object_groups_use_dictionary_specific_metadata() {

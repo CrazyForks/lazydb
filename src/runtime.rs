@@ -270,6 +270,7 @@ pub struct Runtime {
     catalog_mutation_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     redis_mutation_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     relation_tasks: HashMap<crate::model::relation::RelationRequest, JoinHandle<()>>,
+    principal_tasks: HashMap<crate::model::principal::PrincipalDdlRequest, JoinHandle<()>>,
     dashboard_metric_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_metadata_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_process_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
@@ -393,6 +394,7 @@ impl Runtime {
             catalog_mutation_tasks: HashMap::new(),
             redis_mutation_tasks: HashMap::new(),
             relation_tasks: HashMap::new(),
+            principal_tasks: HashMap::new(),
             dashboard_metric_tasks: HashMap::new(),
             dashboard_metadata_tasks: HashMap::new(),
             dashboard_process_tasks: HashMap::new(),
@@ -454,6 +456,7 @@ impl Runtime {
         self.redis_mutation_tasks
             .retain(|_, task| !task.is_finished());
         self.relation_tasks.retain(|_, task| !task.is_finished());
+        self.principal_tasks.retain(|_, task| !task.is_finished());
         self.dashboard_metric_tasks
             .retain(|_, task| !task.is_finished());
         self.dashboard_metadata_tasks
@@ -621,6 +624,13 @@ impl Runtime {
             }
             Command::CancelRelationRequest(request) => {
                 if let Some(task) = self.relation_tasks.remove(&request) {
+                    task.abort();
+                }
+            }
+            Command::LoadPrincipals(request) => self.load_principals(request),
+            Command::LoadPrincipalDdl(request) => self.load_principal_ddl(request),
+            Command::CancelPrincipalDdl(request) => {
+                if let Some(task) = self.principal_tasks.remove(&request) {
                     task.abort();
                 }
             }
@@ -3035,6 +3045,75 @@ impl Runtime {
         self.relation_tasks.insert(request, task);
     }
 
+    fn load_principals(&mut self, request: crate::model::principal::PrincipalListRequest) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        self.background_tasks.push(tokio::spawn(async move {
+            let identity = ConnectionIdentity {
+                profile_id: request.profile_id,
+                generation: request.generation,
+            };
+            let Some(database) = active_database(connection, identity).await else {
+                let _ = sender.send(Action::PrincipalPageFailed {
+                    profile_id: request.profile_id,
+                    request_id: request.request_id,
+                    message: "principal request connection is no longer active".to_owned(),
+                });
+                return;
+            };
+            match database.list_principals().await {
+                Ok(mut page) => {
+                    page.connection = identity;
+                    let _ = sender.send(Action::PrincipalPageLoaded {
+                        profile_id: request.profile_id,
+                        request_id: request.request_id,
+                        page,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalPageFailed {
+                        profile_id: request.profile_id,
+                        request_id: request.request_id,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn load_principal_ddl(&mut self, request: crate::model::principal::PrincipalDdlRequest) {
+        if self.principal_tasks.contains_key(&request) {
+            return;
+        }
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let task_request = request.clone();
+        let task = tokio::spawn(async move {
+            let Some(database) = active_database(connection, task_request.connection).await else {
+                let _ = sender.send(Action::PrincipalDdlFailed {
+                    request: task_request,
+                    message: "principal DDL connection is no longer active".to_owned(),
+                });
+                return;
+            };
+            match database.principal_ddl(&task_request.entry).await {
+                Ok(ddl) => {
+                    let _ = sender.send(Action::PrincipalDdlLoaded {
+                        request: task_request,
+                        ddl,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalDdlFailed {
+                        request: task_request,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        });
+        self.principal_tasks.insert(request, task);
+    }
+
     fn run_query(
         &mut self,
         expected: ConnectionIdentity,
@@ -4674,6 +4753,10 @@ impl Runtime {
             task.abort();
             let _ = task.await;
         }
+        for (_, task) in self.principal_tasks.drain() {
+            task.abort();
+            let _ = task.await;
+        }
         for (_, task) in self.query_tasks.drain() {
             task.abort();
             let _ = task.await;
@@ -6268,6 +6351,23 @@ mod workspace_save_tests {
 }
 
 fn sync_ddl_editor_viewport(app: &mut App, runtime: &mut Runtime, area: ratatui::layout::Rect) {
+    if let Some((session_id, viewport)) = ui::principal::principal_ddl_viewport(area, app) {
+        if app
+            .active_principal_editor_viewport()
+            .ok()
+            .is_none_or(|current| current != viewport)
+        {
+            apply_action(
+                app,
+                runtime,
+                Action::DdlEditorViewportChanged {
+                    session_id,
+                    viewport,
+                },
+            );
+        }
+        return;
+    }
     if let Some((session_id, viewport)) = ui::relation::ddl_editor_viewport(area, app)
         && app
             .active_ddl_editor_viewport()

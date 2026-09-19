@@ -10,6 +10,7 @@ pub mod loading;
 pub mod notifications;
 mod omni;
 pub mod pagination;
+pub(crate) mod principal;
 pub mod profiles;
 pub mod query_bar;
 pub(crate) mod read_only_sql;
@@ -971,10 +972,14 @@ fn render_with_state_at(
         app.tabs.get(app.active_tab),
         Some(WorkspaceTab::RedisBrowser(_))
     );
+    let is_principal = matches!(
+        app.tabs.get(app.active_tab),
+        Some(WorkspaceTab::PrincipalDdl(_))
+    );
     let layout = AppLayout::calculate(
         area,
         app.focus,
-        is_relation || is_dashboard || is_redis_browser,
+        is_relation || is_dashboard || is_redis_browser || is_principal,
         app.pane_sizes,
         app.pane_maximized,
     );
@@ -982,6 +987,7 @@ fn render_with_state_at(
     let editor_rendered = !is_relation
         && !is_dashboard
         && !is_redis_browser
+        && !is_principal
         && empty_workspace.is_none()
         && layout.editor.is_some();
     let redis_layout = is_redis_browser
@@ -1095,7 +1101,7 @@ fn render_with_state_at(
             }
         }
         render_footer(frame, layout.footer, app, theme, sequence, state);
-    } else if is_relation {
+    } else if is_relation || is_principal {
         if let Some(area) = layout.explorer {
             state.hit_regions.push(HitRegion {
                 area,
@@ -1108,7 +1114,11 @@ fn render_with_state_at(
                 area,
                 target: HitTarget::Focus(Focus::Results),
             });
-            relation::render(frame, area, app, theme, state);
+            if is_principal {
+                principal::render(frame, area, app, theme, state);
+            } else {
+                relation::render(frame, area, app, theme, state);
+            }
         }
         render_footer(frame, layout.footer, app, theme, sequence, state);
         state.hit_regions.push(HitRegion {
@@ -1532,6 +1542,7 @@ fn animation_observation(app: &App) -> animation::AnimationObservation {
         }
         WorkspaceTab::Dashboard(_) => {}
         WorkspaceTab::RedisBrowser(_) => {}
+        WorkspaceTab::PrincipalDdl(_) => {}
     }
     observation
 }
@@ -2206,6 +2217,7 @@ fn tab_database_kind(app: &App, tab: &WorkspaceTab) -> Option<DatabaseKind> {
             .map(|connection| connection.profile_id)
             .or(tab.profile_id)?,
         WorkspaceTab::RedisBrowser(_) => return Some(DatabaseKind::Redis),
+        WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id,
     };
 
     app.profiles
@@ -2347,10 +2359,19 @@ fn render_tabs(
                         .find(|profile| profile.id == redis.target.profile_id)
                         .map(|profile| profile.name.clone())
                         .unwrap_or_else(|| "Invalid target".to_owned()),
+                    WorkspaceTab::PrincipalDdl(principal) => app
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == principal.entry.id.profile_id)
+                        .map(|profile| profile.name.clone())
+                        .unwrap_or_else(|| "Invalid target".to_owned()),
                 };
                 match tab {
                     WorkspaceTab::RedisBrowser(redis) => {
                         format!("db{}@{connection_name}", redis.target.database)
+                    }
+                    WorkspaceTab::PrincipalDdl(principal) => {
+                        format!("{}@{connection_name}", principal.entry.name)
                     }
                     _ => format!("{} @{connection_name}", tab.title()),
                 }
@@ -2750,6 +2771,12 @@ fn explorer_list_item(
         crate::model::explorer::ExplorerNodeId::Group { group, .. } => {
             icons.group(*group, expanded)
         }
+        crate::model::explorer::ExplorerNodeId::PrincipalGroup { .. } => {
+            icons.principal(crate::db::principal::PrincipalDisplayKind::Group)
+        }
+        crate::model::explorer::ExplorerNodeId::Principal { .. } => {
+            visible.principal.map_or("·", |kind| icons.principal(kind))
+        }
         _ => visible.kind.map_or("·", |kind| icons.catalog(kind)),
     };
     let label = sanitize_terminal_text(&visible.label);
@@ -2806,7 +2833,9 @@ fn explorer_list_item(
                 }),
         ));
     } else if !is_others {
-        let icon_color = if matches!(
+        let icon_color = if let Some(principal) = visible.principal {
+            principal_node_color(principal, theme)
+        } else if matches!(
             &visible.id,
             crate::model::explorer::ExplorerNodeId::RedisDatabase { .. }
         ) {
@@ -3074,6 +3103,12 @@ fn render_explorer_search(
                 crate::model::explorer::ExplorerNodeId::Group { group, .. } => {
                     icons.group(*group, expanded)
                 }
+                crate::model::explorer::ExplorerNodeId::PrincipalGroup { .. } => {
+                    icons.principal(crate::db::principal::PrincipalDisplayKind::Group)
+                }
+                crate::model::explorer::ExplorerNodeId::Principal { .. } => {
+                    row.principal.map_or("·", |kind| icons.principal(kind))
+                }
                 _ => row.kind.map_or("·", |kind| icons.catalog(kind)),
             };
             let label_style = Style::new()
@@ -3094,11 +3129,14 @@ fn render_explorer_search(
                     Style::new().fg(icons.database_color(kind)).bg(background),
                 ));
             } else {
+                let icon_color = if let Some(principal) = row.principal {
+                    principal_node_color(principal, theme)
+                } else {
+                    row.kind.map_or(theme.muted, |kind| kind_color(kind, theme))
+                };
                 spans.push(Span::styled(
                     format!("{} ", icon),
-                    Style::new()
-                        .fg(row.kind.map_or(theme.muted, |kind| kind_color(kind, theme)))
-                        .bg(background),
+                    Style::new().fg(icon_color).bg(background),
                 ));
             }
             spans.extend(match_spans(
@@ -4572,7 +4610,10 @@ fn render_footer(
                 };
                 (mode, theme.accent)
             } else {
-                ("DATA", theme.warning)
+                match app.tabs.get(app.active_tab) {
+                    Some(crate::model::tab::WorkspaceTab::PrincipalDdl(_)) => ("DDL", theme.accent),
+                    _ => ("DATA", theme.warning),
+                }
             }
         }
     };
@@ -7221,6 +7262,18 @@ fn kind_color(kind: CatalogKind, theme: Theme) -> Color {
         CatalogKind::PrimaryKey | CatalogKind::UniqueConstraint => theme.warning,
         CatalogKind::ForeignKey | CatalogKind::Trigger => theme.accent,
         _ => theme.muted,
+    }
+}
+
+/// Semantic colour for the `Users & Roles` group and its user/role children.
+///
+/// Uses theme tokens so custom themes and `--color=never` (all `Reset`) are
+/// honoured automatically.
+fn principal_node_color(kind: crate::db::principal::PrincipalDisplayKind, theme: Theme) -> Color {
+    match kind {
+        crate::db::principal::PrincipalDisplayKind::Group => theme.accent,
+        crate::db::principal::PrincipalDisplayKind::User => theme.action,
+        crate::db::principal::PrincipalDisplayKind::Role => theme.syntax_column,
     }
 }
 

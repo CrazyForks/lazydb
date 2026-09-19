@@ -1088,3 +1088,44 @@ fn assert_membership(column: &ColumnMetadata, constraint_id: &CatalogId, ordinal
             })
     );
 }
+
+#[tokio::test]
+async fn lists_mysql_accounts_and_builds_credential_free_ddl_when_configured() {
+    use lazydb::db::principal::PrincipalKind;
+
+    let Ok(url) = std::env::var("LAZYDB_TEST_MYSQL_URL") else {
+        eprintln!("skipping MySQL principal browse: LAZYDB_TEST_MYSQL_URL is not set");
+        return;
+    };
+    let imported = import_connection_url(&url, Some("mysql-principals")).unwrap();
+    let database =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap();
+
+    let page = database.list_principals().await.unwrap();
+    assert!(!page.entries.is_empty());
+    // Every listed account keeps its host, and any account known to MySQL as a
+    // role is classified as such.
+    for entry in &page.entries {
+        assert!(entry.id.host.is_some(), "{entry:?}");
+    }
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.kind == PrincipalKind::User)
+    );
+
+    let user = page
+        .entries
+        .iter()
+        .find(|entry| entry.kind == PrincipalKind::User)
+        .cloned()
+        .unwrap();
+    let ddl = database.principal_ddl(&user).await.unwrap();
+    assert!(ddl.sql.contains("CREATE USER"), "{}", ddl.sql);
+    // Native CREATE USER includes a password hash; the read-only preview must
+    // never reproduce it.
+    assert!(!ddl.sql.contains("IDENTIFIED BY '"), "{}", ddl.sql);
+    assert!(!ddl.sql.contains("AS '$A$"), "{}", ddl.sql);
+}

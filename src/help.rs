@@ -36,6 +36,8 @@ pub enum ShortcutContext {
     RelationDataVisual,
     RelationDataBusy,
     RelationDdl,
+    /// DDL-only view for a database user or role (no relation data view).
+    PrincipalDdl,
     RecordView,
     DataQueryInput,
     ProfileManagerForm,
@@ -94,6 +96,7 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::RelationDataVisual,
     ShortcutContext::RelationDataBusy,
     ShortcutContext::RelationDdl,
+    ShortcutContext::PrincipalDdl,
     ShortcutContext::RecordView,
     ShortcutContext::DataQueryInput,
     ShortcutContext::ProfileManagerForm,
@@ -285,6 +288,9 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
             if app.focus == Focus::Results && tab.view == RelationView::Ddl =>
         {
             ShortcutContext::RelationDdl
+        }
+        Some(WorkspaceTab::PrincipalDdl(_)) if app.focus == Focus::Results => {
+            ShortcutContext::PrincipalDdl
         }
         Some(WorkspaceTab::Relation(tab)) if app.focus == Focus::Results => {
             match tab.edit.as_ref().map(|edit| &edit.mode) {
@@ -927,6 +933,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             RedisKeys,
             RedisKeysFindEditing,
             RedisKeysFindConfirmed,
@@ -953,6 +960,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             RedisKeys,
             RedisKeysFindEditing,
             RedisKeysFindConfirmed,
@@ -978,6 +986,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             RedisKeys,
             RedisKeysFindEditing,
             RedisKeysFindConfirmed,
@@ -1003,6 +1012,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             Dashboard
         ],
         "Ctrl-Shift-s",
@@ -1018,6 +1028,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataBrowse,
             RelationDataVisual,
             RelationDdl,
+            PrincipalDdl,
             Dashboard
         ],
         "Ctrl-w h",
@@ -1074,6 +1085,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             Dashboard
         ],
         "Ctrl-w Ctrl-w",
@@ -1093,7 +1105,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             Dashboard,
             RelationDataBrowse,
             RelationDataVisual,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w f",
         "maximize or restore focused pane",
@@ -1137,7 +1150,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-Shift-n",
         "move tab right"
@@ -1150,7 +1164,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-Shift-p",
         "move tab left"
@@ -1163,7 +1178,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "[t",
         "previous tab",
@@ -1178,7 +1194,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "]t",
         "next tab",
@@ -1193,7 +1210,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Space s",
         "open console manager",
@@ -1208,6 +1226,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlOutput,
             RelationDataBrowse,
             RelationDdl,
+            PrincipalDdl,
             Dashboard
         ],
         "Space b",
@@ -1235,7 +1254,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Space q",
         "close current tab",
@@ -1249,7 +1269,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl+Shift+q",
         "close other tabs"
@@ -1274,6 +1295,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlOutput,
             RelationDataBrowse,
             RelationDdl,
+            PrincipalDdl,
             NotificationHistory
         ],
         "F8",
@@ -1291,6 +1313,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlOutput,
             RelationDataBrowse,
             RelationDdl,
+            PrincipalDdl,
             NotificationHistory
         ],
         "F7",
@@ -1304,7 +1327,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Space m",
         "open notification history",
@@ -1325,6 +1349,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             RelationDataVisual,
             RelationDataBusy,
             RelationDdl,
+            PrincipalDdl,
             Dashboard
         ],
         "F9",
@@ -1575,6 +1600,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlOutput,
             RelationDataBrowse,
             RelationDdl,
+            PrincipalDdl,
             EditorNormal
         ],
         "Space D",
@@ -1589,7 +1615,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Space c",
         "focus Explorer",
@@ -2033,7 +2060,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         RelationRefresh,
-        [RelationDataBrowse, RelationDdl],
+        [RelationDataBrowse, RelationDdl, PrincipalDdl],
         "r",
         "refresh relation"
     ),
@@ -2179,7 +2206,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w +",
         "increase focused pane height",
@@ -2196,7 +2224,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w -",
         "decrease focused pane height",
@@ -2213,7 +2242,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w >",
         "increase focused pane width",
@@ -2230,7 +2260,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w <",
         "decrease focused pane width",
@@ -2247,7 +2278,8 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             SqlResultsData,
             SqlOutput,
             RelationDataBrowse,
-            RelationDdl
+            RelationDdl,
+            PrincipalDdl
         ],
         "Ctrl-w =",
         "restore default pane sizes",
@@ -2371,29 +2403,35 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     ),
     row!(
         RelationDdlMove,
-        [RelationDdl],
+        [RelationDdl, PrincipalDdl],
         "j/k",
         "move through DDL",
         display
     ),
     row!(
         RelationDdlEnds,
-        [RelationDdl],
+        [RelationDdl, PrincipalDdl],
         "gg/G",
         "move to DDL ends",
         display
     ),
-    row!(RelationDdlSearch, [RelationDdl], "/", "search DDL", display),
+    row!(
+        RelationDdlSearch,
+        [RelationDdl, PrincipalDdl],
+        "/",
+        "search DDL",
+        display
+    ),
     row!(
         RelationDdlSelect,
-        [RelationDdl],
+        [RelationDdl, PrincipalDdl],
         "v/V",
         "select DDL",
         display
     ),
     row!(
         RelationDdlCopy,
-        [RelationDdl],
+        [RelationDdl, PrincipalDdl],
         "y",
         "copy selection",
         display
@@ -3654,7 +3692,8 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         | ShortcutContext::RelationDataEdit
         | ShortcutContext::RelationDataVisual
         | ShortcutContext::RelationDataBusy
-        | ShortcutContext::RelationDdl => "RESULTS",
+        | ShortcutContext::RelationDdl
+        | ShortcutContext::PrincipalDdl => "RESULTS",
         ShortcutContext::RedisKeys => "REDIS KEYS",
         ShortcutContext::RedisKeysFindEditing | ShortcutContext::RedisKeysFindConfirmed => {
             "REDIS KEYS · FIND"

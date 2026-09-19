@@ -529,6 +529,21 @@ Relation DDL is a read-only Vim text view.
 | `p` | Return to Data |
 | `r` | Refresh relation |
 
+## Users & Roles DDL
+
+A user/role DDL tab is a DDL-only read-only Vim view. It has no Data view to
+return to, so `p` is not bound; everything else matches Relation DDL.
+
+| Keys | Behavior |
+| --- | --- |
+| `j/k`, arrows | Move through DDL |
+| `gg/G`, `H/M/L` | Move to ends or align viewport |
+| `Ctrl-d/u`, `Ctrl-f/b` | Scroll viewport |
+| `/` | Search DDL |
+| `v/V`, `Ctrl-v` | Select DDL text |
+| `y` | Copy selected text |
+| `r` | Refresh this user/role DDL |
+
 ## Record View
 
 | Keys | Behavior |

@@ -68,6 +68,9 @@ use super::{
     },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
+    principal::{
+        PrincipalDdl, PrincipalEntry, PrincipalId, PrincipalKind, PrincipalPage, PrincipalScope,
+    },
     query::{
         ColumnMeta, QueryBudget, QueryOutcome, QueryOutcomeAccumulator, RELATION_PREVIEW_LIMIT,
         ResultSet,
@@ -330,6 +333,114 @@ struct PgSearchCandidate {
 }
 
 impl PostgresAdapter {
+    pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT oid::text AS oid, rolname, rolcanlogin, rolsuper FROM pg_roles ORDER BY rolcanlogin DESC, rolname COLLATE \"C\", oid",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?;
+        let entries = rows
+            .into_iter()
+            .map(|row| {
+                let can_login: bool = row.try_get("rolcanlogin").map_err(decode_error)?;
+                let name: String = row.try_get("rolname").map_err(decode_error)?;
+                let system = name.starts_with("pg_") || name == "postgres";
+                Ok(PrincipalEntry {
+                    id: PrincipalId {
+                        profile_id: self.connection_id,
+                        scope: PrincipalScope::Cluster,
+                        native_id: row.try_get::<String, _>("oid").map_err(decode_error)?,
+                        host: None,
+                    },
+                    kind: if can_login {
+                        PrincipalKind::User
+                    } else {
+                        PrincipalKind::Role
+                    },
+                    native_kind: if can_login { "login_role" } else { "role" }.into(),
+                    name,
+                    system,
+                })
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+        Ok(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id: self.connection_id,
+                generation: 0,
+            },
+            entries,
+            complete: true,
+        })
+    }
+
+    pub async fn principal_ddl(
+        &self,
+        principal: &PrincipalEntry,
+    ) -> Result<PrincipalDdl, DatabaseError> {
+        let oid = &principal.id.native_id;
+        let row = sqlx::query("SELECT rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil::text FROM pg_roles WHERE oid = $1::oid")
+            .bind(oid)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql_error)?
+            .ok_or_else(|| DatabaseError::configuration("principal no longer exists"))?;
+        let name: String = row.try_get("rolname").map_err(decode_error)?;
+        let login: bool = row.try_get("rolcanlogin").map_err(decode_error)?;
+        let superuser: bool = row.try_get("rolsuper").map_err(decode_error)?;
+        let createdb: bool = row.try_get("rolcreatedb").map_err(decode_error)?;
+        let createrole: bool = row.try_get("rolcreaterole").map_err(decode_error)?;
+        let inherit: bool = row.try_get("rolinherit").map_err(decode_error)?;
+        let replication: bool = row.try_get("rolreplication").map_err(decode_error)?;
+        let bypass_rls: bool = row.try_get("rolbypassrls").map_err(decode_error)?;
+        let connlimit: i32 = row.try_get("rolconnlimit").map_err(decode_error)?;
+        let valid_until: Option<String> = row.try_get("rolvaliduntil").map_err(decode_error)?;
+        let mut sql = format!(
+            "-- Password is intentionally omitted from read-only catalog DDL.\nCREATE ROLE {};\nALTER ROLE {} {} {} {} {} {} {} {} CONNECTION LIMIT {};",
+            quote_identifier(&name),
+            quote_identifier(&name),
+            if login { "LOGIN" } else { "NOLOGIN" },
+            if superuser {
+                "SUPERUSER"
+            } else {
+                "NOSUPERUSER"
+            },
+            if createdb { "CREATEDB" } else { "NOCREATEDB" },
+            if createrole {
+                "CREATEROLE"
+            } else {
+                "NOCREATEROLE"
+            },
+            if inherit { "INHERIT" } else { "NOINHERIT" },
+            if replication {
+                "REPLICATION"
+            } else {
+                "NOREPLICATION"
+            },
+            if bypass_rls {
+                "BYPASSRLS"
+            } else {
+                "NOBYPASSRLS"
+            },
+            connlimit
+        );
+        if let Some(valid_until) = valid_until {
+            sql.push_str(&format!("\n-- VALID UNTIL {}", valid_until));
+        }
+        let memberships = sqlx::query_scalar::<_, String>("SELECT granted_role.rolname FROM pg_auth_members m JOIN pg_roles member_role ON member_role.oid = m.member JOIN pg_roles granted_role ON granted_role.oid = m.roleid WHERE member_role.oid = $1::oid ORDER BY granted_role.rolname COLLATE \"C\"")
+            .bind(oid).fetch_all(&self.pool).await.map_err(sql_error)?;
+        for role in memberships {
+            sql.push_str(&format!(
+                "\nGRANT {} TO {};",
+                quote_identifier(&role),
+                quote_identifier(&name)
+            ));
+        }
+        Ok(PrincipalDdl {
+            principal: principal.clone(),
+            sql,
+        })
+    }
     pub async fn preview_relation_with_scope(
         &self,
         relation: &CatalogId,

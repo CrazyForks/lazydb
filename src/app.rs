@@ -1465,6 +1465,9 @@ impl App {
             {
                 Some(tab.ddl_editor_id)
             }
+            Some(WorkspaceTab::PrincipalDdl(tab)) if self.focus == Focus::Results => {
+                Some(tab.editor_id)
+            }
             _ if self.focus == Focus::Results
                 && matches!(
                     self.overlay,
@@ -1522,6 +1525,9 @@ impl App {
             Some(WorkspaceTab::Relation(tab))
                 if session_id == tab.ddl_editor_id && tab.view == RelationView::Ddl =>
             {
+                Some(Focus::Results)
+            }
+            Some(WorkspaceTab::PrincipalDdl(tab)) if session_id == tab.editor_id => {
                 Some(Focus::Results)
             }
             Some(_)
@@ -1692,6 +1698,7 @@ impl App {
             Some(WorkspaceTab::Relation(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::Dashboard(tab)) => tab.grid.selected_column,
             Some(WorkspaceTab::RedisBrowser(tab)) => tab.preview_grid.selected_column,
+            Some(WorkspaceTab::PrincipalDdl(_)) => 0,
             None => 0,
         }
     }
@@ -1890,6 +1897,38 @@ impl App {
         self.editor.viewport(tab.ddl_editor_id)
     }
 
+    /// Snapshot for the active principal (user/role) DDL-only tab.
+    ///
+    /// The SQL dialect is taken from the tab's own bound profile, never from
+    /// whichever profile happens to be active.
+    pub fn active_principal_editor_snapshot(
+        &self,
+        viewport: EditorViewport,
+    ) -> Result<EditorRenderSnapshot, EditorError> {
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
+            return Err(EditorError::MissingSession(Uuid::nil()));
+        };
+        let dialect = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == tab.entry.id.profile_id)
+            .map(|profile| SqlDialect::for_database_kind(profile.kind))
+            .unwrap_or_else(|| self.sql_dialect());
+        self.editor.render_snapshot_with_dialect_and_statement(
+            tab.editor_id,
+            viewport,
+            dialect,
+            None,
+        )
+    }
+
+    pub fn active_principal_editor_viewport(&self) -> Result<EditorViewport, EditorError> {
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
+            return Err(EditorError::MissingSession(Uuid::nil()));
+        };
+        self.editor.viewport(tab.editor_id)
+    }
+
     pub(crate) fn text_detail_snapshot(
         &self,
         session_id: Uuid,
@@ -2009,6 +2048,7 @@ impl App {
                         WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
                         WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
                         WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
+                        WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id == profile_id,
                     })
                     .cloned()
                     .collect::<Vec<_>>();
@@ -2241,6 +2281,7 @@ impl App {
             WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id == profile_id,
             WorkspaceTab::Dashboard(tab) => tab.profile_id == Some(profile_id),
             WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id == profile_id,
+            WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id == profile_id,
         }
     }
 
@@ -2294,6 +2335,18 @@ impl App {
                     database: tab.target.database,
                     pattern: tab.keyspace.pattern.clone(),
                 },
+                WorkspaceTab::PrincipalDdl(tab) => PersistedTab::PrincipalDdl(
+                    crate::persistence::workspace::PersistedPrincipalTab {
+                        id: tab.id,
+                        profile_id: tab.entry.id.profile_id,
+                        scope: tab.entry.id.scope.clone(),
+                        native_id: tab.entry.id.native_id.clone(),
+                        kind: tab.entry.kind,
+                        display_name: tab.entry.name.clone(),
+                        native_kind: tab.entry.native_kind.clone(),
+                        system: tab.entry.system,
+                    },
+                ),
             })
             .collect();
         PersistedProfileWorkspace {
@@ -2568,6 +2621,26 @@ impl App {
                     tabs.push(WorkspaceTab::RedisBrowser(tab));
                 }
                 PersistedTab::RedisBrowser { .. } => {}
+                PersistedTab::PrincipalDdl(persisted)
+                    if persisted.profile_id == profile.profile_id =>
+                {
+                    let entry = crate::db::principal::PrincipalEntry {
+                        id: crate::db::principal::PrincipalId {
+                            profile_id: persisted.profile_id,
+                            scope: persisted.scope.clone(),
+                            native_id: persisted.native_id.clone(),
+                            host: None,
+                        },
+                        kind: persisted.kind,
+                        name: persisted.display_name.clone(),
+                        native_kind: persisted.native_kind.clone(),
+                        system: persisted.system,
+                    };
+                    let mut tab = crate::model::principal::PrincipalDdlTab::new(entry);
+                    tab.id = persisted.id;
+                    tabs.push(WorkspaceTab::PrincipalDdl(tab));
+                }
+                PersistedTab::PrincipalDdl(_) => {}
             }
         }
         let text = records
@@ -9939,11 +10012,15 @@ impl App {
                 session_id,
                 viewport,
             } => {
-                if matches!(
+                let is_ddl_only = matches!(
                     self.tabs.get(self.active_tab),
                     Some(WorkspaceTab::Relation(tab))
                         if tab.view == RelationView::Ddl && tab.ddl_editor_id == session_id
-                ) {
+                ) || matches!(
+                    self.tabs.get(self.active_tab),
+                    Some(WorkspaceTab::PrincipalDdl(tab)) if tab.editor_id == session_id
+                );
+                if is_ddl_only {
                     self.ensure_read_only_session(session_id);
                     let _ = self.editor.set_viewport(session_id, viewport);
                 }
@@ -10844,6 +10921,11 @@ impl App {
             Action::CommitTransaction => self.transaction_control(true),
             Action::RollbackTransaction => self.transaction_control(false),
             Action::RefreshCatalog => {
+                if let Some(ExplorerNodeId::PrincipalGroup { profile_id }) =
+                    self.explorer.selected_id().cloned()
+                {
+                    return self.request_principals(profile_id, true);
+                }
                 let target = self
                     .selected_catalog_target()
                     .unwrap_or(CatalogTarget::Databases);
@@ -10853,6 +10935,29 @@ impl App {
                 self.start_catalog_request(target, None, CatalogRequestIntent::Explicit)
             }
             Action::ExplorerOpenSelected => {
+                if let Some(ExplorerNodeId::Principal { entry }) =
+                    self.explorer.selected_id().cloned()
+                {
+                    return self.update(Action::OpenPrincipal {
+                        profile_id: entry.profile_id,
+                        entry: {
+                            let Some(profile) =
+                                self.explorer.normalized.profiles.get(&entry.profile_id)
+                            else {
+                                return Vec::new();
+                            };
+                            let Some(principal) = profile
+                                .principals
+                                .iter()
+                                .find(|principal| principal.id == entry)
+                                .cloned()
+                            else {
+                                return Vec::new();
+                            };
+                            principal
+                        },
+                    });
+                }
                 let opens_relation = matches!(
                     self.explorer.selected_id(),
                     Some(ExplorerNodeId::Catalog(id))
@@ -10897,6 +11002,77 @@ impl App {
                     .map(Command::CancelRelationRequest)
                     .into_iter()
                     .collect()
+            }
+            Action::OpenPrincipal { profile_id, entry } => self.open_principal(profile_id, entry),
+            Action::RefreshActivePrincipal => self.refresh_active_principal(),
+            Action::CancelActivePrincipalRequest => self.cancel_active_principal_request(),
+            Action::PrincipalPageLoaded {
+                profile_id,
+                request_id,
+                page,
+            } => {
+                let expected = self.principal_connection(profile_id);
+                let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id) else {
+                    return Vec::new();
+                };
+                if profile.principals_pending != Some(request_id) {
+                    return Vec::new();
+                }
+                if expected != Some(page.connection) {
+                    return Vec::new();
+                }
+                profile.principals_pending = None;
+                profile.principals_error = None;
+                profile.principals_unsupported = None;
+                profile.set_principals(page);
+                self.reconcile_principal_selection(profile_id);
+                Vec::new()
+            }
+            Action::PrincipalPageFailed {
+                profile_id,
+                request_id,
+                message,
+            } => {
+                let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id) else {
+                    return Vec::new();
+                };
+                if profile.principals_pending != Some(request_id) {
+                    return Vec::new();
+                }
+                profile.principals_pending = None;
+                profile.principals_error = Some(message);
+                Vec::new()
+            }
+            Action::PrincipalDdlLoaded { request, ddl } => {
+                let Some(index) = self.tabs.iter().position(|tab| {
+                    matches!(tab, WorkspaceTab::PrincipalDdl(tab) if tab.id == request.tab_id)
+                }) else {
+                    return Vec::new();
+                };
+                let (editor_id, sql) = {
+                    let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) else {
+                        return Vec::new();
+                    };
+                    if tab.generation != request.tab_generation {
+                        return Vec::new();
+                    }
+                    let Some(sql) = tab.apply_success(&request, ddl) else {
+                        return Vec::new();
+                    };
+                    (tab.editor_id, sql)
+                };
+                self.editor.open_read_only(editor_id, &sql);
+                Vec::new()
+            }
+            Action::PrincipalDdlFailed { request, message } => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| matches!(tab, WorkspaceTab::PrincipalDdl(tab) if tab.id == request.tab_id))
+                {
+                    tab.apply_failure(&request, message);
+                }
+                Vec::new()
             }
             Action::DdlScroll { rows, columns } => {
                 if let Some(WorkspaceTab::Relation(tab)) = self.tabs.get_mut(self.active_tab)
@@ -11629,6 +11805,36 @@ impl App {
                     commands.extend(self.open_redis_object_create());
                 }
                 commands.extend(commands_for_catalog);
+                // Connection-scoped principal (user/role) refresh:
+                //  * if the `Users & Roles` group is expanded, reload its list
+                //  * rebind and reload any open principal DDL tab so late
+                //    responses from the previous connection cannot win
+                if profile_kind != DatabaseKind::Redis {
+                    let group =
+                        crate::model::explorer::ExplorerNodeId::PrincipalGroup { profile_id };
+                    if self.explorer.normalized.expanded.contains(&group) {
+                        commands.extend(self.request_principals(profile_id, true));
+                    }
+                    let principal_tabs = self
+                        .tabs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, tab)| {
+                            matches!(
+                                tab,
+                                WorkspaceTab::PrincipalDdl(tab)
+                                    if tab.entry.id.profile_id == profile_id
+                            )
+                            .then_some(index)
+                        })
+                        .collect::<Vec<_>>();
+                    for index in principal_tabs {
+                        if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) {
+                            tab.invalidate_for_reconnect();
+                        }
+                        commands.extend(self.load_principal_ddl(index, true));
+                    }
+                }
                 if self.pending_navigation.as_ref().is_some_and(|navigation| {
                     navigation.profile_id == profile_id && navigation.generation == generation
                 }) {
@@ -15855,6 +16061,11 @@ impl App {
                     .map(Command::CancelRelationRequest)
                     .collect()
             }
+            Some(WorkspaceTab::PrincipalDdl(tab)) => tab
+                .cancel()
+                .map(Command::CancelPrincipalDdl)
+                .into_iter()
+                .collect(),
             _ => Vec::new(),
         };
         let dashboard_cancel = match self.tabs.get(index) {
@@ -16681,6 +16892,7 @@ impl App {
                 WorkspaceTab::Relation(tab) => tab.descriptor.key.profile_id != profile_id,
                 WorkspaceTab::Dashboard(tab) => tab.profile_id != Some(profile_id),
                 WorkspaceTab::RedisBrowser(tab) => tab.target.profile_id != profile_id,
+                WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id != profile_id,
             });
             self.active_workspace_profile = self.sql_editors.iter().find_map(|record| {
                 record
@@ -19094,6 +19306,143 @@ impl App {
         vec![Command::LoadCatalogPage(request)]
     }
 
+    fn request_principals(&mut self, profile_id: Uuid, force: bool) -> Vec<Command> {
+        let Some(profile) = self.explorer.normalized.profiles.get(&profile_id) else {
+            return Vec::new();
+        };
+        if profile.kind == DatabaseKind::Redis {
+            return Vec::new();
+        }
+        if profile.kind == DatabaseKind::Sqlite {
+            if let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id) {
+                profile.principals_loaded = true;
+                profile.principals_unsupported =
+                    Some("SQLite does not support users or roles".to_owned());
+                profile.principals_error = None;
+            }
+            return Vec::new();
+        }
+        if profile.principals_loaded && !force {
+            return Vec::new();
+        }
+        let Some(connection) = self.explorer.catalog_sessions.get(&profile_id).copied() else {
+            return Vec::new();
+        };
+        if self.sessions.get_by_identity(connection).is_none() {
+            return Vec::new();
+        }
+        let Some(profile) = self.explorer.normalized.profiles.get_mut(&profile_id) else {
+            return Vec::new();
+        };
+        let Some(request_id) = profile.allocate_request_id() else {
+            return Vec::new();
+        };
+        profile.principals_pending = Some(request_id);
+        profile.principals_unsupported = None;
+        vec![Command::LoadPrincipals(
+            crate::model::principal::PrincipalListRequest {
+                profile_id,
+                generation: connection.generation,
+                request_id,
+            },
+        )]
+    }
+
+    fn principal_connection(&self, profile_id: Uuid) -> Option<ConnectionIdentity> {
+        self.explorer.catalog_sessions.get(&profile_id).copied()
+    }
+
+    fn open_principal(
+        &mut self,
+        profile_id: Uuid,
+        entry: crate::db::principal::PrincipalEntry,
+    ) -> Vec<Command> {
+        if entry.id.profile_id != profile_id {
+            return Vec::new();
+        }
+        if let Some(index) = self.tabs.iter().position(|tab| {
+            matches!(
+                tab,
+                WorkspaceTab::PrincipalDdl(tab) if tab.entry.id == entry.id
+            )
+        }) {
+            self.active_tab = index;
+            self.focus = Focus::Results;
+            return self.load_principal_ddl(index, false);
+        }
+        let tab = crate::model::principal::PrincipalDdlTab::new(entry);
+        let editor_id = tab.editor_id;
+        self.tabs.push(WorkspaceTab::PrincipalDdl(tab));
+        self.editor.open_read_only(editor_id, "");
+        self.active_tab = self.tabs.len() - 1;
+        self.focus = Focus::Results;
+        self.load_principal_ddl(self.active_tab, true)
+    }
+
+    fn load_principal_ddl(&mut self, index: usize, force: bool) -> Vec<Command> {
+        let Some(profile_id) = self.tabs.get(index).and_then(|tab| match tab {
+            WorkspaceTab::PrincipalDdl(tab) => Some(tab.entry.id.profile_id),
+            _ => None,
+        }) else {
+            return Vec::new();
+        };
+        let Some(connection) = self.principal_connection(profile_id) else {
+            return Vec::new();
+        };
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) else {
+            return Vec::new();
+        };
+        if tab.load.pending_request().is_some() {
+            return Vec::new();
+        }
+        if !force && tab.load.snapshot().is_some() {
+            return Vec::new();
+        }
+        let Some(request) = tab.allocate_request(connection) else {
+            return Vec::new();
+        };
+        tab.begin_load(request.clone());
+        vec![Command::LoadPrincipalDdl(request)]
+    }
+
+    fn refresh_active_principal(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::PrincipalDdl(_)) = self.tabs.get(self.active_tab) else {
+            return Vec::new();
+        };
+        self.load_principal_ddl(self.active_tab, true)
+    }
+
+    fn reconcile_principal_selection(&mut self, profile_id: Uuid) {
+        let Some(crate::model::explorer::ExplorerNodeId::Principal { entry }) =
+            self.explorer.selected_id().cloned()
+        else {
+            return;
+        };
+        if entry.profile_id != profile_id {
+            return;
+        }
+        let exists = self
+            .explorer
+            .normalized
+            .profiles
+            .get(&profile_id)
+            .is_some_and(|profile| profile.principals.iter().any(|p| p.id == entry));
+        if !exists {
+            self.explorer
+                .select_id(crate::model::explorer::ExplorerNodeId::PrincipalGroup { profile_id });
+        }
+    }
+
+    fn cancel_active_principal_request(&mut self) -> Vec<Command> {
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return Vec::new();
+        };
+        tab.cancel()
+            .map(Command::CancelPrincipalDdl)
+            .into_iter()
+            .collect()
+    }
+
     fn edit_explorer_search(
         &mut self,
         edit: impl FnOnce(&mut crate::model::text_input::TextInput),
@@ -19857,6 +20206,14 @@ impl App {
                     self.editor.open_read_only(session_id, &text);
                     return;
                 }
+                WorkspaceTab::PrincipalDdl(tab) if tab.editor_id == session_id => {
+                    let text = tab
+                        .load
+                        .snapshot()
+                        .map_or_else(String::new, |snapshot| snapshot.sql.clone());
+                    self.editor.open_read_only(session_id, &text);
+                    return;
+                }
                 _ => {}
             }
         }
@@ -20408,6 +20765,8 @@ impl App {
             ExplorerNodeId::Others => None,
             ExplorerNodeId::ConnectionGroup { .. } => None,
             ExplorerNodeId::RedisDatabase { .. } => None,
+            ExplorerNodeId::PrincipalGroup { .. } | ExplorerNodeId::Principal { .. } => None,
+            ExplorerNodeId::PrincipalNotice { .. } => None,
         }
     }
 
@@ -20513,6 +20872,48 @@ impl App {
                 profile_id,
                 database,
             } => self.open_redis_browser(*profile_id, *database),
+            ExplorerNodeId::PrincipalGroup { profile_id } => {
+                let expanded = self.explorer.normalized.expanded.contains(&selected);
+                self.explorer.toggle_selected();
+                if expanded {
+                    return Vec::new();
+                }
+                self.request_principals(*profile_id, false)
+            }
+            ExplorerNodeId::Principal { .. } => {
+                let Some(profile_id) = selected.profile_id() else {
+                    return Vec::new();
+                };
+                let Some(profile) = self.explorer.normalized.profiles.get(&profile_id) else {
+                    return Vec::new();
+                };
+                let ExplorerNodeId::Principal { entry } = &selected else {
+                    return Vec::new();
+                };
+                let Some(principal) = profile
+                    .principals
+                    .iter()
+                    .find(|principal| principal.id == *entry)
+                    .cloned()
+                else {
+                    return Vec::new();
+                };
+                self.open_principal(profile_id, principal)
+            }
+            ExplorerNodeId::PrincipalNotice { profile_id } => {
+                // Retrying a failed principal load from its notice row.
+                if self
+                    .explorer
+                    .normalized
+                    .profiles
+                    .get(profile_id)
+                    .is_some_and(|profile| profile.principals_error.is_some())
+                {
+                    self.request_principals(*profile_id, true)
+                } else {
+                    Vec::new()
+                }
+            }
         }
     }
 
@@ -27638,6 +28039,7 @@ mod tests {
             WorkspaceTab::Sql(_) => unreachable!(),
             WorkspaceTab::Dashboard(_) => unreachable!(),
             WorkspaceTab::RedisBrowser(_) => unreachable!(),
+            WorkspaceTab::PrincipalDdl(_) => unreachable!(),
         };
         let scope = app.profiles[0].catalog_scope.clone();
         let request = RelationRequest {

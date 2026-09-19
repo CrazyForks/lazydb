@@ -18,6 +18,7 @@ pub mod notification;
 pub mod omni;
 pub mod pagination;
 pub mod pending_execution;
+pub mod principal;
 pub mod profile_group;
 pub mod profile_manager;
 pub mod profile_organization;

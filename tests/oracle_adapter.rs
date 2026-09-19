@@ -427,3 +427,56 @@ async fn oracle_query_pagination_required() {
     );
     connection.close().await;
 }
+
+#[tokio::test]
+async fn oracle_lists_service_users_and_roles_when_credentials_are_available() {
+    use lazydb::db::principal::{PrincipalKind, PrincipalScope};
+
+    let (Ok(url), Ok(user), Ok(password)) = (
+        std::env::var("LAZYDB_TEST_ORACLE_URL"),
+        std::env::var("LAZYDB_TEST_ORACLE_USER"),
+        std::env::var("LAZYDB_TEST_ORACLE_PASSWORD"),
+    ) else {
+        eprintln!("skipping Oracle principal browse: LAZYDB_TEST_ORACLE_* is not set");
+        return;
+    };
+    let imported = import_connection_url(&url, Some("oracle-principals")).unwrap();
+    let password = SecretString::from(password);
+    let database = DatabaseConnection::connect(&imported.profile, Some(&password))
+        .await
+        .unwrap();
+    let _ = user;
+
+    let page = database.list_principals().await.unwrap();
+    assert!(!page.entries.is_empty());
+    // Users are listed before roles, scoped to this connection's service.
+    let mut seen_role = false;
+    for entry in &page.entries {
+        match entry.kind {
+            PrincipalKind::User => assert!(!seen_role, "users must precede roles"),
+            PrincipalKind::Role => seen_role = true,
+        }
+        assert!(matches!(entry.id.scope, PrincipalScope::Database(_)));
+        assert!(entry.id.native_id.starts_with("USER:") || entry.id.native_id.starts_with("ROLE:"));
+    }
+    let user_entry = page
+        .entries
+        .iter()
+        .find(|entry| entry.kind == PrincipalKind::User && !entry.system)
+        .or_else(|| {
+            page.entries
+                .iter()
+                .find(|entry| entry.kind == PrincipalKind::User)
+        })
+        .cloned()
+        .expect("a visible Oracle user");
+    let ddl = database.principal_ddl(&user_entry).await.unwrap();
+    assert!(ddl.sql.contains("CREATE USER"), "{}", ddl.sql);
+    // DBMS_METADATA would embed IDENTIFIED BY VALUES; the preview must not.
+    assert!(
+        !ddl.sql.to_ascii_uppercase().contains("IDENTIFIED BY"),
+        "{}",
+        ddl.sql
+    );
+    database.close().await;
+}

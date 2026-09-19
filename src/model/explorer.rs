@@ -8,6 +8,7 @@ use crate::db::catalog::{
     CatalogRequest, CatalogSearchHit, CatalogTarget, ObjectGroup, search_text_matches,
 };
 use crate::db::catalog_mutation::CatalogMutationAnchor;
+use crate::db::principal::PrincipalEntry;
 use crate::profile::{ConnectionGroup, DatabaseKind};
 
 #[cfg(test)]
@@ -113,6 +114,18 @@ pub enum ExplorerNodeId {
     Empty {
         owner: ExplorerOwnerId,
     },
+    PrincipalGroup {
+        profile_id: Uuid,
+    },
+    Principal {
+        entry: crate::db::principal::PrincipalId,
+    },
+    /// Non-selectable informational row shown under the `Users & Roles`
+    /// group when there is no principal list to show (unsupported database,
+    /// empty result, or a load failure).
+    PrincipalNotice {
+        profile_id: Uuid,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,6 +163,8 @@ pub fn resolve_mutation_intent(
             },
         )),
         ExplorerNodeId::ConnectionGroup { .. } | ExplorerNodeId::RedisDatabase { .. } => None,
+        ExplorerNodeId::PrincipalGroup { .. } | ExplorerNodeId::Principal { .. } => None,
+        ExplorerNodeId::PrincipalNotice { .. } => None,
         ExplorerNodeId::EmptyProfiles
         | ExplorerNodeId::Others
         | ExplorerNodeId::Status { .. }
@@ -170,6 +185,9 @@ impl ExplorerNodeId {
             | Self::Empty { owner } => Some(owner.profile_id()),
             Self::EmptyProfiles | Self::Others | Self::ConnectionGroup { .. } => None,
             Self::RedisDatabase { profile_id, .. } => Some(*profile_id),
+            Self::PrincipalGroup { profile_id } => Some(*profile_id),
+            Self::Principal { entry } => Some(entry.profile_id),
+            Self::PrincipalNotice { profile_id } => Some(*profile_id),
         }
     }
 }
@@ -828,6 +846,11 @@ pub struct ExplorerProfileState {
     pub redis_databases: Vec<crate::db::redis::discovery::RedisDatabaseInfo>,
     pub redis_databases_partial: bool,
     pub redis_databases_error: Option<String>,
+    pub principals: Vec<PrincipalEntry>,
+    pub principals_loaded: bool,
+    pub principals_error: Option<String>,
+    pub principals_unsupported: Option<String>,
+    pub principals_pending: Option<u64>,
 }
 
 impl ExplorerProfileState {
@@ -861,6 +884,11 @@ impl ExplorerProfileState {
             redis_databases: Vec::new(),
             redis_databases_partial: false,
             redis_databases_error: None,
+            principals: Vec::new(),
+            principals_loaded: false,
+            principals_error: None,
+            principals_unsupported: None,
+            principals_pending: None,
         }
     }
 
@@ -888,6 +916,12 @@ impl ExplorerProfileState {
         );
         self.redis_databases_error =
             (!discovery.warnings.is_empty()).then(|| discovery.warnings.join("; "));
+    }
+
+    pub fn set_principals(&mut self, page: crate::db::principal::PrincipalPage) {
+        self.principals = page.entries;
+        self.principals_loaded = true;
+        self.principals_error = None;
     }
 
     pub fn invalidate_catalog_target(&mut self, target: &CatalogTarget) {
@@ -1076,12 +1110,24 @@ impl ExplorerTreeState {
                 .and_then(|profile| profile.catalog.get(id))
                 .map(|entry| entry.qualified_name.object.clone()),
             ExplorerNodeId::Group { group, .. } => Some(group_label(*group).to_owned()),
+            ExplorerNodeId::PrincipalGroup { .. } => Some("Users & Roles".to_owned()),
+            ExplorerNodeId::Principal { entry } => self
+                .profiles
+                .get(&entry.profile_id)
+                .and_then(|profile| {
+                    profile
+                        .principals
+                        .iter()
+                        .find(|principal| principal.id == *entry)
+                })
+                .map(|principal| principal.name.clone()),
             ExplorerNodeId::EmptyProfiles
             | ExplorerNodeId::Others
             | ExplorerNodeId::Status { .. }
             | ExplorerNodeId::LoadMore { .. }
             | ExplorerNodeId::Empty { .. }
             | ExplorerNodeId::ConnectionGroup { .. }
+            | ExplorerNodeId::PrincipalNotice { .. }
             | ExplorerNodeId::RedisDatabase { .. } => None,
         }
     }
@@ -1392,6 +1438,9 @@ impl ExplorerTreeState {
             0,
             profile.catalog.roots().len(),
         );
+        if profile.kind != DatabaseKind::Redis {
+            projection.push(ExplorerNodeId::PrincipalGroup { profile_id }, 0);
+        }
         projection.rows
     }
 
@@ -1519,6 +1568,29 @@ impl ExplorerTreeState {
             child_depth,
             roots.len(),
         );
+        let principal_group = ExplorerNodeId::PrincipalGroup { profile_id };
+        projection.push(principal_group.clone(), child_depth);
+        if self.expanded.contains(&principal_group) {
+            if profile.principals.is_empty()
+                && (profile.principals_loaded
+                    || profile.principals_error.is_some()
+                    || profile.principals_unsupported.is_some())
+            {
+                projection.push(
+                    ExplorerNodeId::PrincipalNotice { profile_id },
+                    child_depth + 1,
+                );
+            } else {
+                for principal in &profile.principals {
+                    projection.push(
+                        ExplorerNodeId::Principal {
+                            entry: principal.id.clone(),
+                        },
+                        child_depth + 1,
+                    );
+                }
+            }
+        }
     }
 
     pub fn select(&mut self, id: ExplorerNodeId) -> bool {
@@ -1563,10 +1635,13 @@ impl ExplorerTreeState {
                 })
             }
             ExplorerNodeId::Others => true,
+            ExplorerNodeId::PrincipalGroup { profile_id } => self.profiles.contains_key(profile_id),
             ExplorerNodeId::EmptyProfiles
             | ExplorerNodeId::Status { .. }
             | ExplorerNodeId::LoadMore { .. }
             | ExplorerNodeId::Empty { .. }
+            | ExplorerNodeId::Principal { .. }
+            | ExplorerNodeId::PrincipalNotice { .. }
             | ExplorerNodeId::RedisDatabase { .. } => false,
         };
         expandable && self.expanded.insert(selected)
@@ -1978,6 +2053,17 @@ impl ExplorerTreeState {
             ExplorerNodeId::RedisDatabase { profile_id, .. } => {
                 Some(ExplorerNodeId::Profile(*profile_id))
             }
+            ExplorerNodeId::PrincipalGroup { profile_id } => {
+                Some(ExplorerNodeId::Profile(*profile_id))
+            }
+            ExplorerNodeId::Principal { entry } => Some(ExplorerNodeId::PrincipalGroup {
+                profile_id: entry.profile_id,
+            }),
+            ExplorerNodeId::PrincipalNotice { profile_id } => {
+                Some(ExplorerNodeId::PrincipalGroup {
+                    profile_id: *profile_id,
+                })
+            }
             ExplorerNodeId::ConnectionGroup { region, .. } => Some(match region {
                 ProfileRegion::Primary => ExplorerNodeId::EmptyProfiles,
                 ProfileRegion::Others => ExplorerNodeId::Others,
@@ -2035,6 +2121,18 @@ impl ExplorerTreeState {
                         .iter()
                         .any(|item| item.database == *database)
             }),
+            ExplorerNodeId::PrincipalGroup { profile_id } => self.profiles.contains_key(profile_id),
+            ExplorerNodeId::Principal { entry } => {
+                self.profiles.get(&entry.profile_id).is_some_and(|profile| {
+                    profile
+                        .principals
+                        .iter()
+                        .any(|principal| principal.id == *entry)
+                })
+            }
+            ExplorerNodeId::PrincipalNotice { profile_id } => {
+                self.profiles.contains_key(profile_id)
+            }
             ExplorerNodeId::ConnectionGroup { group_id, region } => {
                 self.groups.iter().any(|group| {
                     group.id == *group_id && self.group_exists_in_region(*group_id, *region)
@@ -2122,6 +2220,21 @@ impl ExplorerTreeState {
             | ExplorerNodeId::Others
             | ExplorerNodeId::ConnectionGroup { .. }
             | ExplorerNodeId::RedisDatabase { .. } => {}
+            ExplorerNodeId::PrincipalGroup { profile_id } => {
+                chain.push(ExplorerNodeId::Profile(*profile_id));
+            }
+            ExplorerNodeId::Principal { entry } => {
+                chain.push(ExplorerNodeId::PrincipalGroup {
+                    profile_id: entry.profile_id,
+                });
+                chain.push(ExplorerNodeId::Profile(entry.profile_id));
+            }
+            ExplorerNodeId::PrincipalNotice { profile_id } => {
+                chain.push(ExplorerNodeId::PrincipalGroup {
+                    profile_id: *profile_id,
+                });
+                chain.push(ExplorerNodeId::Profile(*profile_id));
+            }
             ExplorerNodeId::Profile(profile_id) => {
                 if let Some(profile) = self.profiles.get(profile_id)
                     && let Some(group_id) = profile.group_id
@@ -2513,10 +2626,17 @@ pub(crate) mod tests {
     fn expanded_table_rows_have_expected_shape() {
         let (explorer, table_ids) = explorer_with_tables(956);
         let rows = explorer.visible();
-        assert_eq!(rows.len(), 960);
+        // The connection-level `Users & Roles` group is appended last.
+        assert_eq!(rows.len(), 961);
+        assert_eq!(
+            rows[rows.len() - 2].id.clone(),
+            table_ids.last().cloned().unwrap()
+        );
         assert_eq!(
             rows.last().map(|row| row.id.clone()),
-            table_ids.last().cloned()
+            Some(ExplorerNodeId::PrincipalGroup {
+                profile_id: uuid::Uuid::from_u128(1)
+            })
         );
     }
 
@@ -2540,7 +2660,7 @@ pub(crate) mod tests {
         let _ = take_projection_calls();
         let viewport = explorer.viewport(30);
         assert_eq!(take_projection_calls(), 1);
-        assert_eq!(viewport.total_rows, 960);
+        assert_eq!(viewport.total_rows, 961);
         assert!(viewport.rows.len() <= 30);
 
         let _ = take_projection_calls();
