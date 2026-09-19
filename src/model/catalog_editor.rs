@@ -3742,12 +3742,26 @@ impl CatalogEditorState {
         &self,
         request: &crate::db::catalog_mutation::CatalogObjectDefinitionRequest,
     ) -> bool {
+        let anchor_matches = match &self.anchor {
+            CatalogMutationAnchor::Catalog(object) => {
+                object == &request.object && request.principal.is_none()
+            }
+            CatalogMutationAnchor::Principal(principal) => {
+                request.principal.as_ref() == Some(principal)
+                    && request.object.profile_id() == principal.id.profile_id
+                    && request.object.kind == crate::db::catalog::CatalogKind::Database
+                    && request.object.native_path.len() == 2
+                    && request.object.native_path[0] == "__role__"
+                    && request.object.native_path[1] == principal.name
+            }
+            _ => false,
+        };
         self.operation
             == Some(CatalogEditorOperation::LoadingDefinition {
                 request_id: request.request_id,
             })
             && self.catalog_epoch == request.catalog_epoch
-            && self.anchor == CatalogMutationAnchor::Catalog(request.object.clone())
+            && anchor_matches
     }
 
     pub fn begin_planning(&mut self, request_id: u64) -> bool {

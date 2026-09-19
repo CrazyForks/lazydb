@@ -15326,6 +15326,26 @@ impl App {
             );
             return Vec::new();
         };
+        let object_type = match principal.kind {
+            crate::db::principal::PrincipalKind::User => CatalogObjectType::LoginRole,
+            crate::db::principal::PrincipalKind::Role => CatalogObjectType::Role,
+        };
+        match session.mutation_capabilities.edit_availability(object_type) {
+            Some(crate::db::catalog_mutation::CatalogMutationAvailability::Available) => {}
+            Some(crate::db::catalog_mutation::CatalogMutationAvailability::Unavailable {
+                reason,
+            }) => {
+                self.notify_warning("Catalog", reason);
+                return Vec::new();
+            }
+            None => {
+                self.notify_warning(
+                    "Catalog",
+                    "This connection does not support editing users or roles",
+                );
+                return Vec::new();
+            }
+        }
         let Some(profile_state) = self.explorer.normalized.profiles.get_mut(&entry.profile_id)
         else {
             return Vec::new();
@@ -15346,10 +15366,7 @@ impl App {
             Vec::new(),
         );
         editor.database_kind = Some(profile.kind);
-        editor.object_type = Some(match principal.kind {
-            crate::db::principal::PrincipalKind::User => CatalogObjectType::LoginRole,
-            crate::db::principal::PrincipalKind::Role => CatalogObjectType::Role,
-        });
+        editor.object_type = Some(object_type);
         self.catalog_editor = Some(editor);
         self.overlay = Some(Overlay::CatalogEditor);
         let editor = self

@@ -848,6 +848,7 @@ pub struct ExplorerProfileState {
     pub redis_databases_error: Option<String>,
     pub principals: Vec<PrincipalEntry>,
     pub principals_loaded: bool,
+    pub principals_complete: bool,
     pub principals_error: Option<String>,
     pub principals_unsupported: Option<String>,
     pub principals_pending: Option<u64>,
@@ -886,6 +887,7 @@ impl ExplorerProfileState {
             redis_databases_error: None,
             principals: Vec::new(),
             principals_loaded: false,
+            principals_complete: false,
             principals_error: None,
             principals_unsupported: None,
             principals_pending: None,
@@ -921,6 +923,7 @@ impl ExplorerProfileState {
     pub fn set_principals(&mut self, page: crate::db::principal::PrincipalPage) {
         self.principals = page.entries;
         self.principals_loaded = true;
+        self.principals_complete = page.complete;
         self.principals_error = None;
     }
 
@@ -1585,24 +1588,23 @@ impl ExplorerTreeState {
         let principal_group = ExplorerNodeId::PrincipalGroup { profile_id };
         projection.push(principal_group.clone(), child_depth);
         if self.expanded.contains(&principal_group) {
-            if profile.principals.is_empty()
-                && (profile.principals_loaded
-                    || profile.principals_error.is_some()
-                    || profile.principals_unsupported.is_some())
+            if profile.principals_error.is_some()
+                || profile.principals_unsupported.is_some()
+                || (profile.principals_loaded
+                    && (!profile.principals_complete || profile.principals.is_empty()))
             {
                 projection.push(
                     ExplorerNodeId::PrincipalNotice { profile_id },
                     child_depth + 1,
                 );
-            } else {
-                for principal in &profile.principals {
-                    projection.push(
-                        ExplorerNodeId::Principal {
-                            entry: principal.id.clone(),
-                        },
-                        child_depth + 1,
-                    );
-                }
+            }
+            for principal in &profile.principals {
+                projection.push(
+                    ExplorerNodeId::Principal {
+                        entry: principal.id.clone(),
+                    },
+                    child_depth + 1,
+                );
             }
         }
     }
