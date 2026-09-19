@@ -448,6 +448,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if let HitTarget::OpenTextDetail(request) = target {
                 return Some(Action::OpenTextDetail(request));
             }
+            if let HitTarget::Shortcut(keys) = target {
+                return crate::input::keymap::map_shortcut(&keys, app);
+            }
             if let Some((input_target, cursor)) =
                 ui.input_selection_target_at(event.column, event.row)
             {
@@ -611,6 +614,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 | HitTarget::TransactionExitCancel
                                 | HitTarget::UpdateButton { .. }
                                 | HitTarget::OpenTextDetail(_)
+                                | HitTarget::Shortcut(_)
                         )))
             {
                 return None;
@@ -668,6 +672,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 });
             }
             match target {
+                HitTarget::Shortcut(_) => None,
                 HitTarget::Focus(focus) => Some(Action::Focus(focus)),
                 HitTarget::Tab(index) => Some(Action::ActivateTab(index)),
                 HitTarget::TabScrollLeft(index) | HitTarget::TabScrollRight(index) => {
@@ -1404,6 +1409,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::ResultPageSize
         | HitTarget::ResultNextPage
         | HitTarget::ResultLastPage => Some(Focus::Results),
+        HitTarget::Shortcut(_) => None,
     }
 }
 

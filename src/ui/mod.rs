@@ -31,6 +31,7 @@ pub mod theme;
 pub(crate) mod update;
 
 use crate::profile::DatabaseKind;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     buffer::CellWidth,
@@ -270,6 +271,7 @@ pub enum HitTarget {
     RecordViewCopyCell,
     RecordViewCopyRow,
     RecordViewViewValue,
+    Shortcut(Vec<crossterm::event::KeyEvent>),
 }
 
 pub(crate) fn readonly_detail_request(
@@ -4776,11 +4778,12 @@ fn render_overlay(
                     target: HitTarget::RedisValueSaveAction(action.index),
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc cancel",
                 theme,
+                state,
             );
             let _ = tab_id;
         }
@@ -4840,11 +4843,12 @@ fn render_overlay(
                     target: HitTarget::RedisUnsavedValueAction(action.index),
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   s save   d discard   Esc cancel",
                 theme,
+                state,
             );
         }
         Overlay::ProfileAccess {
@@ -4920,11 +4924,12 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc keep running",
                 theme,
+                state,
             );
         }
         Overlay::TransactionExitConfirm { prompt, choice } => {
@@ -5150,11 +5155,12 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc cancel",
                 theme,
+                state,
             );
         }
         Overlay::TransactionMenu { selected } => {
@@ -5188,7 +5194,7 @@ fn render_overlay(
                 .saturating_sub(visible_count.saturating_sub(1))
                 .min(candidates.len().saturating_sub(visible_count));
             let end = start.saturating_add(visible_count);
-            let mut lines = Vec::with_capacity(visible_count.saturating_add(3));
+            let mut lines = Vec::with_capacity(visible_count.saturating_add(2));
             lines.extend(
                 candidates[start..end]
                     .iter()
@@ -5258,16 +5264,6 @@ fn render_overlay(
                     }),
             );
             lines.push(Line::raw(""));
-            lines.push(shortcut_hints::line(
-                &[
-                    ShortcutHint::new("j/k or Up/Down", "select"),
-                    ShortcutHint::new("Enter", "confirm"),
-                    ShortcutHint::new("Esc", "cancel"),
-                ],
-                inner.width,
-                theme,
-                theme.surface_raised,
-            ));
             lines.push(Line::from(Span::styled(
                 " Cancel ",
                 Style::new().fg(theme.text).bg(theme.surface_raised),
@@ -5289,6 +5285,31 @@ fn render_overlay(
                     });
                 }
             }
+            shortcut_hints::render_interactive(
+                frame,
+                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                &[
+                    ShortcutHint::with_keys(
+                        "j/k or Up/Down",
+                        "select",
+                        [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Enter",
+                        "confirm",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Esc",
+                        "cancel",
+                        [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                    ),
+                ],
+                theme,
+                theme.surface_raised,
+                Alignment::Center,
+                state,
+            );
             frame.render_widget(
                 Paragraph::new(lines).style(Style::new().fg(theme.text).bg(theme.surface_raised)),
                 inner,
@@ -5476,11 +5497,12 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc cancel",
                 theme,
+                state,
             );
         }
         Overlay::RedisDeleteConfirm {
@@ -5566,11 +5588,12 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
                 "Tab / Left / Right switch   Enter activate   Esc cancel",
                 theme,
+                state,
             );
         }
         Overlay::RedisDeletePreparing { target, .. } => {
@@ -5677,7 +5700,7 @@ fn render_overlay(
                     },
                 });
             }
-            dialog::render_hint(
+            dialog::render_interactive_hint(
                 frame,
                 chunks[5],
                 if compact {
@@ -5686,6 +5709,7 @@ fn render_overlay(
                     "Tab / Left / Right switch   Enter confirm   Esc back"
                 },
                 theme,
+                state,
             );
         }
         Overlay::ProfileGroup(group) => {
@@ -5869,20 +5893,30 @@ fn render_explorer_add(
             });
         }
     }
-    frame.render_widget(
-        Paragraph::new(shortcut_hints::line(
-            &[
-                ShortcutHint::new("j/k · ↑/↓", "select"),
-                ShortcutHint::new("Enter", "continue"),
-                ShortcutHint::new("Esc", "close"),
-            ],
-            inner.width,
-            theme,
-            theme.surface,
-        ))
-        .style(Style::new().bg(theme.surface))
-        .alignment(Alignment::Center),
+    shortcut_hints::render_interactive(
+        frame,
         Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &[
+            ShortcutHint::with_keys(
+                "j/k · ↑/↓",
+                "select",
+                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Enter",
+                "continue",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "close",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ],
+        theme,
+        theme.surface,
+        Alignment::Center,
+        state,
     );
 }
 
@@ -6255,28 +6289,41 @@ fn render_profile_group_overlay(
                     });
                 }
             }
-            frame.render_widget(
-                Paragraph::new(if *busy {
-                    Line::from(Span::styled(
-                        "Updating group...",
-                        Style::new().fg(theme.muted).bg(theme.surface),
-                    ))
-                } else {
-                    shortcut_hints::line(
-                        &[
-                            ShortcutHint::new("↑/↓", "select"),
-                            ShortcutHint::new("Enter", "apply"),
-                            ShortcutHint::new("Esc", "cancel"),
-                        ],
-                        inner.width,
-                        theme,
-                        theme.surface,
-                    )
-                })
-                .style(Style::new().bg(theme.surface))
-                .alignment(Alignment::Center),
-                Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-            );
+            let footer = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
+            if *busy {
+                frame.render_widget(
+                    Paragraph::new("Updating group...")
+                        .style(Style::new().fg(theme.muted).bg(theme.surface))
+                        .alignment(Alignment::Center),
+                    footer,
+                );
+            } else {
+                shortcut_hints::render_interactive(
+                    frame,
+                    footer,
+                    &[
+                        ShortcutHint::with_keys(
+                            "↑/↓",
+                            "select",
+                            [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+                        ),
+                        ShortcutHint::with_keys(
+                            "Enter",
+                            "apply",
+                            [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                        ),
+                        ShortcutHint::with_keys(
+                            "Esc",
+                            "cancel",
+                            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                        ),
+                    ],
+                    theme,
+                    theme.surface,
+                    Alignment::Center,
+                    state,
+                );
+            }
         }
         ProfileGroupOverlay::Edit {
             group_id,
@@ -6365,20 +6412,26 @@ fn render_profile_group_overlay(
                 state,
                 theme,
             );
-            frame.render_widget(
-                Paragraph::new(shortcut_hints::line(
-                    &[
-                        ShortcutHint::new("Enter", "save"),
-                        ShortcutHint::new("Esc", "cancel"),
-                        ShortcutHint::new("Ctrl-W/U/A/E", "edit"),
-                    ],
-                    inner.width,
-                    theme,
-                    theme.surface,
-                ))
-                .style(Style::new().bg(theme.surface))
-                .alignment(Alignment::Center),
+            shortcut_hints::render_interactive(
+                frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                &[
+                    ShortcutHint::with_keys(
+                        "Enter",
+                        "save",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Esc",
+                        "cancel",
+                        [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::new("Ctrl-W/U/A/E", "edit"),
+                ],
+                theme,
+                theme.surface,
+                Alignment::Center,
+                state,
             );
         }
         ProfileGroupOverlay::DeleteConfirm {
@@ -6414,20 +6467,30 @@ fn render_profile_group_overlay(
                 state,
                 theme,
             );
-            frame.render_widget(
-                Paragraph::new(shortcut_hints::line(
-                    &[
-                        ShortcutHint::new("Tab/←/→", "switch"),
-                        ShortcutHint::new("Enter", "confirm"),
-                        ShortcutHint::new("Esc", "cancel"),
-                    ],
-                    inner.width,
-                    theme,
-                    theme.surface,
-                ))
-                .style(Style::new().bg(theme.surface))
-                .alignment(Alignment::Center),
+            shortcut_hints::render_interactive(
+                frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+                &[
+                    ShortcutHint::with_keys(
+                        "Tab/←/→",
+                        "switch",
+                        [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Enter",
+                        "confirm",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Esc",
+                        "cancel",
+                        [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                    ),
+                ],
+                theme,
+                theme.surface,
+                Alignment::Center,
+                state,
             );
         }
     }
@@ -6796,11 +6859,12 @@ fn render_console_manager(
                 },
             });
         }
-        dialog::render_hint(
+        dialog::render_interactive_hint(
             frame,
             Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
             "Tab / Left / Right switch   Enter activate   Esc cancel",
             theme,
+            state,
         );
     }
 }
@@ -6936,7 +7000,7 @@ fn render_catalog_drop_confirm(
             },
         });
     }
-    dialog::render_hint(
+    dialog::render_interactive_hint(
         frame,
         chunks[3],
         if *busy {
@@ -6945,6 +7009,7 @@ fn render_catalog_drop_confirm(
             "Tab / Left / Right switch   Enter activate   Esc cancel"
         },
         theme,
+        state,
     );
 }
 

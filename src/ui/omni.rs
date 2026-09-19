@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     buffer::CellWidth,
@@ -10,7 +11,13 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::{app::App, security::sanitize_terminal_text};
 
-use super::{HitRegion, HitTarget, UiState, icons::IconSet, render_text_input, theme::Theme};
+use super::{
+    HitRegion, HitTarget, UiState,
+    icons::IconSet,
+    render_text_input,
+    shortcut_hints::{self, ShortcutHint},
+    theme::Theme,
+};
 
 pub(super) struct OmniLayout {
     pub popup: Rect,
@@ -40,8 +47,8 @@ pub(super) fn layout(area: Rect, has_status: bool) -> Option<OmniLayout> {
     );
     let input = Rect::new(inner.x, inner.y, inner.width, 1);
     let status =
-        has_status.then(|| Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1));
-    let results_height = inner.height.saturating_sub(2 + u16::from(has_status));
+        has_status.then(|| Rect::new(inner.x, inner.bottom().saturating_sub(2), inner.width, 1));
+    let results_height = inner.height.saturating_sub(4);
     let results = Rect::new(
         inner.x,
         inner.y.saturating_add(2),
@@ -84,11 +91,6 @@ pub(super) fn render(
     };
     let popup = layout.popup;
     frame.render_widget(Clear, popup);
-    let footer = if matches!(omni.step, crate::model::omni::OmniStep::Root) {
-        " ↑↓ select  Enter open  Esc close "
-    } else {
-        " ↑↓ select  Enter continue  Esc back "
-    };
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -98,8 +100,7 @@ pub(super) fn render(
         .title_top(
             Line::from(Span::styled(" Tab -> Help ", Style::new().fg(theme.muted)))
                 .alignment(Alignment::Right),
-        )
-        .title_bottom(footer);
+        );
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -253,6 +254,52 @@ pub(super) fn render(
             status_area,
         );
     }
+    let footer = if matches!(omni.step, crate::model::omni::OmniStep::Root) {
+        [
+            ShortcutHint::with_keys(
+                "↑/↓",
+                "select",
+                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Enter",
+                "open",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "close",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ]
+    } else {
+        [
+            ShortcutHint::with_keys(
+                "↑/↓",
+                "select",
+                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Enter",
+                "continue",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "back",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ]
+    };
+    shortcut_hints::render_interactive(
+        frame,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &footer,
+        theme,
+        theme.surface_raised,
+        Alignment::Center,
+        state,
+    );
 }
 
 fn visible_window(

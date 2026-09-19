@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use crossterm::event::KeyEvent;
 use ratatui::{
     Frame,
     buffer::CellWidth,
@@ -10,21 +11,35 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use super::Theme;
+use super::{HitRegion, HitTarget, Theme, UiState};
 
 const SEPARATOR: &str = "   ";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ShortcutHint<'a> {
+pub(crate) struct ShortcutHint<'a> {
     pub key: Cow<'a, str>,
     pub description: Cow<'a, str>,
+    pub activation: Option<Vec<KeyEvent>>,
 }
 
 impl<'a> ShortcutHint<'a> {
-    pub(super) fn new(key: impl Into<Cow<'a, str>>, description: impl Into<Cow<'a, str>>) -> Self {
+    pub(crate) fn new(key: impl Into<Cow<'a, str>>, description: impl Into<Cow<'a, str>>) -> Self {
         Self {
             key: key.into(),
             description: description.into(),
+            activation: None,
+        }
+    }
+
+    pub(crate) fn with_keys(
+        key: impl Into<Cow<'a, str>>,
+        description: impl Into<Cow<'a, str>>,
+        keys: impl Into<Vec<KeyEvent>>,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            description: description.into(),
+            activation: Some(keys.into()),
         }
     }
 }
@@ -92,6 +107,90 @@ pub(super) fn render(
             .alignment(alignment),
         area,
     );
+}
+
+pub(super) fn render_interactive(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    hints: &[ShortcutHint<'_>],
+    theme: Theme,
+    background: Color,
+    alignment: Alignment,
+    state: &mut UiState,
+) {
+    let rendered = lines(hints, area.width, theme, background);
+    frame.render_widget(
+        Paragraph::new(rendered.clone())
+            .style(Style::new().bg(background))
+            .alignment(alignment),
+        area,
+    );
+    if area.is_empty() {
+        return;
+    }
+
+    let mut rows: Vec<(Vec<usize>, u16)> = vec![(Vec::new(), 0)];
+    for (index, hint) in hints.iter().enumerate() {
+        let width = hint.key.as_ref().cell_width();
+        let text_width = hint.description.as_ref().cell_width();
+        let item_width = width.saturating_add(1).saturating_add(text_width);
+        let row_width = rows.last().map_or(0, |(_, width)| *width);
+        let separator = if row_width == 0 {
+            0
+        } else {
+            SEPARATOR.cell_width()
+        };
+        if row_width > 0
+            && row_width
+                .saturating_add(separator)
+                .saturating_add(item_width)
+                > area.width
+        {
+            rows.push((Vec::new(), 0));
+        }
+        let (indices, width) = rows.last_mut().expect("shortcut rows always have one row");
+        let separator = if indices.is_empty() {
+            0
+        } else {
+            SEPARATOR.cell_width()
+        };
+        indices.push(index);
+        *width = width.saturating_add(separator).saturating_add(item_width);
+    }
+    if rows.is_empty() {
+        return;
+    }
+    for (row_index, (indices, row_width)) in rows.into_iter().enumerate() {
+        let mut x = match alignment {
+            Alignment::Center => area
+                .x
+                .saturating_add(area.width.saturating_sub(row_width) / 2),
+            Alignment::Right => area.x.saturating_add(area.width.saturating_sub(row_width)),
+            Alignment::Left => area.x,
+        };
+        let y = area.y.saturating_add(row_index as u16);
+        for index in indices {
+            let hint = &hints[index];
+            let width = hint.key.as_ref().cell_width();
+            let text_width = hint.description.as_ref().cell_width();
+            let item_width = width.saturating_add(1).saturating_add(text_width);
+            if x >= area.right() {
+                break;
+            }
+            if let Some(keys) = hint.activation.as_ref()
+                && item_width > 0
+                && y < area.bottom()
+            {
+                let clipped = item_width.min(area.right().saturating_sub(x));
+                state.hit_regions.push(HitRegion {
+                    area: Rect::new(x, y, clipped, 1),
+                    target: HitTarget::Shortcut(keys.clone()),
+                });
+            }
+            x = x.saturating_add(item_width);
+            x = x.saturating_add(SEPARATOR.cell_width());
+        }
+    }
 }
 
 pub(super) fn lines(

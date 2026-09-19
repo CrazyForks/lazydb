@@ -1,5 +1,6 @@
 #![allow(clippy::if_same_then_else)]
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     buffer::CellWidth,
@@ -230,11 +231,12 @@ fn render_form(
         state,
         theme,
     );
-    render_hint(
+    render_interactive_hint(
         frame,
         layout.hint,
         &form_hints(manager.selected_field, inner.width),
         theme,
+        state,
     );
 }
 
@@ -305,11 +307,30 @@ fn render_confirmation(
             },
         });
     }
-    dialog::render_hint(
+    shortcut_hints::render_interactive(
         frame,
         Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-        "Tab / Left / Right switch   Enter activate   Esc cancel",
+        &[
+            ShortcutHint::with_keys(
+                "Tab/←/→",
+                "switch",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Enter",
+                "activate",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ],
         theme,
+        theme.surface,
+        Alignment::Center,
+        state,
     );
 }
 
@@ -437,25 +458,57 @@ fn render_scope(
             ShortcutHint::new("Esc", "back"),
         ]
     };
+    let hints = hints
+        .into_iter()
+        .map(|hint| match hint.key.as_ref() {
+            "Enter" => ShortcutHint::with_keys(
+                hint.key,
+                hint.description,
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            "Esc" => ShortcutHint::with_keys(
+                hint.key,
+                hint.description,
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+            "Space" => ShortcutHint::with_keys(
+                hint.key,
+                hint.description,
+                [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+            ),
+            "r" => ShortcutHint::with_keys(
+                hint.key,
+                hint.description,
+                [KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)],
+            ),
+            _ => hint,
+        })
+        .collect::<Vec<_>>();
     if loading {
-        let line = Line::from(vec![Span::styled(
-            "Loading...   ",
-            Style::new().fg(theme.muted).bg(theme.surface),
-        )]);
-        let mut spans = line.spans;
-        spans.extend(
-            shortcut_hints::line(
-                &hints,
-                hint_area.width.saturating_sub(12),
-                theme,
-                theme.surface,
-            )
-            .spans,
+        frame.render_widget(
+            Paragraph::new("Loading...   ").style(Style::new().fg(theme.muted).bg(theme.surface)),
+            Rect::new(hint_area.x, hint_area.y, 12.min(hint_area.width), 1),
         );
-        frame.render_widget(Paragraph::new(Line::from(spans)), hint_area);
-    } else {
-        render_hint(frame, hint_area, &hints, theme);
     }
+    let hint_area = if loading {
+        Rect::new(
+            hint_area.x.saturating_add(12),
+            hint_area.y,
+            hint_area.width.saturating_sub(12),
+            hint_area.height,
+        )
+    } else {
+        hint_area
+    };
+    shortcut_hints::render_interactive(
+        frame,
+        hint_area,
+        &hints,
+        theme,
+        theme.surface,
+        Alignment::Center,
+        state,
+    );
 }
 
 fn render_panel(frame: &mut Frame<'_>, area: Rect, title: &str, theme: Theme) -> Rect {
@@ -947,22 +1000,43 @@ fn render_buttons(
 }
 
 fn form_hints(field: ProfileField, width: u16) -> Vec<ShortcutHint<'static>> {
+    let ctrl = KeyModifiers::CONTROL;
     if width < 70 {
         return vec![
-            ShortcutHint::new("^T", "Test"),
-            ShortcutHint::new("^Enter", "Save+Connect"),
-            ShortcutHint::new("^S", "Save"),
-            ShortcutHint::new("Esc", "Close"),
+            ShortcutHint::with_keys("^T", "Test", [KeyEvent::new(KeyCode::Char('t'), ctrl)]),
+            ShortcutHint::with_keys(
+                "^Enter",
+                "Save+Connect",
+                [KeyEvent::new(KeyCode::Enter, ctrl)],
+            ),
+            ShortcutHint::with_keys("^S", "Save", [KeyEvent::new(KeyCode::Char('s'), ctrl)]),
+            ShortcutHint::with_keys(
+                "Esc",
+                "Close",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
         ];
     }
     let mut hints = vec![
-        ShortcutHint::new("Ctrl+T", "test"),
-        ShortcutHint::new("Ctrl+Enter", "save & connect"),
-        ShortcutHint::new("Ctrl+S", "save"),
-        ShortcutHint::new("Esc", "cancel"),
+        ShortcutHint::with_keys("Ctrl+T", "test", [KeyEvent::new(KeyCode::Char('t'), ctrl)]),
+        ShortcutHint::with_keys(
+            "Ctrl+Enter",
+            "save & connect",
+            [KeyEvent::new(KeyCode::Enter, ctrl)],
+        ),
+        ShortcutHint::with_keys("Ctrl+S", "save", [KeyEvent::new(KeyCode::Char('s'), ctrl)]),
+        ShortcutHint::with_keys(
+            "Esc",
+            "cancel",
+            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        ),
     ];
     if is_text_field(field) {
-        hints.push(ShortcutHint::new("Tab/Shift+Tab", "move"));
+        hints.push(ShortcutHint::with_keys(
+            "Tab/Shift+Tab",
+            "move",
+            [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+        ));
     } else if is_cycle_field(field) || field == ProfileField::Kind {
         hints.push(ShortcutHint::new("Left/Right", "change"));
     } else if !is_button_field(field) {
@@ -996,8 +1070,22 @@ fn is_cycle_field(field: ProfileField) -> bool {
     )
 }
 
-fn render_hint(frame: &mut Frame<'_>, area: Rect, hints: &[ShortcutHint<'_>], theme: Theme) {
-    shortcut_hints::render(frame, area, hints, theme, theme.surface, Alignment::Center);
+fn render_interactive_hint(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    hints: &[ShortcutHint<'_>],
+    theme: Theme,
+    state: &mut UiState,
+) {
+    shortcut_hints::render_interactive(
+        frame,
+        area,
+        hints,
+        theme,
+        theme.surface,
+        Alignment::Center,
+        state,
+    );
 }
 
 fn manager_panel(area: Rect, max_width: u16, max_height: u16) -> Rect {

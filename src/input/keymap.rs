@@ -62,6 +62,34 @@ pub struct Keymap {
     bindings: crate::config::KeyBindings,
 }
 
+/// Map a shortcut advertised by an interactive UI hint through the same
+/// context-sensitive keymap used for terminal keyboard input.
+pub(crate) fn map_shortcut(sequence: &[KeyEvent], app: &App) -> Option<Action> {
+    if sequence.is_empty() {
+        return None;
+    }
+    let mut keymap = Keymap::with_sequence_timeout_and_bindings(
+        std::time::Duration::from_millis(
+            crate::config::AppConfig::default()
+                .keybindings
+                .sequence_timeout_ms,
+        ),
+        app.key_bindings.clone(),
+    );
+    let mut action = None;
+    for (index, event) in sequence.iter().copied().enumerate() {
+        let mapped = keymap.map(event, app);
+        if index + 1 < sequence.len() {
+            if mapped.is_some() {
+                return None;
+            }
+        } else {
+            action = mapped;
+        }
+    }
+    action
+}
+
 impl Default for Keymap {
     fn default() -> Self {
         Self::with_sequence_timeout(Duration::from_millis(
@@ -4310,7 +4338,7 @@ fn redis_help_binding_is_active(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{Keymap, Pending, PendingState, map_text_input_edit};
+    use super::{Keymap, Pending, PendingState, map_shortcut, map_text_input_edit};
     use crate::{
         action::Action,
         app::App,
@@ -4336,6 +4364,20 @@ mod tests {
         app.active_tab = 1;
         app.focus = Focus::Results;
         app
+    }
+
+    #[test]
+    fn advertised_shortcuts_use_the_same_contextual_keymap_as_keyboard_input() {
+        let mut app = relation_app(RelationGridMode::Browse);
+        app.overlay = Some(Overlay::Message {
+            title: "test".into(),
+            body: "test".into(),
+        });
+        assert_eq!(
+            map_shortcut(&[KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)], &app,),
+            Some(Action::DismissOverlay),
+        );
+        assert_eq!(map_shortcut(&[], &app), None);
     }
 
     #[test]
