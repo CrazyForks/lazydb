@@ -204,6 +204,187 @@ fn oracle_table_edit_plan_renames_only_the_table_identity() {
 }
 
 #[test]
+fn mysql_table_and_column_comment_edits_produce_mutation_sql() {
+    let profile_id = Uuid::from_u128(90);
+    let object = CatalogId::new(profile_id, CatalogKind::Table, ["app", "app", "items"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 1,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("app".into()),
+    };
+    let definition = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "app".into(),
+        name: "items".into(),
+        owner: String::new(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("old table".into())),
+        columns: vec![lazydb::db::catalog_mutation::ColumnDefinition {
+            name: "id".into(),
+            ordinal_position: 1,
+            native_type: "INT".into(),
+            nullable: false,
+            default_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            identity: lazydb::db::catalog::OptionalMetadata::Supported(Some(true)),
+            generated_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            collation: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("old column".into())),
+        }],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "items".into(),
+    };
+    let mut draft = TableDraft::from_definition_for_database(&definition, DatabaseKind::MySql);
+    draft.comment.set("new table");
+    draft.columns[0].comment.set("new column");
+    let plan = MySqlAdapter::plan_catalog_mutation(
+        request,
+        CatalogDraft::Table(draft),
+        Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(definition)),
+    )
+    .expect("comment-only MySQL edit should produce a plan");
+    assert!(
+        plan.statements()
+            .iter()
+            .any(|sql| sql.contains("ALTER TABLE `app`.`items` COMMENT = 'new table'"))
+    );
+    assert!(
+        plan.statements().iter().any(|sql| {
+            sql.contains("CHANGE COLUMN `id`") && sql.contains("COMMENT 'new column'")
+        })
+    );
+}
+
+#[test]
+fn oracle_table_and_column_comment_edits_produce_comment_statements() {
+    let profile_id = Uuid::from_u128(91);
+    let object = CatalogId::new(profile_id, CatalogKind::Table, ["SERVICE", "APP", "ITEMS"]);
+    let request = lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id: 1,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("SERVICE".into()),
+    };
+    let definition = lazydb::db::catalog_mutation::TableDefinition {
+        database: "SERVICE".into(),
+        schema: "APP".into(),
+        name: "ITEMS".into(),
+        owner: "APP".into(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("old table".into())),
+        columns: vec![lazydb::db::catalog_mutation::ColumnDefinition {
+            name: "ID".into(),
+            ordinal_position: 1,
+            native_type: "NUMBER".into(),
+            nullable: false,
+            default_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            identity: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            generated_expression: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            collation: lazydb::db::catalog::OptionalMetadata::Unsupported,
+            comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("old column".into())),
+        }],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "items".into(),
+    };
+    let mut draft = TableDraft::from_definition(&definition);
+    draft.comment.set("new table");
+    draft.columns[0].comment.set("new column");
+    let plan = OracleAdapter::plan_catalog_mutation(
+        request,
+        CatalogDraft::Table(draft),
+        Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(definition)),
+    )
+    .expect("comment-only Oracle edit should produce a plan");
+    assert_eq!(
+        plan.statements(),
+        &[
+            "COMMENT ON TABLE \"APP\".\"ITEMS\" IS 'new table'",
+            "COMMENT ON COLUMN \"APP\".\"ITEMS\".\"ID\" IS 'new column'",
+        ]
+    );
+    assert!(!plan.impact.native_identity_changed);
+}
+
+#[test]
+fn comment_edits_preserve_no_changes_and_support_clearing() {
+    let profile_id = Uuid::from_u128(92);
+    let object = CatalogId::new(profile_id, CatalogKind::Table, ["app", "app", "items"]);
+    let request = |request_id| lazydb::db::catalog_mutation::CatalogMutationRequest {
+        connection: lazydb::identity::ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+        request_id,
+        catalog_epoch: 1,
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Catalog(object.clone()),
+        object_type: CatalogObjectType::Catalog(CatalogKind::Table),
+        current_database: Some("app".into()),
+    };
+    let definition = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "app".into(),
+        name: "items".into(),
+        owner: String::new(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("table".into())),
+        columns: vec![lazydb::db::catalog_mutation::ColumnDefinition {
+            name: "id".into(),
+            ordinal_position: 1,
+            native_type: "INT".into(),
+            nullable: false,
+            default_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            identity: lazydb::db::catalog::OptionalMetadata::Supported(Some(false)),
+            generated_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            collation: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("column".into())),
+        }],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "items".into(),
+    };
+    let baseline = lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(definition.clone());
+    let unchanged = TableDraft::from_definition_for_database(&definition, DatabaseKind::MySql);
+    let unchanged_result = MySqlAdapter::plan_catalog_mutation(
+        request(1),
+        CatalogDraft::Table(unchanged),
+        Some(baseline.clone()),
+    );
+    assert!(matches!(
+        unchanged_result,
+        Err(lazydb::db::catalog_mutation::CatalogMutationError::NoChanges)
+    ));
+
+    let mut clear = TableDraft::from_definition_for_database(&definition, DatabaseKind::MySql);
+    clear.comment.clear();
+    clear.columns[0].comment.clear();
+    let plan =
+        MySqlAdapter::plan_catalog_mutation(request(2), CatalogDraft::Table(clear), Some(baseline))
+            .expect("clearing comments should produce a plan");
+    assert!(
+        plan.statements()
+            .iter()
+            .any(|sql| sql.ends_with("COMMENT = ''"))
+    );
+    assert!(
+        plan.statements()
+            .iter()
+            .any(|sql| sql.contains("COMMENT ''"))
+    );
+}
+
+#[test]
 fn oracle_view_edit_plan_replaces_the_definition() {
     let profile_id = Uuid::from_u128(10);
     let object = CatalogId::new(profile_id, CatalogKind::View, ["SERVICE", "APP", "V"]);
