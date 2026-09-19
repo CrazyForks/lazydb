@@ -219,7 +219,7 @@ pub(crate) fn render(
             },
         });
     }
-    dialog::render_hint(
+    dialog::render_interactive_hint(
         frame,
         Rect::new(
             sections[2].x,
@@ -229,6 +229,7 @@ pub(crate) fn render(
         ),
         "Tab / Left / Right switch   Enter activate   Up / Down preview   Esc cancel",
         theme,
+        state,
     );
 }
 

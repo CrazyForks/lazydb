@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -46,10 +47,10 @@ pub fn render(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     match editor.page {
-        CatalogEditorPage::ObjectPicker => picker(frame, inner, editor, theme, icons),
-        CatalogEditorPage::Loading => loading(frame, inner, editor, theme),
+        CatalogEditorPage::ObjectPicker => picker(frame, inner, editor, theme, icons, ui),
+        CatalogEditorPage::Loading => loading(frame, inner, editor, theme, ui),
         CatalogEditorPage::Form => form(frame, inner, app, editor, ui, theme),
-        CatalogEditorPage::SqlPreview => preview(frame, inner, app, editor, theme),
+        CatalogEditorPage::SqlPreview => preview(frame, inner, app, editor, ui, theme),
     }
     if editor.page == CatalogEditorPage::Form
         && let Some(CatalogDraft::Table(draft)) = editor.draft.as_ref()
@@ -93,6 +94,7 @@ fn picker(
     editor: &CatalogEditorState,
     theme: Theme,
     icons: IconSet,
+    ui: &mut UiState,
 ) {
     frame.render_widget(
         Paragraph::new(format!("TARGET  {}", target_label(editor)))
@@ -136,20 +138,28 @@ fn picker(
             row,
         );
     }
-    frame.render_widget(
-        Paragraph::new(shortcut_hints::line(
-            &[
-                ShortcutHint::new("j/k · ↑/↓", "select"),
-                ShortcutHint::new("Enter", "continue"),
-                ShortcutHint::new("Esc", "close"),
-            ],
-            area.width,
-            theme,
-            theme.surface,
-        ))
-        .style(Style::new().bg(theme.surface))
-        .alignment(ratatui::layout::Alignment::Center),
+    render_interactive_hints(
+        frame,
         Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        &[
+            ShortcutHint::with_keys(
+                "j/k · ↑/↓",
+                "select",
+                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Enter",
+                "continue",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "close",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ],
+        theme,
+        ui,
     );
 }
 
@@ -169,7 +179,13 @@ fn object_color(object_type: CatalogObjectType, theme: Theme) -> Color {
     }
 }
 
-fn loading(frame: &mut Frame<'_>, area: Rect, editor: &CatalogEditorState, theme: Theme) {
+fn loading(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    editor: &CatalogEditorState,
+    theme: Theme,
+    ui: &mut UiState,
+) {
     let operation = editor
         .operation
         .map(|operation| match operation {
@@ -212,15 +228,77 @@ fn loading(frame: &mut Frame<'_>, area: Rect, editor: &CatalogEditorState, theme
         Paragraph::new(lines).wrap(Wrap { trim: true }),
         content_area,
     );
-    frame.render_widget(
-        Paragraph::new(shortcut_hints::line(
-            &footer,
-            area.width,
-            theme,
-            theme.surface,
-        ))
-        .style(Style::new().bg(theme.surface)),
+    render_interactive_hints(
+        frame,
         Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        &footer,
+        theme,
+        ui,
+    );
+}
+
+fn render_interactive_hints(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    hints: &[ShortcutHint<'_>],
+    theme: Theme,
+    ui: &mut UiState,
+) {
+    let hints = hints
+        .iter()
+        .map(|hint| match hint.key.as_ref() {
+            "Esc" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+            "Enter" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            "dd" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                ],
+            ),
+            "j/k · ↑/↓" | "↑/↓" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+            ),
+            "Tab/Shift-Tab" | "Tab/Shift-Tab/Up/Down" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            "Enter/Space" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            "a" | "A" | "e" | "r" | "J/K" => ShortcutHint::with_keys(
+                hint.key.clone(),
+                hint.description.clone(),
+                [KeyEvent::new(
+                    KeyCode::Char(hint.key.chars().next().unwrap_or('a')),
+                    KeyModifiers::NONE,
+                )],
+            ),
+            _ => hint.clone(),
+        })
+        .collect::<Vec<_>>();
+    shortcut_hints::render_interactive(
+        frame,
+        area,
+        &hints,
+        theme,
+        theme.surface,
+        ratatui::layout::Alignment::Center,
+        ui,
     );
 }
 
@@ -391,16 +469,7 @@ fn form(
             }
             hints.push(ShortcutHint::new("Esc", "cancel"));
         }
-        frame.render_widget(
-            Paragraph::new(shortcut_hints::line(
-                &hints,
-                chunks[2].width,
-                theme,
-                theme.surface,
-            ))
-            .style(Style::new().bg(theme.surface)),
-            chunks[2],
-        );
+        render_interactive_hints(frame, chunks[2], &hints, theme, ui);
     }
 }
 
@@ -2097,11 +2166,12 @@ fn render_table(
         );
         x = x.saturating_add(width + 3);
     }
-    frame.render_widget(
-        Paragraph::new(hint_lines)
-            .style(Style::new().bg(theme.surface))
-            .alignment(ratatui::layout::Alignment::Center),
+    render_interactive_hints(
+        frame,
         Rect::new(area.x, footer_y, area.width, footer_height),
+        &table_shortcut_hints(draft, compact),
+        theme,
+        ui,
     );
 }
 
@@ -2350,21 +2420,29 @@ fn render_table_column_details_modal(
         });
     }
     let footer = Rect::new(inner.x, inner.y.saturating_add(8), inner.width, 1);
-    frame.render_widget(
-        Paragraph::new(shortcut_hints::line(
-            &[
-                ShortcutHint::new("Tab/Shift-Tab/Up/Down", "move field"),
-                ShortcutHint::new("Enter", "confirm"),
-                ShortcutHint::new("Esc", "cancel"),
-                ShortcutHint::new("Space", "toggle"),
-            ],
-            footer.width,
-            theme,
-            theme.surface,
-        ))
-        .style(Style::new().bg(theme.surface))
-        .alignment(ratatui::layout::Alignment::Center),
+    render_interactive_hints(
+        frame,
         footer,
+        &[
+            ShortcutHint::new("Tab/Shift-Tab/Up/Down", "move field"),
+            ShortcutHint::with_keys(
+                "Enter",
+                "confirm",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Space",
+                "toggle",
+                [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+            ),
+        ],
+        theme,
+        ui,
     );
     let controls = Rect::new(inner.x, inner.y.saturating_add(7), inner.width, 1);
     let confirm_width = 13.min(controls.width);
@@ -2690,6 +2768,7 @@ fn preview(
     area: Rect,
     app: &App,
     editor: &CatalogEditorState,
+    ui: &mut UiState,
     theme: Theme,
 ) {
     let sql = editor
@@ -2705,7 +2784,6 @@ fn preview(
             ShortcutHint::new("Esc", "return to form"),
         ]
     };
-    let footer = shortcut_hints::line(&footer_hints, area.width, theme, theme.surface);
     let mut lines = vec![
         Line::from(Span::styled(
             "SQL PREVIEW",
@@ -2788,7 +2866,7 @@ fn preview(
         Paragraph::new(lines).scroll((scroll.min(usize::from(u16::MAX)) as u16, 0)),
         body_area,
     );
-    frame.render_widget(Paragraph::new(footer), footer_area);
+    render_interactive_hints(frame, footer_area, &footer_hints, theme, ui);
 }
 
 fn target_label(editor: &CatalogEditorState) -> String {

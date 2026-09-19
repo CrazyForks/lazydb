@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -7,7 +8,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::theme::Theme;
+use super::{
+    Theme, UiState,
+    shortcut_hints::{self, ShortcutHint},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DialogTone {
@@ -126,13 +130,61 @@ pub fn render_body(frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>,
     );
 }
 
-pub fn render_hint(frame: &mut Frame<'_>, area: Rect, text: &'static str, theme: Theme) {
-    frame.render_widget(
-        Paragraph::new(text)
-            .style(Style::new().fg(theme.muted).bg(theme.surface_raised))
-            .alignment(Alignment::Center),
+pub fn render_interactive_hint(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    text: &'static str,
+    theme: Theme,
+    state: &mut UiState,
+) {
+    let hints = text
+        .split("   ")
+        .filter_map(|part| {
+            let (key, description) = part.split_once(char::is_whitespace)?;
+            let key = key.trim();
+            let description = description.trim();
+            if key.is_empty() || description.is_empty() {
+                return Some(ShortcutHint::new(part, ""));
+            }
+            let event = shortcut_event(key)?;
+            Some(ShortcutHint::with_keys(key, description, [event]))
+        })
+        .collect::<Vec<_>>();
+    shortcut_hints::render_interactive(
+        frame,
         area,
+        &hints,
+        theme,
+        theme.surface,
+        Alignment::Center,
+        state,
     );
+}
+
+fn shortcut_event(key: &str) -> Option<KeyEvent> {
+    let (key, modifiers) = if let Some(key) = key.strip_prefix("Ctrl+") {
+        (key, KeyModifiers::CONTROL)
+    } else if let Some(key) = key.strip_prefix("Alt+") {
+        (key, KeyModifiers::ALT)
+    } else {
+        (key, KeyModifiers::NONE)
+    };
+    let code = match key {
+        "Enter" => KeyCode::Enter,
+        "Esc" => KeyCode::Esc,
+        "Tab" => KeyCode::Tab,
+        "BackTab" | "Shift+Tab" => KeyCode::BackTab,
+        "Up" | "↑" => KeyCode::Up,
+        "Down" | "↓" => KeyCode::Down,
+        "Left" | "←" => KeyCode::Left,
+        "Right" | "→" => KeyCode::Right,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Space" => KeyCode::Char(' '),
+        value if value.chars().count() == 1 => KeyCode::Char(value.chars().next()?),
+        _ => return None,
+    };
+    Some(KeyEvent::new(code, modifiers))
 }
 
 fn format_button(label: &str, focused: bool) -> String {
