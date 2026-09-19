@@ -78,6 +78,132 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
     assert_eq!(rows.len(), 10_202);
 }
 
+/// Build one fully expanded schema/Tables group holding `table_count` objects.
+fn expanded_tables_explorer(table_count: usize) -> (ExplorerTreeState, Vec<CatalogId>) {
+    let profile = Uuid::from_u128(1);
+    let database = database_entry(profile);
+    let schema = schema_entry(profile, &database.id, 0);
+    let mut entries = vec![database.clone(), schema.clone()];
+    let mut table_ids = Vec::with_capacity(table_count);
+    for index in 0..table_count {
+        let table = relation_entry(profile, &schema.id, 0, index);
+        table_ids.push(table.id.clone());
+        entries.push(table);
+    }
+
+    let mut tree = CatalogTree::new(profile);
+    tree.insert_subtree(entries).unwrap();
+    tree.set_group_state(
+        &schema.id,
+        ObjectGroup::Tables,
+        CatalogGroupState {
+            count: CatalogCount::Exact(table_count as u64),
+            completeness: CatalogCompleteness::Complete,
+        },
+    )
+    .unwrap();
+
+    let mut explorer = ExplorerTreeState::default();
+    explorer.add_profile(profile);
+    explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+    explorer.expanded.extend([
+        ExplorerNodeId::Profile(profile),
+        ExplorerNodeId::Catalog(database.id.clone()),
+        ExplorerNodeId::Catalog(schema.id.clone()),
+        ExplorerNodeId::Group {
+            parent: schema.id.clone(),
+            group: ObjectGroup::Tables,
+        },
+    ]);
+    explorer.viewport_height = 30;
+    explorer.selected = Some(ExplorerNodeId::Catalog(table_ids[0].clone()));
+    (explorer, table_ids)
+}
+
+#[test]
+fn expanded_tables_group_keeps_navigation_bounded_for_nine_hundred_fifty_six_tables() {
+    let (mut explorer, table_ids) = expanded_tables_explorer(956);
+    let (rows, visits) = explorer.visible_with_visit_count();
+    assert_eq!(visits, 958);
+    assert_eq!(rows.len(), 960);
+    assert_eq!(
+        rows.last().unwrap().id,
+        ExplorerNodeId::Catalog(table_ids[955].clone())
+    );
+
+    for _ in 0..2_000 {
+        explorer.move_selection(1, 30);
+        assert!(explorer.scroll < explorer.visible().len());
+    }
+    assert_eq!(
+        explorer.selected,
+        Some(ExplorerNodeId::Catalog(table_ids[955].clone()))
+    );
+}
+
+/// Manual measurement only; run with `--release --ignored --nocapture`.
+#[test]
+#[ignore = "performance measurement, not a CI gate"]
+fn navigation_and_viewport_timing_for_large_expanded_lists() {
+    for table_count in [956usize, 10_000] {
+        let (mut explorer, _) = expanded_tables_explorer(table_count);
+        for _ in 0..100 {
+            explorer.move_selection(1, 30);
+        }
+
+        let mut move_samples = Vec::with_capacity(2_000);
+        for _ in 0..1_000 {
+            let start = std::time::Instant::now();
+            explorer.move_selection(1, 30);
+            move_samples.push(start.elapsed());
+            let start = std::time::Instant::now();
+            explorer.move_selection(-1, 30);
+            move_samples.push(start.elapsed());
+        }
+
+        let mut viewport_samples = Vec::with_capacity(1_000);
+        for _ in 0..1_000 {
+            let start = std::time::Instant::now();
+            let _ = explorer.viewport(30);
+            viewport_samples.push(start.elapsed());
+        }
+
+        println!(
+            "tables={table_count} move p50={:?} p95={:?} viewport p50={:?} p95={:?}",
+            percentile(&move_samples, 50),
+            percentile(&move_samples, 95),
+            percentile(&viewport_samples, 50),
+            percentile(&viewport_samples, 95),
+        );
+    }
+
+    // Cost the old scrollbar paid on every draw by formatting all rows for display.
+    // This conversion code is unchanged, so one measurement documents both revisions.
+    let (explorer, _) = expanded_tables_explorer(956);
+    let state = lazydb::model::workspace::ExplorerState {
+        normalized: explorer,
+        ..lazydb::model::workspace::ExplorerState::default()
+    };
+    let mut display_samples = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let start = std::time::Instant::now();
+        let _ = state.visible();
+        display_samples.push(start.elapsed());
+    }
+    println!(
+        "tables=956 full display conversion removed from each draw p50={:?} p95={:?}",
+        percentile(&display_samples, 50),
+        percentile(&display_samples, 95),
+    );
+}
+
+fn percentile(samples: &[std::time::Duration], percentile: usize) -> std::time::Duration {
+    let mut sorted = samples.to_vec();
+    sorted.sort();
+    let index = (sorted.len() * percentile / 100).min(sorted.len() - 1);
+    sorted[index]
+}
+
 fn database_entry(profile: Uuid) -> CatalogEntry {
     CatalogEntry::database(
         CatalogId::new(profile, CatalogKind::Database, ["app"]),

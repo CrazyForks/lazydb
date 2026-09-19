@@ -10,6 +10,17 @@ use crate::db::catalog::{
 use crate::db::catalog_mutation::CatalogMutationAnchor;
 use crate::profile::{ConnectionGroup, DatabaseKind};
 
+#[cfg(test)]
+std::thread_local! {
+    static PROJECTION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only read of how many full-tree projections ran on this thread.
+#[cfg(test)]
+pub(crate) fn take_projection_calls() -> usize {
+    PROJECTION_CALLS.with(|calls| calls.replace(0))
+}
+
 fn group_label(group: ObjectGroup) -> &'static str {
     match group {
         ObjectGroup::Tables => "Tables",
@@ -935,6 +946,8 @@ pub struct ExplorerViewport {
     pub hidden_ancestor_count: usize,
     pub show_ancestor_indicator: bool,
     pub body_height: usize,
+    /// Total projected logical rows, independent of the viewport window.
+    pub total_rows: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1305,6 +1318,11 @@ impl ExplorerTreeState {
 
     pub fn viewport(&self, height: usize) -> ExplorerViewport {
         let rows = self.visible();
+        self.viewport_for_rows(&rows, height)
+    }
+
+    /// Build a viewport from rows the caller already projected.
+    fn viewport_for_rows(&self, rows: &[VisibleExplorerNode], height: usize) -> ExplorerViewport {
         if rows.is_empty() || height == 0 {
             return ExplorerViewport {
                 pinned: Vec::new(),
@@ -1312,30 +1330,30 @@ impl ExplorerTreeState {
                 hidden_ancestor_count: 0,
                 show_ancestor_indicator: false,
                 body_height: 0,
+                total_rows: rows.len(),
             };
         }
 
-        let indexes = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (row.id.clone(), index))
-            .collect::<HashMap<_, _>>();
-        let ancestors = self
+        let ancestors_with_index = self
             .selected_ancestors()
             .into_iter()
-            .filter_map(|id| indexes.get(&id).copied().map(|index| (index, id)))
-            .filter(|(index, _)| *index < self.scroll)
-            .map(|(_, id)| id)
+            .filter_map(|id| {
+                rows.iter()
+                    .position(|row| row.id == id)
+                    .filter(|index| *index < self.scroll)
+                    .map(|index| (index, id))
+            })
             .collect::<Vec<_>>();
-        let show_ancestor_indicator = height >= 3 && ancestors.len() > height.saturating_sub(2);
+        let show_ancestor_indicator =
+            height >= 3 && ancestors_with_index.len() > height.saturating_sub(2);
         let pinned_capacity = height
             .saturating_sub(1)
             .saturating_sub(usize::from(show_ancestor_indicator));
-        let hidden_ancestor_count = ancestors.len().saturating_sub(pinned_capacity);
-        let pinned = ancestors
+        let hidden_ancestor_count = ancestors_with_index.len().saturating_sub(pinned_capacity);
+        let pinned = ancestors_with_index
             .into_iter()
             .skip(hidden_ancestor_count)
-            .filter_map(|id| indexes.get(&id).and_then(|index| rows.get(*index)).cloned())
+            .filter_map(|(index, _)| rows.get(index).cloned())
             .collect::<Vec<_>>();
         let indicator_height = usize::from(show_ancestor_indicator);
         let body_height = height
@@ -1343,18 +1361,20 @@ impl ExplorerTreeState {
             .saturating_sub(indicator_height)
             .max(1)
             .min(height);
-        let rows = rows
-            .into_iter()
+        let body = rows
+            .iter()
             .skip(self.scroll)
             .take(body_height)
+            .cloned()
             .collect();
 
         ExplorerViewport {
             pinned,
-            rows,
+            rows: body,
             hidden_ancestor_count,
             show_ancestor_indicator,
             body_height,
+            total_rows: rows.len(),
         }
     }
 
@@ -1377,6 +1397,8 @@ impl ExplorerTreeState {
 
     #[doc(hidden)]
     pub fn visible_with_visit_count(&self) -> (Vec<VisibleExplorerNode>, usize) {
+        #[cfg(test)]
+        PROJECTION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
         let mut projection = Projection::new(self);
         self.append_region(&mut projection, ProfileRegion::Primary, 0);
         let other_profiles = self
@@ -1592,12 +1614,19 @@ impl ExplorerTreeState {
     }
 
     pub fn move_selection(&mut self, delta: isize, viewport_height: usize) {
+        let _ = self.move_selection_index(delta, viewport_height);
+    }
+
+    /// Move the selection and return the new row index so callers can sync a cached
+    /// index without projecting the tree again.
+    #[doc(hidden)]
+    pub fn move_selection_index(&mut self, delta: isize, viewport_height: usize) -> Option<usize> {
         self.viewport_height = viewport_height;
         let rows = self.visible();
         if rows.is_empty() {
             self.selected = None;
             self.scroll = 0;
-            return;
+            return None;
         }
         let current = self
             .selected
@@ -1608,7 +1637,8 @@ impl ExplorerTreeState {
             .saturating_add_signed(delta)
             .min(rows.len().saturating_sub(1));
         self.selected = Some(rows[selected_index].id.clone());
-        self.update_scroll(selected_index, rows.len());
+        self.update_scroll(&rows, selected_index);
+        Some(selected_index)
     }
 
     pub fn selected_visible_index(&self) -> Option<usize> {
@@ -1621,7 +1651,8 @@ impl ExplorerTreeState {
         if rows.is_empty() || self.viewport_height == 0 {
             return;
         }
-        let body_height = self.body_height_for_scroll(&rows, self.scroll);
+        let ancestor_indexes = self.ancestor_row_indexes(&rows);
+        let body_height = self.body_height_for_scroll(rows.len(), &ancestor_indexes, self.scroll);
         let first = self.scroll.min(rows.len() - 1);
         let last = first.saturating_add(body_height - 1).min(rows.len() - 1);
         let selected_index = match target {
@@ -1632,7 +1663,7 @@ impl ExplorerTreeState {
             ExplorerNodeTarget::ViewBottom => last,
         };
         self.selected = Some(rows[selected_index].id.clone());
-        self.update_scroll(selected_index, rows.len());
+        self.update_scroll(&rows, selected_index);
     }
 
     pub fn scroll_nodes(&mut self, direction: isize, amount: ExplorerScrollAmount) {
@@ -1640,15 +1671,18 @@ impl ExplorerTreeState {
         if rows.is_empty() || self.viewport_height == 0 || direction == 0 {
             return;
         }
+        let ancestor_indexes = self.ancestor_row_indexes(&rows);
         let step = match amount {
             ExplorerScrollAmount::Lines(lines) => {
                 self.scroll_lines(&rows, direction, lines);
                 return;
             }
             ExplorerScrollAmount::HalfPage => {
-                (self.body_height_for_scroll(&rows, self.scroll) / 2).max(1)
+                (self.body_height_for_scroll(rows.len(), &ancestor_indexes, self.scroll) / 2).max(1)
             }
-            ExplorerScrollAmount::Page => self.body_height_for_scroll(&rows, self.scroll),
+            ExplorerScrollAmount::Page => {
+                self.body_height_for_scroll(rows.len(), &ancestor_indexes, self.scroll)
+            }
         };
         let delta = if direction.is_negative() {
             -(step.min(isize::MAX as usize) as isize)
@@ -1663,7 +1697,7 @@ impl ExplorerTreeState {
         let selected_index = current.saturating_add_signed(delta).min(rows.len() - 1);
         self.selected = Some(rows[selected_index].id.clone());
         self.scroll = self.scroll.saturating_add_signed(delta);
-        self.update_scroll(selected_index, rows.len());
+        self.update_scroll(&rows, selected_index);
     }
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
@@ -1673,7 +1707,7 @@ impl ExplorerTreeState {
             return;
         }
         self.scroll = offset.min(rows.len().saturating_sub(1));
-        let viewport = self.viewport(self.viewport_height);
+        let viewport = self.viewport_for_rows(&rows, self.viewport_height);
         let pinned = viewport
             .pinned
             .iter()
@@ -1715,7 +1749,10 @@ impl ExplorerTreeState {
         let requested = self.scroll.saturating_add_signed(delta);
 
         for _ in 0..=self.selected_ancestors().len().saturating_add(1) {
-            let body_height = self.body_height_for_scroll(rows, requested).min(rows.len());
+            let ancestor_indexes = self.ancestor_row_indexes(rows);
+            let body_height = self
+                .body_height_for_scroll(rows.len(), &ancestor_indexes, requested)
+                .min(rows.len());
             let scroll = requested.min(rows.len().saturating_sub(body_height));
             let last = scroll
                 .saturating_add(body_height.saturating_sub(1))
@@ -1746,7 +1783,8 @@ impl ExplorerTreeState {
             self.align_selected_middle(&rows, selected_index);
             return;
         }
-        let body_height = self.body_height_for_scroll(&rows, self.scroll);
+        let ancestor_indexes = self.ancestor_row_indexes(&rows);
+        let body_height = self.body_height_for_scroll(rows.len(), &ancestor_indexes, self.scroll);
         let screen_row = match alignment {
             ExplorerNodeAlignment::Top => 0,
             ExplorerNodeAlignment::Middle => (body_height - 1) / 2,
@@ -1760,22 +1798,19 @@ impl ExplorerTreeState {
 
     fn align_selected_middle(&mut self, rows: &[VisibleExplorerNode], selected_index: usize) {
         let max_scroll = rows.len().saturating_sub(1);
+        let ancestor_indexes = self.ancestor_row_indexes(rows);
         let mut candidates = HashSet::from([
             0,
             max_scroll,
             selected_index.saturating_sub(self.viewport_height.saturating_sub(1) / 2),
         ]);
-        let indexes = rows
-            .iter()
-            .enumerate()
-            .map(|(index, row)| (row.id.clone(), index))
-            .collect::<HashMap<_, _>>();
         for ancestor in self.selected_ancestors() {
-            let Some(index) = indexes.get(&ancestor).copied() else {
+            let Some(index) = rows.iter().position(|row| row.id == ancestor) else {
                 continue;
             };
             for scroll in [index.saturating_sub(1), index, index.saturating_add(1)] {
-                let body_height = self.body_height_for_scroll(rows, scroll);
+                let body_height =
+                    self.body_height_for_scroll(rows.len(), &ancestor_indexes, scroll);
                 candidates
                     .insert(selected_index.saturating_sub((body_height.saturating_sub(1)) / 2));
             }
@@ -1784,7 +1819,7 @@ impl ExplorerTreeState {
         let ideal = selected_index.saturating_sub(self.viewport_height.saturating_sub(1) / 2);
         for scroll in candidates {
             let scroll = scroll.min(max_scroll);
-            let body_height = self.body_height_for_scroll(rows, scroll);
+            let body_height = self.body_height_for_scroll(rows.len(), &ancestor_indexes, scroll);
             if selected_index < scroll || selected_index >= scroll.saturating_add(body_height) {
                 continue;
             }
@@ -1809,7 +1844,7 @@ impl ExplorerTreeState {
         let Some(selected_index) = rows.iter().position(|row| &row.id == selected) else {
             return;
         };
-        self.update_scroll(selected_index, rows.len());
+        self.update_scroll(&rows, selected_index);
     }
 
     pub fn replace_page(
@@ -1875,37 +1910,41 @@ impl ExplorerTreeState {
         Ok(removed)
     }
 
-    fn update_scroll(&mut self, selected_index: usize, row_count: usize) {
+    fn update_scroll(&mut self, rows: &[VisibleExplorerNode], selected_index: usize) {
         if self.viewport_height == 0 {
             self.scroll = selected_index;
             return;
         }
-        let rows = self.visible();
-        for _ in 0..=self.selected_ancestors().len() {
-            let body_height = self.body_height_for_scroll(&rows, self.scroll);
+        let ancestors = self.selected_ancestors();
+        let ancestor_indexes = ancestor_row_indexes(rows, &ancestors);
+        for _ in 0..=ancestors.len() {
+            let body_height =
+                self.body_height_for_scroll(rows.len(), &ancestor_indexes, self.scroll);
             if selected_index < self.scroll {
                 self.scroll = selected_index;
             } else if selected_index >= self.scroll.saturating_add(body_height) {
                 self.scroll = selected_index + 1 - body_height;
             }
-            self.scroll = self.scroll.min(row_count.saturating_sub(body_height));
+            self.scroll = self.scroll.min(rows.len().saturating_sub(body_height));
         }
     }
 
-    fn body_height_for_scroll(&self, rows: &[VisibleExplorerNode], scroll: usize) -> usize {
-        if self.viewport_height == 0 || rows.is_empty() {
+    fn ancestor_row_indexes(&self, rows: &[VisibleExplorerNode]) -> Vec<usize> {
+        ancestor_row_indexes(rows, &self.selected_ancestors())
+    }
+
+    fn body_height_for_scroll(
+        &self,
+        rows_len: usize,
+        ancestor_indexes: &[usize],
+        scroll: usize,
+    ) -> usize {
+        if self.viewport_height == 0 || rows_len == 0 {
             return 0;
         }
-        let indexes = rows
+        let pinned = ancestor_indexes
             .iter()
-            .enumerate()
-            .map(|(index, row)| (row.id.clone(), index))
-            .collect::<HashMap<_, _>>();
-        let pinned = self
-            .selected_ancestors()
-            .into_iter()
-            .filter_map(|id| indexes.get(&id).copied())
-            .filter(|index| *index < scroll)
+            .filter(|index| **index < scroll)
             .count();
         self.viewport_height.saturating_sub(pinned).max(1)
     }
@@ -2360,5 +2399,177 @@ fn object_group(kind: CatalogKind) -> Option<ObjectGroup> {
         | CatalogKind::UniqueConstraint
         | CatalogKind::ForeignKey
         | CatalogKind::CheckConstraint => None,
+    }
+}
+
+/// Row indexes of the given ancestor ids, in ancestor order.
+///
+/// Comparing borrowed ids avoids cloning every `CatalogId` into a map while the
+/// body-height loop runs for each navigation step.
+fn ancestor_row_indexes(rows: &[VisibleExplorerNode], ancestors: &[ExplorerNodeId]) -> Vec<usize> {
+    if ancestors.is_empty() {
+        return Vec::new();
+    }
+    let mut indexes = Vec::with_capacity(ancestors.len());
+    for ancestor in ancestors {
+        if let Some(index) = rows.iter().position(|row| row.id == *ancestor) {
+            indexes.push(index);
+        }
+    }
+    indexes
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::db::catalog::{OptionalMetadata, QualifiedName};
+
+    fn table_entry(profile: Uuid, schema: &CatalogId, index: usize) -> CatalogEntry {
+        let name = format!("table_{index:04}");
+        CatalogEntry::relation(
+            CatalogId::new(profile, CatalogKind::Table, [name.as_str()]),
+            schema.clone(),
+            QualifiedName {
+                database: Some("app".to_owned()),
+                schema: Some("public".to_owned()),
+                object: name,
+            },
+            "table",
+            OptionalMetadata::Supported(None),
+            false,
+        )
+        .unwrap()
+    }
+
+    pub(crate) fn explorer_with_tables(
+        table_count: usize,
+    ) -> (ExplorerTreeState, Vec<ExplorerNodeId>) {
+        let profile = Uuid::from_u128(1);
+        let database = CatalogEntry::database(
+            CatalogId::new(profile, CatalogKind::Database, ["app"]),
+            QualifiedName {
+                database: Some("app".to_owned()),
+                schema: None,
+                object: "app".to_owned(),
+            },
+            "database",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap();
+        let schema = CatalogEntry::schema(
+            CatalogId::new(profile, CatalogKind::Schema, ["public"]),
+            database.id.clone(),
+            QualifiedName {
+                database: Some("app".to_owned()),
+                schema: Some("public".to_owned()),
+                object: "public".to_owned(),
+            },
+            "schema",
+            OptionalMetadata::Supported(None),
+            true,
+        )
+        .unwrap();
+        let tables = (0..table_count)
+            .map(|index| table_entry(profile, &schema.id, index))
+            .collect::<Vec<_>>();
+        let table_ids = tables
+            .iter()
+            .map(|table| ExplorerNodeId::Catalog(table.id.clone()))
+            .collect::<Vec<_>>();
+
+        let mut entries = vec![database.clone(), schema.clone()];
+        entries.extend(tables);
+        let mut tree = CatalogTree::new(profile);
+        tree.insert_subtree(entries).unwrap();
+        tree.set_group_state(
+            &schema.id,
+            ObjectGroup::Tables,
+            CatalogGroupState {
+                count: CatalogCount::Exact(table_count as u64),
+                completeness: CatalogCompleteness::Complete,
+            },
+        )
+        .unwrap();
+
+        let mut explorer = ExplorerTreeState::default();
+        explorer.add_profile(profile);
+        explorer.profiles.get_mut(&profile).unwrap().catalog = tree;
+        explorer.expanded.extend([
+            ExplorerNodeId::Profile(profile),
+            ExplorerNodeId::Catalog(database.id.clone()),
+            ExplorerNodeId::Catalog(schema.id.clone()),
+            ExplorerNodeId::Group {
+                parent: schema.id.clone(),
+                group: ObjectGroup::Tables,
+            },
+        ]);
+        explorer.viewport_height = 30;
+        explorer.selected = Some(table_ids[0].clone());
+        (explorer, table_ids)
+    }
+
+    #[test]
+    fn expanded_table_rows_have_expected_shape() {
+        let (explorer, table_ids) = explorer_with_tables(956);
+        let rows = explorer.visible();
+        assert_eq!(rows.len(), 960);
+        assert_eq!(
+            rows.last().map(|row| row.id.clone()),
+            table_ids.last().cloned()
+        );
+    }
+
+    #[test]
+    fn one_navigation_step_projects_at_most_once() {
+        let (mut explorer, _) = explorer_with_tables(956);
+        for delta in [1, 1, -1, 5, -20] {
+            let _ = take_projection_calls();
+            explorer.move_selection(delta, 30);
+            assert!(
+                take_projection_calls() <= 1,
+                "a single move must not re-project the expanded tree"
+            );
+        }
+    }
+
+    #[test]
+    fn viewport_scroll_and_alignment_each_project_once() {
+        let (mut explorer, _) = explorer_with_tables(956);
+
+        let _ = take_projection_calls();
+        let viewport = explorer.viewport(30);
+        assert_eq!(take_projection_calls(), 1);
+        assert_eq!(viewport.total_rows, 960);
+        assert!(viewport.rows.len() <= 30);
+
+        let _ = take_projection_calls();
+        explorer.set_scroll_offset(400);
+        assert_eq!(take_projection_calls(), 1);
+
+        let _ = take_projection_calls();
+        explorer.ensure_selected_visible();
+        assert_eq!(take_projection_calls(), 1);
+
+        let _ = take_projection_calls();
+        explorer.align_selected(ExplorerNodeAlignment::Middle);
+        assert_eq!(take_projection_calls(), 1);
+    }
+
+    #[test]
+    fn navigation_over_expanded_tables_keeps_scroll_in_bounds() {
+        let (mut explorer, _) = explorer_with_tables(956);
+        let total = explorer.visible().len();
+        for _ in 0..2_000 {
+            explorer.move_selection(1, 30);
+            assert!(explorer.scroll < total);
+            assert!(explorer.selected.is_some());
+        }
+        let bottom = explorer.selected.clone();
+        for _ in 0..2_000 {
+            explorer.move_selection(-1, 30);
+        }
+        assert_eq!(explorer.scroll, 0);
+        assert_ne!(explorer.selected, bottom);
     }
 }

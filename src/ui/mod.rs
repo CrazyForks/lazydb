@@ -2616,28 +2616,26 @@ fn render_explorer(
         List::new(items).style(Style::new().bg(theme.surface)),
         inner,
     );
-    render_explorer_scrollbar(frame, inner, app, theme, state);
+    render_explorer_scrollbar(
+        frame,
+        inner,
+        viewport.total_rows,
+        app.explorer.normalized.scroll,
+        theme,
+        state,
+    );
 }
 
 fn render_explorer_scrollbar(
     frame: &mut Frame<'_>,
     area: Rect,
-    app: &App,
+    rows: usize,
+    offset: usize,
     theme: Theme,
     state: &mut UiState,
 ) {
-    let rows = if app.explorer.search.is_some() {
-        app.explorer.visible_search().len()
-    } else {
-        app.explorer.visible().len()
-    };
     let visible = area.height as usize;
     let track = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
-    let offset = app
-        .explorer
-        .search
-        .as_ref()
-        .map_or(app.explorer.normalized.scroll, |search| search.scroll);
     let Some(geometry) = crate::ui::scrollbar::geometry(track, visible, rows, offset) else {
         return;
     };
@@ -2664,7 +2662,7 @@ fn render_explorer_scrollbar(
     state.hit_regions.push(HitRegion {
         area: Rect::new(track.x, track.y.saturating_add(1), 1, before),
         target: HitTarget::ExplorerScrollbarPage {
-            offset: app.explorer.normalized.scroll.saturating_sub(visible),
+            offset: offset.saturating_sub(visible),
         },
     });
     state.hit_regions.push(HitRegion {
@@ -2685,12 +2683,7 @@ fn render_explorer_scrollbar(
             after,
         ),
         target: HitTarget::ExplorerScrollbarPage {
-            offset: app
-                .explorer
-                .normalized
-                .scroll
-                .saturating_add(visible)
-                .min(geometry.max_offset),
+            offset: offset.saturating_add(visible).min(geometry.max_offset),
         },
     });
 }
@@ -2958,7 +2951,14 @@ fn render_explorer_find(
         List::new(items).style(Style::new().bg(theme.surface)),
         tree_area,
     );
-    render_explorer_scrollbar(frame, tree_area, app, theme, state);
+    render_explorer_scrollbar(
+        frame,
+        tree_area,
+        viewport.total_rows,
+        app.explorer.normalized.scroll,
+        theme,
+        state,
+    );
     if area.height > 1 {
         let status = if find.phase == ExplorerSearchPhase::Editing {
             "Enter confirm  Esc cancel"
@@ -3026,7 +3026,7 @@ fn render_explorer_search(
     }
 
     let result_height = area.height.saturating_sub(2) as usize;
-    let visible = app.explorer.visible_search();
+    let row_count = app.explorer.search_row_count();
     let start = search
         .scroll
         .max(
@@ -3034,13 +3034,14 @@ fn render_explorer_search(
                 .selected
                 .saturating_sub(result_height.saturating_sub(1)),
         )
-        .min(visible.len().saturating_sub(1));
-    let items = visible
+        .min(row_count.saturating_sub(1));
+    let items = app
+        .explorer
+        .search_rows_range(start, result_height)
         .iter()
         .enumerate()
-        .skip(start)
-        .take(result_height)
-        .map(|(index, row)| {
+        .map(|(offset, row)| {
+            let index = start + offset;
             let selected = index == search.selected;
             let background = if selected {
                 theme.selection
@@ -3125,7 +3126,7 @@ fn render_explorer_search(
                 result_height as u16,
             ),
         );
-        render_explorer_search_scrollbar(frame, area, app, search, theme, state, result_height);
+        render_explorer_search_scrollbar(frame, area, search, theme, state, result_height);
     } else if result_height > 0 {
         let message = match &search.lifecycle {
             crate::model::workspace::ExplorerSearchLifecycle::Idle => {
@@ -3189,13 +3190,12 @@ fn render_explorer_search(
 fn render_explorer_search_scrollbar(
     frame: &mut Frame<'_>,
     area: Rect,
-    app: &App,
     search: &crate::model::workspace::ExplorerSearchState,
     theme: Theme,
     state: &mut UiState,
     visible: usize,
 ) {
-    let rows = app.explorer.visible_search().len();
+    let rows = search.frontend_rows.len();
     let track = Rect::new(
         area.right().saturating_sub(1),
         area.y.saturating_add(1),
