@@ -234,6 +234,22 @@ pub enum Action {
     RequestDropCatalogObject {
         id: crate::db::catalog::CatalogId,
     },
+    OpenPrincipalDrop,
+    PrincipalDropPlanReady(crate::db::principal_drop::PrincipalDropPlan),
+    PrincipalDropPlanFailed {
+        request: crate::db::principal_drop::PrincipalDropRequest,
+        message: String,
+    },
+    PrincipalDropCancel,
+    PrincipalDropConfirm,
+    TogglePrincipalDropFocus,
+    PrincipalDropSucceeded {
+        plan: crate::db::principal_drop::PrincipalDropPlan,
+    },
+    PrincipalDropFailed {
+        plan: crate::db::principal_drop::PrincipalDropPlan,
+        message: String,
+    },
     CatalogDropPlanReady(CatalogDropPlan),
     CatalogDropPlanFailed {
         request: CatalogDropRequest,
@@ -1533,6 +1549,8 @@ pub enum Command {
         generation: u64,
     },
     PlanCatalogDrop(CatalogDropRequest),
+    PlanPrincipalDrop(crate::db::principal_drop::PrincipalDropRequest),
+    ExecutePrincipalDrop(crate::db::principal_drop::PrincipalDropPlan),
     ExecuteCatalogDrop(CatalogDropPlan),
     PlanCatalogMutation {
         request: CatalogMutationRequest,

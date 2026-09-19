@@ -636,6 +636,17 @@ impl Keymap {
                 _ => None,
             };
         }
+        if matches!(app.overlay, Some(Overlay::PrincipalDropConfirm { .. })) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Enter => Some(Action::PrincipalDropConfirm),
+                KeyCode::Esc => Some(Action::PrincipalDropCancel),
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::TogglePrincipalDropFocus)
+                }
+                _ => None,
+            };
+        }
         if matches!(
             app.overlay,
             Some(Overlay::CatalogEditorDestructiveConfirm { .. })
@@ -4006,6 +4017,16 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
             ) {
                 return Some(Action::ProfileGroupCreate);
             }
+            if matches!(
+                app.explorer.normalized.selected,
+                Some(
+                    ExplorerNodeId::PrincipalGroup { .. }
+                        | ExplorerNodeId::Principal { .. }
+                        | ExplorerNodeId::PrincipalNotice { .. }
+                )
+            ) {
+                return Some(Action::OpenExplorerAdd);
+            }
             return crate::help::shortcut_is_available_in_app(
                 app,
                 crate::help::HelpShortcutId::ExplorerCreateCatalog,
@@ -4013,6 +4034,12 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
             .then_some(Action::OpenCatalogCreate);
         }
         KeyCode::Char('e') => {
+            if matches!(
+                app.explorer.normalized.selected,
+                Some(ExplorerNodeId::Principal { .. })
+            ) {
+                return Some(Action::OpenCatalogEdit);
+            }
             if matches!(
                 app.explorer.normalized.selected,
                 Some(ExplorerNodeId::ConnectionGroup { .. })
@@ -4041,6 +4068,7 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
                 Some(ExplorerNodeId::Catalog(id)) => {
                     Some(Action::RequestDropCatalogObject { id: id.clone() })
                 }
+                Some(ExplorerNodeId::Principal { .. }) => Some(Action::OpenPrincipalDrop),
                 _ => None,
             };
         }

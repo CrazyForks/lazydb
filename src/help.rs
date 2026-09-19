@@ -227,6 +227,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::PageSizeSelector { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::RedisPreviewFormat { .. } => ShortcutContext::PageSizeSelector,
                 Overlay::CatalogDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
+                Overlay::PrincipalDropConfirm { .. } => ShortcutContext::CatalogDropConfirmation,
                 Overlay::CatalogEditorDestructiveConfirm { .. } => {
                     ShortcutContext::CatalogEditorPreview
                 }

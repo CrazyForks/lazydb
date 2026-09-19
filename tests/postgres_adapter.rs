@@ -1152,6 +1152,7 @@ async fn apply_plan(
                 schema.native_path.first().cloned().unwrap_or_default()
             }
             CatalogMutationAnchor::Profile { .. } => String::new(),
+            CatalogMutationAnchor::Principal(_) => String::new(),
         };
         Some(
             load_definition(
@@ -1383,6 +1384,7 @@ async fn load_definition(
                 database: database_name.to_owned(),
                 schema: None,
             },
+            principal: None,
         })
         .await
         .unwrap()

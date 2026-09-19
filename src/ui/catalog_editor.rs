@@ -2908,5 +2908,8 @@ fn target_label(editor: &CatalogEditorState) -> String {
                 .collect::<Vec<_>>();
             format!("{} / {label}", path.join(" / "))
         }
+        crate::db::catalog_mutation::CatalogMutationAnchor::Principal(entry) => {
+            format!("{} @ {}", entry.name, entry.id.profile_id)
+        }
     }
 }

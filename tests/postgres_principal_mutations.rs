@@ -1,0 +1,164 @@
+use lazydb::{
+    db::{
+        DatabaseConnection,
+        catalog::{CatalogId, CatalogKind},
+        catalog_mutation::{
+            CatalogMutationAnchor, CatalogMutationMode, CatalogMutationRequest,
+            CatalogObjectDefinitionRequest, CatalogObjectType,
+        },
+        postgres::PostgresAdapter,
+        principal::{PrincipalEntry, PrincipalId, PrincipalKind, PrincipalScope},
+        value::CellValue,
+    },
+    identity::ConnectionIdentity,
+    model::{
+        catalog_editor::{CatalogDraft, RoleDraft},
+        execution_target::ExecutionTarget,
+    },
+    profile::import_connection_url,
+};
+
+#[tokio::test]
+async fn postgres_principal_mutation_environment_is_explicit() {
+    let Some(url) = std::env::var_os("LAZYDB_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let imported = import_connection_url(&url.to_string_lossy(), Some("principal-mutations"))
+        .expect("test URL should parse");
+    let profile = imported.profile.clone();
+    let _ = PrincipalKind::User;
+    let connection = match DatabaseConnection::connect(&profile, None).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("PostgreSQL principal test skipped: {error}");
+            return;
+        }
+    };
+    let page = connection
+        .list_principals()
+        .await
+        .expect("principal listing should work");
+    assert!(page.complete);
+    let can_create = matches!(
+        connection
+            .execute("SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user")
+            .await
+            .ok()
+            .and_then(|outcome| outcome.result_sets.last()?.rows.first()?.first().cloned()),
+        Some(CellValue::Boolean(true))
+    );
+    if !can_create {
+        eprintln!("PostgreSQL principal mutation test skipped: current role lacks CREATEROLE");
+        connection.close().await;
+        return;
+    }
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let role_name = format!("lazydb_principal_{suffix}");
+    connection
+        .execute(&format!("CREATE ROLE \"{role_name}\" NOLOGIN"))
+        .await
+        .expect("create role");
+    let profile_id = profile.id;
+    let identity = ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    let entry = PrincipalEntry {
+        id: PrincipalId {
+            profile_id,
+            scope: PrincipalScope::Cluster,
+            native_id: "0".into(),
+            host: None,
+        },
+        kind: PrincipalKind::Role,
+        name: role_name.clone(),
+        native_kind: "role".into(),
+        system: false,
+    };
+    let oid = connection
+        .execute(&format!(
+            "SELECT oid::text FROM pg_roles WHERE rolname = '{role_name}'"
+        ))
+        .await
+        .expect("role oid");
+    let oid = match &oid.result_sets.last().unwrap().rows[0][0] {
+        CellValue::Text(value) => value.clone(),
+        value => panic!("unexpected oid: {value:?}"),
+    };
+    let entry = PrincipalEntry {
+        id: PrincipalId {
+            native_id: oid.clone(),
+            ..entry.id
+        },
+        ..entry
+    };
+    let object = CatalogId::new(
+        profile_id,
+        CatalogKind::Database,
+        ["__role__", role_name.as_str()],
+    );
+    let request = CatalogObjectDefinitionRequest {
+        connection: identity,
+        request_id: 1,
+        catalog_epoch: 1,
+        object: object.clone(),
+        target: ExecutionTarget {
+            profile_id,
+            database: imported
+                .profile
+                .database
+                .clone()
+                .unwrap_or_else(|| "postgres".into()),
+            schema: None,
+        },
+        principal: Some(entry.clone()),
+    };
+    let definition = connection
+        .load_catalog_object_definition(&request)
+        .await
+        .expect("load role definition");
+    let baseline = Some(definition.clone());
+    let mut draft = RoleDraft::from_definition(match &definition {
+        lazydb::db::catalog_mutation::CatalogObjectDefinition::Role(role) => role,
+        _ => panic!("expected role"),
+    });
+    draft.login = true;
+    draft.set_password("lazydb-test-password");
+    draft.name = format!("{role_name}_renamed").into();
+    let mutation = CatalogMutationRequest::new(
+        identity,
+        2,
+        1,
+        CatalogMutationMode::Edit,
+        CatalogMutationAnchor::Principal(entry),
+        CatalogObjectType::Role,
+    )
+    .unwrap()
+    .with_current_database(profile.database.unwrap_or_else(|| "postgres".into()));
+    let plan =
+        PostgresAdapter::plan_catalog_mutation(mutation, CatalogDraft::Role(draft), baseline)
+            .expect("plan role edit");
+    assert!(plan.sql().contains("LOGIN"));
+    assert!(plan.sql().contains("PASSWORD '<REDACTED>'"));
+    assert!(!plan.sql().contains("lazydb-test-password"));
+    connection
+        .execute(&plan.sql())
+        .await
+        .expect("apply role edit");
+    let renamed = format!("{role_name}_renamed");
+    let renamed_oid = connection
+        .execute(&format!(
+            "SELECT oid::text FROM pg_roles WHERE rolname = '{renamed}'"
+        ))
+        .await
+        .expect("renamed oid");
+    assert_eq!(
+        renamed_oid.result_sets.last().unwrap().rows[0][0],
+        CellValue::Text(oid)
+    );
+    connection
+        .execute(&format!("DROP ROLE IF EXISTS \"{renamed}\""))
+        .await
+        .expect("cleanup renamed role");
+    connection.close().await;
+}

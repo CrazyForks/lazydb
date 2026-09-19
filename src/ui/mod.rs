@@ -258,6 +258,8 @@ pub enum HitTarget {
     SqlEditorListDeleteConfirm,
     CatalogDropCancel,
     CatalogDropConfirm,
+    PrincipalDropCancel,
+    PrincipalDropConfirm,
     SqlEditorListDeleteCancel,
     SqlEditorListSearch,
     SqlEditorListRename,
@@ -1455,6 +1457,7 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::PageSizeSelector { .. } => animation::OverlayKey::PageSizeSelector,
         Overlay::RedisPreviewFormat { .. } => animation::OverlayKey::PageSizeSelector,
         Overlay::CatalogDropConfirm { .. } => animation::OverlayKey::CatalogDropConfirm,
+        Overlay::PrincipalDropConfirm { .. } => animation::OverlayKey::CatalogDropConfirm,
         Overlay::CatalogEditorDestructiveConfirm { .. } => {
             animation::OverlayKey::CatalogEditorDestructiveConfirm
         }
@@ -5616,6 +5619,74 @@ fn render_overlay(
         }
         Overlay::CatalogDropConfirm { .. } => {
             render_catalog_drop_confirm(frame, area, app, state, theme);
+        }
+        Overlay::PrincipalDropConfirm {
+            plan,
+            delete_selected,
+            busy,
+            error,
+        } => {
+            let popup = centered(area, 72, 12);
+            let title = match plan.request.entry.kind {
+                crate::db::principal::PrincipalKind::User => " DROP USER ",
+                crate::db::principal::PrincipalKind::Role => " DROP ROLE ",
+            };
+            let inner = dialog::render_frame(frame, popup, title, theme);
+            let chunks = Layout::vertical([
+                Constraint::Min(0),
+                Constraint::Length(2),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+            let mut lines = vec![
+                Line::raw("This operation will execute:"),
+                Line::raw(""),
+                Line::raw(plan.sql().to_owned()),
+                Line::raw(""),
+                Line::raw("This action cannot be undone."),
+            ];
+            if let Some(error) = error {
+                lines.push(Line::styled(
+                    crate::security::sanitize_terminal_text(error).to_owned(),
+                    Style::new().fg(theme.error),
+                ));
+            }
+            dialog::render_body(frame, chunks[0], lines, theme);
+            let actions = dialog::render_actions(
+                frame,
+                chunks[1],
+                &[
+                    dialog::DialogButton {
+                        label: "Cancel",
+                        tone: dialog::DialogTone::Normal,
+                        enabled: !*busy,
+                    },
+                    dialog::DialogButton {
+                        label: if *busy { "Dropping..." } else { "Drop" },
+                        tone: dialog::DialogTone::Danger,
+                        enabled: !*busy,
+                    },
+                ],
+                usize::from(*delete_selected),
+                theme,
+            );
+            for action in actions {
+                state.hit_regions.push(HitRegion {
+                    area: action.area,
+                    target: if action.index == 0 {
+                        HitTarget::PrincipalDropCancel
+                    } else {
+                        HitTarget::PrincipalDropConfirm
+                    },
+                });
+            }
+            dialog::render_interactive_hint(
+                frame,
+                chunks[2],
+                "Tab / Left / Right switch   Enter activate   Esc cancel",
+                theme,
+                state,
+            );
         }
         Overlay::CatalogEditorDestructiveConfirm { plan, input } => {
             render_catalog_mutation_confirm(frame, area, plan, input, theme);
