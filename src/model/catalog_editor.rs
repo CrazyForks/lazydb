@@ -2633,6 +2633,35 @@ fn is_empty_added_column(column: &ColumnDraft) -> bool {
 }
 
 impl ColumnDraft {
+    pub fn field_changed_against(
+        &self,
+        field: TableColumnField,
+        baseline: Option<&crate::db::catalog_mutation::TableDefinition>,
+    ) -> bool {
+        if !matches!(&self.state, DraftRowState::Existing { .. }) {
+            return false;
+        }
+        let original_name = self.existing_name.as_deref().unwrap_or(self.name.value());
+        let Some(before) = baseline.and_then(|table| {
+            table
+                .columns
+                .iter()
+                .find(|column| column.name == original_name)
+        }) else {
+            return false;
+        };
+        match field {
+            TableColumnField::Name => self.name.value() != before.name,
+            TableColumnField::Type => self.native_type.value() != before.native_type,
+            TableColumnField::Default => {
+                self.default_expression.value() != optional_string(&before.default_expression)
+            }
+            TableColumnField::Comment => self.comment.value() != optional_string(&before.comment),
+            TableColumnField::Nullable => self.nullable != before.nullable,
+            TableColumnField::Identity => self.identity != optional_bool(&before.identity),
+        }
+    }
+
     pub fn new_added() -> Self {
         Self::new_added_for_database(crate::profile::DatabaseKind::Postgres)
     }

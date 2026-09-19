@@ -685,6 +685,98 @@ fn table_editor_renders_general_and_columns_sections() {
 }
 
 #[test]
+fn table_editor_highlights_modified_column_cells_without_highlighting_the_row() {
+    let definition = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "public".into(),
+        name: "events".into(),
+        owner: "postgres".into(),
+        comment: OptionalMetadata::Supported(None),
+        columns: vec![
+            lazydb::db::catalog_mutation::ColumnDefinition {
+                name: "id".into(),
+                ordinal_position: 1,
+                native_type: "integer".into(),
+                nullable: false,
+                default_expression: OptionalMetadata::Supported(None),
+                identity: OptionalMetadata::Supported(Some(false)),
+                generated_expression: OptionalMetadata::Supported(None),
+                collation: OptionalMetadata::Supported(None),
+                comment: OptionalMetadata::Supported(None),
+            },
+            lazydb::db::catalog_mutation::ColumnDefinition {
+                name: "name".into(),
+                ordinal_position: 2,
+                native_type: "text".into(),
+                nullable: true,
+                default_expression: OptionalMetadata::Supported(None),
+                identity: OptionalMetadata::Supported(Some(false)),
+                generated_expression: OptionalMetadata::Supported(None),
+                collation: OptionalMetadata::Supported(None),
+                comment: OptionalMetadata::Supported(Some("display name".into())),
+            },
+        ],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "baseline".into(),
+    };
+    let mut draft = lazydb::model::catalog_editor::TableDraft::from_definition(&definition);
+    draft.columns[1].name = "renamed".into();
+    draft.columns[1].comment = "changed comment".into();
+    draft.selected_column = 0;
+    draft.focus = lazydb::model::catalog_editor::TableEditorFocus::Columns;
+
+    let mut app = App::new(Vec::new());
+    app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
+        database_kind: Some(DatabaseKind::Postgres),
+        mode: CatalogMutationMode::Edit,
+        anchor: CatalogMutationAnchor::Profile {
+            profile_id: uuid::Uuid::nil(),
+        },
+        object_type: Some(CatalogObjectType::Catalog(CatalogKind::Table)),
+        page: CatalogEditorPage::Form,
+        operation: None,
+        catalog_epoch: 0,
+        options: vec![],
+        selected_option: 0,
+        baseline: Some(lazydb::db::catalog_mutation::CatalogObjectDefinition::Table(definition)),
+        plan: None,
+        error: None,
+        owner_picker: Default::default(),
+        preview_scroll: 0,
+        draft: Some(lazydb::model::catalog_editor::CatalogDraft::Table(draft)),
+    });
+    app.overlay = Some(Overlay::CatalogEditor);
+
+    let (buffer, state) = render_buffer_with_icons(&app, 100, 30, IconSet::default());
+    let row = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorTableColumn(1))
+        .expect("modified column row");
+    let name_x = find_ascii_cells(&buffer, row.area.y, "renamed").expect("renamed cell");
+    let comment_x = find_ascii_cells(&buffer, row.area.y, "changed comment").expect("comment cell");
+    assert_eq!(
+        buffer[(name_x, row.area.y)].bg,
+        Theme::deep_space().row_updated
+    );
+    assert_eq!(
+        buffer[(comment_x + 1, row.area.y)].bg,
+        Theme::deep_space().row_updated
+    );
+    let unchanged_row = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::CatalogEditorTableColumn(0))
+        .expect("unchanged column row");
+    let id_x = find_ascii_cells(&buffer, unchanged_row.area.y, "id").expect("unchanged id cell");
+    assert_ne!(
+        buffer[(id_x, unchanged_row.area.y)].bg,
+        Theme::deep_space().row_updated
+    );
+}
+
+#[test]
 fn table_editor_baseline_hit_regions_stay_inside_the_rendered_window() {
     let mut app = App::new(Vec::new());
     app.catalog_editor = Some(lazydb::model::catalog_editor::CatalogEditorState {
