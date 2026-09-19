@@ -278,6 +278,97 @@ fn table_change_summary_ignores_focus_and_text_cursor_changes() {
 }
 
 #[test]
+fn column_field_changes_match_original_identity_and_clear_when_restored() {
+    let mut draft = TableDraft::new("public");
+    let column = &mut draft.columns[0];
+    column.name = "renamed".into();
+    column.existing_name = Some("id".into());
+    column.native_type = "text".into();
+    column.comment = "new comment".into();
+    column.state = DraftRowState::Existing {
+        id: lazydb::db::catalog::CatalogId::new(
+            profile(),
+            lazydb::db::catalog::CatalogKind::Column,
+            ["id"],
+        ),
+    };
+    let baseline = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "public".into(),
+        name: "events".into(),
+        owner: "postgres".into(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(None),
+        columns: vec![lazydb::db::catalog_mutation::ColumnDefinition {
+            name: "id".into(),
+            ordinal_position: 1,
+            native_type: "integer".into(),
+            nullable: true,
+            default_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            identity: lazydb::db::catalog::OptionalMetadata::Supported(Some(false)),
+            generated_expression: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            collation: lazydb::db::catalog::OptionalMetadata::Supported(None),
+            comment: lazydb::db::catalog::OptionalMetadata::Supported(Some("old comment".into())),
+        }],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "baseline".into(),
+    };
+
+    assert!(column.field_changed_against(TableColumnField::Name, Some(&baseline)));
+    assert!(column.field_changed_against(TableColumnField::Type, Some(&baseline)));
+    assert!(column.field_changed_against(TableColumnField::Comment, Some(&baseline)));
+    assert!(!column.field_changed_against(TableColumnField::Nullable, Some(&baseline)));
+
+    column.name = "id".into();
+    column.native_type = "integer".into();
+    column.comment = "old comment".into();
+    assert!(!column.field_changed_against(TableColumnField::Name, Some(&baseline)));
+    assert!(!column.field_changed_against(TableColumnField::Type, Some(&baseline)));
+    assert!(!column.field_changed_against(TableColumnField::Comment, Some(&baseline)));
+}
+
+#[test]
+fn column_field_changes_ignore_added_removed_and_unmatched_columns() {
+    let baseline = lazydb::db::catalog_mutation::TableDefinition {
+        database: "app".into(),
+        schema: "public".into(),
+        name: "events".into(),
+        owner: "postgres".into(),
+        comment: lazydb::db::catalog::OptionalMetadata::Supported(None),
+        columns: vec![],
+        indexes: vec![],
+        constraints: vec![],
+        baseline_fingerprint: "baseline".into(),
+    };
+    let mut added = lazydb::model::catalog_editor::ColumnDraft::new_added();
+    added.name = "added".into();
+    added.native_type = "changed".into();
+    assert!(!added.field_changed_against(TableColumnField::Type, Some(&baseline)));
+
+    let mut removed = added.clone();
+    removed.state = DraftRowState::Removed {
+        id: lazydb::db::catalog::CatalogId::new(
+            profile(),
+            lazydb::db::catalog::CatalogKind::Column,
+            ["added"],
+        ),
+    };
+    assert!(!removed.field_changed_against(TableColumnField::Type, Some(&baseline)));
+
+    let mut unmatched = added;
+    unmatched.state = DraftRowState::Existing {
+        id: lazydb::db::catalog::CatalogId::new(
+            profile(),
+            lazydb::db::catalog::CatalogKind::Column,
+            ["missing"],
+        ),
+    };
+    unmatched.existing_name = Some("missing".into());
+    assert!(!unmatched.field_changed_against(TableColumnField::Type, Some(&baseline)));
+    assert!(!unmatched.field_changed_against(TableColumnField::Type, None));
+}
+
+#[test]
 fn table_change_summary_counts_added_modified_and_removed_columns() {
     let mut draft = TableDraft::new("public");
     draft.name = "events".into();

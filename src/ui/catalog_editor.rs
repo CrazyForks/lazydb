@@ -1906,21 +1906,29 @@ fn render_table(
             let row_number = format!("{focus_marker}{state_marker}{:>1}", index + 1);
             let separator =
                 Cell::from("│").style(Style::new().fg(theme.grid_border).bg(row_background));
+            let field_style = |field| {
+                if column.field_changed_against(field, baseline) {
+                    Style::new().bg(theme.row_updated)
+                } else {
+                    Style::new()
+                }
+            };
             (
                 index,
                 Row::new([
                     Cell::from(row_number),
                     separator.clone(),
-                    Cell::from(name),
+                    Cell::from(name).style(field_style(TableColumnField::Name)),
                     separator.clone(),
-                    Cell::from(native_type),
+                    Cell::from(native_type).style(field_style(TableColumnField::Type)),
                     separator.clone(),
                     Cell::from(truncate_cells(
                         nullable.to_owned(),
                         usize::from(nullable_width),
-                    )),
+                    ))
+                    .style(field_style(TableColumnField::Nullable)),
                     separator,
-                    Cell::from(comment),
+                    Cell::from(comment).style(field_style(TableColumnField::Comment)),
                 ])
                 .style(row_style),
             )
