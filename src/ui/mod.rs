@@ -27,6 +27,7 @@ pub(crate) mod sql_preview;
 pub mod text_detail;
 pub mod text_selection;
 pub mod theme;
+pub(crate) mod update;
 
 use crate::profile::DatabaseKind;
 use ratatui::{
@@ -139,7 +140,7 @@ pub enum HitTarget {
     Help,
     UpdateCenter,
     UpdateButton {
-        primary: bool,
+        action: crate::model::update::UpdateDialogAction,
     },
     ToggleResultView,
     ResultView(ResultView),
@@ -499,6 +500,12 @@ impl UiState {
     pub(crate) fn profile_scope_loading_elapsed(&self, request_id: u64) -> Duration {
         self.animations
             .elapsed(&animation::LoadIdentity::ProfileScope { request_id })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn update_progress_elapsed(&self, request_id: u64) -> Duration {
+        self.animations
+            .elapsed(&animation::LoadIdentity::Update { request_id })
             .unwrap_or_default()
     }
 
@@ -1469,6 +1476,11 @@ fn animation_observation(app: &App) -> animation::AnimationObservation {
         observation
             .active_loads
             .insert(animation::LoadIdentity::ProfileScope { request_id });
+    }
+    if let crate::model::update::UpdateState::Installing { request_id, .. } = app.update_state {
+        observation
+            .active_loads
+            .insert(animation::LoadIdentity::Update { request_id });
     }
     let Some(tab) = app.tabs.get(app.active_tab) else {
         return observation;
@@ -4615,7 +4627,7 @@ fn render_overlay(
 ) {
     match overlay {
         Overlay::Help(help) => render_help(frame, area, help, state, theme),
-        Overlay::Update(_) => render_update_overlay(frame, area, app, state, theme),
+        Overlay::Update(_) => update::render(frame, area, app, state, theme),
         Overlay::NotificationHistory(history) => {
             notifications::render_history(frame, area, app, history, theme, state, icons)
         }
@@ -7087,148 +7099,6 @@ fn render_workspace_save_failed(
             .wrap(Wrap { trim: true }),
         inner,
     );
-}
-
-fn render_update_overlay(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    app: &App,
-    state: &mut UiState,
-    theme: Theme,
-) {
-    use crate::model::update::{UpdateOverlayFocus, UpdateState};
-
-    let popup = centered(area, 76, 16);
-    frame.render_widget(Clear, popup);
-    let block = panel_block(" UPDATE CENTER ", true, theme);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-    let mut lines = vec![Line::from(Span::styled(
-        " LAZYDB UPDATE",
-        theme.title(true),
-    ))];
-    let (primary, primary_enabled, status_line) = match &app.update_state {
-        UpdateState::Idle => ("Check now", true, "No update check has run".to_owned()),
-        UpdateState::Checking { .. } => {
-            ("Checking...", false, "Checking for updates...".to_owned())
-        }
-        UpdateState::UpToDate(inspection) => (
-            "Check again",
-            true,
-            format!(
-                "Running {} · Latest {}",
-                inspection.running_version,
-                inspection.target_version.as_deref().unwrap_or("unknown")
-            ),
-        ),
-        UpdateState::Available(inspection) => (
-            "Update now",
-            inspection.manager == crate::update::InstallationManager::Native,
-            format!(
-                "Running {} · Latest {} · {:?}",
-                inspection.running_version,
-                inspection.target_version.as_deref().unwrap_or("unknown"),
-                inspection.channel
-            ),
-        ),
-        UpdateState::Installing { inspection, .. } => (
-            "Installing...",
-            false,
-            format!(
-                "Installing {}. You can continue using LazyDB.",
-                inspection.target_version.as_deref().unwrap_or("the update")
-            ),
-        ),
-        UpdateState::ReadyToRestart(inspection) => (
-            "Restart now",
-            true,
-            format!(
-                "Running {} · Installed {}",
-                inspection.running_version,
-                inspection.installed_version.as_deref().unwrap_or("unknown")
-            ),
-        ),
-        UpdateState::ManagerActionRequired(inspection) => (
-            "Copy command",
-            false,
-            format!(
-                "Latest {} · {:?}: {}",
-                inspection.target_version.as_deref().unwrap_or("unknown"),
-                inspection.manager,
-                inspection
-                    .action
-                    .as_deref()
-                    .unwrap_or("use the installation manager to update")
-            ),
-        ),
-        UpdateState::Failed { message, .. } => (
-            "Retry",
-            true,
-            format!("Update failed: {}", sanitize_terminal_text(message)),
-        ),
-    };
-    lines.push(Line::raw(status_line));
-    lines.push(Line::raw(""));
-    if let UpdateState::Available(inspection) = &app.update_state {
-        lines.push(Line::raw(format!("Installation: {:?}", inspection.manager)));
-    }
-    lines.push(Line::raw(""));
-    let later_selected = matches!(
-        app.overlay,
-        Some(Overlay::Update(ref overlay)) if overlay.focus == UpdateOverlayFocus::Later
-    );
-    let primary_selected = !later_selected;
-    let primary_label = if primary_enabled && primary_selected {
-        format!("[ {primary} ]")
-    } else {
-        format!("  {primary}  ")
-    };
-    let later_label = if later_selected {
-        "[ Later ]"
-    } else {
-        "  Later  "
-    };
-    lines.push(Line::from(vec![
-        Span::styled(
-            primary_label,
-            Style::new()
-                .fg(if primary_enabled {
-                    theme.action
-                } else {
-                    theme.muted
-                })
-                .bg(theme.surface),
-        ),
-        Span::raw("   "),
-        Span::styled(later_label, Style::new().fg(theme.text).bg(theme.surface)),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "Tab/Left/Right select   Enter confirm   Esc/q close",
-        Style::new().fg(theme.muted),
-    )));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::new().fg(theme.text).bg(theme.surface))
-            .wrap(Wrap { trim: true }),
-        inner,
-    );
-    let action_y = inner.bottom().saturating_sub(2);
-    let button_width = (inner.width / 2).max(1);
-    if primary_enabled {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(inner.x, action_y, button_width, 1),
-            target: HitTarget::UpdateButton { primary: true },
-        });
-    }
-    state.hit_regions.push(HitRegion {
-        area: Rect::new(
-            inner.x.saturating_add(button_width),
-            action_y,
-            inner.width.saturating_sub(button_width),
-            1,
-        ),
-        target: HitTarget::UpdateButton { primary: false },
-    });
 }
 
 fn render_profile_access(

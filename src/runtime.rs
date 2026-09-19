@@ -912,7 +912,19 @@ impl Runtime {
                 }
                 let sender = self.event_sender.clone();
                 self.update_install_task = Some(tokio::spawn(async move {
-                    match crate::update::install_current_native(Some(channel), false).await {
+                    let progress_sender = sender.clone();
+                    match crate::update::install_current_native_with_progress(
+                        Some(channel),
+                        false,
+                        move |progress| {
+                            let _ = progress_sender.send(Action::UpdateInstallProgress {
+                                request_id,
+                                progress,
+                            });
+                        },
+                    )
+                    .await
+                    {
                         Ok(inspection) => {
                             let _ = sender.send(Action::UpdateInstalled {
                                 request_id,

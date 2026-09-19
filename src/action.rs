@@ -144,8 +144,13 @@ pub enum Action {
         automatic: bool,
         message: String,
     },
+    UpdateInstallProgress {
+        request_id: u64,
+        progress: crate::update::UpdateProgress,
+    },
     UpdateOverlayToggleFocus,
     UpdateOverlayConfirm,
+    UpdateOverlayActivate(crate::model::update::UpdateDialogAction),
     HelpPanelSettingsWriteFailed(String),
     InstallUpdate,
     UpdateInstalled {
