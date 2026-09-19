@@ -27,6 +27,17 @@ use crate::profile::DatabaseKind;
 use crate::sql::CompletionIndex;
 use crate::sql::ExecutionDraft;
 
+#[cfg(test)]
+std::thread_local! {
+    static DISPLAY_ROW_CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only read of how many explorer rows were formatted for display.
+#[cfg(test)]
+pub(crate) fn take_display_row_conversions() -> usize {
+    DISPLAY_ROW_CONVERSIONS.with(|count| count.replace(0))
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Focus {
     Explorer,
@@ -439,6 +450,8 @@ pub struct VisibleExplorerViewport {
     pub hidden_ancestor_count: usize,
     pub show_ancestor_indicator: bool,
     pub body_height: usize,
+    /// Total projected logical rows, independent of the viewport window.
+    pub total_rows: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1026,6 +1039,19 @@ impl ExplorerState {
         self.visible_rows(rows)
     }
 
+    /// Number of rows a search result list would render.
+    pub fn search_row_count(&self) -> usize {
+        self.explorer_search_rows().map_or(0, |rows| rows.len())
+    }
+
+    /// Format only the requested search window instead of every result row.
+    pub fn search_rows_range(&self, start: usize, len: usize) -> Vec<VisibleCatalogNode> {
+        let rows = self.explorer_search_rows().map_or_else(Vec::new, |rows| {
+            rows.iter().skip(start).take(len).cloned().collect()
+        });
+        self.visible_rows(rows)
+    }
+
     pub fn viewport(&self, height: usize) -> VisibleExplorerViewport {
         let viewport = self.normalized.viewport(height);
         VisibleExplorerViewport {
@@ -1034,6 +1060,7 @@ impl ExplorerState {
             hidden_ancestor_count: viewport.hidden_ancestor_count,
             show_ancestor_indicator: viewport.show_ancestor_indicator,
             body_height: viewport.body_height,
+            total_rows: viewport.total_rows,
         }
     }
 
@@ -1041,6 +1068,8 @@ impl ExplorerState {
         &self,
         rows: Vec<crate::model::explorer::VisibleExplorerNode>,
     ) -> Vec<VisibleCatalogNode> {
+        #[cfg(test)]
+        DISPLAY_ROW_CONVERSIONS.with(|count| count.set(count.get().saturating_add(rows.len())));
         rows.into_iter()
             .map(|row| {
                 let profile = row
@@ -1332,8 +1361,10 @@ impl ExplorerState {
 
     pub fn move_selection(&mut self, delta: isize) {
         let viewport_height = self.normalized.viewport_height;
-        self.normalized.move_selection(delta, viewport_height);
-        self.sync_selected_index();
+        if let Some(index) = self.normalized.move_selection_index(delta, viewport_height) {
+            self.selected = index;
+        }
+        self.scroll = self.normalized.scroll;
     }
 
     pub fn set_viewport_height(&mut self, height: usize) {
@@ -1362,7 +1393,7 @@ impl ExplorerState {
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
         if self.search.is_some() {
-            let row_count = self.visible_search().len();
+            let row_count = self.search_row_count();
             if let Some(search) = self.search.as_mut() {
                 search.scroll = offset.min(row_count.saturating_sub(1));
             }
@@ -1378,7 +1409,7 @@ impl ExplorerState {
     }
 
     pub fn select_id(&mut self, id: ExplorerNodeId) -> bool {
-        let rows = self.visible();
+        let rows = self.normalized.visible();
         let Some(index) = rows.iter().position(|row| row.id == id) else {
             return false;
         };
@@ -1434,6 +1465,7 @@ impl ExplorerState {
             return;
         };
         self.selected = self
+            .normalized
             .visible()
             .iter()
             .position(|row| &row.id == selected)
@@ -1811,6 +1843,56 @@ mod tests {
         assert_eq!(
             redis_pane_resize(Focus::Results, true, '+', 1),
             pane_resize(Focus::Results, '+', 1)
+        );
+    }
+}
+
+#[cfg(test)]
+mod explorer_hot_path_tests {
+    use super::{ExplorerState, take_display_row_conversions};
+    use crate::model::explorer::take_projection_calls;
+
+    fn explorer_state_with_tables(table_count: usize) -> ExplorerState {
+        let (normalized, _) = crate::model::explorer::tests::explorer_with_tables(table_count);
+        ExplorerState {
+            normalized,
+            ..ExplorerState::default()
+        }
+    }
+
+    #[test]
+    fn moving_in_expanded_tables_skips_full_display_formatting() {
+        let mut explorer = explorer_state_with_tables(956);
+
+        let _ = take_projection_calls();
+        let _ = take_display_row_conversions();
+        explorer.move_selection(1);
+
+        assert_eq!(
+            take_display_row_conversions(),
+            0,
+            "moving must not format off-screen rows"
+        );
+        assert!(
+            take_projection_calls() <= 1,
+            "moving must project the tree at most once"
+        );
+        assert!(explorer.selected > 0);
+        assert_eq!(explorer.scroll, explorer.normalized.scroll);
+    }
+
+    #[test]
+    fn drawing_only_formats_viewport_rows() {
+        let explorer = explorer_state_with_tables(956);
+
+        let _ = take_display_row_conversions();
+        let viewport = explorer.viewport(30);
+
+        let converted = take_display_row_conversions();
+        assert_eq!(viewport.total_rows, 960);
+        assert!(
+            converted <= 60,
+            "expected only pinned and body rows, formatted {converted}"
         );
     }
 }

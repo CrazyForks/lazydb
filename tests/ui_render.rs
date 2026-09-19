@@ -3734,6 +3734,132 @@ fn profile_group_delete_highlight_follows_keyboard_focus() {
     assert_ne!(selected_background, after[(confirm.x, confirm.y)].bg);
 }
 
+/// Manual measurement only; run with `--release --ignored --nocapture`.
+#[test]
+#[ignore = "performance measurement, not a CI gate"]
+fn explorer_redraw_timing_for_expanded_tables() {
+    use std::time::{Duration, Instant};
+
+    fn percentile(samples: &[Duration], percentile: usize) -> Duration {
+        let mut sorted = samples.to_vec();
+        sorted.sort();
+        sorted[(sorted.len() * percentile / 100).min(sorted.len() - 1)]
+    }
+
+    let profile = import_connection_url(":memory:", Some("catalog-perf-ui"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile.clone()]);
+    app.focus = Focus::Explorer;
+    app.connection.profile_id = Some(profile.id);
+    app.connection.generation = 1;
+    app.connection.status = ConnectionStatus::Connected;
+
+    let database = CatalogEntry::database(
+        CatalogId::new(profile.id, CatalogKind::Database, ["app"]),
+        QualifiedName {
+            database: Some("app".into()),
+            schema: None,
+            object: "app".into(),
+        },
+        "database",
+        OptionalMetadata::Supported(None),
+        true,
+    )
+    .unwrap();
+    let schema = CatalogEntry::schema(
+        CatalogId::new(profile.id, CatalogKind::Schema, ["app", "public"]),
+        database.id.clone(),
+        QualifiedName {
+            database: Some("app".into()),
+            schema: Some("public".into()),
+            object: "public".into(),
+        },
+        "schema",
+        OptionalMetadata::Supported(None),
+        true,
+    )
+    .unwrap();
+    let mut entries = vec![database.clone(), schema.clone()];
+    for index in 0..956 {
+        let name = format!("perf_table_{index:04}");
+        entries.push(
+            CatalogEntry::relation(
+                CatalogId::new(profile.id, CatalogKind::Table, [name.as_str()]),
+                schema.id.clone(),
+                QualifiedName {
+                    database: Some("app".into()),
+                    schema: Some("public".into()),
+                    object: name,
+                },
+                "table",
+                OptionalMetadata::Supported(None),
+                false,
+            )
+            .unwrap(),
+        );
+    }
+    {
+        let state = app
+            .explorer
+            .normalized
+            .profiles
+            .get_mut(&profile.id)
+            .unwrap();
+        state.catalog.insert_subtree(entries).unwrap();
+        state
+            .catalog
+            .set_group_state(
+                &schema.id,
+                ObjectGroup::Tables,
+                CatalogGroupState {
+                    count: CatalogCount::Exact(956),
+                    completeness: CatalogCompleteness::Complete,
+                },
+            )
+            .unwrap();
+    }
+    app.explorer.normalized.expanded.extend([
+        ExplorerNodeId::Profile(profile.id),
+        ExplorerNodeId::Catalog(database.id.clone()),
+        ExplorerNodeId::Catalog(schema.id.clone()),
+        ExplorerNodeId::Group {
+            parent: schema.id.clone(),
+            group: ObjectGroup::Tables,
+        },
+    ]);
+    app.explorer.normalized.viewport_height = 30;
+    app.explorer.rebuild_projection(profile.id);
+
+    for _ in 0..20 {
+        let _ = render_buffer_with_state(&app, 120, 40, UiState::new());
+    }
+
+    let mut draw_samples = Vec::with_capacity(300);
+    for _ in 0..300 {
+        let start = Instant::now();
+        let _ = render_buffer_with_state(&app, 120, 40, UiState::new());
+        draw_samples.push(start.elapsed());
+    }
+
+    let mut move_draw_samples = Vec::with_capacity(300);
+    for _ in 0..300 {
+        let start = Instant::now();
+        app.explorer.move_selection(1);
+        let _ = render_buffer_with_state(&app, 120, 40, UiState::new());
+        move_draw_samples.push(start.elapsed());
+        app.explorer.move_selection(-1);
+    }
+
+    println!(
+        "tables=956 draw p50={:?} p95={:?} move+draw p50={:?} p95={:?}",
+        percentile(&draw_samples, 50),
+        percentile(&draw_samples, 95),
+        percentile(&move_draw_samples, 50),
+        percentile(&move_draw_samples, 95),
+    );
+}
+
 fn render_buffer_with_icons(
     app: &App,
     width: u16,
