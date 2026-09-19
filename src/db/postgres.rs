@@ -2518,10 +2518,16 @@ LIMIT 2001
                         .iter()
                         .all(|row| matches!(row.state, DraftRowState::Added))
                 });
-            if surviving != draft_existing_order || !additions_are_at_end {
+            if surviving != draft_existing_order {
                 return Err(CatalogMutationError::InvalidDraft {
                     reason: "PostgreSQL table edits cannot reorder existing columns or insert a column before an existing column".into(),
                 });
+            }
+            if !additions_are_at_end {
+                warnings.push(
+                    "PostgreSQL appends newly added columns; their requested position is not preserved"
+                        .into(),
+                );
             }
             let old_relation = relation(&table.schema, &table.name);
             let current_relation = relation(schema, name);

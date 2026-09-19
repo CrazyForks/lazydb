@@ -7087,7 +7087,7 @@ impl App {
                 Vec::new()
             }
             Action::CatalogOwnerContextLoaded { request, context } => {
-                if self.database_command_identity() == Some(request.connection) {
+                if self.session_is_connected(request.connection) {
                     self.connection.owner_context.finish(&request, context);
                     let choices = self
                         .connection
@@ -7106,7 +7106,7 @@ impl App {
                 Vec::new()
             }
             Action::CatalogOwnerContextLoadFailed { request, message } => {
-                if self.database_command_identity() == Some(request.connection) {
+                if self.session_is_connected(request.connection) {
                     self.connection.owner_context.fail(&request, message);
                 }
                 Vec::new()
@@ -7120,17 +7120,28 @@ impl App {
                         self.notify_warning("Catalog", "This catalog object cannot be edited");
                         return Vec::new();
                     };
-                    let Some(connection) = self.database_command_identity() else {
-                        self.notify_warning(
-                            "Catalog",
-                            "Catalog is unavailable for the active profile",
-                        );
-                        return Vec::new();
-                    };
-                    let Some(profile) = self.active_profile() else {
+                    let profile_id = object.profile_id();
+                    let Some(profile) = self
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == profile_id)
+                    else {
                         self.notify_warning("Catalog", "The active connection profile is missing");
                         return Vec::new();
                     };
+                    let database = object
+                        .native_path
+                        .first()
+                        .filter(|value| value.as_str() != "__role__")
+                        .map(String::as_str);
+                    let Some(session) = self.catalog_edit_session(profile_id, database) else {
+                        self.notify_warning(
+                            "Catalog",
+                            "The connection for the selected catalog object is unavailable",
+                        );
+                        return Vec::new();
+                    };
+                    let connection = session.identity;
                     if profile.read_only {
                         self.notify_warning(
                             "Catalog",
@@ -7142,7 +7153,7 @@ impl App {
                         .explorer
                         .normalized
                         .profiles
-                        .get(&connection.profile_id)
+                        .get(&profile_id)
                         .and_then(|state| state.catalog.get(object))
                     else {
                         self.notify_warning(
@@ -7155,8 +7166,7 @@ impl App {
                         self.notify_warning("Catalog", "The selected catalog entry is invalid");
                         return Vec::new();
                     }
-                    if !self
-                        .connection
+                    if !session
                         .mutation_capabilities
                         .can_edit(&anchor, Some(entry))
                         .unwrap_or(false)
@@ -7171,34 +7181,29 @@ impl App {
                         self.notify_warning("Catalog", "The selected catalog ID is invalid");
                         return Vec::new();
                     };
-                    let Some(target) = self.connection.target.clone().filter(|target| {
-                        object.kind == crate::db::catalog::CatalogKind::Database
-                            || object
-                                .native_path
-                                .first()
-                                .is_some_and(|value| value == "__role__")
-                            || target.database == *database
-                    }) else {
+                    let target = session.target.clone();
+                    if !(object.kind == crate::db::catalog::CatalogKind::Database
+                        || object
+                            .native_path
+                            .first()
+                            .is_some_and(|value| value == "__role__")
+                        || target.database == *database)
+                    {
                         self.notify_warning(
                             "Catalog",
                             "The selected catalog database is not the active target database",
                         );
                         return Vec::new();
                     };
-                    if !target.is_valid(profile)
-                        || connection != self.connection.active_identity().unwrap()
-                    {
+                    if !target.is_valid(profile) {
                         self.notify_warning(
                             "Catalog",
                             "The selected catalog target is unavailable",
                         );
                         return Vec::new();
                     }
-                    let Some(profile_state) = self
-                        .explorer
-                        .normalized
-                        .profiles
-                        .get_mut(&connection.profile_id)
+                    let Some(profile_state) =
+                        self.explorer.normalized.profiles.get_mut(&profile_id)
                     else {
                         self.notify_warning("Catalog", "The active catalog state is missing");
                         return Vec::new();
@@ -7214,7 +7219,7 @@ impl App {
                         catalog_epoch,
                         Vec::new(),
                     );
-                    editor.database_kind = self.active_profile().map(|profile| profile.kind);
+                    editor.database_kind = Some(profile.kind);
                     self.catalog_editor = Some(editor);
                     self.overlay = Some(Overlay::CatalogEditor);
                     let editor = self.catalog_editor.as_mut().unwrap();
@@ -7411,7 +7416,7 @@ impl App {
                 request,
                 definition,
             } => {
-                let valid = self.database_command_identity() == Some(request.connection)
+                let valid = self.session_is_connected(request.connection)
                     && self
                         .explorer
                         .normalized
@@ -7517,7 +7522,7 @@ impl App {
                 Vec::new()
             }
             Action::CatalogObjectDefinitionLoadFailed { request, message } => {
-                if self.database_command_identity() == Some(request.connection)
+                if self.session_is_connected(request.connection)
                     && self
                         .explorer
                         .normalized
@@ -8515,8 +8520,31 @@ impl App {
                     }
                     return Vec::new();
                 }
-                let Some(connection) = self.database_command_identity() else {
-                    return Vec::new();
+                let (connection, current_database) = match &anchor {
+                    CatalogMutationAnchor::Catalog(id) => {
+                        let database = id
+                            .native_path
+                            .first()
+                            .filter(|value| value.as_str() != "__role__")
+                            .map(String::as_str);
+                        let Some(session) = self.catalog_edit_session(id.profile_id(), database)
+                        else {
+                            return Vec::new();
+                        };
+                        (session.identity, Some(session.target.database.clone()))
+                    }
+                    _ => {
+                        let Some(connection) = self.database_command_identity() else {
+                            return Vec::new();
+                        };
+                        (
+                            connection,
+                            self.connection
+                                .target
+                                .as_ref()
+                                .map(|target| target.database.clone()),
+                        )
+                    }
                 };
                 let request_id = self.next_profile_request_id();
                 let object_type = object_type.unwrap_or(CatalogObjectType::Catalog(
@@ -8531,12 +8559,9 @@ impl App {
                     object_type,
                 )
                 .map(|request| {
-                    self.connection
-                        .target
-                        .as_ref()
-                        .map_or(request.clone(), |target| {
-                            request.with_current_database(target.database.clone())
-                        })
+                    current_database.map_or(request.clone(), |database| {
+                        request.with_current_database(database)
+                    })
                 }) else {
                     return Vec::new();
                 };
@@ -8571,7 +8596,7 @@ impl App {
                 let Some(plan) = editor.plan.clone() else {
                     return Vec::new();
                 };
-                if self.connection.active_identity() != Some(plan.request.connection) {
+                if !self.session_is_connected(plan.request.connection) {
                     return Vec::new();
                 }
                 if let Some(editor) = self.catalog_editor.as_mut()
@@ -8676,8 +8701,7 @@ impl App {
                                     request_id: plan.request.request_id,
                                 },
                             )
-                }) && self.connection.active_identity()
-                    == Some(plan.request.connection);
+                }) && self.session_is_connected(plan.request.connection);
                 if !valid {
                     return Vec::new();
                 }
@@ -8722,8 +8746,7 @@ impl App {
                 self.commands_for_catalog_targets(profile_id, &plan.refresh)
             }
             Action::CatalogMutationFailed { plan, message } => {
-                let identity_matches =
-                    self.connection.active_identity() == Some(plan.request.connection);
+                let identity_matches = self.session_is_connected(plan.request.connection);
                 let epoch_matches = self
                     .explorer
                     .normalized
@@ -17168,6 +17191,59 @@ impl App {
             return None;
         }
         self.connection.active_identity()
+    }
+
+    pub(crate) fn catalog_edit_session(
+        &self,
+        profile_id: uuid::Uuid,
+        database: Option<&str>,
+    ) -> Option<crate::model::session::SessionState> {
+        if let Some(identity) = self.connection.active_identity()
+            && identity.profile_id == profile_id
+            && self.connection.status == ConnectionStatus::Connected
+            && let Some(target) = self.connection.target.clone()
+            && database.is_none_or(|database| target.database == database)
+        {
+            return Some(crate::model::session::SessionState {
+                target,
+                identity,
+                status: crate::model::session::SessionStatus::Connected,
+                server: self.connection.server.clone(),
+                mutation_capabilities: self.connection.mutation_capabilities.clone(),
+                error: None,
+            });
+        }
+        self.sessions
+            .iter()
+            .filter(|session| {
+                session.identity.profile_id == profile_id
+                    && session.status == crate::model::session::SessionStatus::Connected
+                    && database.is_none_or(|database| session.target.database == database)
+            })
+            .find(|session| {
+                self.explorer
+                    .catalog_sessions
+                    .get(&profile_id)
+                    .is_some_and(|identity| *identity == session.identity)
+            })
+            .or_else(|| {
+                self.sessions.iter().find(|session| {
+                    session.identity.profile_id == profile_id
+                        && session.status == crate::model::session::SessionStatus::Connected
+                        && database.is_none_or(|database| session.target.database == database)
+                })
+            })
+            .cloned()
+    }
+
+    fn session_is_connected(&self, identity: ConnectionIdentity) -> bool {
+        self.connection.active_identity() == Some(identity)
+            || self
+                .sessions
+                .get_by_identity(identity)
+                .is_some_and(|session| {
+                    session.status == crate::model::session::SessionStatus::Connected
+                })
     }
 
     fn connection_identity_is_live(&self, identity: ConnectionIdentity) -> bool {
