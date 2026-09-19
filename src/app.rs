@@ -228,6 +228,7 @@ pub struct App {
     pub sql_editors: Vec<ConsoleRecord>,
     pub recent_targets: Vec<ExecutionTarget>,
     pub active_tab: usize,
+    placeholder_console_id: Option<Uuid>,
     pub focus: Focus,
     pub redis_info_scroll: u16,
     pub pane_maximized: bool,
@@ -796,6 +797,10 @@ impl App {
             (Vec::new(), Vec::new())
         };
 
+        let placeholder_console_id = tabs
+            .iter()
+            .find_map(WorkspaceTab::as_console)
+            .map(|tab| tab.id);
         Self {
             project,
             profiles,
@@ -808,6 +813,7 @@ impl App {
             sql_editors,
             recent_targets: Vec::new(),
             active_tab: 0,
+            placeholder_console_id,
             focus: Focus::Editor,
             redis_info_scroll: 0,
             pane_maximized: false,
@@ -1251,6 +1257,7 @@ impl App {
         profile_id: Uuid,
         target: ExecutionTarget,
     ) -> Vec<Command> {
+        self.remove_placeholder_console();
         let commands = Vec::new();
         if self.active_workspace_profile != Some(profile_id) || self.tabs.is_empty() {
             if self.active_workspace_profile != Some(profile_id)
@@ -1280,6 +1287,20 @@ impl App {
             self.normalize_focus();
         }
         commands
+    }
+
+    fn remove_placeholder_console(&mut self) {
+        let Some(id) = self.placeholder_console_id.take() else {
+            return;
+        };
+        self.tabs.retain(|tab| tab.id() != id);
+        self.sql_editors.retain(|record| record.id != id);
+        self.editor.close_console(id);
+        self.active_tab = self
+            .active_tab_id()
+            .and_then(|active_id| self.tabs.iter().position(|tab| tab.id() == active_id))
+            .unwrap_or(0)
+            .min(self.tabs.len().saturating_sub(1));
     }
 
     pub fn set_confirmation_policy(&mut self, policy: ConfirmationPolicy) {

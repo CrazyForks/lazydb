@@ -61,12 +61,20 @@ async fn mariadb_11_4_catalog_loads_tables_views_and_sequences() {
         [database_name.clone(), database_name.clone()],
     );
     let prefix = format!("lazydb_catalog_{}", uuid::Uuid::new_v4().simple());
+    let table_name = format!("{prefix}_table");
+    let view_name = format!("{prefix}_view");
+    let q_table = lazydb::db::mysql::quote_identifier(&table_name);
+    let q_view = lazydb::db::mysql::quote_identifier(&view_name);
     let sequence_one = format!("{prefix}_one");
     let sequence_two = format!("{prefix}_two");
     let q_one = lazydb::db::mysql::quote_identifier(&sequence_one);
     let q_two = lazydb::db::mysql::quote_identifier(&sequence_two);
     database
-        .execute(&format!("CREATE SEQUENCE {q_one}; CREATE SEQUENCE {q_two}"))
+        .execute(&format!(
+            "CREATE TABLE {q_table} (id INT PRIMARY KEY, value VARCHAR(32)); \
+             CREATE VIEW {q_view} AS SELECT id, value FROM {q_table}; \
+             CREATE SEQUENCE {q_one}; CREATE SEQUENCE {q_two}"
+        ))
         .await
         .unwrap();
 
@@ -169,7 +177,9 @@ async fn mariadb_11_4_catalog_loads_tables_views_and_sequences() {
     .await;
 
     database
-        .execute(&format!("DROP SEQUENCE {q_one}; DROP SEQUENCE {q_two}"))
+        .execute(&format!(
+            "DROP VIEW {q_view}; DROP SEQUENCE {q_one}; DROP SEQUENCE {q_two}; DROP TABLE {q_table}"
+        ))
         .await
         .unwrap();
     result.unwrap();
