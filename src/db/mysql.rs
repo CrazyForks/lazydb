@@ -73,11 +73,32 @@ fn mysql_column_definition(
     if !column.nullable {
         definition.push_str(" NOT NULL");
     }
+    if column.identity {
+        definition.push_str(" AUTO_INCREMENT");
+    }
+    if !column.collation.value().trim().is_empty() {
+        definition.push_str(" COLLATE ");
+        definition.push_str(column.collation.value().trim());
+    }
     if !column.default_expression.value().trim().is_empty() {
         definition.push_str(" DEFAULT ");
         definition.push_str(column.default_expression.value().trim());
     }
+    if !column.generated_expression.value().trim().is_empty() {
+        definition.push_str(" GENERATED ALWAYS AS (");
+        definition.push_str(column.generated_expression.value().trim());
+        definition.push(')');
+    }
+    definition.push_str(" COMMENT ");
+    definition.push_str(&quote_literal(column.comment.value()));
     Ok(definition)
+}
+
+fn comment_changed(before: &OptionalMetadata<String>, after: &str) -> bool {
+    match before {
+        OptionalMetadata::Supported(value) => value.as_deref().unwrap_or("") != after,
+        OptionalMetadata::Unsupported => !after.is_empty(),
+    }
 }
 
 pub const CATALOG_TABLES_SQL: &str = r#"
@@ -631,6 +652,14 @@ impl MySqlAdapter {
                     quote_identifier(new_name)
                 ));
             }
+            if comment_changed(&table.comment, draft.comment.value()) {
+                statements.push(format!(
+                    "ALTER TABLE {}.{} COMMENT = {}",
+                    quote_identifier(&schema_sql),
+                    quote_identifier(new_name),
+                    quote_literal(draft.comment.value())
+                ));
+            }
             let mut current = table
                 .columns
                 .iter()
@@ -674,7 +703,6 @@ impl MySqlAdapter {
                     || " FIRST".to_owned(),
                     |name| format!(" AFTER {}", quote_identifier(name)),
                 );
-                let definition = mysql_column_definition(row)?;
                 if let Some(existing_name) = row.existing_name.as_deref() {
                     let old = table
                         .columns
@@ -684,9 +712,15 @@ impl MySqlAdapter {
                         old.name != row.name.value().trim()
                             || old.native_type != row.native_type.value().trim()
                             || old.nullable != row.nullable
+                            || comment_changed(&old.comment, row.comment.value())
+                            || comment_changed(
+                                &old.default_expression,
+                                row.default_expression.value().trim(),
+                            )
                             || current.iter().position(|name| name == existing_name)
                                 != Some(desired_index)
                     });
+                    let definition = mysql_column_definition(row)?;
                     if let Some(index) = current.iter().position(|name| name == existing_name) {
                         current.remove(index);
                     }
@@ -705,6 +739,7 @@ impl MySqlAdapter {
                         row.name.value().trim().to_owned(),
                     );
                 } else {
+                    let definition = mysql_column_definition(row)?;
                     statements.push(format!(
                         "ALTER TABLE {}.{} ADD COLUMN {}{}",
                         quote_identifier(&schema_sql),
@@ -1041,6 +1076,16 @@ impl MySqlAdapter {
         .fetch_all(&mut *connection)
         .await
         .map_err(sql_error)?;
+        let table_comment = sqlx::query(
+            "SELECT table_comment FROM information_schema.tables WHERE BINARY table_schema=BINARY ? AND BINARY table_name=BINARY ?",
+        )
+        .bind(schema)
+        .bind(name)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(sql_error)?
+        .map(|row| row.try_get::<String, _>(0).map_err(decode_error))
+        .transpose()?;
         let mut columns = Vec::new();
         for row in rows {
             let default = row.try_get::<Option<String>, _>(4).map_err(decode_error)?;
@@ -1066,13 +1111,14 @@ impl MySqlAdapter {
                 "MySQL table has no visible columns",
             ));
         }
-        let baseline_fingerprint = format!("mysql:table:{database}:{schema}:{name}:{columns:?}");
+        let baseline_fingerprint =
+            format!("mysql:table:{database}:{schema}:{name}:{table_comment:?}:{columns:?}");
         Ok(CatalogObjectDefinition::Table(TableDefinition {
             database: database.clone(),
             schema: schema.clone(),
             name: name.clone(),
             owner: String::new(),
-            comment: OptionalMetadata::Unsupported,
+            comment: OptionalMetadata::Supported(table_comment),
             columns: columns.clone(),
             indexes: Vec::new(),
             constraints: Vec::new(),

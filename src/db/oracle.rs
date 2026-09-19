@@ -50,6 +50,17 @@ use crate::{
 };
 use futures_util::future::BoxFuture;
 
+fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn comment_changed(before: &OptionalMetadata<String>, after: &str) -> bool {
+    match before {
+        OptionalMetadata::Supported(value) => value.as_deref().unwrap_or("") != after,
+        OptionalMetadata::Unsupported => !after.is_empty(),
+    }
+}
+
 #[derive(Clone)]
 pub struct OracleAdapter {
     #[cfg(feature = "driver-oracle")]
@@ -336,7 +347,7 @@ impl OracleAdapter {
         let schema = object.native_path.get(1).cloned().unwrap_or_default();
         let old_name = object.native_path.get(2).cloned().unwrap_or_default();
         let (kind, new_name, statements) = match (baseline, draft) {
-            (CatalogObjectDefinition::Table(_), CatalogDraft::Table(draft)) => {
+            (CatalogObjectDefinition::Table(table), CatalogDraft::Table(draft)) => {
                 if draft.columns.iter().any(|column| {
                     !matches!(
                         column.state,
@@ -363,14 +374,42 @@ impl OracleAdapter {
                         },
                     );
                 }
-                let statements = (new_name != old_name).then(|| {
-                    format!(
+                let mut statements = Vec::new();
+                if new_name != old_name {
+                    statements.push(format!(
                         "ALTER TABLE {}.{} RENAME TO {}",
                         quote_identifier(&schema),
                         quote_identifier(&old_name),
                         quote_identifier(&new_name)
-                    )
-                });
+                    ));
+                }
+                if comment_changed(&table.comment, draft.comment.value()) {
+                    statements.push(format!(
+                        "COMMENT ON TABLE {}.{} IS {}",
+                        quote_identifier(&schema),
+                        quote_identifier(&new_name),
+                        quote_literal(draft.comment.value())
+                    ));
+                }
+                for column in &draft.columns {
+                    let Some(existing_name) = column.existing_name.as_deref() else {
+                        continue;
+                    };
+                    let Some(baseline_column) =
+                        table.columns.iter().find(|item| item.name == existing_name)
+                    else {
+                        continue;
+                    };
+                    if comment_changed(&baseline_column.comment, column.comment.value()) {
+                        statements.push(format!(
+                            "COMMENT ON COLUMN {}.{}.{} IS {}",
+                            quote_identifier(&schema),
+                            quote_identifier(&new_name),
+                            quote_identifier(column.name.value().trim()),
+                            quote_literal(column.comment.value())
+                        ));
+                    }
+                }
                 (
                     CatalogKind::Table,
                     new_name,
@@ -415,6 +454,10 @@ impl OracleAdapter {
             return Err(super::catalog_mutation::CatalogMutationError::NoChanges);
         }
         let old_object = object.clone();
+        let identity_changed = match kind {
+            CatalogKind::Table => old_name != new_name,
+            _ => true,
+        };
         let new_object = CatalogId::new(
             request.connection.profile_id,
             kind,
@@ -449,13 +492,13 @@ impl OracleAdapter {
         )
         .map(|plan| {
             plan.with_impact(super::catalog_mutation::CatalogMutationImpact {
-                old_object_id: old_object,
+                old_object_id: old_object.clone(),
                 owning_relation_id: None,
                 namespace: super::catalog_mutation::CatalogMutationNamespace {
                     database: None,
                     schema: None,
                 },
-                native_identity_changed: true,
+                native_identity_changed: identity_changed,
             })
         })
     }
@@ -593,6 +636,27 @@ impl OracleAdapter {
                         object.kind
                     )));
                 }
+                let table_comment: Option<String> = connection
+                    .query_row(
+                        "SELECT comments FROM all_tab_comments WHERE owner = :1 AND table_name = :2",
+                        &[schema, name],
+                    )
+                    .map_err(oracle_error)?
+                    .get(0)
+                    .map_err(oracle_error)?;
+                let column_comment_rows = connection
+                    .query(
+                        "SELECT column_name, comments FROM all_col_comments WHERE owner = :1 AND table_name = :2",
+                        &[schema, name],
+                    )
+                    .map_err(oracle_error)?;
+                let mut column_comments = std::collections::HashMap::new();
+                for row in column_comment_rows {
+                    let row = row.map_err(oracle_error)?;
+                    let column_name: String = row.get(0).map_err(oracle_error)?;
+                    let comment: Option<String> = row.get(1).map_err(oracle_error)?;
+                    column_comments.insert(column_name, comment);
+                }
                 let rows = connection
                     .query(
                         "SELECT column_name, data_type, data_precision, data_scale, nullable, data_default, column_id FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
@@ -603,6 +667,7 @@ impl OracleAdapter {
                 for row in rows {
                     let row = row.map_err(oracle_error)?;
                     let column_name: String = row.get(0).map_err(oracle_error)?;
+                    let comment = column_comments.remove(&column_name).flatten();
                     let native_type: String = row.get(1).map_err(oracle_error)?;
                     let precision: Option<i64> = row.get(2).map_err(oracle_error)?;
                     let scale: Option<i64> = row.get(3).map_err(oracle_error)?;
@@ -625,7 +690,7 @@ impl OracleAdapter {
                         identity: OptionalMetadata::Unsupported,
                         generated_expression: OptionalMetadata::Unsupported,
                         collation: OptionalMetadata::Unsupported,
-                        comment: OptionalMetadata::Unsupported,
+                        comment: OptionalMetadata::Supported(comment),
                     });
                 }
                 if columns.is_empty() {
@@ -639,7 +704,7 @@ impl OracleAdapter {
                     schema: schema.clone(),
                     name: name.clone(),
                     owner: schema.clone(),
-                    comment: OptionalMetadata::Unsupported,
+                    comment: OptionalMetadata::Supported(table_comment),
                     columns,
                     indexes: Vec::new(),
                     constraints: Vec::new(),
