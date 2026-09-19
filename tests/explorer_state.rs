@@ -30,7 +30,9 @@ fn profile_order_controls_roots_independently_of_map_order() {
         visible_ids(&explorer),
         vec![
             ExplorerNodeId::Profile(first),
+            ExplorerNodeId::PrincipalGroup { profile_id: first },
             ExplorerNodeId::Profile(second),
+            ExplorerNodeId::PrincipalGroup { profile_id: second },
         ]
     );
 }
@@ -59,7 +61,13 @@ fn other_profiles_are_hidden_under_a_collapsed_group() {
 
     assert_eq!(
         visible_ids(&explorer),
-        vec![ExplorerNodeId::Profile(current), ExplorerNodeId::Others,]
+        vec![
+            ExplorerNodeId::Profile(current),
+            ExplorerNodeId::PrincipalGroup {
+                profile_id: current
+            },
+            ExplorerNodeId::Others,
+        ]
     );
 
     explorer.select(ExplorerNodeId::Others);
@@ -68,11 +76,15 @@ fn other_profiles_are_hidden_under_a_collapsed_group() {
         visible_ids(&explorer),
         vec![
             ExplorerNodeId::Profile(current),
+            ExplorerNodeId::PrincipalGroup {
+                profile_id: current
+            },
             ExplorerNodeId::Others,
             ExplorerNodeId::Profile(other),
+            ExplorerNodeId::PrincipalGroup { profile_id: other },
         ]
     );
-    assert_eq!(explorer.visible().last().unwrap().depth, 1);
+    assert_eq!(explorer.visible().last().unwrap().depth, 2);
 }
 
 #[test]
@@ -576,6 +588,9 @@ fn viewport_scroll_keeps_selection_visible() {
     for profile in &profiles {
         explorer.add_profile(*profile);
     }
+    // These cases exercise flat-list navigation mechanics; collapsing the
+    // auto-expanded profiles keeps the principal group rows out of the way.
+    explorer.expanded.clear();
 
     explorer.move_selection(7, 3);
     assert_eq!(
@@ -600,6 +615,7 @@ fn line_scroll_moves_explorer_selection_and_viewport_immediately_with_bounds() {
     for profile in &profiles {
         explorer.add_profile(*profile);
     }
+    explorer.expanded.clear();
     explorer.set_viewport_height(3);
     explorer.move_selection(2, 3);
 
@@ -692,6 +708,7 @@ fn vim_targets_page_moves_and_alignment_use_the_measured_viewport() {
     for profile in &profiles {
         explorer.add_profile(*profile);
     }
+    explorer.expanded.clear();
     explorer.set_viewport_height(5);
 
     for _ in 0..4 {
@@ -770,9 +787,14 @@ fn visible_find_snapshots_only_currently_visible_primary_labels() {
     let find = state.find.as_ref().unwrap();
     assert_eq!(
         find.matches,
-        vec![ExplorerNodeId::Catalog(fixture.table.id.clone())]
+        vec![
+            ExplorerNodeId::Catalog(fixture.table.id.clone()),
+            ExplorerNodeId::PrincipalGroup {
+                profile_id: profile
+            },
+        ]
     );
-    assert_eq!(state.find_match_position(), (1, 1));
+    assert_eq!(state.find_match_position(), (1, 2));
     assert!(find.rows.iter().any(|row| row.label == "users"));
     assert!(!find.rows.iter().any(|row| row.label == "id"));
 }
@@ -850,12 +872,21 @@ fn visible_find_confirms_and_cycles_selection_with_wraparound() {
     assert!(state.move_find_match(1));
     assert_eq!(
         state.selected_id(),
+        Some(&ExplorerNodeId::PrincipalGroup {
+            profile_id: profile
+        })
+    );
+    assert!(state.move_find_match(1));
+    assert_eq!(
+        state.selected_id(),
         Some(&ExplorerNodeId::Catalog(fixture.table.id.clone()))
     );
     assert!(state.move_find_match(-1));
     assert_eq!(
         state.selected_id(),
-        Some(&ExplorerNodeId::Catalog(fixture.view.id.clone()))
+        Some(&ExplorerNodeId::PrincipalGroup {
+            profile_id: profile
+        })
     );
 }
 
@@ -904,7 +935,7 @@ fn visible_find_previews_first_match_while_typing() {
     state.open_find();
     state.edit_find(|query| query.push_str("user"));
 
-    assert_eq!(state.find_match_position(), (1, 2));
+    assert_eq!(state.find_match_position(), (1, 3));
     assert_eq!(
         state.selected_id(),
         Some(&ExplorerNodeId::Catalog(fixture.table.id.clone()))
@@ -935,7 +966,7 @@ fn visible_find_previews_first_match_before_original_selection() {
     state.open_find();
     state.edit_find(|query| query.push_str("user"));
 
-    assert_eq!(state.find_match_position(), (1, 2));
+    assert_eq!(state.find_match_position(), (1, 3));
     assert_eq!(
         state.selected_id(),
         Some(&ExplorerNodeId::Catalog(fixture.table.id.clone()))
@@ -1019,6 +1050,7 @@ fn visible_find_editing_realigns_after_viewport_resize() {
         normalized,
         ..Default::default()
     };
+    state.normalized.expanded.clear();
     state.set_viewport_height(5);
     state.open_find();
     state.edit_find(|query| query.push_str("profile"));
@@ -1048,6 +1080,7 @@ fn visible_find_centers_each_current_match_in_the_viewport() {
         normalized,
         ..Default::default()
     };
+    state.normalized.expanded.clear();
     state.set_viewport_height(5);
     state.open_find();
     state.edit_find(|query| query.push_str("profile"));

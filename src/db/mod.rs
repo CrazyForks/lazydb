@@ -13,6 +13,7 @@ pub mod mysql;
 pub mod oracle;
 pub mod oracle_client;
 pub mod postgres;
+pub mod principal;
 pub mod query;
 pub mod redis;
 pub mod relation_plan;
@@ -42,6 +43,7 @@ use self::{
     mysql::MySqlAdapter,
     oracle::OracleAdapter,
     postgres::PostgresAdapter,
+    principal::{PrincipalDdl, PrincipalEntry, PrincipalPage},
     query::{QueryBudget, QueryOutcome},
     redis::RedisAdapter,
     sqlite::SqliteAdapter,
@@ -123,6 +125,15 @@ impl DatabaseError {
         Self {
             category: ErrorCategory::Configuration,
             code: None,
+            message: sanitize_terminal_text(message.as_ref()),
+            diagnostic: None,
+        }
+    }
+
+    pub fn unsupported(message: impl AsRef<str>) -> Self {
+        Self {
+            category: ErrorCategory::Unsupported,
+            code: Some("unsupported".to_owned()),
             message: sanitize_terminal_text(message.as_ref()),
             diagnostic: None,
         }
@@ -279,6 +290,30 @@ pub enum DatabaseConnection {
 }
 
 impl DatabaseConnection {
+    pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => adapter.list_principals().await,
+            Self::MySql(adapter) | Self::MariaDb(adapter) => adapter.list_principals().await,
+            Self::SqlServer(adapter) => adapter.list_principals().await,
+            Self::Oracle(adapter) => adapter.list_principals().await,
+            Self::Sqlite(adapter) => adapter.list_principals().await,
+            Self::Redis(_) => Err(DatabaseError::unsupported("Redis has no SQL principals")),
+        }
+    }
+
+    pub async fn principal_ddl(
+        &self,
+        principal: &PrincipalEntry,
+    ) -> Result<PrincipalDdl, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => adapter.principal_ddl(principal).await,
+            Self::MySql(adapter) | Self::MariaDb(adapter) => adapter.principal_ddl(principal).await,
+            Self::SqlServer(adapter) => adapter.principal_ddl(principal).await,
+            Self::Oracle(adapter) => adapter.principal_ddl(principal).await,
+            Self::Sqlite(_) => Err(DatabaseError::unsupported("SQLite has no SQL principals")),
+            Self::Redis(_) => Err(DatabaseError::unsupported("Redis has no SQL principals")),
+        }
+    }
     pub async fn load_monitor_snapshot(&self) -> Result<monitor::MonitorSnapshot, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.load_monitor_snapshot().await,

@@ -6,6 +6,7 @@ use crate::{
     db::{
         catalog::{CatalogKind, ObjectGroup},
         catalog_mutation::CatalogObjectType,
+        principal::PrincipalDisplayKind,
     },
     model::notification::NotificationLevel,
     profile::DatabaseKind,
@@ -366,6 +367,30 @@ impl IconSet {
             CatalogObjectType::Catalog(kind) => self.catalog(kind),
             CatalogObjectType::LoginRole => self.explorer_add(ExplorerAddIcon::User),
             CatalogObjectType::Role => self.explorer_add(ExplorerAddIcon::Role),
+        }
+    }
+
+    /// Icon for the connection-level `Users & Roles` group and its children.
+    ///
+    /// The browse icons deliberately avoid the "add" glyphs used by the
+    /// explorer add menu so an existing user never looks like a create action.
+    pub const fn principal(self, kind: PrincipalDisplayKind) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => match kind {
+                PrincipalDisplayKind::Group => md::MD_ACCOUNT_GROUP,
+                PrincipalDisplayKind::User => md::MD_ACCOUNT,
+                PrincipalDisplayKind::Role => md::MD_SHIELD_ACCOUNT,
+            },
+            IconMode::Unicode => match kind {
+                PrincipalDisplayKind::Group => "♟",
+                PrincipalDisplayKind::User => "●",
+                PrincipalDisplayKind::Role => "◇",
+            },
+            IconMode::Ascii => match kind {
+                PrincipalDisplayKind::Group => "UR",
+                PrincipalDisplayKind::User => "US",
+                PrincipalDisplayKind::Role => "RL",
+            },
         }
     }
 

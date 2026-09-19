@@ -42,6 +42,9 @@ use super::{
     },
     ddl::{DdlSection, assemble_ddl},
     monitor::{MonitorMetadata, MonitorSnapshot, ProcessSnapshot},
+    principal::{
+        PrincipalDdl, PrincipalEntry, PrincipalId, PrincipalKind, PrincipalPage, PrincipalScope,
+    },
     query::{ColumnMeta, QueryBudget, QueryOutcome, QueryStats, RELATION_PREVIEW_LIMIT, ResultSet},
     value::CellValue,
 };
@@ -2292,6 +2295,165 @@ impl MsSqlAdapter {
         })
     }
 
+    /// List users and database roles for the connection's bound database.
+    ///
+    /// Only database-level principals are returned: server logins
+    /// (`sys.server_principals`) are deliberately excluded because they are not
+    /// database users. Built-in principals are flagged so the DDL preview can
+    /// describe them instead of emitting a statement that cannot be replayed.
+    pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        let database = self.settings.database.clone();
+        let sql = format!(
+            "SELECT p.[principal_id], p.[name], p.[type], \
+                    CAST(p.[is_fixed_role] AS int) AS is_fixed_role \
+             FROM {}.sys.database_principals AS p \
+             WHERE p.[type] IN ('S','U','G','E','X','R','A','C','K') \
+             ORDER BY p.[name]",
+            quote_identifier(&database)
+        );
+        let pool = self.pool_for_database(&database).await?;
+        let rows = query_rows(&pool, &sql).await?;
+        let mut entries = rows
+            .iter()
+            .map(|row| {
+                let name = optional_string(row, "name")?
+                    .ok_or_else(|| decode_error("database principal has no name"))?;
+                let principal_id: i32 = row
+                    .try_get::<i32, _>("principal_id")
+                    .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                    .ok_or_else(|| decode_error("database principal has no id"))?;
+                let type_code = optional_string(row, "type")?.unwrap_or_default();
+                let is_fixed_role = row
+                    .try_get::<i32, _>("is_fixed_role")
+                    .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                    .unwrap_or(0)
+                    != 0;
+                let kind = if matches!(type_code.as_str(), "R" | "A") {
+                    PrincipalKind::Role
+                } else {
+                    PrincipalKind::User
+                };
+                Ok(PrincipalEntry {
+                    id: PrincipalId {
+                        profile_id: self.connection_id,
+                        scope: PrincipalScope::Database(database.clone()),
+                        native_id: principal_id.to_string(),
+                        host: None,
+                    },
+                    kind,
+                    name: name.clone(),
+                    native_kind: type_code,
+                    system: is_fixed_role || is_builtin_principal(&name),
+                })
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+        // Users are listed before roles, each group name-sorted.
+        entries.sort_by(|left, right| {
+            let left_key = (left.kind == PrincipalKind::Role, left.name.as_str());
+            let right_key = (right.kind == PrincipalKind::Role, right.name.as_str());
+            left_key
+                .cmp(&right_key)
+                .then_with(|| left.id.native_id.cmp(&right.id.native_id))
+        });
+        Ok(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id: self.connection_id,
+                generation: 0,
+            },
+            entries,
+            complete: true,
+        })
+    }
+
+    pub async fn principal_ddl(
+        &self,
+        principal: &PrincipalEntry,
+    ) -> Result<PrincipalDdl, DatabaseError> {
+        if principal.id.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "principal does not belong to this connection",
+            ));
+        }
+        let database = match &principal.id.scope {
+            PrincipalScope::Database(database) => database.clone(),
+            _ => self.settings.database.clone(),
+        };
+        let principal_id: i32 = principal
+            .id
+            .native_id
+            .parse()
+            .map_err(|_| DatabaseError::configuration("invalid principal id"))?;
+        let pool = self.pool_for_database(&database).await?;
+        let quoted_database = quote_identifier(&database);
+
+        let related_sql = if principal.kind == PrincipalKind::Role {
+            format!(
+                "SELECT m.[name] AS related_name FROM {quoted_database}.sys.database_role_members AS rm \
+                 JOIN {quoted_database}.sys.database_principals AS m ON m.[principal_id] = rm.[member_principal_id] \
+                 WHERE rm.[role_principal_id] = {principal_id} ORDER BY m.[name]"
+            )
+        } else {
+            format!(
+                "SELECT r.[name] AS related_name FROM {quoted_database}.sys.database_role_members AS rm \
+                 JOIN {quoted_database}.sys.database_principals AS r ON r.[principal_id] = rm.[role_principal_id] \
+                 WHERE rm.[member_principal_id] = {principal_id} ORDER BY r.[name]"
+            )
+        };
+        let related = query_rows(&pool, &related_sql)
+            .await?
+            .iter()
+            .filter_map(|row| optional_string(row, "related_name").ok().flatten())
+            .collect::<Vec<_>>();
+
+        let permissions_sql = format!(
+            "SELECT p.[state_desc], p.[permission_name], p.[class_desc], \
+                    sc.[name] AS schema_name, ob.[name] AS object_name, \
+                    CASE WHEN p.[minor_id] <> 0 THEN 1 ELSE 0 END AS is_column \
+             FROM {quoted_database}.sys.database_permissions AS p \
+             LEFT JOIN {quoted_database}.sys.schemas AS sc ON sc.[schema_id] = p.[major_id] AND p.[class] = 3 \
+             LEFT JOIN {quoted_database}.sys.objects AS ob ON ob.[object_id] = p.[major_id] AND p.[class] = 1 \
+             WHERE p.[grantee_principal_id] = {principal_id} \
+             ORDER BY p.[class_desc], p.[permission_name]"
+        );
+        let mut permissions = Vec::new();
+        for row in query_rows(&pool, &permissions_sql).await? {
+            let state = optional_string(&row, "state_desc")?.unwrap_or_default();
+            let permission = optional_string(&row, "permission_name")?.unwrap_or_default();
+            let class = optional_string(&row, "class_desc")?.unwrap_or_default();
+            let schema = optional_string(&row, "schema_name")?;
+            let object = optional_string(&row, "object_name")?;
+            let is_column = row
+                .try_get::<i32, _>("is_column")
+                .map_err(|error| tiberius_error(error, ErrorCategory::Internal))?
+                .unwrap_or(0)
+                != 0;
+            if let Some(statement) = format_permission(
+                &state,
+                &permission,
+                &class,
+                schema.as_deref(),
+                object.as_deref(),
+                is_column,
+                &principal.name,
+            ) {
+                permissions.push(statement);
+            }
+        }
+
+        let sql = assemble_principal_ddl(
+            principal.kind,
+            &principal.name,
+            &principal.native_kind,
+            principal.system,
+            &related,
+            &permissions,
+        );
+        Ok(PrincipalDdl {
+            principal: principal.clone(),
+            sql,
+        })
+    }
+
     pub async fn object_ddl(
         &self,
         kind: CatalogKind,
@@ -3711,6 +3873,130 @@ fn quote_literal(value: &str) -> String {
     format!("N'{}'", value.replace('\'', "''"))
 }
 
+/// Built-in SQL Server principals whose definition is system-managed.
+fn is_builtin_principal(name: &str) -> bool {
+    name == "dbo"
+        || name == "guest"
+        || name == "sys"
+        || name == "INFORMATION_SCHEMA"
+        || name == "public"
+        || name.starts_with("##")
+}
+
+/// Format one `sys.database_permissions` row as a GRANT/DENY statement.
+///
+/// Returns `None` for rows that cannot be rendered faithfully (REVOKE
+/// bookkeeping rows, unknown classes, or unresolvable targets) so the caller
+/// never emits a wrong statement.
+fn format_permission(
+    state_desc: &str,
+    permission_name: &str,
+    class_desc: &str,
+    schema_name: Option<&str>,
+    object_name: Option<&str>,
+    is_column: bool,
+    grantee: &str,
+) -> Option<String> {
+    let verb = match state_desc {
+        "GRANT" | "GRANT_WITH_GRANT_OPTION" => "GRANT",
+        "DENY" => "DENY",
+        // A REVOKE row records removed access; it is not a statement to replay.
+        _ => return None,
+    };
+    let with_grant_option = if state_desc == "GRANT_WITH_GRANT_OPTION" {
+        " WITH GRANT OPTION"
+    } else {
+        ""
+    };
+    let target = match class_desc {
+        "DATABASE" => String::new(),
+        "SCHEMA" => format!(" ON SCHEMA::{}", quote_identifier(schema_name?)),
+        "OBJECT_OR_COLUMN" => {
+            let schema = schema_name?;
+            let object = object_name?;
+            let qualified = format!("{}.{}", quote_identifier(schema), quote_identifier(object));
+            if is_column {
+                // Column names are not resolved here; the object remains
+                // actionable and the column scope is documented.
+                format!(" ON {qualified} /* column-level permission */")
+            } else {
+                format!(" ON {qualified}")
+            }
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{verb} {permission_name}{target} TO {grantee}{with_grant_option};"
+    ))
+}
+
+/// Build a readable definition for a SQL Server database principal.
+///
+/// Passwords, SIDs and other secrets can never be recovered from the catalog;
+/// they are omitted and documented. `related` holds role members for a role, or
+/// the roles a user belongs to.
+fn assemble_principal_ddl(
+    kind: PrincipalKind,
+    name: &str,
+    type_code: &str,
+    builtin: bool,
+    related: &[String],
+    permissions: &[String],
+) -> String {
+    let quoted = quote_identifier(name);
+    let mut lines = Vec::new();
+    match kind {
+        PrincipalKind::Role => {
+            lines.push(format!("CREATE ROLE {quoted} AUTHORIZATION [dbo];"));
+            if builtin {
+                lines.push(
+                    "-- Built-in fixed database role; its members and permissions are system-defined."
+                        .to_owned(),
+                );
+            } else {
+                for member in related {
+                    lines.push(format!(
+                        "ALTER ROLE {quoted} ADD MEMBER {};",
+                        quote_identifier(member)
+                    ));
+                }
+            }
+        }
+        PrincipalKind::User => {
+            let create = match type_code {
+                "S" | "U" | "G" => format!("CREATE USER {quoted} FOR LOGIN {quoted};"),
+                "E" | "X" => format!("CREATE USER {quoted} FROM EXTERNAL PROVIDER;"),
+                "C" | "K" => format!(
+                    "CREATE USER {quoted} WITHOUT LOGIN; /* mapped to a certificate or key */"
+                ),
+                _ => format!("CREATE USER {quoted};"),
+            };
+            lines.push(create);
+            if builtin {
+                lines.push(
+                    "-- Built-in database user; its definition is system-defined.".to_owned(),
+                );
+            }
+            for role in related {
+                lines.push(format!(
+                    "ALTER ROLE {} ADD MEMBER {quoted};",
+                    quote_identifier(role)
+                ));
+            }
+        }
+    }
+    for permission in permissions {
+        let permission = permission.trim();
+        if !permission.is_empty() {
+            lines.push(permission.to_owned());
+        }
+    }
+    lines.push(
+        "-- Passwords, SIDs and other secrets are not recoverable from the catalog.".to_owned(),
+    );
+    lines.join("\n")
+}
+
 #[derive(Debug)]
 struct MsSqlSearchCandidate {
     kind: CatalogKind,
@@ -4149,6 +4435,101 @@ mod tests {
 
     use super::*;
     use crate::profile::{CatalogScope, ConnectionUrlFormat, CredentialPolicy, Environment};
+
+    #[test]
+    fn sql_server_permission_formatting_handles_database_schema_and_object_targets() {
+        assert_eq!(
+            super::format_permission("GRANT", "CONNECT", "DATABASE", None, None, false, "[app]"),
+            Some("GRANT CONNECT TO [app];".to_owned())
+        );
+        assert_eq!(
+            super::format_permission(
+                "DENY",
+                "SELECT",
+                "SCHEMA",
+                Some("sales"),
+                None,
+                false,
+                "[app]"
+            ),
+            Some("DENY SELECT ON SCHEMA::[sales] TO [app];".to_owned())
+        );
+        assert_eq!(
+            super::format_permission(
+                "GRANT_WITH_GRANT_OPTION",
+                "EXECUTE",
+                "OBJECT_OR_COLUMN",
+                Some("dbo"),
+                Some("run report]"),
+                false,
+                "[app]"
+            ),
+            Some("GRANT EXECUTE ON [dbo].[run report]]] TO [app] WITH GRANT OPTION;".to_owned())
+        );
+        // Column-scoped and unknown states/classes are not rendered verbatim.
+        assert!(
+            super::format_permission(
+                "GRANT",
+                "SELECT",
+                "OBJECT_OR_COLUMN",
+                Some("dbo"),
+                Some("t"),
+                true,
+                "[app]"
+            )
+            .unwrap()
+            .contains("column-level permission")
+        );
+        assert_eq!(
+            super::format_permission("REVOKE", "SELECT", "DATABASE", None, None, false, "[app]"),
+            None
+        );
+    }
+
+    #[test]
+    fn sql_server_user_ddl_matches_the_principal_type_and_never_leaks_secrets() {
+        let sql = super::assemble_principal_ddl(
+            PrincipalKind::User,
+            "DOMAIN\\alice",
+            "U",
+            false,
+            &["db_datareader".to_owned()],
+            &["GRANT CONNECT TO [DOMAIN\\alice];".to_owned()],
+        );
+        assert!(sql.contains("CREATE USER [DOMAIN\\alice] FOR LOGIN [DOMAIN\\alice];"));
+        assert!(sql.contains("ALTER ROLE [db_datareader] ADD MEMBER [DOMAIN\\alice];"));
+        assert!(sql.contains("GRANT CONNECT TO [DOMAIN\\alice];"));
+        assert!(sql.contains("secrets are not recoverable"));
+        assert!(!sql.contains("PASSWORD"), "{sql}");
+
+        let external = super::assemble_principal_ddl(
+            PrincipalKind::User,
+            "azure@example.com",
+            "E",
+            false,
+            &[],
+            &[],
+        );
+        assert!(external.contains("FROM EXTERNAL PROVIDER"));
+    }
+
+    #[test]
+    fn sql_server_builtin_roles_are_described_not_replayed() {
+        let sql = super::assemble_principal_ddl(
+            PrincipalKind::Role,
+            "db_owner",
+            "R",
+            true,
+            &["alice".to_owned()],
+            &[],
+        );
+        assert!(sql.contains("CREATE ROLE [db_owner] AUTHORIZATION [dbo];"));
+        assert!(sql.contains("system-defined"));
+        assert!(!sql.contains("ADD MEMBER"), "{sql}");
+        assert!(super::is_builtin_principal("dbo"));
+        assert!(super::is_builtin_principal("##MS_public##"));
+        assert!(!super::is_builtin_principal("db_analyst"));
+    }
 
     fn profile(ssl_mode: SslMode) -> ConnectionProfile {
         ConnectionProfile {

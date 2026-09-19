@@ -124,6 +124,13 @@ struct SqliteForeignKeyBuilder {
 }
 
 impl SqliteAdapter {
+    pub async fn list_principals(
+        &self,
+    ) -> Result<crate::db::principal::PrincipalPage, DatabaseError> {
+        Err(DatabaseError::unsupported(
+            "SQLite does not support users or roles",
+        ))
+    }
     pub async fn preview_relation_with_scope(
         &self,
         relation: &CatalogId,

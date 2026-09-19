@@ -218,6 +218,17 @@ must be upgraded by their owning package manager.
 - **Database Explorer:** Browse databases, schemas, tables, views, indexes,
   foreign keys, triggers, routines, sequences, and types where supported by the
   driver. Redis uses a dedicated key-space browser rather than a SQL catalog.
+- **Users & Roles:** Relational connections end their first explorer level with
+  a `Users & Roles` group listing database users and roles with distinct icons
+  and colours across the Nerd Font, Unicode, and ASCII icon modes. Pressing
+  Enter opens a dedicated, read-only DDL tab titled `name@connection` that has
+  no Data/DDL selector and reuses the relation DDL editor, so syntax
+  highlighting, scrollbars, mouse selection, and Vim bindings behave
+  identically. PostgreSQL lists cluster roles from `pg_roles`; MySQL and
+  MariaDB list server accounts with their host; SQL Server lists the bound
+  database's users and roles; Oracle lists the connection's service users and
+  roles. SQLite shows an explicit "not supported" notice, Redis has no such
+  group, and passwords or password hashes are never reproduced.
 - **Capability-aware catalog editor:** Explorer `a` creates supported children
   and `e` edits directly selected objects. PostgreSQL exposes the broadest
   catalog editor (schema, table, column, index, constraints, views,

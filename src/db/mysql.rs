@@ -45,6 +45,9 @@ use super::{
     },
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
+    principal::{
+        PrincipalDdl, PrincipalEntry, PrincipalId, PrincipalKind, PrincipalPage, PrincipalScope,
+    },
     query::{
         ColumnMeta, QueryBudget, QueryOutcome, QueryOutcomeAccumulator, RELATION_PREVIEW_LIMIT,
         ResultSet,
@@ -2776,6 +2779,174 @@ impl MySqlAdapter {
             .collect()
     }
 
+    /// List server-level accounts for MySQL/MariaDB.
+    ///
+    /// MySQL and MariaDB expose account metadata differently, so the two are
+    /// handled separately:
+    ///  * MariaDB has an explicit `is_role` flag on `mysql.user`.
+    ///  * MySQL 8 records role membership in `mysql.role_edges`; an account is
+    ///    only reported as a role when it appears there, because MySQL has no
+    ///    independent role flag. Roles that have never been granted therefore
+    ///    cannot be distinguished from users and are reported as users with a
+    ///    native-kind note.
+    pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        let rows = if self.kind == DatabaseKind::MariaDb {
+            sqlx::query(
+                "SELECT User AS user_name, Host AS host_name, CAST(is_role AS SIGNED) AS is_role \
+                 FROM mysql.user ORDER BY CAST(is_role AS SIGNED), User, Host",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_error)?
+        } else {
+            sqlx::query(
+                "SELECT User AS user_name, Host AS host_name, 0 AS is_role FROM mysql.user \
+                 ORDER BY User, Host",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_error)?
+        };
+        let mysql_roles = if self.kind == DatabaseKind::MariaDb {
+            Vec::new()
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT DISTINCT FROM_USER, FROM_HOST FROM mysql.role_edges",
+            )
+            .fetch_all(&self.pool)
+            .await
+            // MySQL < 8 has no role support at all; treat that as "no roles"
+            // rather than failing the whole browse.
+            .unwrap_or_default()
+        };
+        let mut entries = rows
+            .into_iter()
+            .map(|row| {
+                let user: String = row.try_get("user_name").map_err(decode_error)?;
+                let host: String = row.try_get("host_name").map_err(decode_error)?;
+                let flag: i64 = row.try_get("is_role").map_err(decode_error)?;
+                let is_role = flag != 0
+                    || mysql_roles
+                        .iter()
+                        .any(|(role_user, role_host)| role_user == &user && role_host == &host);
+                // Credentials and other secrets are never part of the list.
+                Ok(PrincipalEntry {
+                    id: PrincipalId {
+                        profile_id: self.connection_id,
+                        scope: PrincipalScope::Server,
+                        native_id: user.clone(),
+                        host: Some(host.clone()),
+                    },
+                    kind: if is_role {
+                        PrincipalKind::Role
+                    } else {
+                        PrincipalKind::User
+                    },
+                    name: format!("'{user}'@'{host}'"),
+                    native_kind: if is_role { "role" } else { "account" }.to_owned(),
+                    system: user == "root"
+                        || user.starts_with("mysql.")
+                        || user == "mariadb.sys"
+                        || user == "PUBLIC",
+                })
+            })
+            .collect::<Result<Vec<_>, DatabaseError>>()?;
+        if self.kind != DatabaseKind::MariaDb && mysql_roles.is_empty() {
+            for entry in &mut entries {
+                entry.native_kind = "account (role metadata unavailable)".to_owned();
+            }
+        }
+        Ok(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id: self.connection_id,
+                generation: 0,
+            },
+            entries,
+            complete: true,
+        })
+    }
+
+    pub async fn principal_ddl(
+        &self,
+        principal: &PrincipalEntry,
+    ) -> Result<PrincipalDdl, DatabaseError> {
+        if principal.id.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "principal does not belong to this connection",
+            ));
+        }
+        let user = principal.id.native_id.clone();
+        let host = principal.id.host.clone().unwrap_or_else(|| "%".to_owned());
+        // MariaDB's `mysql.user` view does not expose every MySQL column, so
+        // the account-lock flag is only read where it exists.
+        let detail_sql = if self.kind == DatabaseKind::MariaDb {
+            "SELECT plugin, \
+             (authentication_string IS NOT NULL AND authentication_string <> '') AS has_password \
+             FROM mysql.user WHERE User = ? AND Host = ?"
+        } else {
+            "SELECT plugin, account_locked, \
+             (authentication_string IS NOT NULL AND authentication_string <> '') AS has_password \
+             FROM mysql.user WHERE User = ? AND Host = ?"
+        };
+        let row = sqlx::query(detail_sql)
+            .bind(&user)
+            .bind(&host)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql_error)?
+            .ok_or_else(|| DatabaseError::configuration("principal no longer exists"))?;
+        let plugin: Option<String> = row.try_get("plugin").map_err(decode_error)?;
+        let has_password: i64 = row
+            .try_get::<Option<i64>, _>("has_password")
+            .map_err(decode_error)?
+            .unwrap_or(0);
+        let locked = if self.kind == DatabaseKind::MariaDb {
+            false
+        } else {
+            row.try_get::<Option<String>, _>("account_locked")
+                .map_err(decode_error)?
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("Y"))
+        };
+
+        let grants = self.principal_grants(&user, &host).await?;
+        let sql = assemble_principal_ddl(
+            principal.kind,
+            &user,
+            &host,
+            plugin.as_deref(),
+            has_password != 0,
+            locked,
+            &grants,
+        );
+        Ok(PrincipalDdl {
+            principal: principal.clone(),
+            sql,
+        })
+    }
+
+    async fn principal_grants(&self, user: &str, host: &str) -> Result<Vec<String>, DatabaseError> {
+        // `SHOW GRANTS` cannot use placeholders, so the account identifier is
+        // escaped into the statement instead.
+        let statement = format!(
+            "SHOW GRANTS FOR {}@{}",
+            quote_literal(user),
+            quote_literal(host)
+        );
+        let rows = sqlx::query(AssertSqlSafe(statement))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql_error)?;
+        let mut grants = Vec::new();
+        for row in rows {
+            // The single column is named after the account, so read positionally.
+            if let Ok(value) = row.try_get::<String, _>(0) {
+                grants.push(value);
+            }
+        }
+        Ok(grants)
+    }
+
     pub async fn object_ddl(
         &self,
         kind: CatalogKind,
@@ -4101,6 +4272,73 @@ pub fn quote_identifier(value: &str) -> String {
     format!("`{}`", value.replace('`', "``"))
 }
 
+/// Quote a MySQL/MariaDB string literal for statements that cannot take
+/// placeholders (such as `SHOW GRANTS FOR`).
+pub fn quote_literal(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for character in value.chars() {
+        match character {
+            '\'' => quoted.push_str("''"),
+            '\\' => quoted.push_str("\\\\"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+/// Build a readable, credential-free definition for a MySQL/MariaDB account.
+///
+/// Password material can never be recovered from the catalog, so it is
+/// deliberately omitted and documented. Grants are emitted verbatim because
+/// they are already valid statements returned by `SHOW GRANTS`.
+fn assemble_principal_ddl(
+    kind: PrincipalKind,
+    user: &str,
+    host: &str,
+    plugin: Option<&str>,
+    has_password: bool,
+    locked: bool,
+    grants: &[String],
+) -> String {
+    let account = format!("{}@{}", quote_identifier(user), quote_identifier(host));
+    let mut lines = Vec::new();
+    match kind {
+        PrincipalKind::Role => {
+            lines.push(format!("CREATE ROLE {account};"));
+        }
+        PrincipalKind::User => {
+            match plugin.filter(|plugin| !plugin.is_empty()) {
+                Some(plugin) => lines.push(format!(
+                    "CREATE USER {account} IDENTIFIED WITH {};",
+                    quote_literal(plugin)
+                )),
+                None => lines.push(format!("CREATE USER {account};")),
+            }
+            if locked {
+                lines.push(format!("ALTER USER {account} ACCOUNT LOCK;"));
+            }
+            if has_password {
+                lines.push(
+                    "-- Password is intentionally omitted from read-only catalog DDL.".to_owned(),
+                );
+            }
+        }
+    }
+    for grant in grants {
+        let grant = grant.trim();
+        if !grant.is_empty() {
+            lines.push(if grant.ends_with(';') {
+                grant.to_owned()
+            } else {
+                format!("{grant};")
+            });
+        }
+    }
+    lines.join("\n")
+}
+
 fn mysql_ssl_mode(mode: SslMode) -> MySqlSslMode {
     match mode {
         SslMode::Disable => MySqlSslMode::Disabled,
@@ -4240,6 +4478,51 @@ mod tests {
     use crate::model::relation_edit::EditableRowId;
     use crate::profile::import_connection_url;
     use uuid::Uuid;
+
+    #[test]
+    fn principal_ddl_omits_credentials_and_keeps_account_identity() {
+        let sql = super::assemble_principal_ddl(
+            crate::db::principal::PrincipalKind::User,
+            "app'user",
+            "10.0.0.%",
+            Some("caching_sha2_password"),
+            true,
+            true,
+            &[
+                "GRANT USAGE ON *.* TO `app'user`@`10.0.0.%`".to_owned(),
+                "".to_owned(),
+            ],
+        );
+        assert!(sql.contains(
+            "CREATE USER `app'user`@`10.0.0.%` IDENTIFIED WITH 'caching_sha2_password';"
+        ));
+        assert!(sql.contains("ALTER USER `app'user`@`10.0.0.%` ACCOUNT LOCK;"));
+        assert!(sql.contains("-- Password is intentionally omitted from read-only catalog DDL."));
+        assert!(sql.contains("GRANT USAGE ON *.* TO `app'user`@`10.0.0.%`;"));
+        // No password material or hash may ever appear.
+        assert!(!sql.contains("IDENTIFIED BY"), "{sql}");
+        assert!(!sql.contains("AS '$"), "{sql}");
+    }
+
+    #[test]
+    fn principal_ddl_creates_roles_without_user_clauses() {
+        let sql = super::assemble_principal_ddl(
+            crate::db::principal::PrincipalKind::Role,
+            "auditors",
+            "%",
+            None,
+            false,
+            true,
+            &[],
+        );
+        assert_eq!(sql, "CREATE ROLE `auditors`@`%`;");
+    }
+
+    #[test]
+    fn mysql_literal_quoting_escapes_quotes_and_backslashes() {
+        assert_eq!(super::quote_literal("a'b"), "'a''b'");
+        assert_eq!(super::quote_literal("a\\b"), "'a\\\\b'");
+    }
 
     fn mariadb_test_url() -> Option<String> {
         match std::env::var("LAZYDB_TEST_MARIADB_URL") {

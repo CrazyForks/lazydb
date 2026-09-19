@@ -725,3 +725,68 @@ async fn sql_server_task12_ddl_golden_objects_when_configured() {
     database.close().await;
     result.unwrap();
 }
+
+#[tokio::test]
+async fn lists_database_principals_scoped_to_the_bound_database_when_configured() {
+    use lazydb::db::principal::{PrincipalKind, PrincipalScope};
+
+    let Ok(url) = std::env::var("LAZYDB_TEST_SQLSERVER_URL") else {
+        eprintln!("skipping SQL Server principal browse: LAZYDB_TEST_SQLSERVER_URL is not set");
+        return;
+    };
+    let imported = import_connection_url(&url, Some("sqlserver-principals")).unwrap();
+    let database =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap();
+
+    let page = database.list_principals().await.unwrap();
+    assert!(!page.entries.is_empty());
+    let bound_database = imported
+        .profile
+        .database
+        .clone()
+        .unwrap_or_else(|| "master".to_owned());
+    for entry in &page.entries {
+        // Every principal is scoped to this connection's database, never the
+        // server's login list.
+        match &entry.id.scope {
+            PrincipalScope::Database(name) => assert_eq!(name, &bound_database),
+            other => panic!("unexpected principal scope: {other:?}"),
+        }
+    }
+    // Users are listed before roles.
+    let mut seen_role = false;
+    for entry in &page.entries {
+        match entry.kind {
+            PrincipalKind::User => assert!(!seen_role, "users must precede roles"),
+            PrincipalKind::Role => seen_role = true,
+        }
+    }
+    // Built-in principals such as `dbo`/`public`/`db_*` are flagged.
+    assert!(page.entries.iter().any(|entry| entry.system));
+
+    let user = page
+        .entries
+        .iter()
+        .find(|entry| entry.kind == PrincipalKind::User && !entry.system)
+        .or_else(|| {
+            page.entries
+                .iter()
+                .find(|entry| entry.kind == PrincipalKind::User)
+        })
+        .cloned()
+        .expect("a database user");
+    let ddl = database.principal_ddl(&user).await.unwrap();
+    assert!(ddl.sql.contains("CREATE USER"), "{}", ddl.sql);
+    assert!(
+        ddl.sql.contains("secrets are not recoverable"),
+        "{}",
+        ddl.sql
+    );
+    assert!(
+        !ddl.sql.to_ascii_uppercase().contains("PASSWORD ="),
+        "{}",
+        ddl.sql
+    );
+}

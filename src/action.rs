@@ -675,6 +675,30 @@ pub enum Action {
     ConfirmPageSizeSelector,
     CancelPageSizeSelector,
     CancelActiveRelationRequest,
+    OpenPrincipal {
+        profile_id: Uuid,
+        entry: crate::db::principal::PrincipalEntry,
+    },
+    RefreshActivePrincipal,
+    CancelActivePrincipalRequest,
+    PrincipalPageLoaded {
+        profile_id: Uuid,
+        request_id: u64,
+        page: crate::db::principal::PrincipalPage,
+    },
+    PrincipalPageFailed {
+        profile_id: Uuid,
+        request_id: u64,
+        message: String,
+    },
+    PrincipalDdlLoaded {
+        request: crate::model::principal::PrincipalDdlRequest,
+        ddl: crate::db::principal::PrincipalDdl,
+    },
+    PrincipalDdlFailed {
+        request: crate::model::principal::PrincipalDdlRequest,
+        message: String,
+    },
     DdlScroll {
         rows: isize,
         columns: isize,
@@ -1513,6 +1537,9 @@ pub enum Command {
     ExecuteCatalogMutation(CatalogMutationPlan),
     LoadRelationPreview(crate::model::relation::RelationRequest),
     LoadRelationDdl(crate::model::relation::RelationRequest),
+    LoadPrincipals(crate::model::principal::PrincipalListRequest),
+    LoadPrincipalDdl(crate::model::principal::PrincipalDdlRequest),
+    CancelPrincipalDdl(crate::model::principal::PrincipalDdlRequest),
     CancelRelationRequest(crate::model::relation::RelationRequest),
     RunQuery {
         connection: ConnectionIdentity,

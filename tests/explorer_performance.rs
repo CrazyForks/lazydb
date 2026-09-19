@@ -61,7 +61,8 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
 
     let (rows, visited_catalog_entries) = explorer.visible_with_visit_count();
     assert_eq!(visited_catalog_entries, 201);
-    assert_eq!(rows.len(), 203);
+    // One extra row is the connection-level `Users & Roles` group.
+    assert_eq!(rows.len(), 204);
 
     for schema in &schemas {
         explorer
@@ -75,7 +76,7 @@ fn projection_visits_only_expanded_subtrees_with_ten_thousand_objects() {
 
     let (rows, visited_catalog_entries) = explorer.visible_with_visit_count();
     assert_eq!(visited_catalog_entries, 10_101);
-    assert_eq!(rows.len(), 10_202);
+    assert_eq!(rows.len(), 10_203);
 }
 
 fn database_entry(profile: Uuid) -> CatalogEntry {

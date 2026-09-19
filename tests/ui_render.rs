@@ -8190,3 +8190,64 @@ fn editor_snapshot_scrolls_without_projecting_offscreen_lines() {
     assert_eq!(snapshot.lines[0].line, 5_000);
     assert!(!snapshot.lines[0].spans[0].text.contains("line-4999"));
 }
+
+#[test]
+fn explorer_renders_users_and_roles_group_with_distinct_icons_and_colors() {
+    use lazydb::db::principal::{
+        PrincipalEntry, PrincipalId, PrincipalKind, PrincipalPage, PrincipalScope,
+    };
+
+    let mut app = fixture();
+    let profile_id = app.profiles[0].id;
+    app.explorer
+        .normalized
+        .expanded
+        .insert(ExplorerNodeId::PrincipalGroup { profile_id });
+    let entry = |native_id: &str, name: &str, kind: PrincipalKind| PrincipalEntry {
+        id: PrincipalId {
+            profile_id,
+            scope: PrincipalScope::Cluster,
+            native_id: native_id.to_owned(),
+            host: None,
+        },
+        kind,
+        name: name.to_owned(),
+        native_kind: "role".to_owned(),
+        system: false,
+    };
+    app.explorer
+        .normalized
+        .profiles
+        .get_mut(&profile_id)
+        .unwrap()
+        .set_principals(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id,
+                generation: 1,
+            },
+            entries: vec![
+                entry("1", "Ada", PrincipalKind::User),
+                entry("2", "auditors", PrincipalKind::Role),
+            ],
+            complete: true,
+        });
+
+    app.focus = Focus::Explorer;
+    let (buffer, _) = render_buffer_with_icons(&app, 80, 24, IconSet::new(IconMode::Ascii));
+    let (group_x, group_y) = find_text_cell(&buffer, "UR").expect("group icon");
+    assert!(find_text_cell(&buffer, "Users & Roles").is_some());
+    let (user_x, user_y) = find_text_cell(&buffer, "US").expect("user icon");
+    let (role_x, role_y) = find_text_cell(&buffer, "RL").expect("role icon");
+
+    assert_eq!(buffer[(group_x, group_y)].fg, Color::Rgb(99, 230, 216));
+    assert_eq!(buffer[(user_x, user_y)].fg, Color::Rgb(101, 167, 255));
+    assert_eq!(buffer[(role_x, role_y)].fg, Color::Rgb(199, 146, 234));
+    assert!(find_text_cell(&buffer, "Ada").is_some());
+    assert!(find_text_cell(&buffer, "auditors").is_some());
+
+    // Unicode and NerdFont modes keep a distinct glyph per node as well.
+    let (unicode, _) = render_buffer_with_icons(&app, 80, 24, IconSet::new(IconMode::Unicode));
+    assert!(find_text_cell(&unicode, "♟").is_some());
+    assert!(find_text_cell(&unicode, "●").is_some());
+    assert!(find_text_cell(&unicode, "◇").is_some());
+}

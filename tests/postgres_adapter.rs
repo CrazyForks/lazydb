@@ -442,6 +442,75 @@ fn postgres_sequence_mutation_is_advertised_without_sequence_children() {
 }
 
 #[tokio::test]
+async fn lists_postgres_principals_and_renders_quoted_role_ddl_when_configured() {
+    use lazydb::db::principal::PrincipalKind;
+
+    let Ok(url) = std::env::var("LAZYDB_TEST_POSTGRES_URL") else {
+        eprintln!("skipping principal browse: LAZYDB_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let imported = import_connection_url(&url, Some("postgres-principals")).unwrap();
+    let database =
+        DatabaseConnection::connect(&imported.profile, imported.transient_password.as_ref())
+            .await
+            .unwrap();
+
+    let page = database.list_principals().await.unwrap();
+    // A PostgreSQL cluster always has at least one login role (the connection
+    // user) and system roles such as `pg_monitor` that are not login roles.
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.kind == PrincipalKind::User),
+        "expected at least one login role"
+    );
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.kind == PrincipalKind::Role),
+        "expected at least one non-login role"
+    );
+    // Users are listed before roles, and each group is sorted by name.
+    let mut seen_role = false;
+    let mut previous: Option<(PrincipalKind, String)> = None;
+    for entry in &page.entries {
+        match entry.kind {
+            PrincipalKind::User => assert!(!seen_role, "users must precede roles"),
+            PrincipalKind::Role => seen_role = true,
+        }
+        if let Some((kind, name)) = &previous {
+            assert!(
+                kind != &entry.kind || name.as_str() <= entry.name.as_str(),
+                "principals must be name-sorted within their kind"
+            );
+        }
+        previous = Some((entry.kind, entry.name.clone()));
+    }
+
+    let user = page
+        .entries
+        .iter()
+        .find(|entry| entry.kind == PrincipalKind::User)
+        .cloned()
+        .expect("a login role to inspect");
+    let ddl = database.principal_ddl(&user).await.unwrap();
+    assert!(ddl.sql.contains("CREATE ROLE"), "{}", ddl.sql);
+    assert!(
+        ddl.sql.contains(&format!("\"{}\"", user.name)),
+        "{}",
+        ddl.sql
+    );
+    // The read-only catalog cannot recover the password, so the DDL must
+    // document the omission instead of fabricating `PASSWORD NULL`.
+    assert!(!ddl.sql.contains("PASSWORD NULL"), "{}", ddl.sql);
+    assert!(
+        ddl.sql.to_ascii_lowercase().contains("password"),
+        "{}",
+        ddl.sql
+    );
+}
+
+#[tokio::test]
 async fn connects_and_decodes_common_postgres_values_when_configured() {
     let Ok(url) = std::env::var("LAZYDB_TEST_POSTGRES_URL") else {
         return;

@@ -22,6 +22,25 @@ disable it at runtime.
 | SQLite | Relational | Available; table/view DDL and catalog mutation | Rowid-table insert lookup; update/delete require primary key; table shape is gated | AUTO/MANUAL | Progress handler / close | Not applicable |
 | Redis | Key-value | No SQL catalog or DDL | Native key/value and collection mutation, separate from relation grid | No SQL transaction UI | Not applicable | Read-only `INFO` metrics |
 
+## Users & Roles
+
+Every relational connection ends its first explorer level with a `Users & Roles`
+group. Expanding it lists users before roles, name-sorted. Enter opens a
+read-only, DDL-only tab titled `name@connection`; it has no Data/DDL selector
+and shares the relation DDL editor, so syntax highlighting, scrollbars, mouse
+selection, and Vim bindings are identical. Passwords, password hashes, and
+other secrets are never read or reproduced.
+
+| Driver | Source and scope | Notes |
+| --- | --- | --- |
+| PostgreSQL | `pg_roles` cluster-wide; users are `rolcanlogin` roles | DDL is adapter-generated from role attributes and direct memberships; passwords cannot be recovered and are documented as omitted |
+| MySQL | `mysql.user` accounts plus `mysql.role_edges` for role classification | Accounts keep `user` and `host` as separate identity fields; MySQL has no independent role flag, so roles that were never granted are reported as accounts with a native-kind note; MySQL before 8 has no role metadata |
+| MariaDB | `mysql.user` with the native `is_role` flag | The flag is authoritative; account-lock state is not shown because the `mysql.user` view does not expose it |
+| SQL Server | Bound database's `sys.database_principals`; `sys.database_role_members` and `sys.database_permissions` | Server logins are excluded; built-in fixed roles and users are described rather than emitted as replayable statements; identifiers use bracket quoting |
+| Oracle | `all_users` plus `dba_roles` (falling back to `user_role_privs`, marked incomplete) | User and role names are namespaced in the native identity because they can collide; `DBMS_METADATA.GET_DDL` is not used for users because it embeds `IDENTIFIED BY VALUES` |
+| SQLite | Not applicable | The group expands to an explicit "SQLite does not support users or roles" notice and issues no account query |
+| Redis | Not applicable | No `Users & Roles` group is shown |
+
 ## Relation Data Mutation Matrix
 
 Relation Data 的行操作能力与 Catalog DDL 能力分开判断。新增一行不要求表有主键；更新和删除已有行仍要求可可靠定位，当前网格使用完整主键。插入结果必须来自数据库返回或可靠回查，不能用草稿值代替服务器生成的默认值、身份值或触发器结果。

@@ -1074,7 +1074,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     direction: 1,
                     amount: ExplorerScrollAmount::Lines(3),
                 }),
-                Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, 3),
+                Focus::Results if is_ddl_only_focus(app) => ddl_scroll_action(app, 3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, 3, 0),
                 Focus::Results
                     if matches!(
@@ -1156,7 +1156,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     direction: -1,
                     amount: ExplorerScrollAmount::Lines(3),
                 }),
-                Focus::Results if is_relation_ddl_focus(app) => ddl_scroll_action(app, -3),
+                Focus::Results if is_ddl_only_focus(app) => ddl_scroll_action(app, -3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, -3, 0),
                 Focus::Results
                     if matches!(
@@ -1206,9 +1206,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return None;
             }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
-                Focus::Results if is_relation_ddl_focus(app) => {
-                    ddl_horizontal_scroll_action(app, -3)
-                }
+                Focus::Results if is_ddl_only_focus(app) => ddl_horizontal_scroll_action(app, -3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, 0, -3),
                 Focus::Results => grid_horizontal_scroll_action(ui, false),
                 Focus::Editor => Some(Action::EditorScroll {
@@ -1238,9 +1236,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 return None;
             }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
-                Focus::Results if is_relation_ddl_focus(app) => {
-                    ddl_horizontal_scroll_action(app, 3)
-                }
+                Focus::Results if is_ddl_only_focus(app) => ddl_horizontal_scroll_action(app, 3),
                 Focus::Results if is_output_focus(app) => output_scroll_action(app, 0, 3),
                 Focus::Results => grid_horizontal_scroll_action(ui, true),
                 Focus::Editor => Some(Action::EditorScroll {
@@ -1425,6 +1421,17 @@ fn is_relation_ddl_focus(app: &App) -> bool {
         )
 }
 
+/// DDL-only read-only focus shared by the relation DDL view and the
+/// principal (user/role) DDL tab.
+fn is_ddl_only_focus(app: &App) -> bool {
+    is_relation_ddl_focus(app)
+        || (app.focus == Focus::Results
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(WorkspaceTab::PrincipalDdl(_))
+            ))
+}
+
 fn is_output_focus(app: &App) -> bool {
     app.focus == Focus::Results
         && app.active_console_opt().is_some_and(|tab| {
@@ -1444,22 +1451,26 @@ fn output_scroll_action(app: &App, rows: isize, columns: isize) -> Option<Action
 }
 
 fn ddl_scroll_action(app: &App, rows: isize) -> Option<Action> {
-    let Some(WorkspaceTab::Relation(tab)) = app.tabs.get(app.active_tab) else {
-        return None;
+    let session_id = match app.tabs.get(app.active_tab) {
+        Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Ddl => tab.ddl_editor_id,
+        Some(WorkspaceTab::PrincipalDdl(tab)) => tab.editor_id,
+        _ => return None,
     };
     Some(Action::ReadOnlyEditorScroll {
-        session_id: tab.ddl_editor_id,
+        session_id,
         rows,
         columns: 0,
     })
 }
 
 fn ddl_horizontal_scroll_action(app: &App, columns: isize) -> Option<Action> {
-    let Some(WorkspaceTab::Relation(tab)) = app.tabs.get(app.active_tab) else {
-        return None;
+    let session_id = match app.tabs.get(app.active_tab) {
+        Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Ddl => tab.ddl_editor_id,
+        Some(WorkspaceTab::PrincipalDdl(tab)) => tab.editor_id,
+        _ => return None,
     };
     Some(Action::ReadOnlyEditorScroll {
-        session_id: tab.ddl_editor_id,
+        session_id,
         rows: 0,
         columns,
     })

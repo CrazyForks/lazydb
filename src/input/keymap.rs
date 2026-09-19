@@ -1437,7 +1437,7 @@ impl Keymap {
             return None;
         }
 
-        if is_relation_ddl_focus(app)
+        if is_ddl_only_focus(app)
             && event.modifiers.is_empty()
             && event.code == KeyCode::Char(' ')
             && app
@@ -1447,15 +1447,11 @@ impl Keymap {
             self.set_pending(Pending::Leader, app);
             return None;
         }
-        if is_relation_ddl_focus(app)
+        if is_ddl_only_focus(app)
             && is_read_only_editor_key(event)
-            && let Some(crate::model::tab::WorkspaceTab::Relation(tab)) =
-                app.tabs.get(app.active_tab)
+            && let Some(session_id) = ddl_only_session_id(app)
         {
-            return Some(Action::ReadOnlyEditorKey {
-                session_id: tab.ddl_editor_id,
-                event,
-            });
+            return Some(Action::ReadOnlyEditorKey { session_id, event });
         }
         if app.focus == Focus::Results
             && event.modifiers.is_empty()
@@ -1936,7 +1932,7 @@ impl Keymap {
             }
             KeyCode::Char('g')
                 if app.focus != Focus::Editor
-                    && !is_relation_ddl_focus(app)
+                    && !is_ddl_only_focus(app)
                     && !is_relation_data_focus(app) =>
             {
                 if matches!(
@@ -2062,20 +2058,34 @@ impl Keymap {
             return map_relation(event.code, app);
         }
         if relation_tab && app.focus == Focus::Results {
-            if is_relation_ddl_focus(app)
+            if let Some(session_id) = ddl_only_session_id(app)
                 && is_read_only_editor_key(event)
-                && let Some(crate::model::tab::WorkspaceTab::Relation(tab)) =
-                    app.tabs.get(app.active_tab)
             {
-                return Some(Action::ReadOnlyEditorKey {
-                    session_id: tab.ddl_editor_id,
-                    event,
-                });
+                return Some(Action::ReadOnlyEditorKey { session_id, event });
             }
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(action);
             }
             return map_relation(event.code, app);
+        }
+        if app.focus == Focus::Results
+            && matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::PrincipalDdl(_))
+            )
+        {
+            if let Some(session_id) = ddl_only_session_id(app)
+                && is_read_only_editor_key(event)
+            {
+                return Some(Action::ReadOnlyEditorKey { session_id, event });
+            }
+            if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
+                return Some(action);
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('r') {
+                return Some(Action::RefreshActivePrincipal);
+            }
+            return None;
         }
         if app.focus == Focus::Results
             && matches!(
@@ -3348,13 +3358,24 @@ fn is_relation_data_focus(app: &App) -> bool {
         )
 }
 
-fn is_relation_ddl_focus(app: &App) -> bool {
-    app.focus == Focus::Results
-        && matches!(
-            app.tabs.get(app.active_tab),
-            Some(crate::model::tab::WorkspaceTab::Relation(tab))
-                if tab.view == crate::model::relation::RelationView::Ddl
-        )
+/// Editor session for any DDL-only read-only workspace tab.
+///
+/// Covers both the relation DDL view and the principal (user/role) DDL tab so
+/// they share identical Vim and scroll behavior.
+fn ddl_only_session_id(app: &App) -> Option<uuid::Uuid> {
+    match app.tabs.get(app.active_tab) {
+        Some(crate::model::tab::WorkspaceTab::Relation(tab))
+            if tab.view == crate::model::relation::RelationView::Ddl =>
+        {
+            Some(tab.ddl_editor_id)
+        }
+        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab)) => Some(tab.editor_id),
+        _ => None,
+    }
+}
+
+fn is_ddl_only_focus(app: &App) -> bool {
+    app.focus == Focus::Results && ddl_only_session_id(app).is_some()
 }
 
 fn relation_grid_is_browse(app: &App) -> bool {
@@ -4250,6 +4271,7 @@ fn active_data_query_has_focus(app: &App) -> bool {
         Some(crate::model::tab::WorkspaceTab::Sql(tab)) => tab.query.focus.is_some(),
         Some(crate::model::tab::WorkspaceTab::Dashboard(_)) => false,
         Some(crate::model::tab::WorkspaceTab::RedisBrowser(_)) => false,
+        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(_)) => false,
         None => false,
     }
 }

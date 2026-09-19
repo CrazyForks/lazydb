@@ -23,6 +23,7 @@ pub enum TabKind {
     Relation,
     Dashboard,
     RedisBrowser,
+    PrincipalDdl,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -82,6 +83,7 @@ pub enum WorkspaceTab {
     Relation(RelationTab),
     Dashboard(DashboardTab),
     RedisBrowser(RedisBrowserTab),
+    PrincipalDdl(crate::model::principal::PrincipalDdlTab),
 }
 
 impl WorkspaceTab {
@@ -91,6 +93,7 @@ impl WorkspaceTab {
             Self::Relation(tab) => tab.id,
             Self::Dashboard(tab) => tab.id,
             Self::RedisBrowser(tab) => tab.id,
+            Self::PrincipalDdl(tab) => tab.id,
         }
     }
 
@@ -100,6 +103,7 @@ impl WorkspaceTab {
             Self::Relation(tab) => tab.title(),
             Self::Dashboard(_) => "Dashboard",
             Self::RedisBrowser(_) => "Redis",
+            Self::PrincipalDdl(tab) => tab.title(),
         }
     }
 
@@ -109,6 +113,7 @@ impl WorkspaceTab {
             Self::Relation(_) => TabKind::Relation,
             Self::Dashboard(_) => TabKind::Dashboard,
             Self::RedisBrowser(_) => TabKind::RedisBrowser,
+            Self::PrincipalDdl(_) => TabKind::PrincipalDdl,
         }
     }
 
@@ -118,6 +123,7 @@ impl WorkspaceTab {
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
             Self::RedisBrowser(_) => None,
+            Self::PrincipalDdl(_) => None,
         }
     }
 
@@ -127,6 +133,7 @@ impl WorkspaceTab {
             Self::Relation(_) => None,
             Self::Dashboard(_) => None,
             Self::RedisBrowser(_) => None,
+            Self::PrincipalDdl(_) => None,
         }
     }
 }

@@ -103,6 +103,20 @@ pub enum PersistedTab {
         #[serde(default)]
         pattern: Vec<u8>,
     },
+    PrincipalDdl(PersistedPrincipalTab),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PersistedPrincipalTab {
+    pub id: Uuid,
+    pub profile_id: Uuid,
+    pub scope: crate::db::principal::PrincipalScope,
+    pub native_id: String,
+    pub kind: crate::db::principal::PrincipalKind,
+    pub display_name: String,
+    pub native_kind: String,
+    #[serde(default)]
+    pub system: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -415,6 +429,19 @@ pub fn validate_snapshot(snapshot: &WorkspaceSnapshot) -> Result<(), WorkspaceEr
                         )));
                     }
                 }
+                PersistedTab::PrincipalDdl(tab) => {
+                    if tab.profile_id != profile.profile_id {
+                        return Err(WorkspaceError::Invalid(
+                            "principal DDL tab belongs to another profile".into(),
+                        ));
+                    }
+                    if console_ids.contains(&tab.id) {
+                        return Err(WorkspaceError::Invalid(format!(
+                            "principal DDL tab {} duplicates a console ID",
+                            tab.id
+                        )));
+                    }
+                }
             }
             if !tab_ids.insert(id) {
                 return Err(WorkspaceError::Invalid(format!("duplicate tab ID {id}")));
@@ -496,5 +523,6 @@ fn tab_id(tab: &PersistedTab) -> Uuid {
         PersistedTab::Relation(relation) => relation.id,
         PersistedTab::Dashboard { dashboard_id, .. } => *dashboard_id,
         PersistedTab::RedisBrowser { tab_id, .. } => *tab_id,
+        PersistedTab::PrincipalDdl(tab) => tab.id,
     }
 }
