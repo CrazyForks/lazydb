@@ -6063,6 +6063,7 @@ impl App {
                     self.overlay =
                         Some(Overlay::Update(crate::model::update::UpdateOverlayState {
                             focus: crate::model::update::UpdateOverlayFocus::Later,
+                            instructions: false,
                         }));
                 }
                 if matches!(
@@ -6083,12 +6084,11 @@ impl App {
                 Vec::new()
             }
             Action::StartUpdateCheck { automatic } => {
-                if matches!(
-                    self.update_state,
-                    crate::model::update::UpdateState::Checking { .. }
-                        | crate::model::update::UpdateState::Installing { .. }
-                ) {
+                if !self.update_state.can_check_again() {
                     return Vec::new();
+                }
+                if let Some(Overlay::Update(overlay)) = self.overlay.as_mut() {
+                    overlay.instructions = false;
                 }
                 let request_id = self.next_update_request_id();
                 self.update_state = crate::model::update::UpdateState::Checking {
@@ -6171,61 +6171,110 @@ impl App {
                 Vec::new()
             }
             Action::UpdateOverlayConfirm => {
-                let focus = match self.overlay.as_ref() {
-                    Some(Overlay::Update(update)) => update.focus,
+                let (focus, instructions) = match self.overlay.as_ref() {
+                    Some(Overlay::Update(update)) => (update.focus, update.instructions),
                     _ => return Vec::new(),
                 };
-                match (focus, self.update_state.clone()) {
-                    (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::Available(inspection),
-                    ) if inspection.manager == crate::update::InstallationManager::Native => {
+                let actions = self.update_state.dialog_actions(instructions);
+                if actions.is_empty() {
+                    return Vec::new();
+                }
+                let index = match focus {
+                    crate::model::update::UpdateOverlayFocus::Primary => 0,
+                    crate::model::update::UpdateOverlayFocus::Later => actions.len() - 1,
+                };
+                let action = actions[index.min(actions.len() - 1)];
+                self.update(Action::UpdateOverlayActivate(action))
+            }
+            Action::UpdateOverlayActivate(action) => match action {
+                crate::model::update::UpdateDialogAction::Close => {
+                    self.overlay = None;
+                    Vec::new()
+                }
+                crate::model::update::UpdateDialogAction::Check => {
+                    self.update(Action::StartUpdateCheck { automatic: false })
+                }
+                crate::model::update::UpdateDialogAction::Install => {
+                    if let crate::model::update::UpdateState::Available(inspection) =
+                        self.update_state.clone()
+                        && inspection.manager == crate::update::InstallationManager::Native
+                    {
                         let request_id = self.next_update_request_id();
                         let channel = inspection.channel;
                         self.update_state = crate::model::update::UpdateState::Installing {
                             request_id,
                             inspection,
+                            progress: crate::update::UpdateProgress {
+                                stage: crate::update::UpdateStage::Preparing,
+                                downloaded_bytes: 0,
+                                total_bytes: None,
+                            },
                         };
                         vec![Command::InstallUpdate {
                             request_id,
                             channel,
                         }]
-                    }
-                    (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::ReadyToRestart(inspection),
-                    ) => {
-                        let _ = inspection;
-                        vec![Action::RestartForUpdate]
-                            .into_iter()
-                            .flat_map(|action| self.update(action))
-                            .collect()
-                    }
-                    (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::Failed { .. },
-                    ) => self.update(Action::StartUpdateCheck { automatic: false }),
-                    (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::UpToDate(_),
-                    ) => self.update(Action::StartUpdateCheck { automatic: false }),
-                    (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::ManagerActionRequired(_),
-                    )
-                    | (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::Checking { .. },
-                    )
-                    | (
-                        crate::model::update::UpdateOverlayFocus::Primary,
-                        crate::model::update::UpdateState::Installing { .. },
-                    ) => Vec::new(),
-                    (_, _) => {
-                        self.overlay = None;
+                    } else {
                         Vec::new()
                     }
                 }
+                crate::model::update::UpdateDialogAction::ShowInstructions => {
+                    if matches!(
+                        self.update_state,
+                        crate::model::update::UpdateState::Available(_)
+                            | crate::model::update::UpdateState::ManagerActionRequired(_)
+                    ) {
+                        if let Some(Overlay::Update(overlay)) = self.overlay.as_mut() {
+                            overlay.instructions = true;
+                            overlay.focus = crate::model::update::UpdateOverlayFocus::Later;
+                        }
+                    }
+                    Vec::new()
+                }
+                crate::model::update::UpdateDialogAction::Restart => {
+                    if matches!(
+                        self.update_state,
+                        crate::model::update::UpdateState::ReadyToRestart(_)
+                    ) {
+                        self.update(Action::RestartForUpdate)
+                    } else {
+                        Vec::new()
+                    }
+                }
+                crate::model::update::UpdateDialogAction::CopyCommand => {
+                    let expanded = matches!(self.overlay, Some(Overlay::Update(ref overlay)) if overlay.instructions);
+                    if !expanded {
+                        return Vec::new();
+                    }
+                    let command = self.update_inspection().and_then(|inspection| {
+                        crate::update::manager_update_command(inspection.manager)
+                    });
+                    match command {
+                        Some(command) => vec![Command::WriteClipboard(
+                            crate::clipboard::ClipboardPayload {
+                                text: command,
+                                description: "update command".to_owned(),
+                                sensitive: false,
+                            },
+                        )],
+                        None => Vec::new(),
+                    }
+                }
+            },
+            Action::UpdateInstallProgress {
+                request_id,
+                progress,
+            } => {
+                if let crate::model::update::UpdateState::Installing {
+                    request_id: current,
+                    progress: current_progress,
+                    ..
+                } = &mut self.update_state
+                    && *current == request_id
+                {
+                    *current_progress = progress;
+                }
+                Vec::new()
             }
             Action::InstallUpdate => self.update(Action::UpdateOverlayConfirm),
             Action::UpdateInstalled {
@@ -6234,17 +6283,27 @@ impl App {
             } => {
                 if matches!(self.update_state, crate::model::update::UpdateState::Installing { request_id: current, .. } if current == request_id)
                 {
-                    if inspection.status == crate::update::UpdateStatus::ReadyToRestart
-                        && inspection.installed_version != Some(inspection.running_version.clone())
-                    {
-                        self.update_state =
-                            crate::model::update::UpdateState::ReadyToRestart(inspection);
-                    } else {
-                        self.update_state = crate::model::update::UpdateState::Failed {
+                    // The install may have been completed by another process
+                    // while this one held the lock, in which case the verified
+                    // installed version already matches the target. Trust the
+                    // verified state instead of reporting a failure.
+                    let installed_differs = inspection.installed_version.is_some()
+                        && inspection.installed_version != Some(inspection.running_version.clone());
+                    self.update_state = match inspection.status {
+                        crate::update::UpdateStatus::ReadyToRestart => {
+                            crate::model::update::UpdateState::ReadyToRestart(inspection)
+                        }
+                        crate::update::UpdateStatus::UpToDate if !installed_differs => {
+                            crate::model::update::UpdateState::UpToDate(inspection)
+                        }
+                        _ if installed_differs => {
+                            crate::model::update::UpdateState::ReadyToRestart(inspection)
+                        }
+                        _ => crate::model::update::UpdateState::Failed {
                             operation: crate::model::update::UpdateOperation::Install,
                             message: "update installed but could not be verified".to_owned(),
-                        };
-                    }
+                        },
+                    };
                 }
                 Vec::new()
             }

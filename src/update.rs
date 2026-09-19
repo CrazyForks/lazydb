@@ -58,6 +58,24 @@ pub enum UpdateStatus {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateStage {
+    Preparing,
+    Downloading,
+    VerifyingChecksum,
+    Extracting,
+    VerifyingInstallation,
+    Activating,
+    Finishing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateProgress {
+    pub stage: UpdateStage,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateInspection {
     pub manager: InstallationManager,
@@ -190,6 +208,20 @@ pub trait UpdateHttpClient {
     async fn get(&self, url: &str) -> anyhow::Result<String>;
 
     async fn download(&self, url: &str) -> anyhow::Result<Vec<u8>>;
+
+    async fn download_with_progress(
+        &self,
+        url: &str,
+        progress: &(dyn Fn(UpdateProgress) + Send + Sync),
+    ) -> anyhow::Result<Vec<u8>> {
+        let archive = self.download(url).await?;
+        progress(UpdateProgress {
+            stage: UpdateStage::Downloading,
+            downloaded_bytes: archive.len() as u64,
+            total_bytes: Some(archive.len() as u64),
+        });
+        Ok(archive)
+    }
 }
 
 pub struct SystemUpdateHttpClient {
@@ -257,6 +289,34 @@ impl UpdateHttpClient for SystemUpdateHttpClient {
         let response = self.client.get(url).send().await?.error_for_status()?;
         validate_response_url(url, response.url())?;
         Ok(response.bytes().await?.to_vec())
+    }
+
+    async fn download_with_progress(
+        &self,
+        url: &str,
+        progress: &(dyn Fn(UpdateProgress) + Send + Sync),
+    ) -> anyhow::Result<Vec<u8>> {
+        let response = self.client.get(url).send().await?.error_for_status()?;
+        validate_response_url(url, response.url())?;
+        let total_bytes = response.content_length();
+        let mut downloaded_bytes = 0;
+        let mut archive = Vec::with_capacity(total_bytes.unwrap_or_default() as usize);
+        let mut response = response;
+        progress(UpdateProgress {
+            stage: UpdateStage::Downloading,
+            downloaded_bytes,
+            total_bytes,
+        });
+        while let Some(chunk) = response.chunk().await? {
+            downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
+            archive.extend_from_slice(&chunk);
+            progress(UpdateProgress {
+                stage: UpdateStage::Downloading,
+                downloaded_bytes,
+                total_bytes,
+            });
+        }
+        Ok(archive)
     }
 }
 
@@ -416,6 +476,17 @@ pub async fn install_current_native(
     requested_channel: Option<UpdateChannel>,
     allow_downgrade: bool,
 ) -> anyhow::Result<UpdateInspection> {
+    install_current_native_with_progress(requested_channel, allow_downgrade, |_| {}).await
+}
+
+pub async fn install_current_native_with_progress<F>(
+    requested_channel: Option<UpdateChannel>,
+    allow_downgrade: bool,
+    progress: F,
+) -> anyhow::Result<UpdateInspection>
+where
+    F: Fn(UpdateProgress) + Send + Sync,
+{
     let paths = Some(crate::persistence::paths::AppPaths::discover()?);
     let source = InstallationStateFileSource {
         path: paths
@@ -463,11 +534,12 @@ pub async fn install_current_native(
             },
         ));
     }
-    apply_native_update(
+    apply_native_update_with_progress(
         &current_state,
         &target,
         &manifest,
         &SystemUpdateHttpClient::default(),
+        &progress,
     )
     .await?;
     let installed = source
@@ -535,7 +607,12 @@ where
                     status
                 }
             }
-            _ => UpdateStatus::ManagerActionRequired,
+            _ => version_status_kind(
+                installed_version.as_deref(),
+                target_version.as_deref().unwrap_or_default(),
+                allow_downgrade,
+            )
+            .map_manager_action_required(),
         },
         Err(_) => UpdateStatus::Error,
     };
@@ -568,6 +645,19 @@ where
         status,
         action,
         launcher_path,
+    }
+}
+
+trait UpdateStatusManagerAction {
+    fn map_manager_action_required(self) -> UpdateStatus;
+}
+
+impl UpdateStatusManagerAction for UpdateStatus {
+    fn map_manager_action_required(self) -> UpdateStatus {
+        match self {
+            UpdateStatus::Available => UpdateStatus::ManagerActionRequired,
+            status => status,
+        }
     }
 }
 
@@ -709,9 +799,26 @@ fn resolve_channel(
         .unwrap_or_default()
 }
 
-fn manager_action(manager: InstallationManager, _channel: UpdateChannel) -> Option<String> {
+/// The exact command a user can run to update through a known installation
+/// manager. Returns `None` when the manager cannot be updated with a single
+/// unambiguous command (for example system package managers that need sudo).
+pub fn manager_update_command(manager: InstallationManager) -> Option<String> {
     match manager {
         InstallationManager::Homebrew => Some("brew upgrade yelog/tap/lazydb".to_owned()),
+        InstallationManager::Cargo => Some("cargo install lazydb".to_owned()),
+        _ => None,
+    }
+}
+
+/// Human-readable guidance for updating through an installation manager. This
+/// text never masquerades as a copyable command.
+pub fn manager_update_message(
+    manager: InstallationManager,
+    _channel: UpdateChannel,
+) -> Option<String> {
+    match manager {
+        InstallationManager::Homebrew => Some("Update LazyDB with Homebrew".to_owned()),
+        InstallationManager::Cargo => Some("Update LazyDB with Cargo".to_owned()),
         InstallationManager::Npm => Some(
             "official npm distribution is unavailable; use the Pages installer or Homebrew"
                 .to_owned(),
@@ -728,12 +835,15 @@ fn manager_action(manager: InstallationManager, _channel: UpdateChannel) -> Opti
             "use your Arch package manager to upgrade lazydb; LazyDB will not invoke sudo"
                 .to_owned(),
         ),
-        InstallationManager::Cargo => Some("cargo install lazydb".to_owned()),
         InstallationManager::Unknown => {
             Some("installation manager could not be determined; update using the original installation method or the official installer at https://lazydb.yelog.org/install.sh".to_owned())
         }
         InstallationManager::Native => None,
     }
+}
+
+fn manager_action(manager: InstallationManager, channel: UpdateChannel) -> Option<String> {
+    manager_update_command(manager).or_else(|| manager_update_message(manager, channel))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -981,17 +1091,37 @@ fn native_data_dir(state: &InstallationState) -> anyhow::Result<PathBuf> {
         .to_owned())
 }
 
-async fn apply_native_update<H: UpdateHttpClient>(
+async fn apply_native_update<H: UpdateHttpClient + Sync>(
     state: &InstallationState,
     target: &str,
     manifest: &ChannelManifest,
     http: &H,
 ) -> anyhow::Result<String> {
+    apply_native_update_with_progress(state, target, manifest, http, &|_| {}).await
+}
+
+async fn apply_native_update_with_progress<H: UpdateHttpClient + Sync>(
+    state: &InstallationState,
+    target: &str,
+    manifest: &ChannelManifest,
+    http: &H,
+    progress: &(dyn Fn(UpdateProgress) + Send + Sync),
+) -> anyhow::Result<String> {
     let asset = manifest
         .assets
         .get(target)
         .ok_or_else(|| anyhow::anyhow!("current target is unsupported"))?;
-    let archive = http.download(&asset.url).await?;
+    progress(UpdateProgress {
+        stage: UpdateStage::Preparing,
+        downloaded_bytes: 0,
+        total_bytes: None,
+    });
+    let archive = http.download_with_progress(&asset.url, progress).await?;
+    progress(UpdateProgress {
+        stage: UpdateStage::VerifyingChecksum,
+        downloaded_bytes: archive.len() as u64,
+        total_bytes: Some(archive.len() as u64),
+    });
     let actual = format!("{:x}", Sha256::digest(&archive));
     if actual != asset.sha256 {
         anyhow::bail!("checksum mismatch")
@@ -1002,6 +1132,11 @@ async fn apply_native_update<H: UpdateHttpClient>(
     let staging = data_dir.join(&temp_name);
     let release = staging.join("release");
     fs::create_dir_all(&release)?;
+    progress(UpdateProgress {
+        stage: UpdateStage::Extracting,
+        downloaded_bytes: archive.len() as u64,
+        total_bytes: Some(archive.len() as u64),
+    });
     if let Err(error) = extract_archive(&archive, &release, manifest, target) {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
@@ -1012,6 +1147,11 @@ async fn apply_native_update<H: UpdateHttpClient>(
         "lazydb"
     };
     let binary = release.join(binary_name);
+    progress(UpdateProgress {
+        stage: UpdateStage::VerifyingInstallation,
+        downloaded_bytes: archive.len() as u64,
+        total_bytes: Some(archive.len() as u64),
+    });
     let reported = match run_staged_version(&binary) {
         Ok(version) => version,
         Err(error) => {
@@ -1050,12 +1190,22 @@ async fn apply_native_update<H: UpdateHttpClient>(
         }
         fs::remove_dir_all(&staging)?;
     }
+    progress(UpdateProgress {
+        stage: UpdateStage::Activating,
+        downloaded_bytes: archive.len() as u64,
+        total_bytes: Some(archive.len() as u64),
+    });
     if let Err(error) = publish_native_state(state, &data_dir, &destination, manifest, target) {
         if destination_created {
             let _ = fs::remove_dir_all(&destination);
         }
         return Err(error);
     }
+    progress(UpdateProgress {
+        stage: UpdateStage::Finishing,
+        downloaded_bytes: archive.len() as u64,
+        total_bytes: Some(archive.len() as u64),
+    });
     Ok(manifest.version.clone())
 }
 
@@ -1742,6 +1892,30 @@ mod tests {
         let message = inspection.action.unwrap();
         assert!(message.contains("invalid installation state"));
         assert!(message.contains(&source.path.display().to_string()));
+    }
+
+    #[tokio::test]
+    async fn non_native_installation_is_up_to_date_when_manifest_matches_running_version() {
+        let dir = tempdir().unwrap();
+        let source = InstallationStateFileSource {
+            path: dir.path().join("install.json"),
+            file_system: SystemUpdateFileSystem,
+        };
+        let probe = FakeProbe::default();
+        let manifest = manifest_fixture().replace("1.3.0", env!("CARGO_PKG_VERSION"));
+        let inspection = inspect_installation(
+            None,
+            false,
+            &source,
+            &probe,
+            Path::new("/work/target/release/lazydb"),
+            &ManifestHttp(Ok(manifest)),
+        )
+        .await;
+
+        assert_eq!(inspection.manager, InstallationManager::Cargo);
+        assert_eq!(inspection.status, UpdateStatus::UpToDate);
+        assert!(inspection.action.is_none());
     }
 
     #[test]

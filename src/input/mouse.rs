@@ -749,13 +749,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::Omni => None,
                 HitTarget::OmniItem(index) => Some(Action::OmniSelect(index)),
                 HitTarget::UpdateCenter => Some(Action::OpenUpdateCenter),
-                HitTarget::UpdateButton { primary } => {
-                    if primary {
-                        Some(Action::UpdateOverlayConfirm)
-                    } else {
-                        Some(Action::DismissOverlay)
-                    }
-                }
+                HitTarget::UpdateButton { action } => Some(Action::UpdateOverlayActivate(action)),
                 HitTarget::ToggleResultView => Some(Action::ToggleResultView),
                 HitTarget::ResultView(view) => Some(Action::SetResultView(view)),
                 HitTarget::RelationView(view) => Some(Action::SetRelationView(view)),
