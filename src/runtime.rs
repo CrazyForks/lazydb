@@ -612,6 +612,8 @@ impl Runtime {
                 }
             }
             Command::PlanCatalogDrop(request) => self.plan_catalog_drop(request),
+            Command::PlanPrincipalDrop(request) => self.plan_principal_drop(request),
+            Command::ExecutePrincipalDrop(plan) => self.execute_principal_drop(plan),
             Command::ExecuteCatalogDrop(plan) => self.execute_catalog_drop(plan),
             Command::PlanCatalogMutation {
                 request,
@@ -2491,6 +2493,85 @@ impl Runtime {
         }));
     }
 
+    fn plan_principal_drop(&mut self, request: crate::db::principal_drop::PrincipalDropRequest) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let task_request = request.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let Some(database) = active_database(connection, request.connection).await else {
+                let _ = sender.send(Action::PrincipalDropPlanFailed {
+                    request: task_request,
+                    message: "principal drop connection is no longer active".into(),
+                });
+                return;
+            };
+            if let Err(error) = request.validate() {
+                let _ = sender.send(Action::PrincipalDropPlanFailed {
+                    request: task_request,
+                    message: error.to_string(),
+                });
+                return;
+            }
+            match database.plan_principal_drop(request) {
+                Ok(plan) => {
+                    let _ = sender.send(Action::PrincipalDropPlanReady(plan));
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalDropPlanFailed {
+                        request: task_request,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn execute_principal_drop(&mut self, plan: crate::db::principal_drop::PrincipalDropPlan) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let registry = Arc::clone(&self.registry);
+        self.background_tasks.push(tokio::spawn(async move {
+            if let Err(error) = plan.request.validate() {
+                let _ = sender.send(Action::PrincipalDropFailed {
+                    plan,
+                    message: error.to_string(),
+                });
+                return;
+            }
+            let Some(database) = active_database(connection, plan.request.connection).await else {
+                let _ = sender.send(Action::PrincipalDropFailed {
+                    plan,
+                    message: "principal drop connection is no longer active".into(),
+                });
+                return;
+            };
+            let read_only = registry
+                .lock()
+                .await
+                .profiles
+                .get(&plan.request.connection.profile_id)
+                .is_some_and(|profile| profile.read_only);
+            if read_only {
+                let _ = sender.send(Action::PrincipalDropFailed {
+                    plan,
+                    message: "principal drop is unavailable on a read-only profile".into(),
+                });
+                return;
+            }
+            match database.execute(plan.sql()).await {
+                Ok(_) => {
+                    let _ = sender.send(Action::PrincipalDropSucceeded { plan });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalDropFailed {
+                        plan,
+                        message: sanitize_terminal_text(&error.to_string()),
+                    });
+                }
+            }
+        }));
+    }
+
     fn plan_catalog_drop(&mut self, request: crate::db::catalog_drop::CatalogDropRequest) {
         let key = (request.connection, request.request_id);
         if self.catalog_drop_plan_tasks.contains_key(&key) {
@@ -2650,8 +2731,20 @@ impl Runtime {
                 return;
             }
             if let Some(expected) = task_plan.baseline_fingerprint.as_deref()
-                && let crate::db::catalog_mutation::CatalogMutationAnchor::Catalog(object) =
-                    &task_plan.request.anchor
+                && let Some((object, principal)) = match &task_plan.request.anchor {
+                    crate::db::catalog_mutation::CatalogMutationAnchor::Catalog(object) => {
+                        Some((object.clone(), None))
+                    }
+                    crate::db::catalog_mutation::CatalogMutationAnchor::Principal(entry) => Some((
+                        crate::db::catalog::CatalogId::new(
+                            entry.id.profile_id,
+                            crate::db::catalog::CatalogKind::Database,
+                            ["__role__", entry.name.as_str()],
+                        ),
+                        Some(entry.clone()),
+                    )),
+                    _ => None,
+                }
             {
                 let definition_target =
                     target.execution_target(task_plan.request.connection.profile_id);
@@ -2659,8 +2752,9 @@ impl Runtime {
                     connection: task_plan.request.connection,
                     request_id: task_plan.request.request_id,
                     catalog_epoch: task_plan.request.catalog_epoch,
-                    object: object.clone(),
+                    object,
                     target: definition_target,
+                    principal,
                 };
                 match database
                     .database

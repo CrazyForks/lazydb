@@ -3324,6 +3324,9 @@ impl App {
                     crate::db::catalog_mutation::CatalogMutationAnchor::Group {
                         schema, ..
                     } => Some(schema.profile_id()),
+                    crate::db::catalog_mutation::CatalogMutationAnchor::Principal(entry) => {
+                        Some(entry.id.profile_id)
+                    }
                 },
                 _ => None,
             }
@@ -4219,6 +4222,122 @@ impl App {
             return Vec::new();
         }
         match action {
+            Action::OpenPrincipalDrop => {
+                let Some(ExplorerNodeId::Principal { entry }) =
+                    self.explorer.selected_id().cloned()
+                else {
+                    return Vec::new();
+                };
+                let Some(principal) = self
+                    .explorer
+                    .normalized
+                    .profiles
+                    .get(&entry.profile_id)
+                    .and_then(|profile| {
+                        profile
+                            .principals
+                            .iter()
+                            .find(|principal| principal.id == entry)
+                    })
+                    .cloned()
+                else {
+                    return Vec::new();
+                };
+                let Some(connection) = self.principal_connection(entry.profile_id) else {
+                    self.notify_warning(
+                        "Catalog",
+                        "The connection for the selected role is unavailable",
+                    );
+                    return Vec::new();
+                };
+                let request = crate::db::principal_drop::PrincipalDropRequest {
+                    connection,
+                    request_id: self.next_profile_request_id(),
+                    entry: principal,
+                };
+                vec![Command::PlanPrincipalDrop(request)]
+            }
+            Action::PrincipalDropPlanReady(plan) => {
+                self.overlay = Some(Overlay::PrincipalDropConfirm {
+                    plan: Box::new(plan),
+                    delete_selected: false,
+                    busy: false,
+                    error: None,
+                });
+                Vec::new()
+            }
+            Action::PrincipalDropPlanFailed {
+                request: _,
+                message,
+            } => {
+                self.notify_error("Catalog", message);
+                Vec::new()
+            }
+            Action::PrincipalDropCancel => {
+                if matches!(self.overlay, Some(Overlay::PrincipalDropConfirm { .. })) {
+                    self.overlay = None;
+                }
+                Vec::new()
+            }
+            Action::PrincipalDropConfirm => {
+                let Some(Overlay::PrincipalDropConfirm { plan, busy, .. }) = self.overlay.as_mut()
+                else {
+                    return Vec::new();
+                };
+                if *busy {
+                    return Vec::new();
+                }
+                *busy = true;
+                vec![Command::ExecutePrincipalDrop(plan.as_ref().clone())]
+            }
+            Action::TogglePrincipalDropFocus => {
+                if let Some(Overlay::PrincipalDropConfirm {
+                    delete_selected,
+                    busy,
+                    ..
+                }) = self.overlay.as_mut()
+                    && !*busy
+                {
+                    *delete_selected = !*delete_selected;
+                }
+                Vec::new()
+            }
+            Action::PrincipalDropSucceeded { plan } => {
+                if matches!(self.overlay, Some(Overlay::PrincipalDropConfirm { plan: ref current, .. }) if **current == plan)
+                {
+                    let principal_id = plan.request.entry.id.clone();
+                    let tabs_to_close = self
+                        .tabs
+                        .iter()
+                        .filter_map(|tab| match tab {
+                            WorkspaceTab::PrincipalDdl(tab) if tab.entry.id == principal_id => {
+                                Some(tab.id)
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    self.overlay = None;
+                    self.notify_success("Catalog", "Principal dropped");
+                    let mut commands = tabs_to_close
+                        .into_iter()
+                        .flat_map(|tab_id| self.close_tab(tab_id))
+                        .collect::<Vec<_>>();
+                    commands
+                        .extend(self.request_principals(plan.request.connection.profile_id, true));
+                    return commands;
+                }
+                Vec::new()
+            }
+            Action::PrincipalDropFailed { plan, message } => {
+                if let Some(Overlay::PrincipalDropConfirm { busy, error, .. }) =
+                    self.overlay.as_mut()
+                {
+                    *busy = false;
+                    *error = Some(message);
+                }
+                let _ = plan;
+                Vec::new()
+            }
             Action::BeginMouseInputSelection { target, cursor } => {
                 match target {
                     crate::ui::text_selection::InputSelectionTarget::DataQuery(input) => {
@@ -7264,134 +7383,149 @@ impl App {
                 }
                 Vec::new()
             }
-            Action::OpenCatalogEdit => match self.resolve_explorer_mutation_intent(true) {
-                Some(ExplorerMutationIntent::EditProfile(profile_id)) => {
-                    self.update(Action::ProfileStartEdit { profile_id })
+            Action::OpenCatalogEdit => {
+                if matches!(
+                    self.explorer.normalized.selected,
+                    Some(ExplorerNodeId::Principal { .. })
+                ) {
+                    return self.open_selected_principal_edit();
                 }
-                Some(ExplorerMutationIntent::Edit(anchor)) => {
-                    let CatalogMutationAnchor::Catalog(object) = &anchor else {
-                        self.notify_warning("Catalog", "This catalog object cannot be edited");
-                        return Vec::new();
-                    };
-                    let profile_id = object.profile_id();
-                    let Some(profile) = self
-                        .profiles
-                        .iter()
-                        .find(|profile| profile.id == profile_id)
-                    else {
-                        self.notify_warning("Catalog", "The active connection profile is missing");
-                        return Vec::new();
-                    };
-                    let database = object
-                        .native_path
-                        .first()
-                        .filter(|value| value.as_str() != "__role__")
-                        .map(String::as_str);
-                    let Some(session) = self.catalog_edit_session(profile_id, database) else {
-                        self.notify_warning(
-                            "Catalog",
-                            "The connection for the selected catalog object is unavailable",
-                        );
-                        return Vec::new();
-                    };
-                    let connection = session.identity;
-                    if profile.read_only {
-                        self.notify_warning(
-                            "Catalog",
-                            "Catalog editing requires a writable profile",
-                        );
-                        return Vec::new();
+                match self.resolve_explorer_mutation_intent(true) {
+                    Some(ExplorerMutationIntent::EditProfile(profile_id)) => {
+                        self.update(Action::ProfileStartEdit { profile_id })
                     }
-                    let Some(entry) = self
-                        .explorer
-                        .normalized
-                        .profiles
-                        .get(&profile_id)
-                        .and_then(|state| state.catalog.get(object))
-                    else {
-                        self.notify_warning(
-                            "Catalog",
-                            "The selected catalog object is not in the active catalog",
-                        );
-                        return Vec::new();
-                    };
-                    if entry.id != *object || entry.kind != object.kind {
-                        self.notify_warning("Catalog", "The selected catalog entry is invalid");
-                        return Vec::new();
-                    }
-                    if !session
-                        .mutation_capabilities
-                        .can_edit(&anchor, Some(entry))
-                        .unwrap_or(false)
-                    {
-                        self.notify_warning(
-                            "Catalog",
-                            "This catalog object is not editable by the active adapter",
-                        );
-                        return Vec::new();
-                    }
-                    let Some(database) = object.native_path.first() else {
-                        self.notify_warning("Catalog", "The selected catalog ID is invalid");
-                        return Vec::new();
-                    };
-                    let target = session.target.clone();
-                    if !(object.kind == crate::db::catalog::CatalogKind::Database
-                        || object
+                    Some(ExplorerMutationIntent::Edit(anchor)) => {
+                        let CatalogMutationAnchor::Catalog(object) = &anchor else {
+                            self.notify_warning("Catalog", "This catalog object cannot be edited");
+                            return Vec::new();
+                        };
+                        let profile_id = object.profile_id();
+                        let Some(profile) = self
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == profile_id)
+                        else {
+                            self.notify_warning(
+                                "Catalog",
+                                "The active connection profile is missing",
+                            );
+                            return Vec::new();
+                        };
+                        let database = object
                             .native_path
                             .first()
-                            .is_some_and(|value| value == "__role__")
-                        || target.database == *database)
-                    {
-                        self.notify_warning(
-                            "Catalog",
-                            "The selected catalog database is not the active target database",
+                            .filter(|value| value.as_str() != "__role__")
+                            .map(String::as_str);
+                        let Some(session) = self.catalog_edit_session(profile_id, database) else {
+                            self.notify_warning(
+                                "Catalog",
+                                "The connection for the selected catalog object is unavailable",
+                            );
+                            return Vec::new();
+                        };
+                        let connection = session.identity;
+                        if profile.read_only {
+                            self.notify_warning(
+                                "Catalog",
+                                "Catalog editing requires a writable profile",
+                            );
+                            return Vec::new();
+                        }
+                        let Some(entry) = self
+                            .explorer
+                            .normalized
+                            .profiles
+                            .get(&profile_id)
+                            .and_then(|state| state.catalog.get(object))
+                        else {
+                            self.notify_warning(
+                                "Catalog",
+                                "The selected catalog object is not in the active catalog",
+                            );
+                            return Vec::new();
+                        };
+                        if entry.id != *object || entry.kind != object.kind {
+                            self.notify_warning("Catalog", "The selected catalog entry is invalid");
+                            return Vec::new();
+                        }
+                        if !session
+                            .mutation_capabilities
+                            .can_edit(&anchor, Some(entry))
+                            .unwrap_or(false)
+                        {
+                            self.notify_warning(
+                                "Catalog",
+                                "This catalog object is not editable by the active adapter",
+                            );
+                            return Vec::new();
+                        }
+                        let Some(database) = object.native_path.first() else {
+                            self.notify_warning("Catalog", "The selected catalog ID is invalid");
+                            return Vec::new();
+                        };
+                        let target = session.target.clone();
+                        if !(object.kind == crate::db::catalog::CatalogKind::Database
+                            || object
+                                .native_path
+                                .first()
+                                .is_some_and(|value| value == "__role__")
+                            || target.database == *database)
+                        {
+                            self.notify_warning(
+                                "Catalog",
+                                "The selected catalog database is not the active target database",
+                            );
+                            return Vec::new();
+                        };
+                        if !target.is_valid(profile) {
+                            self.notify_warning(
+                                "Catalog",
+                                "The selected catalog target is unavailable",
+                            );
+                            return Vec::new();
+                        }
+                        let Some(profile_state) =
+                            self.explorer.normalized.profiles.get_mut(&profile_id)
+                        else {
+                            self.notify_warning("Catalog", "The active catalog state is missing");
+                            return Vec::new();
+                        };
+                        let catalog_epoch = profile_state.catalog_epoch;
+                        let Some(request_id) = profile_state.allocate_request_id() else {
+                            self.notify_warning("Catalog", "Catalog request ID exhausted");
+                            return Vec::new();
+                        };
+                        let mut editor = CatalogEditorState::new(
+                            CatalogMutationMode::Edit,
+                            anchor.clone(),
+                            catalog_epoch,
+                            Vec::new(),
                         );
-                        return Vec::new();
-                    };
-                    if !target.is_valid(profile) {
-                        self.notify_warning(
-                            "Catalog",
-                            "The selected catalog target is unavailable",
-                        );
-                        return Vec::new();
+                        editor.database_kind = Some(profile.kind);
+                        self.catalog_editor = Some(editor);
+                        self.overlay = Some(Overlay::CatalogEditor);
+                        let editor = self.catalog_editor.as_mut().unwrap();
+                        editor.begin_loading(request_id);
+                        vec![Command::LoadCatalogObjectDefinition(
+                            crate::db::catalog_mutation::CatalogObjectDefinitionRequest {
+                                connection,
+                                request_id,
+                                catalog_epoch: editor.catalog_epoch,
+                                object: object.clone(),
+                                target,
+                                principal: None,
+                            },
+                        )]
                     }
-                    let Some(profile_state) =
-                        self.explorer.normalized.profiles.get_mut(&profile_id)
-                    else {
-                        self.notify_warning("Catalog", "The active catalog state is missing");
-                        return Vec::new();
-                    };
-                    let catalog_epoch = profile_state.catalog_epoch;
-                    let Some(request_id) = profile_state.allocate_request_id() else {
-                        self.notify_warning("Catalog", "Catalog request ID exhausted");
-                        return Vec::new();
-                    };
-                    let mut editor = CatalogEditorState::new(
-                        CatalogMutationMode::Edit,
-                        anchor.clone(),
-                        catalog_epoch,
-                        Vec::new(),
-                    );
-                    editor.database_kind = Some(profile.kind);
-                    self.catalog_editor = Some(editor);
-                    self.overlay = Some(Overlay::CatalogEditor);
-                    let editor = self.catalog_editor.as_mut().unwrap();
-                    editor.begin_loading(request_id);
-                    vec![Command::LoadCatalogObjectDefinition(
-                        crate::db::catalog_mutation::CatalogObjectDefinitionRequest {
-                            connection,
-                            request_id,
-                            catalog_epoch: editor.catalog_epoch,
-                            object: object.clone(),
-                            target,
-                        },
-                    )]
+                    Some(ExplorerMutationIntent::Create(_)) | None => {
+                        self.notify_warning(
+                            "Catalog",
+                            "The selected catalog object cannot be edited",
+                        );
+                        Vec::new()
+                    }
                 }
-                Some(ExplorerMutationIntent::Create(_)) | None => {
-                    self.notify_warning("Catalog", "The selected catalog object cannot be edited");
-                    Vec::new()
-                }
-            },
+            }
             Action::CatalogEditorCancel => {
                 if matches!(
                     self.overlay,
@@ -8886,6 +9020,13 @@ impl App {
                 self.overlay = None;
                 self.notify_success("Catalog", "Schema mutation applied");
                 let profile_id = plan.request.connection.profile_id;
+                if matches!(
+                    plan.request.object_type,
+                    crate::db::catalog_mutation::CatalogObjectType::LoginRole
+                        | crate::db::catalog_mutation::CatalogObjectType::Role
+                ) {
+                    return self.request_principals(profile_id, true);
+                }
                 self.pending_catalog_selection = plan
                     .refresh
                     .iter()
@@ -15112,6 +15253,23 @@ impl App {
     }
 
     pub fn resolve_explorer_mutation_intent(&self, edit: bool) -> Option<ExplorerMutationIntent> {
+        if edit
+            && let Some(ExplorerNodeId::Principal { entry }) =
+                self.explorer.normalized.selected.as_ref()
+            && let Some(profile) = self.explorer.normalized.profiles.get(&entry.profile_id)
+            && let Some(principal) = profile
+                .principals
+                .iter()
+                .find(|principal| principal.id == *entry)
+        {
+            return Some(ExplorerMutationIntent::Edit(
+                CatalogMutationAnchor::Catalog(crate::db::catalog::CatalogId::new(
+                    principal.id.profile_id,
+                    crate::db::catalog::CatalogKind::Database,
+                    ["__role__", principal.name.as_str()],
+                )),
+            ));
+        }
         if let Some(ExplorerNodeId::Profile(profile_id)) =
             self.explorer.normalized.selected.as_ref()
             && self
@@ -15127,6 +15285,88 @@ impl App {
             self.explorer.normalized.selected.as_ref(),
             edit,
         )
+    }
+
+    fn open_selected_principal_edit(&mut self) -> Vec<Command> {
+        let Some(ExplorerNodeId::Principal { entry }) = self.explorer.selected_id().cloned() else {
+            return Vec::new();
+        };
+        let Some(profile) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == entry.profile_id)
+        else {
+            self.notify_warning("Catalog", "The selected connection profile is missing");
+            return Vec::new();
+        };
+        if profile.read_only {
+            self.notify_warning("Catalog", "Role editing requires a writable profile");
+            return Vec::new();
+        }
+        let Some(principal) = self
+            .explorer
+            .normalized
+            .profiles
+            .get(&entry.profile_id)
+            .and_then(|state| {
+                state
+                    .principals
+                    .iter()
+                    .find(|principal| principal.id == entry)
+            })
+            .cloned()
+        else {
+            self.notify_warning("Catalog", "The selected principal is no longer available");
+            return Vec::new();
+        };
+        let Some(session) = self.catalog_edit_session(entry.profile_id, None) else {
+            self.notify_warning(
+                "Catalog",
+                "The connection for the selected role is unavailable",
+            );
+            return Vec::new();
+        };
+        let Some(profile_state) = self.explorer.normalized.profiles.get_mut(&entry.profile_id)
+        else {
+            return Vec::new();
+        };
+        let Some(request_id) = profile_state.allocate_request_id() else {
+            self.notify_warning("Catalog", "Catalog request ID exhausted");
+            return Vec::new();
+        };
+        let object = crate::db::catalog::CatalogId::new(
+            entry.profile_id,
+            crate::db::catalog::CatalogKind::Database,
+            ["__role__", principal.name.as_str()],
+        );
+        let mut editor = CatalogEditorState::new(
+            CatalogMutationMode::Edit,
+            CatalogMutationAnchor::Principal(principal.clone()),
+            profile_state.catalog_epoch,
+            Vec::new(),
+        );
+        editor.database_kind = Some(profile.kind);
+        editor.object_type = Some(match principal.kind {
+            crate::db::principal::PrincipalKind::User => CatalogObjectType::LoginRole,
+            crate::db::principal::PrincipalKind::Role => CatalogObjectType::Role,
+        });
+        self.catalog_editor = Some(editor);
+        self.overlay = Some(Overlay::CatalogEditor);
+        let editor = self
+            .catalog_editor
+            .as_mut()
+            .expect("catalog editor was set");
+        editor.begin_loading(request_id);
+        vec![Command::LoadCatalogObjectDefinition(
+            crate::db::catalog_mutation::CatalogObjectDefinitionRequest {
+                connection: session.identity,
+                request_id,
+                catalog_epoch: editor.catalog_epoch,
+                object,
+                target: session.target,
+                principal: Some(principal),
+            },
+        )]
     }
 
     pub(crate) fn selected_catalog_create_options(&self) -> Option<CatalogCreateSelection> {
@@ -15191,6 +15431,7 @@ impl App {
             CatalogMutationAnchor::Catalog(id) => id.native_path.first(),
             CatalogMutationAnchor::Group { schema, .. } => schema.native_path.first(),
             CatalogMutationAnchor::Profile { .. } => None,
+            CatalogMutationAnchor::Principal(_) => None,
         };
         if !matches!(profile.kind, DatabaseKind::MySql | DatabaseKind::MariaDb)
             && anchor_database.is_some_and(|database| database != &target.database)
@@ -20320,7 +20561,11 @@ impl App {
             .collect()
     }
 
-    fn explorer_add_options(&self, profile_id: Uuid) -> Vec<ExplorerAddOption> {
+    fn explorer_add_options(
+        &self,
+        profile_id: Uuid,
+        principals_only: bool,
+    ) -> Vec<ExplorerAddOption> {
         let catalog_unavailability = self
             .profiles
             .iter()
@@ -20362,40 +20607,63 @@ impl App {
             Some(reason) => ExplorerAddAvailability::Unavailable(reason),
             None => ExplorerAddAvailability::Available,
         };
-        [
-            (ExplorerAddKind::Connection, None),
-            (ExplorerAddKind::ConnectionGroup, None),
-            (
-                ExplorerAddKind::Database,
-                profile_create_availability(ExplorerAddKind::Database),
-            ),
-            (
-                ExplorerAddKind::User,
-                profile_create_availability(ExplorerAddKind::User),
-            ),
-            (
-                ExplorerAddKind::Role,
-                profile_create_availability(ExplorerAddKind::Role),
-            ),
-        ]
-        .into_iter()
-        .map(|(kind, reason)| ExplorerAddOption {
-            kind,
-            availability: availability(reason),
-        })
-        .collect()
+        let options = if principals_only {
+            vec![
+                (
+                    ExplorerAddKind::User,
+                    profile_create_availability(ExplorerAddKind::User),
+                ),
+                (
+                    ExplorerAddKind::Role,
+                    profile_create_availability(ExplorerAddKind::Role),
+                ),
+            ]
+        } else {
+            vec![
+                (ExplorerAddKind::Connection, None),
+                (ExplorerAddKind::ConnectionGroup, None),
+                (
+                    ExplorerAddKind::Database,
+                    profile_create_availability(ExplorerAddKind::Database),
+                ),
+                (
+                    ExplorerAddKind::User,
+                    profile_create_availability(ExplorerAddKind::User),
+                ),
+                (
+                    ExplorerAddKind::Role,
+                    profile_create_availability(ExplorerAddKind::Role),
+                ),
+            ]
+        };
+        options
+            .into_iter()
+            .map(|(kind, reason)| ExplorerAddOption {
+                kind,
+                availability: availability(reason),
+            })
+            .collect()
     }
 
     fn open_explorer_add(&mut self) -> Vec<Command> {
-        let Some(ExplorerNodeId::Profile(profile_id)) = self.explorer.selected_id().cloned() else {
+        let Some(selected) = self.explorer.selected_id().cloned() else {
             return Vec::new();
+        };
+        let (profile_id, principals_only) = match selected {
+            ExplorerNodeId::Profile(profile_id) => (profile_id, false),
+            ExplorerNodeId::PrincipalGroup { profile_id }
+            | ExplorerNodeId::Principal {
+                entry: crate::db::principal::PrincipalId { profile_id, .. },
+            }
+            | ExplorerNodeId::PrincipalNotice { profile_id } => (profile_id, true),
+            _ => return Vec::new(),
         };
         if !self.profiles.iter().any(|profile| profile.id == profile_id) {
             return Vec::new();
         }
         self.overlay = Some(Overlay::ExplorerAdd(ExplorerAddMenu::new(
             profile_id,
-            self.explorer_add_options(profile_id),
+            self.explorer_add_options(profile_id, principals_only),
         )));
         Vec::new()
     }

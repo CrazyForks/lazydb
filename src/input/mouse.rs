@@ -599,6 +599,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 | HitTarget::CatalogEditorDiscardChanges
                                 | HitTarget::CatalogDropCancel
                                 | HitTarget::CatalogDropConfirm
+                                | HitTarget::PrincipalDropCancel
+                                | HitTarget::PrincipalDropConfirm
                                 | HitTarget::CatalogEditorColumnDetailsConfirm
                                 | HitTarget::CatalogEditorColumnDetailsCancel
                                 | HitTarget::CatalogOwnerChoice(_)
@@ -985,6 +987,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::SqlEditorListDeleteConfirm => Some(Action::SqlEditorListDeleteActivate),
                 HitTarget::CatalogDropCancel => Some(Action::CatalogDropCancel),
                 HitTarget::CatalogDropConfirm => Some(Action::ActivateCatalogDrop),
+                HitTarget::PrincipalDropCancel => Some(Action::PrincipalDropCancel),
+                HitTarget::PrincipalDropConfirm => Some(Action::PrincipalDropConfirm),
                 HitTarget::SqlEditorListDeleteCancel => Some(Action::SqlEditorListDeleteCancel),
                 HitTarget::TextDetailCopyAll => None,
                 HitTarget::TextDetailClose => None,
@@ -1390,6 +1394,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::SqlEditorListDeleteConfirm
         | HitTarget::CatalogDropCancel
         | HitTarget::CatalogDropConfirm
+        | HitTarget::PrincipalDropCancel
+        | HitTarget::PrincipalDropConfirm
         | HitTarget::SqlEditorListDeleteCancel => None,
         HitTarget::ManualCancellationKeepRunning | HitTarget::ManualCancellationConfirm => None,
         HitTarget::ExecutionConfirm | HitTarget::ExecutionCancel => None,

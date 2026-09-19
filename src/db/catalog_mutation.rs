@@ -76,6 +76,7 @@ pub enum CatalogMutationAnchor {
         schema: CatalogId,
         group: ObjectGroup,
     },
+    Principal(crate::db::principal::PrincipalEntry),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -265,6 +266,7 @@ impl CatalogMutationCapabilities {
                     .into_iter()
                     .collect())
             }
+            CatalogMutationAnchor::Principal(_) => Ok(Vec::new()),
         }
     }
 
@@ -363,6 +365,7 @@ pub struct CatalogObjectDefinitionRequest {
     pub catalog_epoch: u64,
     pub object: CatalogId,
     pub target: ExecutionTarget,
+    pub principal: Option<crate::db::principal::PrincipalEntry>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -405,16 +408,25 @@ impl CatalogOwnerContextRequest {
 
 impl CatalogObjectDefinitionRequest {
     pub fn is_role(&self) -> bool {
-        self.object.kind == CatalogKind::Database
-            && self
-                .object
-                .native_path
-                .first()
-                .is_some_and(|v| v == "__role__")
+        self.principal.is_some()
+            || self.object.kind == CatalogKind::Database
+                && self
+                    .object
+                    .native_path
+                    .first()
+                    .is_some_and(|v| v == "__role__")
     }
 
     pub fn validate(&self) -> Result<(), CatalogMutationError> {
         if self.is_role() {
+            if let Some(principal) = &self.principal
+                && (principal.id.profile_id != self.connection.profile_id
+                    || principal.name.trim().is_empty())
+            {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "principal definition identity is invalid",
+                });
+            }
             if self.object.native_path.len() != 2 {
                 return Err(CatalogMutationError::InvalidAnchor {
                     reason: "role definition requires a role name",
@@ -915,6 +927,11 @@ impl CatalogMutationPlan {
             CatalogMutationAnchor::Profile { profile_id } => {
                 CatalogId::new(*profile_id, CatalogKind::Database, [""])
             }
+            CatalogMutationAnchor::Principal(entry) => CatalogId::new(
+                entry.id.profile_id,
+                CatalogKind::Database,
+                ["__role__", &entry.name],
+            ),
         };
         let plan = Self {
             request,
@@ -1117,6 +1134,19 @@ impl CatalogMutationRequest {
                 {
                     return Err(CatalogMutationError::InvalidAnchor {
                         reason: "object type is outside the selected group",
+                    });
+                }
+            }
+            CatalogMutationAnchor::Principal(entry) => {
+                if entry.id.profile_id != connection.profile_id
+                    || entry.name.trim().is_empty()
+                    || !matches!(
+                        object_type,
+                        CatalogObjectType::LoginRole | CatalogObjectType::Role
+                    )
+                {
+                    return Err(CatalogMutationError::InvalidAnchor {
+                        reason: "principal anchor is invalid",
                     });
                 }
             }

@@ -720,6 +720,17 @@ LIMIT 2001
         CatalogDropPlan::new(request, entry, sql)
     }
 
+    pub fn plan_principal_drop(
+        request: crate::db::principal_drop::PrincipalDropRequest,
+    ) -> Result<
+        crate::db::principal_drop::PrincipalDropPlan,
+        crate::db::principal_drop::PrincipalDropError,
+    > {
+        request.validate()?;
+        let name = quote_identifier(&request.entry.name);
+        crate::db::principal_drop::PrincipalDropPlan::new(request, format!("DROP ROLE {name}"))
+    }
+
     pub fn catalog_capabilities() -> CatalogCapabilities {
         CatalogCapabilities {
             namespace_model: NamespaceModel::DatabaseAndSchema,
@@ -919,7 +930,6 @@ LIMIT 2001
                 reason: "role draft required".into(),
             });
         };
-        draft.login = object_type == CatalogObjectType::LoginRole;
         draft.validate()?;
         let old = match baseline {
             Some(CatalogObjectDefinition::Role(r)) => Some(r),
@@ -1021,15 +1031,15 @@ LIMIT 2001
             for member in next.difference(&current) {
                 statements.push(format!(
                     "GRANT {} TO {}",
-                    quote_identifier(name),
-                    quote_identifier(member)
+                    quote_identifier(member),
+                    quote_identifier(name)
                 ));
             }
             for member in current.difference(&next) {
                 statements.push(format!(
                     "REVOKE {} FROM {}",
-                    quote_identifier(name),
-                    quote_identifier(member)
+                    quote_identifier(member),
+                    quote_identifier(name)
                 ));
             }
         } else {
@@ -1089,8 +1099,8 @@ LIMIT 2001
             {
                 statements.push(format!(
                     "GRANT {} TO {}",
-                    quote_identifier(name),
-                    quote_identifier(member)
+                    quote_identifier(member),
+                    quote_identifier(name)
                 ));
             }
         }
@@ -1749,6 +1759,7 @@ LIMIT 2001
                 id.native_path.first().cloned().unwrap_or_default()
             }
             CatalogMutationAnchor::Profile { .. } => String::new(),
+            CatalogMutationAnchor::Principal(_) => String::new(),
         };
         let schema_id = CatalogId::new(
             request.connection.profile_id,
@@ -3724,16 +3735,73 @@ LIMIT 2001
         connection: &mut PgConnection,
         request: &CatalogObjectDefinitionRequest,
     ) -> Result<CatalogObjectDefinition, DatabaseError> {
-        let Some(name) = request.object.native_path.get(1) else {
+        let name = request
+            .principal
+            .as_ref()
+            .map(|principal| principal.name.as_str())
+            .or_else(|| request.object.native_path.get(1).map(String::as_str));
+        let Some(name) = name else {
             return Err(DatabaseError::configuration(
                 "role object ID has invalid shape",
             ));
         };
-        let row = sqlx::query("SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls, rolcanlogin, rolconnlimit, rolvaliduntil::text, obj_description(oid, 'pg_authid') AS comment FROM pg_authid WHERE rolname = $1")
+        let row = sqlx::query("SELECT oid::text AS oid, rolname, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls, rolcanlogin, rolconnlimit, rolvaliduntil::text, obj_description(oid, 'pg_authid') AS comment FROM pg_roles WHERE rolname = $1")
             .bind(name).fetch_optional(&mut *connection).await.map_err(sql_error)?
             .ok_or_else(|| DatabaseError::configuration("role catalog entry was not found"))?;
         let memberships = sqlx::query_scalar::<_, String>("SELECT granted_role.rolname FROM pg_auth_members m JOIN pg_roles member_role ON member_role.oid = m.member JOIN pg_roles granted_role ON granted_role.oid = m.roleid WHERE member_role.rolname = $1 ORDER BY granted_role.rolname COLLATE \"C\"")
             .bind(name).fetch_all(&mut *connection).await.map_err(sql_error)?;
+        let oid: String = row.try_get("oid").map_err(decode_error)?;
+        if let Some(principal) = &request.principal
+            && principal.id.native_id != oid
+        {
+            return Err(DatabaseError::configuration("principal identity changed"));
+        }
+        let mut fingerprint = Sha256::new();
+        for value in [
+            oid.as_str(),
+            row.try_get::<String, _>("rolname")
+                .map_err(decode_error)?
+                .as_str(),
+            row.try_get::<bool, _>("rolsuper")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolcreatedb")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolcreaterole")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolinherit")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolreplication")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolbypassrls")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<bool, _>("rolcanlogin")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+            row.try_get::<i32, _>("rolconnlimit")
+                .map_err(decode_error)?
+                .to_string()
+                .as_str(),
+        ] {
+            fingerprint.update(value.as_bytes());
+            fingerprint.update([0]);
+        }
+        for member in &memberships {
+            fingerprint.update(member.as_bytes());
+            fingerprint.update([0]);
+        }
         Ok(CatalogObjectDefinition::Role(RoleDefinition {
             name: row.try_get("rolname").map_err(decode_error)?,
             login: row.try_get("rolcanlogin").map_err(decode_error)?,
@@ -3749,7 +3817,7 @@ LIMIT 2001
             ),
             memberships,
             comment: OptionalMetadata::Supported(row.try_get("comment").map_err(decode_error)?),
-            baseline_fingerprint: format!("sha256:{:x}", Sha256::digest(name.as_bytes())),
+            baseline_fingerprint: format!("sha256:{:x}", fingerprint.finalize()),
         }))
     }
 

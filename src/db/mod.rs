@@ -14,6 +14,7 @@ pub mod oracle;
 pub mod oracle_client;
 pub mod postgres;
 pub mod principal;
+pub mod principal_drop;
 pub mod query;
 pub mod redis;
 pub mod relation_plan;
@@ -547,6 +548,16 @@ impl DatabaseConnection {
                 kind: entry.kind,
                 reason: "Redis does not have SQL catalog objects".to_owned(),
             }),
+        }
+    }
+
+    pub fn plan_principal_drop(
+        &self,
+        request: principal_drop::PrincipalDropRequest,
+    ) -> Result<principal_drop::PrincipalDropPlan, principal_drop::PrincipalDropError> {
+        match self {
+            Self::Postgres(_) => PostgresAdapter::plan_principal_drop(request),
+            _ => Err(principal_drop::PrincipalDropError::Unsupported),
         }
     }
 

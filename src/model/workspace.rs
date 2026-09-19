@@ -241,6 +241,12 @@ pub enum Overlay {
         busy: bool,
         error: Option<String>,
     },
+    PrincipalDropConfirm {
+        plan: Box<crate::db::principal_drop::PrincipalDropPlan>,
+        delete_selected: bool,
+        busy: bool,
+        error: Option<String>,
+    },
     CatalogEditorDestructiveConfirm {
         plan: Box<crate::db::catalog_mutation::CatalogMutationPlan>,
         input: crate::model::text_input::TextInput,

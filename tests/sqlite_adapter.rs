@@ -99,6 +99,7 @@ async fn sqlite_loads_and_executes_a_table_edit_plan_against_a_temporary_databas
                     database: ":memory:".to_owned(),
                     schema: Some("main".to_owned()),
                 },
+                principal: None,
             },
         )
         .await
@@ -179,6 +180,7 @@ async fn sqlite_rebuilds_structural_table_edits_without_losing_data_indexes_or_t
                     database: ":memory:".to_owned(),
                     schema: Some("main".to_owned()),
                 },
+                principal: None,
             },
         )
         .await
@@ -266,6 +268,7 @@ async fn sqlite_rebuild_restores_composite_keys_and_foreign_key_enforcement() {
                     database: ":memory:".to_owned(),
                     schema: Some("main".to_owned()),
                 },
+                principal: None,
             },
         )
         .await

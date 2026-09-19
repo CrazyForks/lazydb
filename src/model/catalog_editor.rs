@@ -3418,6 +3418,10 @@ impl CatalogEditorState {
     ) -> Self {
         let object_type = matches!(mode, CatalogMutationMode::Edit).then(|| match &anchor {
             CatalogMutationAnchor::Catalog(id) => CatalogObjectType::Catalog(id.kind),
+            CatalogMutationAnchor::Principal(entry) => match entry.kind {
+                crate::db::principal::PrincipalKind::User => CatalogObjectType::LoginRole,
+                crate::db::principal::PrincipalKind::Role => CatalogObjectType::Role,
+            },
             _ => options.first().map(|option| option.object_type).unwrap_or(
                 CatalogObjectType::Catalog(crate::db::catalog::CatalogKind::Schema),
             ),
@@ -3527,6 +3531,7 @@ impl CatalogEditorState {
                 CatalogMutationAnchor::Catalog(id) => Some(id),
                 CatalogMutationAnchor::Group { schema: id, .. } => Some(id),
                 CatalogMutationAnchor::Profile { .. } => None,
+                CatalogMutationAnchor::Principal(_) => None,
             },
             self.object_type,
         ) {

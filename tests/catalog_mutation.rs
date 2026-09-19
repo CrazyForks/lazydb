@@ -61,7 +61,7 @@ fn postgres_role_create_redacts_password_and_plans_attributes_memberships_and_co
     assert!(!plan.sql().contains("never-display-this"));
     assert!(format!("{plan:?}").contains("<redacted>"));
     assert!(!format!("{plan:?}").contains("never-display-this"));
-    assert!(plan.sql().contains("GRANT \"alice\" TO \"reporting\""));
+    assert!(plan.sql().contains("GRANT \"reporting\" TO \"alice\""));
     assert_eq!(plan.execution_target.database(), "app");
     assert_eq!(plan.execution_target.execution_target(profile).schema, None);
 }
@@ -107,8 +107,8 @@ fn postgres_role_edit_blank_password_is_unchanged_and_membership_diff_is_planned
     )
     .unwrap();
     assert!(!plan.sql().contains("PASSWORD"));
-    assert!(plan.sql().contains("GRANT \"alice\" TO \"new_group\""));
-    assert!(plan.sql().contains("REVOKE \"alice\" FROM \"old_group\""));
+    assert!(plan.sql().contains("GRANT \"new_group\" TO \"alice\""));
+    assert!(plan.sql().contains("REVOKE \"old_group\" FROM \"alice\""));
 }
 
 #[test]
@@ -708,6 +708,7 @@ fn mutation_protocol_validates_definition_requests_and_plans() {
             database: "app".into(),
             schema: Some("public".into()),
         },
+        principal: None,
     };
     assert!(definition_request.validate().is_ok());
 

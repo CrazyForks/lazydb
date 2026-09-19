@@ -847,6 +847,11 @@ impl MySqlAdapter {
                     schema.native_path.get(1).cloned().unwrap_or_default(),
                 )
             }
+            CatalogMutationAnchor::Principal(_) => {
+                return Err(CatalogMutationError::InvalidAnchor {
+                    reason: "principal mutations are not supported by MySQL",
+                });
+            }
             CatalogMutationAnchor::Catalog(id)
                 if matches!(id.kind, CatalogKind::Database | CatalogKind::Schema) =>
             {
