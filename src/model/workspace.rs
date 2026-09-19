@@ -1370,6 +1370,9 @@ impl ExplorerState {
                                     reason.to_owned()
                                 } else if let Some(error) = profile.principals_error.as_deref() {
                                     error.to_owned()
+                                } else if profile.principals_loaded && !profile.principals_complete {
+                                    "Only visible users and roles are shown; this list is incomplete."
+                                        .to_owned()
                                 } else {
                                     "No users or roles".to_owned()
                                 }

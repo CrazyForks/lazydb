@@ -177,6 +177,44 @@ fn expanded_group_lists_users_before_roles_at_one_level_deeper() {
 }
 
 #[test]
+fn partial_principal_pages_keep_entries_and_add_an_incomplete_notice() {
+    let profile = profile_id(1);
+    let mut explorer = explorer_with_databases(profile, &["app"]);
+    let group = ExplorerNodeId::PrincipalGroup {
+        profile_id: profile,
+    };
+    explorer.expanded.insert(group.clone());
+    let account = principal(profile, "alice", "alice", PrincipalKind::User);
+    explorer
+        .profiles
+        .get_mut(&profile)
+        .unwrap()
+        .set_principals(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id: profile,
+                generation: 1,
+            },
+            entries: vec![account.clone()],
+            complete: false,
+        });
+
+    let rows = explorer.visible();
+    assert!(rows.iter().any(|row| {
+        row.id
+            == (ExplorerNodeId::Principal {
+                entry: account.id.clone(),
+            })
+    }));
+    assert!(rows.iter().any(|row| {
+        row.id
+            == (ExplorerNodeId::PrincipalNotice {
+                profile_id: profile,
+            })
+    }));
+    assert!(!explorer.profiles.get(&profile).unwrap().principals_complete);
+}
+
+#[test]
 fn unsupported_database_shows_an_informational_notice_instead_of_fake_users() {
     let profile = profile_id(1);
     let mut explorer = explorer_with_databases(profile, &["app"]);

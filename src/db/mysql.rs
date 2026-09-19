@@ -2842,13 +2842,21 @@ impl MySqlAdapter {
     ///    native-kind note.
     pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
         let rows = if self.kind == DatabaseKind::MariaDb {
-            sqlx::query(
-                "SELECT User AS user_name, Host AS host_name, CAST(is_role AS SIGNED) AS is_role \
-                 FROM mysql.user ORDER BY CAST(is_role AS SIGNED), User, Host",
+            match sqlx::query(
+                "SELECT User AS user_name, Host AS host_name, \
+                 CASE WHEN is_role = 'Y' THEN 1 ELSE 0 END AS is_role \
+                 FROM mysql.user \
+                 ORDER BY CASE WHEN is_role = 'Y' THEN 1 ELSE 0 END, User, Host",
             )
             .fetch_all(&self.pool)
             .await
-            .map_err(sql_error)?
+            {
+                Ok(rows) => rows,
+                Err(error) if is_mysql_privilege_error(&error) => {
+                    return self.list_visible_mariadb_principals().await;
+                }
+                Err(error) => return Err(sql_error(error)),
+            }
         } else {
             sqlx::query(
                 "SELECT User AS user_name, Host AS host_name, 0 AS is_role FROM mysql.user \
@@ -2973,6 +2981,72 @@ impl MySqlAdapter {
         Ok(PrincipalDdl {
             principal: principal.clone(),
             sql,
+        })
+    }
+
+    async fn list_visible_mariadb_principals(&self) -> Result<PrincipalPage, DatabaseError> {
+        let current_user = sqlx::query_scalar::<_, String>("SELECT CURRENT_USER()")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(sql_error)?;
+        let (user, host) = current_user
+            .rsplit_once('@')
+            .filter(|(user, host)| !user.is_empty() && !host.is_empty())
+            .ok_or_else(|| {
+                DatabaseError::configuration(
+                    "MariaDB CURRENT_USER() has an invalid account identity",
+                )
+            })?;
+
+        let mut entries = vec![PrincipalEntry {
+            id: PrincipalId {
+                profile_id: self.connection_id,
+                scope: PrincipalScope::Server,
+                native_id: user.to_owned(),
+                host: Some(host.to_owned()),
+            },
+            kind: PrincipalKind::User,
+            name: format!("'{user}'@'{host}'"),
+            native_kind: "account (visible only)".to_owned(),
+            system: false,
+        }];
+        let role_names = sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT ROLE_NAME FROM information_schema.APPLICABLE_ROLES ORDER BY ROLE_NAME",
+        )
+        .fetch_all(&self.pool)
+        .await;
+        let role_names = match role_names {
+            Ok(role_names) => role_names,
+            Err(error) if is_mysql_privilege_error(&error) => Vec::new(),
+            Err(error) => return Err(sql_error(error)),
+        };
+        for role in role_names {
+            if entries
+                .iter()
+                .any(|entry| entry.kind == PrincipalKind::Role && entry.id.native_id == role)
+            {
+                continue;
+            }
+            entries.push(PrincipalEntry {
+                id: PrincipalId {
+                    profile_id: self.connection_id,
+                    scope: PrincipalScope::Server,
+                    native_id: role.clone(),
+                    host: None,
+                },
+                kind: PrincipalKind::Role,
+                name: role,
+                native_kind: "role (visible only)".to_owned(),
+                system: false,
+            });
+        }
+        Ok(PrincipalPage {
+            connection: ConnectionIdentity {
+                profile_id: self.connection_id,
+                generation: 0,
+            },
+            entries,
+            complete: false,
         })
     }
 
@@ -4233,6 +4307,13 @@ fn catalog_internal(message: impl AsRef<str>) -> DatabaseError {
 
 fn sql_error(error: sqlx::Error) -> DatabaseError {
     DatabaseError::from_sqlx(error, ErrorCategory::Sql)
+}
+
+fn is_mysql_privilege_error(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|error| error.try_downcast_ref::<sqlx::mysql::MySqlDatabaseError>())
+        .is_some_and(|error| matches!(error.number(), 1142 | 1143))
 }
 
 fn bind_cell<'q>(
