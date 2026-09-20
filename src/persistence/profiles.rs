@@ -292,10 +292,9 @@ impl ProfileStore {
                         .and_then(toml::Value::as_str)
                         .map(str::to_owned);
                     let reason = if kind.as_deref().is_some_and(|kind| {
-                        !matches!(
-                            kind,
-                            "postgres" | "mysql" | "mariadb" | "oracle" | "sqlserver" | "sqlite"
-                        )
+                        toml::Value::String(kind.to_owned())
+                            .try_into::<DatabaseKind>()
+                            .is_err()
                     }) {
                         ProfileUnavailableReason::UnsupportedKind
                     } else if error.to_string().contains("unknown field") {
@@ -347,6 +346,7 @@ impl ProfileStore {
         if let Ok(existing) = fs::read_to_string(&self.path) {
             contents = preserve_unavailable_profiles(&existing, &contents)?;
         }
+        let _: toml::Value = toml::from_str(&contents)?;
         let file_name = self
             .path
             .file_name()
@@ -408,20 +408,7 @@ fn preserve_unavailable_profiles(
             merge_missing_profile_fields(current, old_profile);
             continue;
         }
-        let known_profile = old_profile["kind"].as_str().is_some_and(|kind| {
-            [
-                "postgres",
-                "mysql",
-                "mariadb",
-                "oracle",
-                "sqlserver",
-                "sqlite",
-            ]
-            .iter()
-            .any(|known| kind.eq_ignore_ascii_case(known))
-        }) && existing_id.is_some()
-            && old_profile["name"].as_str().is_some();
-        if !known_profile {
+        if profile_table_is_unavailable(old_profile) {
             unavailable.push(old_profile.clone());
         }
     }
@@ -433,7 +420,40 @@ fn preserve_unavailable_profiles(
     if !generated_profiles.is_empty() {
         document["profiles"] = generated_profiles.into();
     }
+    let mut next_position = 0;
+    normalize_table_positions(document.as_table_mut(), &mut next_position);
     Ok(document.to_string())
+}
+
+fn profile_table_is_unavailable(table: &toml_edit::Table) -> bool {
+    let mut document = toml_edit::DocumentMut::new();
+    let mut profile = table.clone();
+    profile.set_position(1);
+    document["profiles"] =
+        toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::from_iter([profile]));
+    let mut next_position = 0;
+    normalize_table_positions(document.as_table_mut(), &mut next_position);
+    toml::from_str::<toml::Value>(&document.to_string())
+        .ok()
+        .and_then(|document| document.get("profiles").cloned())
+        .and_then(|profiles| profiles.as_array()?.first().cloned())
+        .is_none_or(|profile| profile.try_into::<ConnectionProfile>().is_err())
+}
+
+fn normalize_table_positions(table: &mut toml_edit::Table, next_position: &mut isize) {
+    table.set_position(*next_position);
+    *next_position += 1;
+    for (_, item) in table.iter_mut() {
+        match item {
+            toml_edit::Item::Table(child) => normalize_table_positions(child, next_position),
+            toml_edit::Item::ArrayOfTables(children) => {
+                for child in children.iter_mut() {
+                    normalize_table_positions(child, next_position);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn merge_missing_profile_fields(current: &mut toml_edit::Table, previous: &toml_edit::Table) {

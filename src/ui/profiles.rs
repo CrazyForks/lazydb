@@ -259,19 +259,39 @@ fn render_confirmation(
             "Delete {name}?\n\nThis removes its saved metadata and remembered credential. This action cannot be undone."
         )
     };
+    let buttons_y = inner.bottom().saturating_sub(2);
+    let content = Rect::new(
+        inner.x.saturating_add(2),
+        inner.y.saturating_add(1),
+        inner.width.saturating_sub(4),
+        buttons_y.saturating_sub(inner.y.saturating_add(1)),
+    );
+    let feedback_height = if manager.message.is_some() {
+        content.height.min(3)
+    } else {
+        0
+    };
+    let body_height = content.height.saturating_sub(feedback_height);
     frame.render_widget(
         Paragraph::new(body)
             .style(Style::new().fg(theme.text).bg(theme.surface))
             .alignment(ratatui::layout::Alignment::Center)
             .wrap(Wrap { trim: true }),
-        Rect::new(
-            inner.x.saturating_add(2),
-            inner.y.saturating_add(1),
-            inner.width.saturating_sub(4),
-            inner.height.saturating_sub(4),
-        ),
+        Rect::new(content.x, content.y, content.width, body_height),
     );
-    let buttons_y = inner.bottom().saturating_sub(2);
+    if feedback_height > 0 {
+        render_message_line(
+            frame,
+            manager,
+            Rect::new(
+                content.x,
+                content.y.saturating_add(body_height),
+                content.width,
+                feedback_height,
+            ),
+            theme,
+        );
+    }
     let actions = dialog::render_actions(
         frame,
         Rect::new(inner.x, buttons_y, inner.width, 1),
@@ -930,6 +950,112 @@ fn render_message_line(
             .wrap(Wrap { trim: true }),
         Rect::new(area.x, area.y, area.width, area.height),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::{
+        model::profile_manager::{ProfileManagerState, ProfileMessageLevel},
+        ui::Theme,
+    };
+
+    #[test]
+    fn delete_confirmation_shows_error_without_hiding_actions() {
+        let mut app = App::new(Vec::new());
+        let mut manager = ProfileManagerState {
+            page: ProfileManagerPage::ConfirmDelete,
+            delete_focus: crate::model::profile_manager::ProfileDeleteFocus::Delete,
+            ..ProfileManagerState::default()
+        };
+        manager.set_message(
+            ProfileMessageLevel::Error,
+            "Unable to save connection profiles: duplicate key",
+        );
+        app.profile_manager = Some(manager);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = UiState::default();
+        terminal
+            .draw(|frame| {
+                if let Some(manager) = app.profile_manager.as_ref() {
+                    render_confirmation(
+                        frame,
+                        frame.area(),
+                        &app,
+                        manager,
+                        &mut state,
+                        Theme::default(),
+                    );
+                }
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Unable to save connection profiles"));
+        assert!(text.contains("Cancel"));
+        assert!(text.contains("Delete permanently"));
+        assert_eq!(
+            state
+                .hit_regions
+                .iter()
+                .filter(|region| matches!(region.target, HitTarget::ProfileButton(_)))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn delete_confirmation_shows_warning_on_compact_terminal() {
+        let mut app = App::new(Vec::new());
+        let mut manager = ProfileManagerState {
+            page: ProfileManagerPage::ConfirmDelete,
+            ..ProfileManagerState::default()
+        };
+        manager.set_message(
+            ProfileMessageLevel::Warning,
+            "Cancel the running query first",
+        );
+        app.profile_manager = Some(manager);
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        let mut state = UiState::default();
+        terminal
+            .draw(|frame| {
+                if let Some(manager) = app.profile_manager.as_ref() {
+                    render_confirmation(
+                        frame,
+                        frame.area(),
+                        &app,
+                        manager,
+                        &mut state,
+                        Theme::default(),
+                    );
+                }
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Cancel the running query"));
+        assert_eq!(
+            state
+                .hit_regions
+                .iter()
+                .filter(|region| matches!(region.target, HitTarget::ProfileButton(_)))
+                .count(),
+            2
+        );
+    }
 }
 
 fn profile_message_style(

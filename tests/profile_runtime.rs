@@ -754,6 +754,52 @@ async fn delete_removes_metadata_and_keyring_value() {
 }
 
 #[tokio::test]
+async fn deleting_multiple_profiles_keeps_disk_and_runtime_in_sync() {
+    let temp = TempDir::new().unwrap();
+    let path = temp.path().join("connections.toml");
+    let store = ProfileStore::new(path);
+    let first = sqlite_profile("first");
+    let middle = import_connection_url("redis://localhost:6379/0", Some("middle"))
+        .unwrap()
+        .profile;
+    let last = postgres_profile("last");
+    let profiles = vec![first.clone(), middle.clone(), last.clone()];
+    store.save(profiles.clone()).unwrap();
+    let persisted = profiles.iter().map(|profile| profile.id).collect();
+    let (mut runtime, mut receiver) = runtime(
+        profiles,
+        persisted,
+        store.clone(),
+        Arc::new(FakeSecretStore::default()),
+    );
+
+    for (request_id, deleted, remaining) in [
+        (20, middle.id, vec![first.clone(), last.clone()]),
+        (21, first.id, vec![last.clone()]),
+        (22, last.id, Vec::new()),
+    ] {
+        runtime.dispatch(Command::DeleteProfile {
+            request_id,
+            profile_id: deleted,
+        });
+        assert!(matches!(
+            next_action(&mut receiver).await,
+            Action::ProfileDeleted {
+                request_id: completed,
+                profile_id,
+                ..
+            } if completed == request_id && profile_id == deleted
+        ));
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.profiles, remaining);
+        assert!(!loaded.profiles.iter().any(|profile| profile.id == deleted));
+    }
+
+    runtime.shutdown().await;
+    assert!(store.load().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn delete_persistence_failure_restores_the_keyring_value() {
     let temp = TempDir::new().unwrap();
     let blocked_parent = temp.path().join("blocked");
@@ -780,6 +826,49 @@ async fn delete_persistence_failure_restores_the_keyring_value() {
         Action::ProfileDeleteFailed { request_id: 9, .. }
     ));
     assert!(fake.matches(profile_id, "stored-password"));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn delete_persistence_failure_preserves_profile_and_can_be_retried() {
+    let temp = TempDir::new().unwrap();
+    let blocked_parent = temp.path().join("blocked");
+    fs::write(&blocked_parent, "not a directory").unwrap();
+    let profile = sqlite_profile("retry-delete");
+    let profile_id = profile.id;
+    let store_path = blocked_parent.join("connections.toml");
+    let (mut runtime, mut receiver) = runtime(
+        vec![profile.clone()],
+        HashSet::from([profile_id]),
+        ProfileStore::new(store_path.clone()),
+        Arc::new(FakeSecretStore::default()),
+    );
+
+    runtime.dispatch(Command::DeleteProfile {
+        request_id: 10,
+        profile_id,
+    });
+    assert!(matches!(
+        next_action(&mut receiver).await,
+        Action::ProfileDeleteFailed { request_id: 10, .. }
+    ));
+
+    fs::remove_file(&blocked_parent).unwrap();
+    let store = ProfileStore::new(store_path);
+    store.save(vec![profile.clone()]).unwrap();
+    runtime.dispatch(Command::DeleteProfile {
+        request_id: 11,
+        profile_id,
+    });
+    assert!(matches!(
+        next_action(&mut receiver).await,
+        Action::ProfileDeleted {
+            request_id: 11,
+            profile_id: deleted,
+            ..
+        } if deleted == profile_id
+    ));
+    assert!(store.load().unwrap().is_empty());
     runtime.shutdown().await;
 }
 

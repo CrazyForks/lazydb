@@ -13,7 +13,7 @@ use lazydb::{
         explorer::{ExplorerConnectionStatus, ExplorerNodeId, ProfilePlacement},
         profile_manager::{
             CatalogDiscoveryState, CatalogScopeMode, DiscoveryFingerprint, ProfileDraft,
-            ProfileField, ProfileManagerPage, ProfileOperation,
+            ProfileField, ProfileManagerPage, ProfileMessageLevel, ProfileOperation,
         },
         text_input::TextInputEdit,
         workspace::{ConnectionIdentity, ConnectionStatus, Overlay, QueryStatus},
@@ -653,6 +653,68 @@ fn uuid_targeted_new_edit_cancel_and_delete_confirmation_are_pure() {
     app.update(Action::ProfileCancelDelete);
     assert!(app.profile_manager.is_none());
     assert!(app.overlay.is_none());
+}
+
+#[test]
+fn profile_delete_failure_keeps_confirmation_retryable_and_ignores_stale_results() {
+    let profile = sqlite_profile("delete-retry");
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.update(Action::ProfileRequestDelete { profile_id });
+    app.update(Action::ToggleProfileDeleteFocus);
+    let commands = app.update(Action::ProfileConfirmDelete);
+    let [Command::DeleteProfile { request_id, .. }] = commands.as_slice() else {
+        panic!("expected delete request");
+    };
+    let request_id = *request_id;
+
+    app.update(Action::ProfileDeleteFailed {
+        request_id,
+        message: "Unable to save connection profiles: invalid TOML".into(),
+    });
+    let manager = app.profile_manager.as_ref().unwrap();
+    assert_eq!(manager.operation, None);
+    assert_eq!(
+        manager.message.as_ref().unwrap().level,
+        ProfileMessageLevel::Error
+    );
+    assert!(
+        manager
+            .message
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("invalid TOML")
+    );
+    assert!(app.profiles.iter().any(|profile| profile.id == profile_id));
+
+    let commands = app.update(Action::ProfileConfirmDelete);
+    let [
+        Command::DeleteProfile {
+            request_id: retry_id,
+            profile_id: retry_profile,
+        },
+    ] = commands.as_slice()
+    else {
+        panic!("delete confirmation should allow retry");
+    };
+    assert_ne!(*retry_id, request_id);
+    assert_eq!(*retry_profile, profile_id);
+
+    app.update(Action::ProfileDeleteFailed {
+        request_id,
+        message: "stale failure".into(),
+    });
+    assert_eq!(
+        app.profile_manager.as_ref().unwrap().operation,
+        Some(ProfileOperation::Deleting)
+    );
+    app.update(Action::ProfileDeleteFailed {
+        request_id: *retry_id,
+        message: "second persistence failure".into(),
+    });
+    app.update(Action::ProfileCancelDelete);
+    assert!(app.profile_manager.is_none());
 }
 
 #[test]
