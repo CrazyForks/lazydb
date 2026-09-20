@@ -3796,9 +3796,7 @@ fn map_profile_manager(event: KeyEvent, app: &App) -> Option<Action> {
             }
         }
         return match event.code {
-            KeyCode::Char('s') => Some(Action::ProfileSave { connect: false }),
             KeyCode::Char('t') => Some(Action::ProfileTest),
-            KeyCode::Enter => Some(Action::ProfileSave { connect: true }),
             KeyCode::Char('w') if is_text_field(manager.selected_field) => {
                 Some(Action::ProfileDeletePreviousWord)
             }
@@ -3860,9 +3858,18 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
         KeyCode::BackTab => return Some(Action::ProfileFieldPrevious),
         _ => {}
     }
+    if code == KeyCode::Enter {
+        if !event.modifiers.is_empty() {
+            return None;
+        }
+        return Some(match field {
+            ProfileField::Test => Action::ProfileTest,
+            ProfileField::Cancel => Action::CloseProfileManager,
+            _ => Action::ProfileSave { connect: true },
+        });
+    }
     if is_text_field(field) {
         return match code {
-            KeyCode::Enter if field == ProfileField::Url => Some(Action::ProfileCommitUrl),
             KeyCode::Char(character) => Some(Action::ProfileInsert(ProfileInput::from(character))),
             KeyCode::Backspace => Some(Action::ProfileBackspace),
             KeyCode::Delete => Some(Action::ProfileDeleteCharacter),
@@ -3877,7 +3884,7 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
     }
     if field == ProfileField::VisibleObjects {
         return match code {
-            KeyCode::Enter | KeyCode::Char(' ') => Some(Action::ProfileOpenScope),
+            KeyCode::Char(' ') => Some(Action::ProfileOpenScope),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::ProfileFieldPrevious),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::ProfileFieldNext),
             _ => None,
@@ -3895,9 +3902,7 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
     if is_cycle_field(field) {
         return match code {
             KeyCode::Left | KeyCode::Char('h') => Some(Action::ProfileCycle(-1)),
-            KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ' | 'l') => {
-                Some(Action::ProfileCycle(1))
-            }
+            KeyCode::Right | KeyCode::Char(' ' | 'l') => Some(Action::ProfileCycle(1)),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::ProfileFieldPrevious),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::ProfileFieldNext),
             _ => None,
@@ -3905,7 +3910,7 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
     }
     if is_toggle_field(field) {
         return match code {
-            KeyCode::Enter | KeyCode::Char(' ') => Some(Action::ProfileToggle),
+            KeyCode::Char(' ') => Some(Action::ProfileToggle),
             KeyCode::Up | KeyCode::Char('k') => Some(Action::ProfileFieldPrevious),
             KeyCode::Down | KeyCode::Char('j') => Some(Action::ProfileFieldNext),
             _ => None,
@@ -3914,15 +3919,13 @@ fn map_profile_form(event: KeyEvent, field: ProfileField) -> Option<Action> {
     match (field, code) {
         (_, KeyCode::Up | KeyCode::Char('k')) => Some(Action::ProfileFieldPrevious),
         (_, KeyCode::Down | KeyCode::Char('j')) => Some(Action::ProfileFieldNext),
-        (ProfileField::Test, KeyCode::Enter | KeyCode::Char(' ')) => Some(Action::ProfileTest),
-        (ProfileField::Save, KeyCode::Enter | KeyCode::Char(' ')) => {
-            Some(Action::ProfileSave { connect: false })
-        }
-        (ProfileField::SaveAndConnect, KeyCode::Enter | KeyCode::Char(' ')) => {
-            Some(Action::ProfileSave { connect: true })
-        }
-        (ProfileField::Cancel, KeyCode::Enter | KeyCode::Char(' ')) => {
-            Some(Action::CloseProfileManager)
+        (ProfileField::Test | ProfileField::Save | ProfileField::Cancel, KeyCode::Char(' ')) => {
+            Some(match field {
+                ProfileField::Test => Action::ProfileTest,
+                ProfileField::Save => Action::ProfileSave { connect: true },
+                ProfileField::Cancel => Action::CloseProfileManager,
+                _ => unreachable!(),
+            })
         }
         _ => None,
     }

@@ -1660,7 +1660,7 @@ fn maps_profile_fields_toggles_and_buttons() {
         &ui,
         &app,
         &HitTarget::ProfileButton(ProfileButton::Save),
-        Action::ProfileSave { connect: false },
+        Action::ProfileSave { connect: true },
     );
     assert_click_maps(
         &ui,

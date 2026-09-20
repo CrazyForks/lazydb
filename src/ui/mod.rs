@@ -98,7 +98,6 @@ use self::{
 pub enum ProfileButton {
     Test,
     Save,
-    SaveAndConnect,
     Cancel,
     ConfirmDelete,
     CancelDelete,

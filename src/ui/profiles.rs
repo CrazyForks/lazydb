@@ -217,11 +217,6 @@ fn render_form(
                 manager.selected_field == ProfileField::Save,
             ),
             (
-                ProfileButton::SaveAndConnect,
-                "Save & Connect",
-                manager.selected_field == ProfileField::SaveAndConnect,
-            ),
-            (
                 ProfileButton::Cancel,
                 "Cancel",
                 manager.selected_field == ProfileField::Cancel,
@@ -1003,30 +998,44 @@ fn render_buttons(
 
 fn form_hints(field: ProfileField, width: u16) -> Vec<ShortcutHint<'static>> {
     let ctrl = KeyModifiers::CONTROL;
+    let enter_description = match field {
+        ProfileField::Test => "test",
+        ProfileField::Cancel => "cancel",
+        _ => "save",
+    };
     if width < 70 {
-        return vec![
+        let mut hints = vec![
             ShortcutHint::with_keys("^T", "Test", [KeyEvent::new(KeyCode::Char('t'), ctrl)]),
             ShortcutHint::with_keys(
-                "^Enter",
-                "Save+Connect",
-                [KeyEvent::new(KeyCode::Enter, ctrl)],
+                "Enter",
+                enter_description,
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
             ),
-            ShortcutHint::with_keys("^S", "Save", [KeyEvent::new(KeyCode::Char('s'), ctrl)]),
             ShortcutHint::with_keys(
                 "Esc",
                 "Close",
                 [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
             ),
         ];
+        if field == ProfileField::VisibleObjects {
+            hints.insert(
+                1,
+                ShortcutHint::with_keys(
+                    "Space",
+                    "visible objects",
+                    [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+                ),
+            );
+        }
+        return hints;
     }
     let mut hints = vec![
         ShortcutHint::with_keys("Ctrl+T", "test", [KeyEvent::new(KeyCode::Char('t'), ctrl)]),
         ShortcutHint::with_keys(
-            "Ctrl+Enter",
-            "save & connect",
-            [KeyEvent::new(KeyCode::Enter, ctrl)],
+            "Enter",
+            enter_description,
+            [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
         ),
-        ShortcutHint::with_keys("Ctrl+S", "save", [KeyEvent::new(KeyCode::Char('s'), ctrl)]),
         ShortcutHint::with_keys(
             "Esc",
             "cancel",
@@ -1046,14 +1055,28 @@ fn form_hints(field: ProfileField, width: u16) -> Vec<ShortcutHint<'static>> {
                 [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
             ),
         ]);
-    } else if is_cycle_field(field) || field == ProfileField::Kind {
-        hints.push(ShortcutHint::new("Left/Right", "change"));
-    } else if !is_button_field(field) {
+    } else if field == ProfileField::VisibleObjects {
         hints.push(ShortcutHint::with_keys(
-            "Enter",
-            "select",
-            [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            "Space",
+            "visible objects",
+            [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
         ));
+    } else if is_cycle_field(field) {
+        hints.push(ShortcutHint::new("Left/Right", "change"));
+        hints.push(ShortcutHint::with_keys(
+            "Space",
+            "change",
+            [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+        ));
+    } else if field == ProfileField::Kind {
+        hints.push(ShortcutHint::new("Left/Right", "change"));
+    } else if is_toggle_field(field) {
+        hints.push(ShortcutHint::with_keys(
+            "Space",
+            "toggle",
+            [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+        ));
+    } else if !is_button_field(field) {
     }
     hints
 }
@@ -1268,10 +1291,7 @@ fn field_value(draft: &ProfileDraft, field: ProfileField) -> String {
         }
         ProfileField::SqliteMemory => toggle_value(draft.sqlite_memory),
         ProfileField::SqlitePath => safe_line(draft.sqlite_path.value()),
-        ProfileField::Test
-        | ProfileField::Save
-        | ProfileField::SaveAndConnect
-        | ProfileField::Cancel => String::new(),
+        ProfileField::Test | ProfileField::Save | ProfileField::Cancel => String::new(),
     }
 }
 
@@ -1310,7 +1330,6 @@ fn field_label(field: ProfileField, kind: DatabaseKind) -> &'static str {
         ProfileField::SqlitePath => "Path",
         ProfileField::Test => "Test",
         ProfileField::Save => "Save",
-        ProfileField::SaveAndConnect => "Save & Connect",
         ProfileField::Cancel => "Cancel",
     }
 }
@@ -1318,10 +1337,7 @@ fn field_label(field: ProfileField, kind: DatabaseKind) -> &'static str {
 fn is_button_field(field: ProfileField) -> bool {
     matches!(
         field,
-        ProfileField::Test
-            | ProfileField::Save
-            | ProfileField::SaveAndConnect
-            | ProfileField::Cancel
+        ProfileField::Test | ProfileField::Save | ProfileField::Cancel
     )
 }
 

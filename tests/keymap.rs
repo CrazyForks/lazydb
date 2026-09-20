@@ -4397,20 +4397,17 @@ fn profile_form_maps_navigation_editing_and_commands() {
     );
     assert_eq!(keymap.map(ctrl('t'), &app), Some(Action::ProfileTest));
     assert_eq!(keymap.map(key(KeyCode::F(5)), &app), None);
-    assert_eq!(
-        keymap.map(ctrl('s'), &app),
-        Some(Action::ProfileSave { connect: false })
-    );
+    assert_eq!(keymap.map(ctrl('s'), &app), None);
     assert_eq!(
         keymap.map(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL), &app,),
-        Some(Action::ProfileSave { connect: true })
+        None
     );
     assert_eq!(
         keymap.map(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT,),
             &app,
         ),
-        Some(Action::ProfileSave { connect: true })
+        None
     );
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
@@ -4472,7 +4469,7 @@ fn profile_form_maps_navigation_editing_and_commands() {
     app.profile_manager.as_mut().unwrap().selected_field = ProfileField::Url;
     assert_eq!(
         keymap.map(key(KeyCode::Enter), &app),
-        Some(Action::ProfileCommitUrl)
+        Some(Action::ProfileSave { connect: true })
     );
 
     app.profile_manager.as_mut().unwrap().selected_field = ProfileField::Kind;
@@ -4500,7 +4497,10 @@ fn profile_form_maps_navigation_editing_and_commands() {
         keymap.map(key(KeyCode::Down), &app),
         Some(Action::ProfileFieldNext)
     );
-    assert_eq!(keymap.map(key(KeyCode::Enter), &app), None);
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::ProfileSave { connect: true })
+    );
     assert_eq!(keymap.map(key(KeyCode::Char(' ')), &app), None);
 
     for field in [ProfileField::SslMode, ProfileField::Environment] {
@@ -4510,7 +4510,7 @@ fn profile_form_maps_navigation_editing_and_commands() {
             (KeyCode::Char('h'), Action::ProfileCycle(-1)),
             (KeyCode::Right, Action::ProfileCycle(1)),
             (KeyCode::Char('l'), Action::ProfileCycle(1)),
-            (KeyCode::Enter, Action::ProfileCycle(1)),
+            (KeyCode::Enter, Action::ProfileSave { connect: true }),
             (KeyCode::Char(' '), Action::ProfileCycle(1)),
             (KeyCode::Up, Action::ProfileFieldPrevious),
             (KeyCode::Char('k'), Action::ProfileFieldPrevious),
@@ -4529,11 +4529,7 @@ fn profile_form_maps_navigation_editing_and_commands() {
 
     for (field, expected) in [
         (ProfileField::Test, Action::ProfileTest),
-        (ProfileField::Save, Action::ProfileSave { connect: false }),
-        (
-            ProfileField::SaveAndConnect,
-            Action::ProfileSave { connect: true },
-        ),
+        (ProfileField::Save, Action::ProfileSave { connect: true }),
         (ProfileField::Cancel, Action::CloseProfileManager),
     ] {
         app.profile_manager.as_mut().unwrap().selected_field = field;

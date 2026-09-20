@@ -2540,15 +2540,15 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
     row!(
         ProfileFormActivate,
         [ProfileManagerForm],
-        "Enter/Space",
-        "activate field",
+        "Space",
+        "activate field or option",
         display
     ),
     row!(
         ProfileFormSave,
         [ProfileManagerForm],
-        "Ctrl-s",
-        "save profile",
+        "Enter",
+        "save and connect",
         display
     ),
     row!(
@@ -4873,7 +4873,7 @@ mod tests {
             ),
             (
                 ShortcutContext::ProfileManagerForm,
-                vec!["Tab/Shift-Tab", "Enter/Space", "Ctrl-s", "Esc"],
+                vec!["Tab/Shift-Tab", "Space", "Enter", "Esc"],
             ),
             (
                 ShortcutContext::ProfileManagerScope,

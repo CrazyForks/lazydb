@@ -606,10 +606,9 @@ query capability. It replaces the underlying grid hints.
 | `Tab`, `Shift-Tab`, BackTab | Move fields |
 | `j/k`, Up/Down | Move fields; literal in text fields where applicable |
 | Left/Right, `h/l` | Cycle compatible driver/options |
-| Enter/Space | Activate option or action |
-| `F5` | Test connection |
-| `Ctrl-s` | Save |
-| `Ctrl-Enter` | Save and connect |
+| `Enter` | Save and connect; activate Test/Cancel when focused |
+| `Space` | Open Visible objects, change/toggle options, or activate a focused button |
+| `Ctrl-t` | Test connection |
 | `Esc` | Close manager |
 
 ### Scope
