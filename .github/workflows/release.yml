@@ -70,9 +70,9 @@ jobs:
           cache-targets: true
       - name: Distribution contracts
         run: sh scripts/release/test-distribution.sh
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets --all-features
+      - run: cargo +1.94.0 fmt --all -- --check
+      - run: cargo +1.94.0 clippy --all-targets --all-features -- -D warnings
+      - run: cargo +1.94.0 test --all-targets --all-features
 
   build:
     needs: plan

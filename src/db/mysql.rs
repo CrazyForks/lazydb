@@ -4423,8 +4423,9 @@ pub fn quote_literal(value: &str) -> String {
 /// Build a readable, credential-free definition for a MySQL/MariaDB account.
 ///
 /// Password material can never be recovered from the catalog, so it is
-/// deliberately omitted and documented. Grants are emitted verbatim because
-/// they are already valid statements returned by `SHOW GRANTS`.
+/// deliberately omitted and documented. `SHOW GRANTS` may append account
+/// authentication clauses (including password hashes) to a grant, so those
+/// clauses must be removed before displaying the statements.
 fn assemble_principal_ddl(
     kind: PrincipalKind,
     user: &str,
@@ -4459,8 +4460,8 @@ fn assemble_principal_ddl(
         }
     }
     for grant in grants {
-        let grant = grant.trim();
-        if !grant.is_empty() {
+        let grant = credential_free_mysql_grant(grant);
+        if let Some(grant) = grant.map(str::trim).filter(|grant| !grant.is_empty()) {
             lines.push(if grant.ends_with(';') {
                 grant.to_owned()
             } else {
@@ -4469,6 +4470,56 @@ fn assemble_principal_ddl(
         }
     }
     lines.join("\n")
+}
+
+fn credential_free_mysql_grant(grant: &str) -> Option<&str> {
+    let grant = grant.trim();
+    // MariaDB may append `IDENTIFIED BY PASSWORD`, `IDENTIFIED VIA ... USING`,
+    // or MySQL's `IDENTIFIED WITH ... AS` to SHOW GRANTS output. The suffix is
+    // account authentication metadata, not a privilege grant, and can contain
+    // a reusable password hash. Keep the privilege statement before it only.
+    let bytes = grant.as_bytes();
+    let mut index = 0;
+    let mut quote = None;
+    let mut safe_end = grant.len();
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(delimiter) = quote {
+            if byte == b'\\' {
+                index = (index + 2).min(bytes.len());
+                continue;
+            }
+            if byte == delimiter {
+                if bytes.get(index + 1) == Some(&delimiter) {
+                    index += 2;
+                    continue;
+                }
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        const KEYWORD: &[u8] = b"IDENTIFIED";
+        let keyword_start = index + 1;
+        let keyword_end = keyword_start + KEYWORD.len();
+        if byte.is_ascii_whitespace()
+            && bytes
+                .get(keyword_start..keyword_end)
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(KEYWORD))
+            && bytes.get(keyword_end).is_none_or(u8::is_ascii_whitespace)
+        {
+            safe_end = index;
+            break;
+        }
+        index += 1;
+    }
+    let safe = grant[..safe_end].trim_end();
+    (!safe.is_empty()).then_some(safe)
 }
 
 fn mysql_ssl_mode(mode: SslMode) -> MySqlSslMode {
@@ -4622,6 +4673,8 @@ mod tests {
             true,
             &[
                 "GRANT USAGE ON *.* TO `app'user`@`10.0.0.%`".to_owned(),
+                "GRANT USAGE ON *.* TO `app'user`@`10.0.0.%` IDENTIFIED BY PASSWORD '*1BAA2A7EA3EBF668FFD2BC9141643BEE34B5E076'".to_owned(),
+                "GRANT SELECT ON `app`.* TO `app'user`@`10.0.0.%` IDENTIFIED VIA mysql_native_password USING '*HASH'".to_owned(),
                 "".to_owned(),
             ],
         );
@@ -4631,9 +4684,22 @@ mod tests {
         assert!(sql.contains("ALTER USER `app'user`@`10.0.0.%` ACCOUNT LOCK;"));
         assert!(sql.contains("-- Password is intentionally omitted from read-only catalog DDL."));
         assert!(sql.contains("GRANT USAGE ON *.* TO `app'user`@`10.0.0.%`;"));
+        assert!(sql.contains("GRANT SELECT ON `app`.* TO `app'user`@`10.0.0.%`;"));
         // No password material or hash may ever appear.
         assert!(!sql.contains("IDENTIFIED BY"), "{sql}");
+        assert!(!sql.contains("IDENTIFIED VIA"), "{sql}");
+        assert!(
+            !sql.contains("1BAA2A7EA3EBF668FFD2BC9141643BEE34B5E076"),
+            "{sql}"
+        );
+        assert!(!sql.contains("*HASH"), "{sql}");
         assert!(!sql.contains("AS '$"), "{sql}");
+    }
+
+    #[test]
+    fn principal_grants_preserve_identified_inside_quoted_names() {
+        let grant = "GRANT SELECT ON `IDENTIFIED schema`.* TO `app`@`%`";
+        assert_eq!(super::credential_free_mysql_grant(grant), Some(grant));
     }
 
     #[test]

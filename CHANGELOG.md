@@ -1244,6 +1244,7 @@
 ### Fixed
 
 - Fixed Redis edit-state and connection-binding issues, profile workspace activation, principal edit loading, cross-connection navigation, and database-specific catalog behavior.
+- Prevented MySQL/MariaDB principal previews from exposing authentication hashes returned by `SHOW GRANTS`.
 
 ### Internal
 
