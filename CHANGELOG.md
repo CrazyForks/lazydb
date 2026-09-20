@@ -1227,6 +1227,145 @@
 - [`26b089e`](https://github.com/yelog/lazydb/commit/26b089e5c5bb3b86fb04b9cf30cb09c1124fddd4) fix(help): fix relation data shortcuts
 - [`ea1ed1a`](https://github.com/yelog/lazydb/commit/ea1ed1a7b4331210f898536cfd58206b1ccfc99b) fix(ci): satisfy newer clippy option zip
 
+## [0.1.6] - 2026-09-20
+
+### Added
+
+- Added Redis value editing in browser tables, with filtering, copying, YAML-aware previews, edit modes, search, undo, and dedicated dialogs.
+- Added relational Users & Roles browsing and management, including read-only DDL tabs and principal mutations.
+- Expanded catalog and relation editing with column ordering, column creation, schema-owner selection, comment preservation, and MariaDB creation and insert support.
+- Added transaction SQL review, focus-scoped tab reordering, consolidated Help and Omni panels, and clearer dialog actions.
+
+### Changed
+
+- Improved editor navigation, keyboard and mouse shortcuts, modified-cell highlighting, large-catalog explorer performance, and update progress feedback.
+- Expanded MariaDB compatibility and JSON/geometry value previews.
+
+### Fixed
+
+- Fixed Redis edit-state and connection-binding issues, profile workspace activation, principal edit loading, cross-connection navigation, and database-specific catalog behavior.
+
+### Internal
+
+- Expanded database fixtures, tests, documentation, CI coverage, and release-note tooling.
+
+### Commits
+
+- [`955501b`](https://github.com/yelog/lazydb/commit/955501b6fb195743540ba70320840dfa774526f0) merge: add table editor column row actions
+- [`76162d6`](https://github.com/yelog/lazydb/commit/76162d6edc0b1e15ff1814f0ca2bf9ccc1b8eb2f) feat(ui): add table column row actions
+- [`b467bd4`](https://github.com/yelog/lazydb/commit/b467bd409b963d6b24ca0d11c8afc21f29d9479a) merge: unify profile save shortcuts and scope navigation
+- [`ee90adc`](https://github.com/yelog/lazydb/commit/ee90adc625ebb704df9e863cdfc21a75502ab6fc) fix(profiles): unify save action and form shortcuts
+- [`f7d03d5`](https://github.com/yelog/lazydb/commit/f7d03d54ac463cbe1c322e738f9a6fe7ee2d773c) merge: unify dialog actions and shortcut hierarchy
+- [`a209d8e`](https://github.com/yelog/lazydb/commit/a209d8ebf698cc6a3a8c2f7970e71cc4c5d2b1df) feat(ui): unify dialog actions and shortcut hierarchy
+- [`bed1481`](https://github.com/yelog/lazydb/commit/bed148153685d02154d8c7890bf21e9a9f0671dc) Merge branch 'task/fix-principal-edit-loading-mariadb-access'
+- [`c8da3e5`](https://github.com/yelog/lazydb/commit/c8da3e5fd01594fd1ea1266555d52f99a01c659c) docs: add dialog actions implementation plan
+- [`590fbbc`](https://github.com/yelog/lazydb/commit/590fbbca8167c7f43458db3c872765f79eec9ca4) merge: fix principal edit loading and MariaDB access
+- [`2f02f63`](https://github.com/yelog/lazydb/commit/2f02f63487530809591a0f2fc863d2eea7713df2) fix(principals): recover edit loading and limited MariaDB access
+- [`9037713`](https://github.com/yelog/lazydb/commit/90377133aa529b6841d6a2712bde1e08ffdc0f99) merge: integrate users and roles management
+- [`218ba4a`](https://github.com/yelog/lazydb/commit/218ba4a3bc17221eaf8d58b7f4d93cf7d0a4f4ad) feat: manage users and roles from explorer
+- [`2a91556`](https://github.com/yelog/lazydb/commit/2a91556a642895a7b10d1231c71bf963971f53ec) fix(workspace): disambiguate principal tab kind
+- [`5a41d82`](https://github.com/yelog/lazydb/commit/5a41d82a7d2ae8363cb197b78f3ecfddcf2fb274) merge: unify clickable popup shortcuts
+- [`da41ca9`](https://github.com/yelog/lazydb/commit/da41ca9af606cd43753648864319cb50ed23807a) feat(ui): unify clickable popup shortcuts
+- [`8f73bb7`](https://github.com/yelog/lazydb/commit/8f73bb7e68be166887f58ec74535df3059f0883b) merge: integrate catalog comment editing
+- [`02e7c66`](https://github.com/yelog/lazydb/commit/02e7c66c17b133b96e0cc65911d77ff55ef1fb44) fix(catalog): preserve mysql and oracle comments
+- [`c634324`](https://github.com/yelog/lazydb/commit/c634324b6cc3a94dbb4735349fc20c4516f23282) merge: hide users roles until connection opens
+- [`e412716`](https://github.com/yelog/lazydb/commit/e4127169f68e95366b2bad71925896e08f060d1e) fix(explorer): hide principals until connection is open
+- [`45e330c`](https://github.com/yelog/lazydb/commit/45e330cedd3b8da493d1c198329ec38d5e1f38b5) merge: integrate users-roles-ddl-browser
+- [`3f04e6e`](https://github.com/yelog/lazydb/commit/3f04e6e1f5a6342ea6f90a28bba60ca9bc5c784d) feat(explorer): add Users & Roles browser with read-only DDL tabs
+- [`d0f8693`](https://github.com/yelog/lazydb/commit/d0f8693766fb85e16525965a1bed448d57df3d0c) merge: integrate explorer many-nodes performance
+- [`6ca7406`](https://github.com/yelog/lazydb/commit/6ca7406225ce325f650599f9f08d7e201250cc94) perf(explorer): cut redundant projection and formatting on large lists
+- [`0f31ece`](https://github.com/yelog/lazydb/commit/0f31ecea273f4609b52ee575436f475fb63d7bc2) merge: integrate update center redesign
+- [`ec0ddfe`](https://github.com/yelog/lazydb/commit/ec0ddfe19ac0d79e45d510b7f0daf167211d3ca2) feat(update): redesign update center status, actions, and progress
+- [`1b45a1e`](https://github.com/yelog/lazydb/commit/1b45a1eb6261cd309edb0c859fadbcbda3a0982f) fix: stabilize profile workspace activation
+- [`34b17c9`](https://github.com/yelog/lazydb/commit/34b17c9ad47f0827536eef86e64a97c1c6c8d6e6) Merge branch 'task/highlight-modified-column-cells'
+- [`98f2f1b`](https://github.com/yelog/lazydb/commit/98f2f1b5e774f03871fb679ff33c68522da74894) docs: add modified column highlights plan
+- [`a1a028a`](https://github.com/yelog/lazydb/commit/a1a028a8b6e1336f0a515c82645ac2c677fcaa21) merge: integrate modified column cell highlights
+- [`7884b20`](https://github.com/yelog/lazydb/commit/7884b202c1b559aa4299cfada626907573b9d1bf) fix(catalog-editor): highlight modified column cells
+- [`303058c`](https://github.com/yelog/lazydb/commit/303058ce01b77955379d7e2bf0bdebb3493388d1) docs: add implementation plans
+- [`16b32bf`](https://github.com/yelog/lazydb/commit/16b32bfc29d11e5f503ec51feea4fa8d381e988a) merge: integrate postgres catalog editor fixes
+- [`2e824a3`](https://github.com/yelog/lazydb/commit/2e824a3d226303f2ea638142f8b5d65ef19a503e) Merge branch 'main' into task/fix-postgres-add-column-and-explorer-edit-ownership
+- [`a7d0e85`](https://github.com/yelog/lazydb/commit/a7d0e85502b10d7b1050c9c3d5f7a940c6a97934) fix(catalog): bind explorer edits and append postgres columns
+- [`2ee009a`](https://github.com/yelog/lazydb/commit/2ee009a77545a2671ffac7c40a37478abbdf984b) Merge branch 'task/fix-redis-value-input-and-connection-binding'
+- [`de69d5c`](https://github.com/yelog/lazydb/commit/de69d5c90b47b34205bd8d926d588b8db3633f82) Merge branch 'main' into task/fix-redis-value-input-and-connection-binding
+- [`83e6913`](https://github.com/yelog/lazydb/commit/83e69136cbd82841f9bb6ed3495eb9ddb3ac8a05) docs(redis): add value input and connection implementation plan
+- [`baf9cd6`](https://github.com/yelog/lazydb/commit/baf9cd6783b97222488c5f9e7361850bf98c6b8d) fix(redis): bind value saves to the tab connection
+- [`3870144`](https://github.com/yelog/lazydb/commit/38701448c582cd05aba2c3db3c61fa9b1bd8e04c) fix(editor): handle vim character arguments before counts
+- [`8ec2584`](https://github.com/yelog/lazydb/commit/8ec2584fc0e60f5240b33563c0e3531578128eeb) Merge branch 'task/catalog-editor-column-ordering'
+- [`a2f69a3`](https://github.com/yelog/lazydb/commit/a2f69a31e42de96d219b7a140311c2df50c536d9) docs(catalog): add column ordering implementation plan
+- [`6dbda68`](https://github.com/yelog/lazydb/commit/6dbda6868fda23b64c6b0ff6917305bb572c9339) merge: integrate catalog editor column ordering
+- [`a2a32f9`](https://github.com/yelog/lazydb/commit/a2a32f9438f67c5be9fdb77b4c9f2108c6d2396d) feat(catalog): support column ordering edits
+- [`80e5563`](https://github.com/yelog/lazydb/commit/80e556374376df56ee31ba52b292ac7c1d7e5864) merge: unify help and omni panels
+- [`7f533c7`](https://github.com/yelog/lazydb/commit/7f533c7692616d6ecd8a91e459d6373fc31f9fce) feat(ui): unify help and omni panels
+- [`84c5df4`](https://github.com/yelog/lazydb/commit/84c5df482680bdaad719afdf1e7719e3b02cb78f) Merge branch 'task/redis-value-dialog-overhaul'
+- [`441eaa2`](https://github.com/yelog/lazydb/commit/441eaa2ecdecdaafda67a117e8c5d7a6d87da503) docs(redis): add value dialog implementation plan
+- [`ac650d8`](https://github.com/yelog/lazydb/commit/ac650d8c47fc16f93de9ff897f1449dc22b15b15) Merge branch 'task/catalog-columns-navigation-shortcuts-layout'
+- [`40582e5`](https://github.com/yelog/lazydb/commit/40582e5fe7dbfcab466b0ea497f7907cfea34b5d) docs(catalog): add columns navigation implementation plan
+- [`a1bdb62`](https://github.com/yelog/lazydb/commit/a1bdb62cfa7d3207e95bbdd2b4a95cc8e351f362) feat(catalog): improve table column navigation and layout
+- [`3aadb81`](https://github.com/yelog/lazydb/commit/3aadb810031741f4ec1e78b04f190ed7251ea7b0) Merge branch 'task/redis-value-dialog-overhaul'
+- [`69e7204`](https://github.com/yelog/lazydb/commit/69e7204c5b46a0e6e244ca6be71dea5a00f4ca32) feat(redis): overhaul value dialogs
+- [`7d92f52`](https://github.com/yelog/lazydb/commit/7d92f523d25a2cde39911e2ee7951d8fdc6645ee) Merge branch 'task/restore-empty-workspace-after-closing-all-tabs'
+- [`7b3d680`](https://github.com/yelog/lazydb/commit/7b3d6807bcde46a25547d7019c30b74b6d1bbdeb) docs: add empty workspace implementation plan
+- [`5a67033`](https://github.com/yelog/lazydb/commit/5a67033079cea19284676e8c7990f0313260b31c) Merge branch 'task/restore-empty-workspace-after-closing-all-tabs'
+- [`71fb7e0`](https://github.com/yelog/lazydb/commit/71fb7e0a41f977d408666a91ca98b2ee1cb462cb) fix(ui): restore empty workspace after closing all tabs
+- [`af23ff6`](https://github.com/yelog/lazydb/commit/af23ff65072f203b5266769cb9898203a09854b5) Merge branch 'task/tab-reorder-focus-scope'
+- [`472c1b9`](https://github.com/yelog/lazydb/commit/472c1b983f71f43302763b5126499fadca84f1c5) docs(tabs): add tab reordering implementation plan
+- [`7242e81`](https://github.com/yelog/lazydb/commit/7242e813f5b0c317084be0c66a6d41a63564223d) merge: add focus-scoped tab reordering
+- [`f4cb02d`](https://github.com/yelog/lazydb/commit/f4cb02de2992a0b33079abe8d516e4b7a703e437) feat(tabs): add focus-scoped tab reordering
+- [`fd294bd`](https://github.com/yelog/lazydb/commit/fd294bd7e8b56d06d0ad945358ae7f0c83ace8d7) Merge branch 'task/relation-cell-editor-column-metadata'
+- [`6f17a01`](https://github.com/yelog/lazydb/commit/6f17a016a7aaa19a9d2fc250027d4c4ed62e015e) docs: add relation cell editor implementation plan
+- [`f1b041e`](https://github.com/yelog/lazydb/commit/f1b041e95b599272f8376216952fc1dc69168166) feat(ui): show column metadata in cell editor
+- [`2df3990`](https://github.com/yelog/lazydb/commit/2df399013fd12a65816715e38180b23f58f99100) docs: align product documentation with current features
+- [`c6c12a5`](https://github.com/yelog/lazydb/commit/c6c12a5a632b75fb86eee0a9c0d157c036af678b) fix(ui): highlight inserted relation rows with green backgrounds
+- [`16b05f4`](https://github.com/yelog/lazydb/commit/16b05f4e3d1d7b78d126891d2b751a0440fc7e07) docs: add implementation plans
+- [`498b656`](https://github.com/yelog/lazydb/commit/498b6564cce4ffa89051eeac7a557e152adca7a0) merge: add transaction review SQL editor
+- [`94d4f40`](https://github.com/yelog/lazydb/commit/94d4f4064f6b4b6b962133ae1820f6545fe6d528) feat(transaction): add vim SQL review preview
+- [`42f2744`](https://github.com/yelog/lazydb/commit/42f274480ef295f78e4bb0b69faf9ef38f799459) merge: support MariaDB keyless grid inserts
+- [`191f8a2`](https://github.com/yelog/lazydb/commit/191f8a2ad3b701fa407fcd5e9539da0aa13bbbda) fix(relation): support MariaDB keyless grid inserts
+- [`527acb6`](https://github.com/yelog/lazydb/commit/527acb66edaf00779862e1831f4c1929c602c285) Merge branch 'task/mariadb-brand-icon'
+- [`1978584`](https://github.com/yelog/lazydb/commit/19785849cf21a3b72e7ff01aded1cdfab5a73d91) docs: add MariaDB brand icon plan
+- [`101bb25`](https://github.com/yelog/lazydb/commit/101bb254107aecfc07baa97aa7dbb15c85d89873) fix(ui): use dedicated MariaDB brand icon
+- [`9e037fc`](https://github.com/yelog/lazydb/commit/9e037fcab270dc66664b6873641758550a055793) fix(ui): use dedicated MariaDB brand icon
+- [`2b6321c`](https://github.com/yelog/lazydb/commit/2b6321cd319b0d5c362e9e2457f6ba437c3491f4) Merge branch 'task/fix-omni-cross-connection-navigation'
+- [`96bb1d3`](https://github.com/yelog/lazydb/commit/96bb1d330c4a32ad9cc7610cc5c3217b1a90b872) docs(omni): add cross-connection navigation plan
+- [`1761bd7`](https://github.com/yelog/lazydb/commit/1761bd71d4a00403c6948a3f147758a41822c2cf) merge: fix Omni cross-connection navigation
+- [`8ffaec8`](https://github.com/yelog/lazydb/commit/8ffaec82b04fccb22805a77cb081d97c14d78bc3) fix(omni): open relations after connection reuse
+- [`9cdd680`](https://github.com/yelog/lazydb/commit/9cdd680416c5f5d13e5b89da14fb9d6cac9534a1) docs: add MariaDB insert returning plan
+- [`67a5642`](https://github.com/yelog/lazydb/commit/67a5642a47a54b44a068581da749c234a91d0b58) fix(mariadb): return inserted rows directly
+- [`92c6bf7`](https://github.com/yelog/lazydb/commit/92c6bf758a3f3beaae74f3fb80a6f1985301e27a) Merge branch 'task/fix-mariadb-explorer-create-shortcut'
+- [`30bcf6d`](https://github.com/yelog/lazydb/commit/30bcf6d8f28e5b3da20ac4e48625ddffd181bebb) docs: add MariaDB Explorer creation plan
+- [`0df5d8a`](https://github.com/yelog/lazydb/commit/0df5d8a014fa387d516e1c80c3b781f5c9a997ed) merge: enable MariaDB Explorer catalog creation
+- [`25968cb`](https://github.com/yelog/lazydb/commit/25968cbe6912b5d289ddeffc8062f80a4dc2ceb0) fix(mariadb): enable explorer catalog creation
+- [`08c95d7`](https://github.com/yelog/lazydb/commit/08c95d767c8dd608b9e7f5f0712946d3bb9eccb0) Merge branch 'task/mariadb-json-geometry-preview'
+- [`6108f95`](https://github.com/yelog/lazydb/commit/6108f95b689ff6f82fbdec05b38d9556af26f732) fix(mysql): preview MariaDB JSON and geometry values
+- [`d7f85bc`](https://github.com/yelog/lazydb/commit/d7f85bc544ef2c8e4d5a72db93b820821640ea57) merge: synchronize Redis YAML preview format
+- [`42bf9a4`](https://github.com/yelog/lazydb/commit/42bf9a46a3291c07c71647189d63cc3eae0dc8bf) fix(redis): synchronize YAML preview format changes
+- [`df964c5`](https://github.com/yelog/lazydb/commit/df964c510a019cf1800c5c49034bf5ba493fb9ba) Merge branch 'task/redis-value-editor-modes-search-undo'
+- [`1bd7503`](https://github.com/yelog/lazydb/commit/1bd750359dcdb7f1e7d3d0064cb6331d22221951) docs(redis): add value editor implementation plan
+- [`a2b9c6d`](https://github.com/yelog/lazydb/commit/a2b9c6d39d0d2e3d15599fd0150fee7dafd21f78) fix(redis): improve value editor modes and undo
+- [`050b141`](https://github.com/yelog/lazydb/commit/050b1412c052a44469ec9523cde86704985bf9f8) docs(redis): add preview clean-state plan
+- [`0c58cbb`](https://github.com/yelog/lazydb/commit/0c58cbb49cae3512cfb10b1039cfd2808efedd34) fix(redis): clear stale preview edit state
+- [`fe3134a`](https://github.com/yelog/lazydb/commit/fe3134adf47b8002cf88cc467f251a71585fb3bb) merge: mariadb catalog compatibility
+- [`b74a748`](https://github.com/yelog/lazydb/commit/b74a74897c930218e65ea4f1c49c0a9175d01438) fix(mariadb): restore catalog discovery on 11.4
+- [`6bc0c07`](https://github.com/yelog/lazydb/commit/6bc0c079c301d60eae2af86210c402cbc782d806) Merge branch 'task/redis-value-editing'
+- [`9426a30`](https://github.com/yelog/lazydb/commit/9426a30a74943875b650f523a05b4e658512688b) feat(redis): edit values in browser tables
+- [`a09dc6a`](https://github.com/yelog/lazydb/commit/a09dc6a1a37f957f6336b1516afd5a779dfb945d) fix(redis): avoid catalog discovery warning on connection test
+- [`ba26e6d`](https://github.com/yelog/lazydb/commit/ba26e6d0f0085c21c90f8b827ae5721cf9cde81b) Merge branch 'task/decouple-explorer-connections-from-editor-targets'
+- [`053c3df`](https://github.com/yelog/lazydb/commit/053c3dfb9268d4177e646d22fa749175c73b8020) docs: add editor target decoupling plan
+- [`62364c9`](https://github.com/yelog/lazydb/commit/62364c9052553902c5a91e5098efd6929486802b) feat(mariadb): add Docker test database fixture
+- [`4cac796`](https://github.com/yelog/lazydb/commit/4cac796f83b4add5beb111cd4e602e6ee17dbc39) merge: decouple explorer connections from editor targets
+- [`c80c438`](https://github.com/yelog/lazydb/commit/c80c43828e3ceb76c1c1b1b036166a18388c7cfa) fix(editor): preserve targets across explorer connections
+- [`cb5bd81`](https://github.com/yelog/lazydb/commit/cb5bd810515557461710b4fef6de8ac50c09aebb) fix(relation): remove row yank shortcut prompt
+- [`b413286`](https://github.com/yelog/lazydb/commit/b413286c2fce57f185ef4275bec0e8a711797d1d) merge: copy relation data cells with y
+- [`1bb73d3`](https://github.com/yelog/lazydb/commit/1bb73d35a74d0ce7df8fcaee556733a5675a82e6) fix(relation): copy cells with y in data view
+- [`1e317fe`](https://github.com/yelog/lazydb/commit/1e317fe1d3569e4f440ee6fefa07b4010e6c08e2) Merge branch 'task/redis-browser-focus-auto-connect'
+- [`0716a06`](https://github.com/yelog/lazydb/commit/0716a0698cef1988007f1899359dfce1e75e686b) fix(redis): connect browser tabs on focus
+- [`2f856d3`](https://github.com/yelog/lazydb/commit/2f856d3090fc2bf89b6941759069312019079235) merge: redis value table filter and copy
+- [`ca65efa`](https://github.com/yelog/lazydb/commit/ca65efac83a643df2dc95072b99a0cf407590215) feat(redis): filter and copy table values
+- [`714eadc`](https://github.com/yelog/lazydb/commit/714eadc269b96b440950f5fe53d5942061665d5b) Merge branch 'task/improve-update-result-output'
+- [`c0affc6`](https://github.com/yelog/lazydb/commit/c0affc6db5ece8c79978b22d55895cb6e71b8326) feat(update): improve result output
+- [`4093b47`](https://github.com/yelog/lazydb/commit/4093b474b27bad145ff1313427e4171d647b62c4) ci(release): collapse commit lists in release notes
+- [`1285bc0`](https://github.com/yelog/lazydb/commit/1285bc0bf315b0f83efa3489d8365effa41b07a7) fix(ci): satisfy release clippy checks
+
 ## Unreleased
 
 - Add persistent Explorer connection groups, group membership, and profile ordering.
