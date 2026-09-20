@@ -284,11 +284,13 @@ fn render_confirmation(
             DialogButton {
                 label: "Cancel",
                 tone: DialogTone::Normal,
+                emphasis: dialog::DialogEmphasis::Secondary,
                 enabled: !busy,
             },
             DialogButton {
                 label: "Delete permanently",
                 tone: DialogTone::Danger,
+                emphasis: dialog::DialogEmphasis::Secondary,
                 enabled: !busy,
             },
         ],
@@ -1032,15 +1034,26 @@ fn form_hints(field: ProfileField, width: u16) -> Vec<ShortcutHint<'static>> {
         ),
     ];
     if is_text_field(field) {
-        hints.push(ShortcutHint::with_keys(
-            "Tab/Shift+Tab",
-            "move",
-            [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
-        ));
+        hints.extend([
+            ShortcutHint::with_keys(
+                "Tab",
+                "next field",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Shift+Tab",
+                "previous field",
+                [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
+            ),
+        ]);
     } else if is_cycle_field(field) || field == ProfileField::Kind {
         hints.push(ShortcutHint::new("Left/Right", "change"));
     } else if !is_button_field(field) {
-        hints.push(ShortcutHint::new("Enter/Space", "select"));
+        hints.push(ShortcutHint::with_keys(
+            "Enter",
+            "select",
+            [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+        ));
     }
     hints
 }
@@ -1083,7 +1096,7 @@ fn render_interactive_hint(
         hints,
         theme,
         theme.surface,
-        Alignment::Center,
+        Alignment::Left,
         state,
     );
 }

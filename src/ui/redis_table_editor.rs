@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -17,7 +18,7 @@ pub fn render(
     frame: &mut Frame<'_>,
     area: Rect,
     editor: &RedisTableEditorState,
-    _state: &mut UiState,
+    state: &mut UiState,
     theme: Theme,
 ) {
     let popup = super::centered(
@@ -57,10 +58,36 @@ pub fn render(
             rows[editor.fields.len()],
         );
     }
-    frame.render_widget(
-        Paragraph::new("Tab/↑↓ focus · Enter apply · Esc cancel")
-            .style(Style::new().fg(theme.muted)),
+    let hints = [
+        crate::ui::shortcut_hints::ShortcutHint::with_keys(
+            "Tab",
+            "next field",
+            [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+        ),
+        crate::ui::shortcut_hints::ShortcutHint::with_keys(
+            "Shift+Tab",
+            "previous field",
+            [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
+        ),
+        crate::ui::shortcut_hints::ShortcutHint::with_keys(
+            "Enter",
+            "apply",
+            [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+        ),
+        crate::ui::shortcut_hints::ShortcutHint::with_keys(
+            "Esc",
+            "cancel",
+            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        ),
+    ];
+    crate::ui::shortcut_hints::render_interactive(
+        frame,
         rows[editor.fields.len() + 1],
+        &hints,
+        theme,
+        theme.surface,
+        ratatui::layout::Alignment::Left,
+        state,
     );
 }
 
@@ -68,6 +95,7 @@ pub fn render_delete_confirm(
     frame: &mut Frame<'_>,
     area: Rect,
     confirm: &RedisTableDeleteConfirmation,
+    state: &mut UiState,
     theme: Theme,
 ) {
     let popup = super::centered(area, 76.min(area.width), 8.min(area.height));
@@ -79,17 +107,43 @@ pub fn render_delete_confirm(
         .style(Style::new().bg(theme.surface));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let selected = match confirm.focus {
-        RedisTableDeleteFocus::Cancel => "Cancel",
-        RedisTableDeleteFocus::Delete => "Delete",
-    };
+    let selected = confirm.focus;
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(confirm.title()),
             Line::from("Delete the selected row?"),
-            Line::from(format!("{selected} · Enter confirm · Esc cancel")),
+            Line::from(if selected == RedisTableDeleteFocus::Cancel {
+                "[ > Cancel ]   [ Delete ]"
+            } else {
+                "[ Cancel ]   [ > Delete ]"
+            }),
         ])
         .style(Style::new().fg(theme.text)),
         inner,
+    );
+    crate::ui::shortcut_hints::render_interactive(
+        frame,
+        Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
+        &[
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Tab",
+                "switch",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Enter",
+                "confirm",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ],
+        theme,
+        theme.surface,
+        ratatui::layout::Alignment::Left,
+        state,
     );
 }

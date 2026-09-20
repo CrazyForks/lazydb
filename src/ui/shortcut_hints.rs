@@ -22,6 +22,19 @@ pub(crate) struct ShortcutHint<'a> {
     pub activation: Option<Vec<KeyEvent>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HintPlacement {
+    pub index: usize,
+    pub area: Rect,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SingleLineLayout {
+    pub line: Line<'static>,
+    pub placements: Vec<HintPlacement>,
+    pub omitted: usize,
+}
+
 impl<'a> ShortcutHint<'a> {
     pub(crate) fn new(key: impl Into<Cow<'a, str>>, description: impl Into<Cow<'a, str>>) -> Self {
         Self {
@@ -109,6 +122,89 @@ pub(super) fn render(
     );
 }
 
+pub(super) fn single_line_layout(
+    hints: &[ShortcutHint<'_>],
+    area: Rect,
+    theme: Theme,
+    background: Color,
+    alignment: Alignment,
+) -> SingleLineLayout {
+    if area.is_empty() || hints.is_empty() {
+        return SingleLineLayout {
+            line: Line::default(),
+            placements: Vec::new(),
+            omitted: hints.len(),
+        };
+    }
+
+    let selected = packed_count(hints, usize::from(area.width));
+    let omitted = hints.len().saturating_sub(selected);
+    let marker = if omitted == 0 {
+        String::new()
+    } else {
+        format!("... (+{omitted})")
+    };
+    let marker_separator = if selected > 0 && !marker.is_empty() {
+        SEPARATOR
+    } else {
+        ""
+    };
+    let visible_width = visible_width(hints, selected)
+        .saturating_add(usize::from(marker_separator.cell_width()))
+        .saturating_add(usize::from(marker.cell_width()));
+    let offset = match alignment {
+        Alignment::Left => 0,
+        Alignment::Center => usize::from(area.width.saturating_sub(visible_width as u16) / 2),
+        Alignment::Right => usize::from(area.width.saturating_sub(visible_width as u16)),
+    };
+    let mut x = area.x.saturating_add(offset as u16);
+    let mut spans = Vec::new();
+    let mut placements = Vec::new();
+    for (index, hint) in hints.iter().take(selected).enumerate() {
+        if index > 0 {
+            spans.push(separator_span(theme, background));
+            x = x.saturating_add(SEPARATOR.cell_width());
+        }
+        let key_width = hint.key.as_ref().cell_width();
+        let description_width = hint.description.as_ref().cell_width();
+        let item_width = key_width
+            .saturating_add(1)
+            .saturating_add(description_width);
+        let clipped = item_width.min(area.right().saturating_sub(x));
+        if clipped > 0 {
+            placements.push(HintPlacement {
+                index,
+                area: Rect::new(x, area.y, clipped, 1),
+            });
+        }
+        spans.push(Span::styled(
+            hint.key.to_string(),
+            theme.dialog_help_key().bg(background),
+        ));
+        spans.push(Span::styled(" ", Style::new().bg(background)));
+        spans.push(Span::styled(
+            hint.description.to_string(),
+            theme.dialog_help_description().bg(background),
+        ));
+        x = x.saturating_add(item_width);
+    }
+    if !marker.is_empty() {
+        if selected > 0 {
+            spans.push(separator_span(theme, background));
+        }
+        spans.push(Span::styled(
+            marker,
+            Style::new().fg(theme.muted).bg(background),
+        ));
+    }
+
+    SingleLineLayout {
+        line: Line::from(spans),
+        placements,
+        omitted,
+    }
+}
+
 pub(super) fn render_interactive(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -118,6 +214,27 @@ pub(super) fn render_interactive(
     alignment: Alignment,
     state: &mut UiState,
 ) {
+    if area.height == 1 {
+        let layout = single_line_layout(hints, area, theme, background, alignment);
+        frame.render_widget(
+            Paragraph::new(layout.line.clone())
+                .style(Style::new().bg(background))
+                .alignment(alignment),
+            area,
+        );
+        for placement in layout.placements {
+            if let Some(keys) = hints
+                .get(placement.index)
+                .and_then(|hint| hint.activation.as_ref())
+            {
+                state.hit_regions.push(HitRegion {
+                    area: placement.area,
+                    target: HitTarget::Shortcut(keys.clone()),
+                });
+            }
+        }
+        return;
+    }
     let rendered = lines(hints, area.width, theme, background);
     frame.render_widget(
         Paragraph::new(rendered.clone())
@@ -383,9 +500,10 @@ fn truncate_to_cells(value: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier};
 
-    use super::{ShortcutHint, line, lines};
+    use super::{ShortcutHint, line, lines, single_line_layout};
     use crate::{cli::ColorMode, ui::Theme};
 
     fn plain_text(line: &ratatui::text::Line<'_>) -> String {
@@ -420,6 +538,47 @@ mod tests {
         assert_eq!(rendered.spans[3].style.fg, Some(theme.muted));
         assert_eq!(rendered.spans[4].style.fg, Some(theme.action));
         assert_eq!(rendered.spans[6].style.fg, Some(theme.text));
+    }
+
+    #[test]
+    fn single_line_layout_keeps_complete_items_and_reports_omissions() {
+        let theme = Theme::deep_space();
+        let layout = single_line_layout(
+            &[
+                ShortcutHint::new("Tab", "next"),
+                ShortcutHint::new("Shift+Tab", "previous"),
+                ShortcutHint::new("Esc", "cancel"),
+            ],
+            Rect::new(0, 0, 28, 1),
+            theme,
+            theme.surface,
+            ratatui::layout::Alignment::Left,
+        );
+
+        assert_eq!(layout.omitted, 2);
+        assert_eq!(layout.placements.len(), 1);
+        assert_eq!(plain_text(&layout.line), "Tab next   ... (+2)");
+        assert!(
+            layout
+                .placements
+                .iter()
+                .all(|placement| placement.area.y == 0)
+        );
+    }
+
+    #[test]
+    fn single_line_layout_uses_display_cells_for_wide_text() {
+        let theme = Theme::deep_space();
+        let layout = single_line_layout(
+            &[ShortcutHint::new("界", "move")],
+            Rect::new(3, 4, 8, 1),
+            theme,
+            theme.surface,
+            ratatui::layout::Alignment::Center,
+        );
+
+        assert_eq!(plain_text(&layout.line), "界 move");
+        assert_eq!(layout.placements[0].area, Rect::new(3, 4, 7, 1));
     }
 
     #[test]

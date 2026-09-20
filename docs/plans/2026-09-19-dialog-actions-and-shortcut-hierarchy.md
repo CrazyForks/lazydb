@@ -419,3 +419,50 @@ Task 1 交互合同与清单
 - [ ] 缩放、中文文本、plain 模式下仍可读、可操作。
 - [ ] 字段详情的提示、错误和按钮不再占用同一行。
 - [ ] 窗口清单完成迁移，必要回归及项目门禁通过。
+
+## 13. 实际执行记录（2026-09-19）
+
+本次在独立 worktree `/Users/yelog/workspace/tui/lazydb-dialog-actions-and-shortcut-hierarchy`
+和分支 `task/dialog-actions-and-shortcut-hierarchy` 中逐项实施并复核。
+
+### 已完成
+
+- Task 1：新增 `docs/ui-dialog-guidelines.md`，完成 overlay 清单、信息层级、焦点/鼠标/尺寸合同。
+- Task 2：扩展 `DialogButton` 的 Primary/Secondary 语义，新增 `dialog_footer` 测量模块和 Theme 语义样式。
+- Task 3：新增单行快捷键布局结果，绘制与 hit region 复用相同 placement；支持 Unicode cell width 和完整项裁剪。
+- Task 4：Catalog 表单和 Table Editor 提示改为显式 `KeyEvent`，不再由 Catalog Editor 的展示字符串推断按键。
+- Task 5：Edit Table 样板完成：Columns 局部操作、底部状态/Cancel/Review、稳定 footer、Column Details 帮助区、紧凑布局。
+- Task 6A：Catalog 其他对象表单提示统一为左对齐、Tab 双向提示、真实 choice/toggle/action 文案。
+- Task 6B：连接表单提示统一为左对齐，保留 Ctrl+T、Ctrl+S、Ctrl+Enter 行为。
+- Task 6C：Redis Object/Table Editor 和 Redis 行删除确认迁移到结构化、左对齐帮助；保留字段索引模型，不错误混入动作索引。
+- Task 7：共享确认帮助改为左对齐；Update 窗口改用结构化可点击提示；Redis 保存/未保存确认使用结构化提示。
+- Task 8：更新 `docs/architecture.md` 和 `docs/keybindings.md`。
+
+### 验证结果
+
+```text
+cargo +1.94.0 fmt --all -- --check       PASS
+cargo +1.94.0 clippy --all-targets --all-features -- -D warnings  PASS
+cargo +1.94.0 test --all-targets --all-features  PASS
+```
+
+定向复核还包括：
+
+- `dialog_footer`：4 tests passed
+- `shortcut_hints`：8 tests passed
+- Table Editor UI：15 tests passed
+- Table Editor Keymap：17 tests passed
+- Catalog Editor State：67 tests passed
+- Catalog Editor Reducer：33 tests passed
+- Profile UI：24 tests passed
+- Profile Keymap：10 tests passed
+- Redis Object Editor：3 tests passed
+- Redis-related UI/Keymap/unsaved tests passed
+- Mouse/UI hit-region tests：全量通过
+
+### 仍保留的兼容边界
+
+`dialog::render_interactive_hint` 的旧静态字符串入口暂时保留，以便剩余历史确认框按窗口逐项迁移；它已统一使用左对齐，且新窗口应优先使用
+`dialog::render_interactive_hints` 的结构化入口。后续若继续扩大迁移范围，应删除旧入口及其字符串解析器，并把剩余确认框全部改为 `ShortcutHint` 列表。
+
+任务分支已提交为 `a209d8e`，现已合并到 `main`。
