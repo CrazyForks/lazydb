@@ -4498,6 +4498,45 @@ fn app_completion_prefers_the_active_console_target_schema() {
     assert_eq!(scores, [1]);
 }
 
+#[test]
+fn offline_console_keeps_local_completion_without_catalog_objects_or_requests() {
+    let profile = import_connection_url("postgres://localhost/app", Some("app"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.reveal_startup_profile(None);
+    app.update(Action::NewConsole);
+    app.update(Action::ReplaceEditor("SELECT CURRENT_TIM".into()));
+    for key in ['G', '$', 'a'] {
+        app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(key),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+
+    let commands = app.update(Action::CompletionExplicit);
+    let popup = app.active_console().completion.as_ref().unwrap();
+
+    assert!(
+        popup
+            .candidates
+            .iter()
+            .any(|candidate| candidate.label == "CURRENT_TIMESTAMP")
+    );
+    assert!(popup.candidates.iter().all(|candidate| !matches!(
+        candidate.kind,
+        CompletionKind::Table | CompletionKind::Column
+    )));
+    assert!(commands.iter().all(|command| {
+        !matches!(
+            command,
+            Command::Connect { .. } | Command::LoadCatalogPage { .. }
+        )
+    }));
+    assert!(!app.explorer.completion_indexes.contains_key(&profile_id));
+}
+
 fn completion_app_with_table() -> (App, Uuid, CatalogEntry) {
     let mut profile = import_connection_url("postgres://localhost/app", Some("app"))
         .unwrap()

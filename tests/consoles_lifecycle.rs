@@ -175,7 +175,7 @@ fn default_console_name_uses_maximum_across_closed_documents() {
 }
 
 #[test]
-fn activating_an_offline_saved_console_starts_its_connection() {
+fn activating_an_offline_saved_console_does_not_start_its_connection() {
     let profile = import_connection_url(":memory:", Some("saved"))
         .unwrap()
         .profile;
@@ -196,6 +196,35 @@ fn activating_an_offline_saved_console_starts_its_connection() {
     let commands = app.update(Action::ActivateSqlEditor(id));
 
     assert!(app.tabs.iter().any(|tab| tab.id() == id));
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+}
+
+#[test]
+fn explicitly_retrying_an_offline_console_starts_its_connection() {
+    let profile = import_connection_url(":memory:", Some("retry"))
+        .unwrap()
+        .profile;
+    let id = Uuid::new_v4();
+    let target = ExecutionTarget::from_profile(&profile);
+    let snapshot = WorkspaceSnapshot {
+        active_profile: None,
+        profiles: Vec::new(),
+        sql: vec![(id, "select retry".into())],
+        active_console: Uuid::nil(),
+        consoles: vec![console(id, "retry console", target.clone())],
+        tabs: Vec::new(),
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile]);
+    app.restore_workspace(snapshot, None);
+    app.update(Action::ActivateSqlEditor(id));
+
+    let commands = app.update(Action::RetryActiveConsoleConnection);
+
     assert!(commands.iter().any(|command| {
         matches!(command, Command::Connect { target: requested, .. } if requested == &target)
     }));
@@ -227,12 +256,10 @@ fn activating_two_consoles_on_one_offline_target_is_single_flight() {
     let first_commands = app.update(Action::ActivateSqlEditor(first_id));
     let second_commands = app.update(Action::ActivateSqlEditor(second_id));
 
-    assert_eq!(
+    assert!(
         first_commands
             .iter()
-            .filter(|command| matches!(command, Command::Connect { .. }))
-            .count(),
-        1
+            .all(|command| !matches!(command, Command::Connect { .. }))
     );
     assert!(
         second_commands

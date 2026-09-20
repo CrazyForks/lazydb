@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum OmniItemId {
     Command(CommandId),
+    UnboundConsole,
     Profile(Uuid),
     Console {
         profile_id: Option<Uuid>,
@@ -36,6 +37,7 @@ pub enum OmniItemKind {
 pub enum OmniItemAction {
     Command(CommandId),
     OpenProfile(Uuid),
+    CreateUnboundConsole,
     OpenConsole {
         profile_id: Option<Uuid>,
         console_id: Uuid,
@@ -108,6 +110,7 @@ impl OmniItemKind {
     fn from_id(id: &OmniItemId) -> Self {
         match id {
             OmniItemId::Command(_) => Self::Command,
+            OmniItemId::UnboundConsole => Self::Action,
             OmniItemId::Profile(_) => Self::Connection(crate::profile::DatabaseKind::Sqlite),
             OmniItemId::Console { .. } => Self::Console,
             OmniItemId::Catalog(_) => Self::Catalog(crate::db::catalog::CatalogKind::Table),
@@ -341,6 +344,7 @@ impl OmniState {
         match &item.action {
             OmniItemAction::Command(id) => crate::commands::intent_for_command(*id, &item.context),
             OmniItemAction::OpenProfile(_) => None,
+            OmniItemAction::CreateUnboundConsole => None,
             OmniItemAction::OpenConsole {
                 profile_id,
                 console_id,

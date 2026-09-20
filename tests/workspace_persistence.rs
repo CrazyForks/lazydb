@@ -2,6 +2,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use lazydb::{
+    action::Action,
     app::App,
     db::catalog::{CatalogId, CatalogKind, QualifiedName},
     model::execution_target::ExecutionTarget,
@@ -61,6 +62,100 @@ fn empty_app_snapshot_does_not_persist_its_placeholder_console() {
     assert!(snapshot.profiles.is_empty());
     assert!(snapshot.consoles.is_empty());
     assert!(snapshot.sql.is_empty());
+}
+
+#[test]
+fn edited_unbound_console_round_trips_without_acquiring_a_profile_target() {
+    let profile = lazydb::profile::import_connection_url(":memory:", Some("configured"))
+        .unwrap()
+        .profile;
+    let temp = TempDir::new().unwrap();
+    let store = WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+    let mut app = App::new(vec![profile.clone()]);
+
+    app.update(Action::NewUnboundConsoleNamed("scratch".into()));
+    app.update(Action::ReplaceEditor("SELECT 42".into()));
+    let console_id = app.active_console().id;
+    let snapshot = app.workspace_snapshot();
+
+    assert!(snapshot.profiles.is_empty());
+    assert_eq!(snapshot.consoles.len(), 1);
+    assert_eq!(snapshot.consoles[0].id, console_id);
+    assert!(snapshot.consoles[0].target.is_none());
+    store.save(&snapshot).unwrap();
+
+    let restored_snapshot = store.load().unwrap().unwrap();
+    let mut restored = App::new(vec![profile]);
+    restored.restore_workspace(restored_snapshot, None);
+
+    assert_eq!(restored.editor_text(console_id).unwrap(), "SELECT 42");
+    assert_eq!(restored.sql_editors.len(), 1);
+    assert!(restored.sql_editors[0].execution_target.is_none());
+    assert!(
+        restored
+            .active_console_opt()
+            .unwrap()
+            .execution_target
+            .is_none()
+    );
+}
+
+#[test]
+fn restoring_a_profile_keeps_top_level_unbound_console_documents() {
+    let profile = lazydb::profile::import_connection_url(":memory:", Some("configured"))
+        .unwrap()
+        .profile;
+    let bound_id = Uuid::new_v4();
+    let unbound_id = Uuid::new_v4();
+    let bound_target = ExecutionTarget::from_profile(&profile);
+    let snapshot = WorkspaceSnapshot {
+        active_profile: Some(profile.id),
+        profiles: vec![PersistedProfileWorkspace {
+            profile_id: profile.id,
+            active_tab: Some(bound_id),
+            consoles: vec![PersistedConsole {
+                id: bound_id,
+                name: "bound".into(),
+                sql_file: format!("{bound_id}.sql").into(),
+                target: Some(bound_target),
+                transaction_mode: TransactionMode::Auto,
+                open: true,
+            }],
+            tabs: vec![PersistedTab::Console {
+                console_id: bound_id,
+            }],
+        }],
+        sql: vec![
+            (bound_id, "SELECT bound".into()),
+            (unbound_id, "SELECT unbound".into()),
+        ],
+        active_console: unbound_id,
+        consoles: vec![PersistedConsole {
+            id: unbound_id,
+            name: "unbound".into(),
+            sql_file: format!("{unbound_id}.sql").into(),
+            target: None,
+            transaction_mode: TransactionMode::Auto,
+            open: true,
+        }],
+        tabs: vec![PersistedTab::Console {
+            console_id: unbound_id,
+        }],
+        recent_targets: Vec::new(),
+    };
+    let mut app = App::new(vec![profile]);
+
+    app.restore_workspace(snapshot, None);
+
+    assert_eq!(app.sql_editors.len(), 2);
+    assert_eq!(app.editor_text(bound_id).unwrap(), "SELECT bound");
+    assert_eq!(app.editor_text(unbound_id).unwrap(), "SELECT unbound");
+    assert!(
+        app.sql_editors
+            .iter()
+            .find(|record| record.id == unbound_id)
+            .is_some_and(|record| record.execution_target.is_none())
+    );
 }
 
 #[test]

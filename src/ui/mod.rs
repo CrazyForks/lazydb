@@ -81,7 +81,7 @@ use crate::{
         tab::{DataGridViewport, ResultView, WorkspaceTab},
         workspace::{
             ConnectionStatus, ExplorerSearchPhase, Focus, Overlay, PaneLayoutMetrics, PaneSplit,
-            QueryStatus, VisibleCatalogNode,
+            QueryStatus, TargetSelectorCandidate, VisibleCatalogNode,
         },
     },
     security::sanitize_terminal_text,
@@ -757,11 +757,7 @@ enum WorkspaceEmptyState {
 
 impl WorkspaceEmptyState {
     fn for_app(app: &App) -> Option<Self> {
-        if app
-            .active_console_opt()
-            .and_then(|console| console.execution_target.as_ref())
-            .is_some()
-        {
+        if !app.tabs.is_empty() {
             return None;
         }
         if app.connection.status == ConnectionStatus::Disconnected
@@ -5260,31 +5256,48 @@ fn render_overlay(
                 candidates[start..end]
                     .iter()
                     .enumerate()
-                    .map(|(offset, target)| {
+                    .map(|(offset, candidate)| {
                         let index = start + offset;
                         let marker = if index == *selected { ">" } else { " " };
-                        let current_marker = if current == Some(target) {
-                            " current"
-                        } else {
-                            ""
-                        };
-                        let profile = app
-                            .profiles
-                            .iter()
-                            .find(|profile| profile.id == target.profile_id);
-                        let profile_label = profile
-                            .map(|profile| format!("{}: ", sanitize_terminal_text(&profile.name)))
-                            .unwrap_or_default();
-                        let target_label = format!(
-                            "{}{}{}",
-                            sanitize_terminal_text(&target.database),
-                            target
-                                .schema
-                                .as_deref()
-                                .map(|schema| format!(".{}", sanitize_terminal_text(schema)))
-                                .unwrap_or_default(),
-                            current_marker,
-                        );
+                        let (profile, profile_label, target_label, current_candidate) =
+                            match candidate {
+                                TargetSelectorCandidate::None => (
+                                    None,
+                                    String::new(),
+                                    "No connection".to_owned(),
+                                    current.is_none(),
+                                ),
+                                TargetSelectorCandidate::Target(target) => {
+                                    let profile = app
+                                        .profiles
+                                        .iter()
+                                        .find(|profile| profile.id == target.profile_id);
+                                    let profile_label = profile
+                                        .map(|profile| {
+                                            format!("{}: ", sanitize_terminal_text(&profile.name))
+                                        })
+                                        .unwrap_or_default();
+                                    let target_label = format!(
+                                        "{}{}",
+                                        sanitize_terminal_text(&target.database),
+                                        target
+                                            .schema
+                                            .as_deref()
+                                            .map(|schema| {
+                                                format!(".{}", sanitize_terminal_text(schema))
+                                            })
+                                            .unwrap_or_default(),
+                                    );
+                                    (
+                                        profile,
+                                        profile_label,
+                                        target_label,
+                                        current == Some(target),
+                                    )
+                                }
+                            };
+                        let current_marker = if current_candidate { " current" } else { "" };
+                        let target_label = format!("{target_label}{current_marker}");
                         let background = if index == *selected {
                             theme.selection
                         } else {
@@ -5295,7 +5308,7 @@ fn render_overlay(
                                 .fg(theme.text)
                                 .bg(background)
                                 .add_modifier(Modifier::BOLD)
-                        } else if current == Some(target) {
+                        } else if current_candidate {
                             Style::new().fg(theme.accent).bg(background)
                         } else {
                             Style::new().fg(theme.text).bg(background)

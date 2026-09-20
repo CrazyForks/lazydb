@@ -206,7 +206,7 @@ pub enum Overlay {
         selected: usize,
     },
     TargetSelector {
-        candidates: Vec<ExecutionTarget>,
+        candidates: Vec<TargetSelectorCandidate>,
         selected: usize,
         console_id: Option<Uuid>,
     },
@@ -254,6 +254,21 @@ pub enum Overlay {
     CatalogEditorDiscardConfirm {
         focus: CatalogEditorDiscardFocus,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TargetSelectorCandidate {
+    None,
+    Target(ExecutionTarget),
+}
+
+impl TargetSelectorCandidate {
+    pub const fn target(&self) -> Option<&ExecutionTarget> {
+        match self {
+            Self::None => None,
+            Self::Target(target) => Some(target),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

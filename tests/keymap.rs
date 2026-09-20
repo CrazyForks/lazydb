@@ -3684,9 +3684,12 @@ fn editor_leader_opens_connection_target_selector() {
         app.overlay,
         Some(lazydb::model::workspace::Overlay::TargetSelector {
             ref candidates,
-            selected: 0,
+            selected: 1,
             ..
-        }) if candidates.len() == 1 && candidates[0].profile_id == profile_id
+        }) if candidates.len() == 2
+            && candidates[1]
+                .target()
+                .is_some_and(|target| target.profile_id == profile_id)
     ));
     assert_eq!(
         keymap.map(key(KeyCode::Esc), &app),
@@ -3720,7 +3723,9 @@ fn global_leader_opens_console_manager_and_current_console_target_selector() {
     assert!(matches!(
         app.overlay,
         Some(Overlay::TargetSelector { ref candidates, .. })
-            if candidates.iter().any(|target| target.profile_id == profile_id)
+            if candidates
+                .iter()
+                .any(|target| target.target().is_some_and(|target| target.profile_id == profile_id))
     ));
 }
 
