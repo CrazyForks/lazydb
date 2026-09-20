@@ -518,6 +518,86 @@ fn target_mismatch_requests_the_console_target_before_query_dispatch() {
 }
 
 #[test]
+fn executing_an_offline_target_connects_and_resumes_the_original_sql() {
+    let profile = import_connection_url(":memory:", Some("lazy-execution"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.reveal_startup_profile(None);
+    app.update(Action::NewConsole);
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+
+    let commands = app.update(Action::RunActiveSql);
+    let generation = match commands.as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        other => panic!("expected lazy connection request, got {other:?}"),
+    };
+    assert!(app.overlay.is_none());
+
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Sqlite,
+            version: "3.50".into(),
+            database: ":memory:".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+
+    assert!(
+        commands.iter().any(|command| {
+            matches!(command, Command::RunQueryPage { source_sql, .. } if source_sql == "SELECT 1")
+        }),
+        "commands: {commands:?}"
+    );
+}
+
+#[test]
+fn lazy_execution_reuses_the_normal_confirmation_policy_after_connecting() {
+    let profile = import_connection_url(":memory:", Some("lazy-confirm"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::with_confirmation_policy(vec![profile], ConfirmationPolicy::Always);
+    app.reveal_startup_profile(None);
+    app.update(Action::NewConsole);
+    app.update(Action::ReplaceEditor("DELETE FROM users".into()));
+
+    let generation = match app.update(Action::RunActiveSql).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        other => panic!("expected lazy connection request, got {other:?}"),
+    };
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Sqlite,
+            version: "3.50".into(),
+            database: ":memory:".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+
+    assert!(
+        commands.iter().all(|command| {
+            matches!(
+                command,
+                Command::LoadCatalogPage { .. } | Command::ScheduleDiagnostics(_)
+            )
+        }),
+        "commands: {commands:?}"
+    );
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ExecutionConfirm { .. })
+    ));
+}
+
+#[test]
 fn base_execution_resets_page_and_invalidates_total() {
     let mut app = connected_app(ConfirmationPolicy::RiskyOnly);
     app.update(Action::ReplaceEditor("SELECT 1".into()));

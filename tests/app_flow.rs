@@ -42,7 +42,8 @@ fn typing_refreshes_an_open_completion_without_flicker() {
     assert!(
         !commands
             .iter()
-            .any(|command| { matches!(command, lazydb::action::Command::ScheduleCompletion(_)) })
+            .any(|command| { matches!(command, lazydb::action::Command::ScheduleCompletion(_)) }),
+        "commands: {commands:?}"
     );
 }
 
@@ -157,7 +158,8 @@ fn empty_editor_does_not_schedule_completion_after_entering_insert_mode() {
     assert!(
         !commands
             .iter()
-            .any(|command| { matches!(command, lazydb::action::Command::ScheduleCompletion(_)) })
+            .any(|command| { matches!(command, lazydb::action::Command::ScheduleCompletion(_)) }),
+        "commands: {commands:?}"
     );
 }
 

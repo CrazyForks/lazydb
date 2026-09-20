@@ -779,7 +779,9 @@ fn selecting_target_selector_row_confirms_on_click() {
     };
     let mut app = App::new(Vec::new());
     app.overlay = Some(Overlay::TargetSelector {
-        candidates: vec![target],
+        candidates: vec![lazydb::model::workspace::TargetSelectorCandidate::Target(
+            target,
+        )],
         selected: 0,
         console_id: None,
     });

@@ -55,17 +55,13 @@ fn console_manager_empty_startup_creates_offline_console() {
     assert!(app.overlay.is_none());
     assert_eq!(
         app.connection.status,
-        lazydb::model::workspace::ConnectionStatus::Connecting
+        lazydb::model::workspace::ConnectionStatus::Disconnected
     );
-    assert_eq!(
-        app.connection.pending_target.as_ref().unwrap().profile_id,
-        profile_id
-    );
-    assert!(!commands.is_empty());
+    assert!(app.connection.pending_target.is_none());
     assert!(
         commands
             .iter()
-            .any(|command| matches!(command, Command::Connect { target, .. } if target.profile_id == profile_id))
+            .all(|command| !matches!(command, Command::Connect { .. }))
     );
     assert!(
         commands

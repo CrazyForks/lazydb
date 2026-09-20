@@ -16,8 +16,8 @@ pub struct CompletionScheduleKey {
     pub console_id: Uuid,
     pub document_revision: u64,
     pub cursor: usize,
-    pub connection: crate::model::workspace::ConnectionIdentity,
-    pub target: crate::model::execution_target::ExecutionTarget,
+    pub connection: Option<crate::model::workspace::ConnectionIdentity>,
+    pub target: Option<crate::model::execution_target::ExecutionTarget>,
     pub catalog_generation: u64,
 }
 

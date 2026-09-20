@@ -497,6 +497,7 @@ fn target_selector_binds_only_the_selected_console_before_connection_success() {
     app.explorer.selected = 7;
     app.explorer.scroll = 3;
     let catalog_epoch_before = app.explorer.normalized.profiles[&profile_id].catalog_epoch;
+    let explorer_status_before = app.explorer.normalized.profiles[&profile_id].status;
 
     app.update(Action::OpenTargetSelector);
     let lazydb::model::workspace::Overlay::TargetSelector {
@@ -507,31 +508,25 @@ fn target_selector_binds_only_the_selected_console_before_connection_success() {
     else {
         panic!("target selector did not open");
     };
-    assert_eq!(candidates, &[alias.clone(), default.clone()]);
-    assert_eq!(*selected, 1);
-    app.update(Action::MoveTargetSelector(1));
+    assert_eq!(candidates.len(), 3);
+    assert!(matches!(
+        candidates[0],
+        lazydb::model::workspace::TargetSelectorCandidate::None
+    ));
+    assert_eq!(*selected, 2);
+    app.update(Action::MoveTargetSelector(-1));
     let commands = app.update(Action::ConfirmTargetSelector);
-    let generation = commands
-        .iter()
-        .find_map(|command| match command {
-            Command::Connect {
-                target, generation, ..
-            } if target == &alias => Some(*generation),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("missing alias connection command: {commands:?}"));
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
     assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
 
-    app.update(Action::ConnectionFailed {
-        profile_id,
-        generation,
-        message: "switch failed".into(),
-    });
-    assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
     assert_eq!(app.connection.target.as_ref(), Some(&default));
     assert_eq!(
         app.explorer.normalized.profiles[&profile_id].status,
-        ExplorerConnectionStatus::Online
+        explorer_status_before
     );
     assert_eq!(
         app.explorer.normalized.profiles[&profile_id]
@@ -545,26 +540,18 @@ fn target_selector_binds_only_the_selected_console_before_connection_success() {
     let alias_index = match app.overlay.as_ref().unwrap() {
         lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates
             .iter()
-            .position(|candidate| candidate == &alias)
+            .position(|candidate| candidate.target() == Some(&alias))
             .unwrap(),
         other => panic!("unexpected overlay: {other:?}"),
     };
     let commands = app.update(Action::SelectTargetSelector(alias_index));
-    let generation = commands
-        .iter()
-        .find_map(|command| match command {
-            Command::Connect { generation, .. } => Some(*generation),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("missing retry connection command: {commands:?}"));
-    let commands = app.update(Action::ConnectionSucceeded {
-        profile_id,
-        generation,
-        server: server(":memory:"),
-        mutation_capabilities: Default::default(),
-    });
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
     assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
-    assert_eq!(app.connection.target.as_ref(), Some(&alias));
+    assert_eq!(app.connection.target.as_ref(), Some(&default));
     assert_eq!(
         app.explorer.normalized.profiles[&profile_id]
             .catalog
@@ -583,14 +570,14 @@ fn target_selector_binds_only_the_selected_console_before_connection_success() {
         catalog_epoch_before
     );
     assert!(
-        !commands
+        commands
             .iter()
-            .any(|command| matches!(command, Command::PersistWorkspace { .. }))
+            .all(|command| !matches!(command, Command::PersistWorkspace { .. }))
     );
 }
 
 #[test]
-fn switching_to_a_console_reconnects_its_target_before_execution() {
+fn switching_to_a_console_does_not_reconnect_its_target() {
     let mut profile = memory_profile("console-target");
     profile.catalog_scope.databases = CatalogSelection::All;
     let profile_id = profile.id;
@@ -618,18 +605,16 @@ fn switching_to_a_console_reconnects_its_target_before_execution() {
 
     let commands = app.update(Action::ActivateTab(0));
 
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::Connect { target, .. }] if target == &console_target
-    ));
-    assert_eq!(
-        app.connection.pending_target.as_ref(),
-        Some(&console_target)
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
     );
+    assert_eq!(app.connection.target.as_ref(), Some(&default));
 }
 
 #[test]
-fn activating_another_console_while_connecting_retries_latest_target_after_success() {
+fn activating_another_console_while_connecting_does_not_defer_activation() {
     let first = memory_profile("deferred-first");
     let second = memory_profile("deferred-second");
     let first_id = first.id;
@@ -638,22 +623,11 @@ fn activating_another_console_while_connecting_retries_latest_target_after_succe
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.connection.profile_id = Some(first_id);
     app.update(Action::NewConsole);
-    let first_connect = app.connection.pending_identity().unwrap();
-
     app.update(Action::NewConsole);
     app.tabs[1].as_console_mut().unwrap().execution_target = Some(second_target.clone());
 
     app.update(Action::ActivateTab(0));
     assert!(app.update(Action::ActivateTab(1)).is_empty());
-    let commands = app.update(Action::ConnectionSucceeded {
-        profile_id: first_id,
-        generation: first_connect.generation,
-        server: server(":memory:"),
-        mutation_capabilities: Default::default(),
-    });
-    assert!(commands.iter().any(|command| {
-        matches!(command, Command::Connect { target, .. } if target == &second_target)
-    }));
     assert_eq!(app.active_console().execution_target, Some(second_target));
     assert_eq!(
         second_id,
@@ -689,7 +663,12 @@ fn console_target_reconnect_updates_the_active_target_before_sql_runs() {
     app.active_tab = 0;
 
     let connect = app.update(Action::ActivateTab(0));
-    let generation = match connect.as_slice() {
+    assert!(
+        connect
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    let generation = match app.update(Action::RetryActiveConsoleConnection).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         other => panic!("unexpected commands: {other:?}"),
     };
@@ -939,16 +918,17 @@ fn target_selector_reconnects_when_console_target_is_selected_but_connection_doe
     let selected = match app.overlay.as_ref().unwrap() {
         lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates
             .iter()
-            .position(|candidate| candidate == &alias)
+            .position(|candidate| candidate.target() == Some(&alias))
             .unwrap(),
         other => panic!("unexpected overlay: {other:?}"),
     };
     let commands = app.update(Action::SelectTargetSelector(selected));
 
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::Connect { target, .. }] if target == &alias
-    ));
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
     assert_eq!(app.active_console().execution_target.as_ref(), Some(&alias));
 }
 

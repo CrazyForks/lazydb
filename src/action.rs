@@ -38,6 +38,8 @@ use crate::{
 pub enum Action {
     NewConsole,
     NewConsoleNamed(String),
+    NewUnboundConsole,
+    NewUnboundConsoleNamed(String),
     PrepareActiveConsole,
     OpenDashboard,
     OpenSqlHistory,
@@ -1392,6 +1394,8 @@ impl Action {
             self,
             Self::NewConsole
                 | Self::NewConsoleNamed(_)
+                | Self::NewUnboundConsole
+                | Self::NewUnboundConsoleNamed(_)
                 | Self::OpenSqlEditorList
                 | Self::SqlEditorListMove(_)
                 | Self::SqlEditorListActivate

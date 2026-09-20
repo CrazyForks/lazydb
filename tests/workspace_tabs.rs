@@ -6,7 +6,6 @@ use lazydb::profile::import_connection_url;
 use lazydb::{
     action::{Action, Command},
     app::App,
-    db::ServerInfo,
     db::catalog::{
         CatalogCount, CatalogCursor, CatalogEntry, CatalogGroupSummary, CatalogId, CatalogKind,
         CatalogPage, CatalogRequest, CatalogTarget, ObjectGroup, OptionalMetadata, QualifiedName,
@@ -14,7 +13,6 @@ use lazydb::{
     model::relation::RelationTab,
     model::tab::{ConsoleTab, TabKind, WorkspaceTab},
     model::workspace::Focus,
-    profile::DatabaseKind,
 };
 use uuid::Uuid;
 
@@ -124,7 +122,12 @@ fn closing_a_restored_offline_tab_does_not_resurrect_after_snapshot() {
             PersistedProfileWorkspace {
                 profile_id: second.id,
                 active_tab: Some(console_id),
-                consoles: vec![persisted_console(console_id, "second", true)],
+                consoles: vec![persisted_console(
+                    console_id,
+                    "second",
+                    true,
+                    Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second)),
+                )],
                 tabs: vec![PersistedTab::Console { console_id }],
             },
         ],
@@ -202,7 +205,7 @@ fn restored_active_console_stays_offline_without_explicit_startup_selection() {
 }
 
 #[test]
-fn restored_active_console_connects_when_editor_focus_is_entered() {
+fn restored_active_console_stays_offline_when_editor_focus_is_entered() {
     let profile = import_connection_url(":memory:", Some("restored"))
         .unwrap()
         .profile;
@@ -236,13 +239,15 @@ fn restored_active_console_connects_when_editor_focus_is_entered() {
     let commands = app.update(Action::Focus(Focus::Editor));
 
     assert_eq!(app.focus, Focus::Editor);
-    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
-    assert_eq!(
+    assert!(app.connection.pending_target.is_none());
+    assert!(
         commands
             .iter()
-            .filter(|command| matches!(command, Command::Connect { .. }))
-            .count(),
-        1
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    assert_eq!(
+        app.active_console().execution_target.as_ref(),
+        Some(&target)
     );
 }
 
@@ -280,55 +285,61 @@ fn restored_console_for_focus_test() -> (App, lazydb::model::execution_target::E
 }
 
 #[test]
-fn restored_active_console_connects_when_results_focus_is_entered() {
+fn restored_active_console_stays_offline_when_results_focus_is_entered() {
     let (mut app, target) = restored_console_for_focus_test();
 
     let commands = app.update(Action::Focus(Focus::Results));
 
     assert_eq!(app.focus, Focus::Results);
-    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
-    assert_eq!(
+    assert!(app.connection.pending_target.is_none());
+    assert!(
         commands
             .iter()
-            .filter(|command| matches!(command, Command::Connect { .. }))
-            .count(),
-        1
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    assert_eq!(
+        app.active_console().execution_target.as_ref(),
+        Some(&target)
     );
 }
 
 #[test]
-fn focus_cycle_enters_restored_console_and_connects_once() {
+fn focus_cycle_enters_restored_console_without_connecting() {
     for action in [Action::FocusNext, Action::FocusPrevious] {
         let (mut app, target) = restored_console_for_focus_test();
 
         let commands = app.update(action);
 
         assert!(matches!(app.focus, Focus::Editor | Focus::Results));
-        assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
-        assert_eq!(
+        assert!(app.connection.pending_target.is_none());
+        assert!(
             commands
                 .iter()
-                .filter(|command| matches!(command, Command::Connect { .. }))
-                .count(),
-            1
+                .all(|command| !matches!(command, Command::Connect { .. }))
+        );
+        assert_eq!(
+            app.active_console().execution_target.as_ref(),
+            Some(&target)
         );
     }
 }
 
 #[test]
-fn activating_restored_console_tab_enters_editor_and_connects() {
+fn activating_restored_console_tab_enters_editor_without_connecting() {
     let (mut app, target) = restored_console_for_focus_test();
 
     let commands = app.update(Action::ActivateTab(0));
 
     assert_eq!(app.focus, Focus::Editor);
-    assert_eq!(app.connection.pending_target.as_ref(), Some(&target));
-    assert_eq!(
+    assert!(app.connection.pending_target.is_none());
+    assert!(
         commands
             .iter()
-            .filter(|command| matches!(command, Command::Connect { .. }))
-            .count(),
-        1
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    assert_eq!(
+        app.active_console().execution_target.as_ref(),
+        Some(&target)
     );
 }
 
@@ -979,7 +990,7 @@ fn initial_and_new_consoles_use_the_active_profile_target() {
 }
 
 #[test]
-fn explicit_console_target_binding_updates_console_and_starts_connection() {
+fn explicit_console_target_binding_updates_console_without_connecting() {
     let first = import_connection_url(":memory:", Some("first"))
         .unwrap()
         .profile;
@@ -989,18 +1000,6 @@ fn explicit_console_target_binding_updates_console_and_starts_connection() {
     let mut app = App::new(vec![first.clone(), second.clone()]);
     app.connection.profile_id = Some(first.id);
     app.update(Action::NewConsole);
-    let first_generation = app.connection.pending_generation.unwrap();
-    app.update(Action::ConnectionSucceeded {
-        profile_id: first.id,
-        generation: first_generation,
-        server: ServerInfo {
-            kind: DatabaseKind::Sqlite,
-            version: "3.50.0".into(),
-            database: ":memory:".into(),
-            current_user: None,
-        },
-        mutation_capabilities: Default::default(),
-    });
     let console_id = app.active_console().id;
     app.update(Action::ReplaceEditor("select 1".into()));
     let target = lazydb::model::execution_target::ExecutionTarget::from_profile(&second);
@@ -1009,7 +1008,7 @@ fn explicit_console_target_binding_updates_console_and_starts_connection() {
     let selected = match app.overlay.as_ref().unwrap() {
         lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates
             .iter()
-            .position(|candidate| candidate == &target)
+            .position(|candidate| candidate.target() == Some(&target))
             .unwrap(),
         overlay => panic!("unexpected overlay: {overlay:?}"),
     };
@@ -1020,9 +1019,11 @@ fn explicit_console_target_binding_updates_console_and_starts_connection() {
             .iter()
             .any(|command| matches!(command, Command::PersistWorkspace { .. }))
     );
-    assert!(commands.iter().any(|command| {
-        matches!(command, Command::Connect { target: requested, .. } if requested == &target)
-    }));
+    assert!(
+        commands
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
     assert_eq!(app.active_console().execution_target, Some(target.clone()));
     assert_eq!(
         app.sql_editors
@@ -1088,7 +1089,7 @@ fn new_console_uses_the_profile_default_instead_of_connected_target() {
 }
 
 #[test]
-fn workspace_restore_preserves_valid_targets_and_defaults_missing_targets() {
+fn workspace_restore_preserves_valid_targets_and_unbound_documents() {
     let profile = import_connection_url(":memory:", Some("active"))
         .unwrap()
         .profile;
@@ -1125,10 +1126,7 @@ fn workspace_restore_preserves_valid_targets_and_defaults_missing_targets() {
     app.restore_workspace(snapshot, Some(profile.id));
 
     assert_eq!(app.active_console().id, second);
-    assert_eq!(
-        app.active_console().execution_target.as_ref(),
-        Some(&expected)
-    );
+    assert_eq!(app.active_console().execution_target.as_ref(), None);
     assert_eq!(
         app.active_console().transaction_mode,
         TransactionMode::Manual
@@ -1154,8 +1152,18 @@ fn workspace_restore_exposes_all_saved_console_documents_before_connecting() {
         recent_targets: Vec::new(),
         active_profile: Some(second.id),
         profiles: vec![
-            profile_workspace(first.id, first_id, None),
-            profile_workspace(second.id, second_id, Some(second_id)),
+            profile_workspace(
+                first.id,
+                first_id,
+                None,
+                Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&first)),
+            ),
+            profile_workspace(
+                second.id,
+                second_id,
+                Some(second_id),
+                Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second)),
+            ),
         ],
         active_console: Uuid::nil(),
         tabs: Vec::new(),
@@ -1197,6 +1205,7 @@ fn workspace_restore_ignores_invalid_or_deleted_targets_and_uses_first_profile()
             deleted_profile,
             invalid_id,
             Some(invalid_id),
+            None,
         )],
         active_console: Uuid::nil(),
         tabs: Vec::new(),
@@ -1223,7 +1232,7 @@ fn workspace_restore_assigns_targetless_consoles_to_startup_then_first_profile()
     let snapshot = WorkspaceSnapshot {
         recent_targets: Vec::new(),
         active_profile: None,
-        profiles: vec![profile_workspace(Uuid::nil(), id, Some(id))],
+        profiles: vec![profile_workspace(Uuid::nil(), id, Some(id), None)],
         active_console: id,
         tabs: Vec::new(),
         consoles: Vec::new(),
@@ -1261,8 +1270,15 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
                 profile_id: first.id,
                 active_tab: Some(relation_id),
                 consoles: vec![
-                    persisted_console(console_id, "first", true),
-                    persisted_console(hidden_id, "hidden", false),
+                    persisted_console(
+                        console_id,
+                        "first",
+                        true,
+                        Some(
+                            lazydb::model::execution_target::ExecutionTarget::from_profile(&first),
+                        ),
+                    ),
+                    persisted_console(hidden_id, "hidden", false, None),
                 ],
                 tabs: vec![
                     PersistedTab::Console { console_id },
@@ -1284,7 +1300,12 @@ fn workspace_restore_rebuilds_all_profile_tabs_and_preserves_hidden_sql() {
                     }),
                 ],
             },
-            profile_workspace(second.id, other_console_id, Some(other_console_id)),
+            profile_workspace(
+                second.id,
+                other_console_id,
+                Some(other_console_id),
+                Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second)),
+            ),
         ],
         active_console: Uuid::nil(),
         tabs: Vec::new(),
@@ -1346,7 +1367,7 @@ fn closing_restored_tabs_without_connecting_survives_disk_round_trip() {
         let relation_id = Uuid::new_v4();
         let dashboard_id = Uuid::new_v4();
         let redis_id = Uuid::new_v4();
-        let mut console = persisted_console(console_id, "saved SQL", true);
+        let mut console = persisted_console(console_id, "saved SQL", true, None);
         console.target =
             Some(lazydb::model::execution_target::ExecutionTarget::from_profile(&second));
         let snapshot = WorkspaceSnapshot {
@@ -1463,16 +1484,16 @@ fn sql_editor_target_selector_excludes_redis_profiles() {
         lazydb::model::workspace::Overlay::TargetSelector { candidates, .. } => candidates,
         overlay => panic!("unexpected overlay: {overlay:?}"),
     };
-    assert!(
-        candidates
-            .iter()
-            .any(|target| target.profile_id == relational.id)
-    );
-    assert!(
-        !candidates
-            .iter()
-            .any(|target| target.profile_id == redis.id)
-    );
+    assert!(candidates.iter().any(|target| {
+        target
+            .target()
+            .is_some_and(|target| target.profile_id == relational.id)
+    }));
+    assert!(!candidates.iter().any(|target| {
+        target
+            .target()
+            .is_some_and(|target| target.profile_id == redis.id)
+    }));
 }
 
 #[test]
@@ -2073,7 +2094,7 @@ fn console_lifecycle_can_run_offline_with_a_profile_workspace() {
     assert!(
         commands
             .iter()
-            .any(|command| matches!(command, Command::Connect { .. }))
+            .all(|command| !matches!(command, Command::Connect { .. }))
     );
     assert_eq!(app.active_workspace_profile, Some(profile_id));
     assert_eq!(app.sql_editors.len(), 1);
@@ -2187,12 +2208,17 @@ fn console_numbering_is_collision_free_within_each_workspace() {
     assert_eq!(app.sql_editors.len(), 2);
 }
 
-fn persisted_console(id: Uuid, name: &str, open: bool) -> PersistedConsole {
+fn persisted_console(
+    id: Uuid,
+    name: &str,
+    open: bool,
+    target: Option<lazydb::model::execution_target::ExecutionTarget>,
+) -> PersistedConsole {
     PersistedConsole {
         id,
         name: name.into(),
         sql_file: format!("{id}.sql").into(),
-        target: None,
+        target,
         transaction_mode: TransactionMode::Auto,
         open,
     }
@@ -2202,6 +2228,7 @@ fn profile_workspace(
     profile_id: Uuid,
     console_id: Uuid,
     active_tab: Option<Uuid>,
+    target: Option<lazydb::model::execution_target::ExecutionTarget>,
 ) -> PersistedProfileWorkspace {
     PersistedProfileWorkspace {
         profile_id,
@@ -2210,7 +2237,7 @@ fn profile_workspace(
             id: console_id,
             name: "console".into(),
             sql_file: format!("{console_id}.sql").into(),
-            target: None,
+            target,
             transaction_mode: TransactionMode::Auto,
             open: true,
         }],
