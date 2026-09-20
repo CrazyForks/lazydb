@@ -265,7 +265,6 @@ pub enum TableColumnField {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TableActionField {
     AddColumn,
-    RemoveColumn,
     Review,
     Cancel,
 }
@@ -2157,9 +2156,6 @@ impl TableDraft {
                 }
             }
             TableEditorFocus::Action(TableActionField::AddColumn) => {
-                TableEditorFocus::Action(TableActionField::RemoveColumn)
-            }
-            TableEditorFocus::Action(TableActionField::RemoveColumn) => {
                 TableEditorFocus::Action(TableActionField::Review)
             }
             TableEditorFocus::Action(TableActionField::Review) => {
@@ -2219,11 +2215,8 @@ impl TableDraft {
                     TableEditorFocus::Columns
                 }
             }
-            TableEditorFocus::Action(TableActionField::RemoveColumn) => {
-                TableEditorFocus::Action(TableActionField::AddColumn)
-            }
             TableEditorFocus::Action(TableActionField::Review) => {
-                TableEditorFocus::Action(TableActionField::RemoveColumn)
+                TableEditorFocus::Action(TableActionField::AddColumn)
             }
             TableEditorFocus::Action(TableActionField::Cancel) => {
                 TableEditorFocus::Action(TableActionField::Review)
@@ -2418,6 +2411,54 @@ impl TableDraft {
     pub fn selected_column_is_removed(&self) -> bool {
         self.selected_column()
             .is_some_and(|column| matches!(column.state, DraftRowState::Removed { .. }))
+    }
+
+    /// Remove the column identified by its stable draft row id.
+    ///
+    /// Unlike `remove_selected_column`, this is used by row-level mouse
+    /// controls and therefore must never fall back to the current selection.
+    pub fn remove_column_row(&mut self, row_id: uuid::Uuid) -> bool {
+        let Some(index) = self
+            .columns
+            .iter()
+            .position(|column| column.row_id == row_id)
+        else {
+            return false;
+        };
+        if self.column_editor.is_some()
+            || matches!(self.columns[index].state, DraftRowState::Removed { .. })
+            || self
+                .columns
+                .iter()
+                .filter(|column| !matches!(column.state, DraftRowState::Removed { .. }))
+                .count()
+                <= 1
+        {
+            return false;
+        }
+        self.selected_column = index;
+        self.focus = TableEditorFocus::Columns;
+        self.remove_selected_column();
+        true
+    }
+
+    /// Restore a previously removed column by its stable draft row id.
+    pub fn restore_column_row(&mut self, row_id: uuid::Uuid) -> bool {
+        let Some(index) = self
+            .columns
+            .iter()
+            .position(|column| column.row_id == row_id)
+        else {
+            return false;
+        };
+        if self.column_editor.is_some()
+            || !matches!(self.columns[index].state, DraftRowState::Removed { .. })
+        {
+            return false;
+        }
+        self.selected_column = index;
+        self.focus = TableEditorFocus::Columns;
+        self.restore_selected_column()
     }
 
     pub fn toggle_selected_column_nullable(&mut self) {

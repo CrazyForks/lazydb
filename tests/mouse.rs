@@ -881,6 +881,27 @@ fn rendered_catalog_editor_table_regions_map_to_column_actions() {
 }
 
 #[test]
+fn row_scoped_catalog_column_actions_map_their_stable_row_id() {
+    let mut app = App::new(Vec::new());
+    app.overlay = Some(Overlay::CatalogEditor);
+    let row_id = Uuid::new_v4();
+    let mut ui = UiState::new();
+    ui.hit_regions.push(HitRegion {
+        area: Rect::new(10, 5, 4, 1),
+        target: HitTarget::CatalogEditorRemoveTableColumnRow(row_id),
+    });
+
+    assert_eq!(
+        map_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), 11, 5),
+            &ui,
+            &app,
+        ),
+        Some(Action::CatalogEditorRemoveTableColumnRow(row_id))
+    );
+}
+
+#[test]
 fn compact_catalog_editor_registers_cancel_action_region() {
     let mut editor = lazydb::model::catalog_editor::CatalogEditorState::new(
         CatalogMutationMode::Create,

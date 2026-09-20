@@ -56,7 +56,6 @@ fn table_navigation_reaches_and_leaves_every_action() {
     }
     for expected in [
         lazydb::model::catalog_editor::TableActionField::AddColumn,
-        lazydb::model::catalog_editor::TableActionField::RemoveColumn,
         lazydb::model::catalog_editor::TableActionField::Review,
         lazydb::model::catalog_editor::TableActionField::Cancel,
     ] {
@@ -69,7 +68,6 @@ fn table_navigation_reaches_and_leaves_every_action() {
     }
     for expected in [
         lazydb::model::catalog_editor::TableActionField::Review,
-        lazydb::model::catalog_editor::TableActionField::RemoveColumn,
         lazydb::model::catalog_editor::TableActionField::AddColumn,
         lazydb::model::catalog_editor::TableActionField::AddColumn,
     ] {

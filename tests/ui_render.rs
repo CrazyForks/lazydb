@@ -1044,7 +1044,7 @@ fn table_editor_marks_removed_columns_and_exposes_restore_action() {
         }
     }
     assert!(output.contains("REMOVED"), "{output}");
-    assert!(output.contains("Restore Column"), "{output}");
+    assert!(output.contains("↶"), "{output}");
     let removed_row = state
         .hit_regions
         .iter()
@@ -1063,12 +1063,12 @@ fn table_editor_marks_removed_columns_and_exposes_restore_action() {
         buffer[(added_row.area.x + 4, added_row.area.y)].bg,
         Theme::deep_space().row_inserted
     );
-    assert!(
-        state
-            .hit_regions
-            .iter()
-            .any(|region| { region.target == HitTarget::CatalogEditorRestoreTableColumn })
-    );
+    assert!(state.hit_regions.iter().any(|region| {
+        matches!(
+            region.target,
+            HitTarget::CatalogEditorRestoreTableColumnRow(_)
+        )
+    }));
 }
 
 #[test]
@@ -1353,7 +1353,7 @@ fn very_small_table_editor_keeps_selected_column_reachable() {
 
     let (output, state) = render_with_state(&app, 56, 16);
 
-    assert!(output.contains("selected_column"), "{output}");
+    assert!(output.contains("selected_col"), "{output}");
     assert!(
         state
             .hit_regions

@@ -2862,7 +2862,6 @@ fn map_table_editor(
         (TableEditorFocus::General(_), KeyCode::Esc)
         | (TableEditorFocus::Columns, KeyCode::Esc)
         | (TableEditorFocus::Action(TableActionField::AddColumn), KeyCode::Esc)
-        | (TableEditorFocus::Action(TableActionField::RemoveColumn), KeyCode::Esc)
         | (TableEditorFocus::Action(TableActionField::Review), KeyCode::Esc)
         | (TableEditorFocus::Action(TableActionField::Cancel), KeyCode::Esc) => {
             return Some(Action::CatalogEditorCancel);
@@ -2934,14 +2933,6 @@ fn map_table_editor(
             TableEditorFocus::Action(TableActionField::AddColumn),
             KeyCode::Enter | KeyCode::Char(' '),
         ) => Some(Action::CatalogEditorAddTableColumn),
-        (
-            TableEditorFocus::Action(TableActionField::RemoveColumn),
-            KeyCode::Enter | KeyCode::Char(' '),
-        ) => Some(if editor_table_selected_column_is_removed(editor) {
-            Action::CatalogEditorRestoreTableColumn
-        } else {
-            Action::CatalogEditorRemoveTableColumn
-        }),
         (
             TableEditorFocus::Action(TableActionField::Review),
             KeyCode::Enter | KeyCode::Char(' '),

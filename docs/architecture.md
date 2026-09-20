@@ -277,6 +277,11 @@ rows omit complete hint items rather than clipping key/description pairs.
 non-color focus indicator. The table catalog editor is the reference
 implementation for this hierarchy; connection, Redis, catalog-form, update,
 and confirmation surfaces progressively consume the same primitives.
+The table editor's column action cells carry the draft column `row_id` through
+the mouse hit target and reducer, so a click mutates the row under the pointer
+instead of relying on the currently selected row. Its bottom actions are
+ordered Add Column, Review SQL, Cancel; change-summary spans use the Theme's
+success/action/error colors for added/modified/removed counts.
 
 Database text passes through terminal-control sanitization before it reaches
 diagnostic state or display-only editor/SQL-preview projections. Raw SQL remains

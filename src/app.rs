@@ -8231,6 +8231,28 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::CatalogEditorRemoveTableColumnRow(row_id) => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.finish_edit_group();
+                    draft.remove_column_row(row_id);
+                }
+                Vec::new()
+            }
+            Action::CatalogEditorRestoreTableColumnRow(row_id) => {
+                if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
+                    .catalog_editor
+                    .as_mut()
+                    .and_then(|editor| editor.draft.as_mut())
+                {
+                    draft.finish_edit_group();
+                    draft.restore_column_row(row_id);
+                }
+                Vec::new()
+            }
             Action::CatalogEditorToggleTableColumnNullable => {
                 if let Some(crate::model::catalog_editor::CatalogDraft::Table(draft)) = self
                     .catalog_editor

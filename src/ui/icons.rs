@@ -354,6 +354,22 @@ impl IconSet {
         }
     }
 
+    pub const fn catalog_column_delete(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => "×",
+            IconMode::Unicode => "×",
+            IconMode::Ascii => "x",
+        }
+    }
+
+    pub const fn catalog_column_restore(self) -> &'static str {
+        match self.mode {
+            IconMode::NerdFont => "↶",
+            IconMode::Unicode => "↶",
+            IconMode::Ascii => "r",
+        }
+    }
+
     pub const fn redis_key(self) -> &'static str {
         match self.mode {
             IconMode::NerdFont => md::MD_KEY,
