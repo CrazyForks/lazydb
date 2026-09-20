@@ -110,7 +110,6 @@ pub enum ProfileField {
     SqlitePath,
     Test,
     Save,
-    SaveAndConnect,
     Cancel,
 }
 
@@ -2555,7 +2554,7 @@ fn redact_url_query_passwords(value: &str) -> String {
     crate::security::redact_url_query_credentials(value)
 }
 
-const POSTGRES_FIELDS: [ProfileField; 19] = [
+const POSTGRES_FIELDS: [ProfileField; 18] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2573,11 +2572,10 @@ const POSTGRES_FIELDS: [ProfileField; 19] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 
-const ORACLE_FIELDS: [ProfileField; 18] = [
+const ORACLE_FIELDS: [ProfileField; 17] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2594,11 +2592,10 @@ const ORACLE_FIELDS: [ProfileField; 18] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 
-const MYSQL_FIELDS: [ProfileField; 18] = [
+const MYSQL_FIELDS: [ProfileField; 17] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2615,11 +2612,10 @@ const MYSQL_FIELDS: [ProfileField; 18] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 
-const SQLITE_FILE_FIELDS: [ProfileField; 12] = [
+const SQLITE_FILE_FIELDS: [ProfileField; 11] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2630,11 +2626,10 @@ const SQLITE_FILE_FIELDS: [ProfileField; 12] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 
-const SQLITE_MEMORY_FIELDS: [ProfileField; 11] = [
+const SQLITE_MEMORY_FIELDS: [ProfileField; 10] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2644,11 +2639,10 @@ const SQLITE_MEMORY_FIELDS: [ProfileField; 11] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 
-const REDIS_FIELDS: [ProfileField; 17] = [
+const REDIS_FIELDS: [ProfileField; 16] = [
     ProfileField::DatabaseCategory,
     ProfileField::Kind,
     ProfileField::Name,
@@ -2664,7 +2658,6 @@ const REDIS_FIELDS: [ProfileField; 17] = [
     ProfileField::Url,
     ProfileField::Test,
     ProfileField::Save,
-    ProfileField::SaveAndConnect,
     ProfileField::Cancel,
 ];
 

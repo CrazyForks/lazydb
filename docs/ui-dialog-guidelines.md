@@ -79,7 +79,7 @@ opposite actions into one clickable hint.
 | Catalog table editor | Add, Remove/Restore beside Columns | Cancel, Review SQL | `src/ui/catalog_editor.rs`, `src/input/keymap.rs` |
 | Column details | None | Confirm, Cancel | Separate type guidance/error from controls |
 | Other catalog forms | Object-specific choices near fields | Cancel, Review SQL | Preserve object-specific focus rules |
-| Profile manager | Test and field choices near form | Cancel, Save/Save & Connect | Preserve Ctrl+T/Ctrl+S/Ctrl+Enter |
+| Profile manager | Test and field choices near form | Cancel, Save | Enter saves and connects; Space activates local options/buttons |
 | Redis object/table editor | Type/toggle/row controls near data | Apply, Cancel | Separate field focus from action focus |
 | Execution confirmation | SQL preview controls | Cancel, Execute | Preserve danger tone and default focus |
 | Transaction confirmation | Preview navigation | Commit, Rollback, Cancel | Verify index-to-action mapping |

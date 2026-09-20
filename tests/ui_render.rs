@@ -7250,7 +7250,6 @@ fn server_profile_form_shows_all_fields_and_never_reveals_passwords() {
         "Password storage",
         "Test",
         "Save",
-        "Save & Connect",
         "Cancel",
     ] {
         assert!(output.contains(label), "missing {label}");
@@ -7266,9 +7265,12 @@ fn server_profile_form_shows_all_fields_and_never_reveals_passwords() {
             .iter()
             .any(|region| { region.target == HitTarget::ProfileField(ProfileField::Password) })
     );
-    assert!(state.hit_regions.iter().any(|region| {
-        region.target == HitTarget::ProfileButton(ProfileButton::SaveAndConnect)
-    }));
+    assert!(
+        state
+            .hit_regions
+            .iter()
+            .any(|region| { region.target == HitTarget::ProfileButton(ProfileButton::Save) })
+    );
     assert!(
         !state
             .hit_regions
@@ -7552,9 +7554,9 @@ fn profile_form_remains_actionable_in_compact_layout() {
     assert!(output.contains("Host"));
     assert!(output.contains("Password"));
     assert!(output.contains("URL") || output.contains("CONNECTION URL"));
-    assert!(output.contains("Save & Connect"));
+    assert!(output.contains("Save"));
     assert!(output.contains("^T Test") || output.contains("Ctrl+T test"));
-    assert!(output.contains("^Enter Save+Connect") || output.contains("Ctrl+Enter save"));
+    assert!(output.contains("Enter save"));
 }
 
 #[test]
@@ -7571,8 +7573,8 @@ fn profile_form_only_highlights_the_focused_action_and_colors_test_errors_red() 
     let save_connect = state
         .hit_regions
         .iter()
-        .find(|region| region.target == HitTarget::ProfileButton(ProfileButton::SaveAndConnect))
-        .expect("save and connect hit region");
+        .find(|region| region.target == HitTarget::ProfileButton(ProfileButton::Save))
+        .expect("save hit region");
     let test_button = state
         .hit_regions
         .iter()

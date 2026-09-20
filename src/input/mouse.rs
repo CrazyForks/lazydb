@@ -1289,8 +1289,7 @@ fn profile_button_action(button: ProfileButton) -> Action {
     match button {
         ProfileButton::Cancel => Action::CloseProfileManager,
         ProfileButton::Test => Action::ProfileTest,
-        ProfileButton::Save => Action::ProfileSave { connect: false },
-        ProfileButton::SaveAndConnect => Action::ProfileSave { connect: true },
+        ProfileButton::Save => Action::ProfileSave { connect: true },
         ProfileButton::ConfirmDelete => Action::ActivateProfileDelete,
         ProfileButton::CancelDelete => Action::ProfileCancelDelete,
     }

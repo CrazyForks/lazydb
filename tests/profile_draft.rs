@@ -905,7 +905,6 @@ fn visible_fields_follow_the_selected_driver_and_sqlite_mode() {
             ProfileField::Url,
             ProfileField::Test,
             ProfileField::Save,
-            ProfileField::SaveAndConnect,
             ProfileField::Cancel,
         ]
     );
@@ -937,7 +936,7 @@ fn visible_field_navigation_reaches_url_before_actions_without_url_format() {
     state.start_new(DatabaseKind::Postgres);
     let fields = state.visible_fields();
     assert!(!fields.contains(&ProfileField::UrlFormat));
-    assert_eq!(fields[fields.len() - 5], ProfileField::Url);
+    assert_eq!(fields[fields.len() - 4], ProfileField::Url);
 
     state.selected_field = ProfileField::ReadOnly;
     state.move_field(1);
