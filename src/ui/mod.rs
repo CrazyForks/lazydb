@@ -214,6 +214,8 @@ pub enum HitTarget {
     CatalogEditorAddTableColumn,
     CatalogEditorRemoveTableColumn,
     CatalogEditorRestoreTableColumn,
+    CatalogEditorRemoveTableColumnRow(uuid::Uuid),
+    CatalogEditorRestoreTableColumnRow(uuid::Uuid),
     CatalogEditorReview,
     CatalogEditorCancel,
     CatalogEditorDiscardKeepEditing,

@@ -493,6 +493,50 @@ fn table_remove_drops_unconfirmed_added_column_without_resetting_other_rows() {
 }
 
 #[test]
+fn row_scoped_remove_and_restore_use_the_requested_row_not_selection() {
+    let mut draft = TableDraft::new("public");
+    draft.columns[0].name = "id".into();
+    draft.columns[0].existing_name = Some("id".into());
+    draft.columns[0].state = DraftRowState::Existing {
+        id: lazydb::db::catalog::CatalogId::new(
+            profile(),
+            lazydb::db::catalog::CatalogKind::Column,
+            ["id"],
+        ),
+    };
+    let mut other = lazydb::model::catalog_editor::ColumnDraft::new_added();
+    other.name = "name".into();
+    other.existing_name = Some("name".into());
+    other.state = DraftRowState::Existing {
+        id: lazydb::db::catalog::CatalogId::new(
+            profile(),
+            lazydb::db::catalog::CatalogKind::Column,
+            ["name"],
+        ),
+    };
+    let row_id = other.row_id;
+    draft.columns.push(other);
+    draft.selected_column = 0;
+
+    assert!(draft.remove_column_row(row_id));
+    assert_eq!(draft.selected_column, 1);
+    assert!(matches!(
+        draft.columns[0].state,
+        DraftRowState::Existing { .. }
+    ));
+    assert!(matches!(
+        draft.columns[1].state,
+        DraftRowState::Removed { .. }
+    ));
+    assert!(draft.restore_column_row(row_id));
+    assert!(matches!(
+        draft.columns[1].state,
+        DraftRowState::Existing { .. }
+    ));
+    assert!(!draft.restore_column_row(uuid::Uuid::new_v4()));
+}
+
+#[test]
 fn table_column_details_validation_rejects_blank_duplicate_and_conflicting_values() {
     let mut draft = TableDraft::new("public");
     draft.columns[0].name = "id".into();
@@ -850,11 +894,6 @@ fn table_action_navigation_moves_both_directions_and_form_clamps_at_ends() {
     draft.focus_next();
     assert_eq!(
         draft.focus,
-        TableEditorFocus::Action(TableActionField::RemoveColumn)
-    );
-    draft.focus_next();
-    assert_eq!(
-        draft.focus,
         TableEditorFocus::Action(TableActionField::Review)
     );
     draft.focus_next();
@@ -872,11 +911,6 @@ fn table_action_navigation_moves_both_directions_and_form_clamps_at_ends() {
     assert_eq!(
         draft.focus,
         TableEditorFocus::Action(TableActionField::Review)
-    );
-    draft.focus_previous();
-    assert_eq!(
-        draft.focus,
-        TableEditorFocus::Action(TableActionField::RemoveColumn)
     );
     draft.focus_previous();
     assert_eq!(
@@ -963,10 +997,7 @@ fn table_navigation_uses_one_complete_state_machine_for_compact_action_chain() {
     draft.focus_previous();
     draft.focus_previous();
     draft.focus_previous();
-    assert_eq!(
-        draft.focus,
-        TableEditorFocus::Action(TableActionField::AddColumn)
-    );
+    assert_eq!(draft.focus, TableEditorFocus::Columns);
 }
 
 #[test]

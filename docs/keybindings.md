@@ -83,10 +83,14 @@ activate. Text fields keep their editing/navigation behavior. `Tab` and
 `Shift+Tab` are listed separately where both directions are available; a
 combined display string must not imply that one click executes both directions.
 
-The table editor also places Add Column and Remove/Restore beside the Columns
-heading, while Cancel and Review SQL remain in the bottom action row. A status
-row reports `No changes` or the number of pending changes. This arrangement is
-the reference hierarchy for other forms and confirmations.
+The table editor renders a row-scoped delete or restore icon at the end of each
+column row. Clicking the icon acts on that row's stable identity; it does not
+require the row to be selected first. Existing rows become muted when removed
+and can be restored from the same position. `dd` and `r` remain the keyboard
+operations for the selected row. `Add Column`, `Review SQL`, and `Cancel` are
+the bottom actions in that order. A status row reports `No changes` or the
+number of pending changes; added, modified, and removed counts use success,
+action, and error semantic colors respectively.
 
 ## Result Pagination
 

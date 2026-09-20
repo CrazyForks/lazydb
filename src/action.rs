@@ -359,6 +359,8 @@ pub enum Action {
     CatalogEditorReorderTableColumn(isize),
     CatalogEditorRemoveTableColumn,
     CatalogEditorRestoreTableColumn,
+    CatalogEditorRemoveTableColumnRow(uuid::Uuid),
+    CatalogEditorRestoreTableColumnRow(uuid::Uuid),
     CatalogEditorToggleTableColumnNullable,
     CatalogEditorToggleTableColumnIdentity,
     OpenRedisObjectCreate,

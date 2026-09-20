@@ -593,6 +593,8 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 | HitTarget::CatalogEditorTableColumn(_)
                                 | HitTarget::CatalogEditorAddTableColumn
                                 | HitTarget::CatalogEditorRemoveTableColumn
+                                | HitTarget::CatalogEditorRemoveTableColumnRow(_)
+                                | HitTarget::CatalogEditorRestoreTableColumnRow(_)
                                 | HitTarget::CatalogEditorReview
                                 | HitTarget::CatalogEditorCancel
                                 | HitTarget::CatalogEditorDiscardKeepEditing
@@ -942,6 +944,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::CatalogEditorAddTableColumn => Some(Action::CatalogEditorAddTableColumn),
                 HitTarget::CatalogEditorRemoveTableColumn => {
                     Some(Action::CatalogEditorRemoveTableColumn)
+                }
+                HitTarget::CatalogEditorRemoveTableColumnRow(row_id) => {
+                    Some(Action::CatalogEditorRemoveTableColumnRow(row_id))
+                }
+                HitTarget::CatalogEditorRestoreTableColumnRow(row_id) => {
+                    Some(Action::CatalogEditorRestoreTableColumnRow(row_id))
                 }
                 HitTarget::CatalogEditorRestoreTableColumn => {
                     Some(Action::CatalogEditorRestoreTableColumn)
@@ -1369,6 +1377,8 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::CatalogEditorAddTableColumn
         | HitTarget::CatalogEditorRemoveTableColumn
         | HitTarget::CatalogEditorRestoreTableColumn
+        | HitTarget::CatalogEditorRemoveTableColumnRow(_)
+        | HitTarget::CatalogEditorRestoreTableColumnRow(_)
         | HitTarget::CatalogEditorReview
         | HitTarget::CatalogEditorCancel
         | HitTarget::CatalogEditorDiscardKeepEditing

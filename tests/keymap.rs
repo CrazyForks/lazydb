@@ -1167,7 +1167,6 @@ fn table_editor_action_buttons_keep_enter_and_space_semantics() {
     let mut keymap = Keymap::default();
     for action_field in [
         lazydb::model::catalog_editor::TableActionField::AddColumn,
-        lazydb::model::catalog_editor::TableActionField::RemoveColumn,
         lazydb::model::catalog_editor::TableActionField::Review,
         lazydb::model::catalog_editor::TableActionField::Cancel,
     ] {
@@ -1183,9 +1182,6 @@ fn table_editor_action_buttons_keep_enter_and_space_semantics() {
             lazydb::model::catalog_editor::TableActionField::AddColumn => {
                 Action::CatalogEditorAddTableColumn
             }
-            lazydb::model::catalog_editor::TableActionField::RemoveColumn => {
-                Action::CatalogEditorRemoveTableColumn
-            }
             lazydb::model::catalog_editor::TableActionField::Review => Action::CatalogEditorPreview,
             lazydb::model::catalog_editor::TableActionField::Cancel => Action::CatalogEditorCancel,
         };
@@ -1197,7 +1193,6 @@ fn table_editor_action_buttons_keep_enter_and_space_semantics() {
         if matches!(
             action_field,
             lazydb::model::catalog_editor::TableActionField::AddColumn
-                | lazydb::model::catalog_editor::TableActionField::RemoveColumn
         ) {
             assert_eq!(
                 keymap.map(key(KeyCode::Esc), &app),
