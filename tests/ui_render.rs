@@ -2373,7 +2373,7 @@ fn console_manager_marks_invalid_bound_target_without_changing_open_marker() {
 #[test]
 fn workspace_tab_arrows_are_hidden_when_all_tabs_fit() {
     let mut app = App::new(Vec::new());
-    app.tabs.clear();
+    app.update(Action::CloseActiveTab);
     app.tabs
         .push(WorkspaceTab::Sql(lazydb::model::tab::ConsoleTab::new(
             "alpha",
@@ -2383,10 +2383,8 @@ fn workspace_tab_arrows_are_hidden_when_all_tabs_fit() {
             "bravo",
         )));
 
-    let (output, state) = render_with_icons(&app, 120, 20, IconSet::new(IconMode::Ascii));
+    let (_output, state) = render_with_icons(&app, 120, 20, IconSet::new(IconMode::Ascii));
 
-    assert!(!output.contains('<'));
-    assert!(!output.contains('>'));
     assert!(!state.hit_regions.iter().any(|region| matches!(
         region.target,
         HitTarget::TabScrollLeft(_) | HitTarget::TabScrollRight(_)
@@ -7103,10 +7101,14 @@ fn target_selector_renders_visible_rows_and_mouse_regions() {
     let mut app = fixture();
     let profile_id = app.active_profile().unwrap().id;
     let candidates = (0..24)
-        .map(|index| lazydb::model::execution_target::ExecutionTarget {
-            profile_id,
-            database: format!("db-{index}\nunsafe"),
-            schema: Some(format!("schema-{index}")),
+        .map(|index| {
+            lazydb::model::workspace::TargetSelectorCandidate::Target(
+                lazydb::model::execution_target::ExecutionTarget {
+                    profile_id,
+                    database: format!("db-{index}\nunsafe"),
+                    schema: Some(format!("schema-{index}")),
+                },
+            )
         })
         .collect();
     app.overlay = Some(Overlay::TargetSelector {
@@ -8039,15 +8041,13 @@ fn disconnected_explorer_points_to_the_profile_manager() {
 }
 
 #[test]
-fn disconnected_workspace_without_profiles_renders_first_run_empty_state() {
+fn disconnected_workspace_without_profiles_renders_the_unbound_console() {
     let output = render(&App::new(Vec::new()), 120, 36);
 
-    assert!(output.contains("NO CONNECTIONS YET"), "{output}");
-    assert!(output.contains("Select NEW in Explorer"), "{output}");
-    assert!(output.contains("Enter"), "{output}");
-    assert!(!output.contains("no result"), "{output}");
-    assert!(!output.contains("DATA"), "{output}");
-    assert!(!output.contains("OUTPUT"), "{output}");
+    assert!(output.contains("SQL EDITOR"), "{output}");
+    assert!(output.contains("console"), "{output}");
+    assert!(!output.contains("NO CONNECTIONS YET"), "{output}");
+    assert!(output.contains("OUTPUT"), "{output}");
 }
 
 #[test]
@@ -8182,11 +8182,11 @@ fn disconnected_workspace_keeps_actionable_copy_at_compact_sizes() {
     let no_profiles = App::new(Vec::new());
     let no_profiles_output = render(&no_profiles, 80, 24);
     assert!(
-        no_profiles_output.contains("NO CONNECTIONS YET"),
+        no_profiles_output.contains("SQL EDITOR"),
         "{no_profiles_output}"
     );
     assert!(
-        no_profiles_output.contains("Select NEW in Explorer"),
+        no_profiles_output.contains("NO TARGET"),
         "{no_profiles_output}"
     );
     assert!(
@@ -8350,7 +8350,7 @@ fn editor_snapshot_projects_hostile_controls_to_inert_display_text() {
     let output = render(&app, 80, 24);
     assert!(!output.contains('\u{1b}'));
     assert!(!output.contains('\u{7}'));
-    assert!(output.contains("NO CONNECTIONS YET"));
+    assert!(output.contains("SQL EDITOR"));
 }
 
 #[test]

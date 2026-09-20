@@ -59,6 +59,11 @@ connections, consoles, tables, and navigation. `F1` or `?` opens contextual help
 notification history; and `F9` opens the Update Center. See the
 [Omni Bar guide](docs/omni-bar.md) and the complete [keyboard reference](docs/keybindings.md).
 
+SQL consoles can be opened without configuring or connecting a database. You can
+write, format, save, and reopen SQL while offline. Binding a target does not
+connect automatically; running SQL establishes the selected connection and
+continues the execution.
+
 ### Installing and running LazyDB
 
 For a ready-to-use MariaDB instance with broad test data-type coverage, see the
