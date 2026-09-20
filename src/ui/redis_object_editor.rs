@@ -1,3 +1,4 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -131,14 +132,45 @@ pub fn render(
             rows[4],
         );
     }
-    frame.render_widget(
-        Paragraph::new(if editor.busy {
-            "Planning…"
-        } else {
-            "Tab/↑↓ focus · Enter apply · Esc cancel"
-        })
-        .style(Style::new().fg(theme.muted)),
+    let hints = if editor.busy {
+        vec![crate::ui::shortcut_hints::ShortcutHint::with_keys(
+            "Esc",
+            "wait for completion",
+            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        )]
+    } else {
+        vec![
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Tab",
+                "next field",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Shift+Tab",
+                "previous field",
+                [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
+            ),
+            crate::ui::shortcut_hints::ShortcutHint::new("Left/Right", "change type/TTL"),
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Enter",
+                "apply",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
+            crate::ui::shortcut_hints::ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
+        ]
+    };
+    crate::ui::shortcut_hints::render_interactive(
+        frame,
         rows[5],
+        &hints,
+        theme,
+        theme.surface,
+        ratatui::layout::Alignment::Left,
+        ui,
     );
 }
 

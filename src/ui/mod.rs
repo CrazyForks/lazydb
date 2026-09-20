@@ -3,6 +3,7 @@ pub mod catalog_editor;
 pub(crate) mod dashboard;
 pub mod data_grid;
 pub(crate) mod dialog;
+pub(crate) mod dialog_footer;
 pub(crate) mod execution_confirm;
 pub mod icons;
 pub mod layout;
@@ -4696,7 +4697,7 @@ fn render_overlay(
             redis_table_editor::render(frame, area, editor, state, theme)
         }
         Overlay::RedisTableDeleteConfirm(confirm) => {
-            redis_table_editor::render_delete_confirm(frame, area, confirm, theme)
+            redis_table_editor::render_delete_confirm(frame, area, confirm, state, theme)
         }
         Overlay::RedisValueSaveConfirm {
             tab_id,
@@ -4746,11 +4747,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Save anyway",
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Back to edit",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ]
@@ -4759,11 +4762,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Save",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Cancel",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ]
@@ -4781,10 +4786,26 @@ fn render_overlay(
                     target: HitTarget::RedisValueSaveAction(action.index),
                 });
             }
-            dialog::render_interactive_hint(
+            dialog::render_interactive_hints(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-                "Tab / Left / Right switch   Enter activate   Esc cancel",
+                &[
+                    ShortcutHint::with_keys(
+                        "Tab",
+                        "switch",
+                        [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Enter",
+                        "activate",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Esc",
+                        "cancel",
+                        [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                    ),
+                ],
                 theme,
                 state,
             );
@@ -4820,16 +4841,19 @@ fn render_overlay(
                 dialog::DialogButton {
                     label: "Save",
                     tone: dialog::DialogTone::Normal,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
                 dialog::DialogButton {
                     label: "Discard",
                     tone: dialog::DialogTone::Danger,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
                 dialog::DialogButton {
                     label: "Cancel",
                     tone: dialog::DialogTone::Normal,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
             ];
@@ -4846,10 +4870,36 @@ fn render_overlay(
                     target: HitTarget::RedisUnsavedValueAction(action.index),
                 });
             }
-            dialog::render_interactive_hint(
+            dialog::render_interactive_hints(
                 frame,
                 Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1),
-                "Tab / Left / Right switch   Enter activate   s save   d discard   Esc cancel",
+                &[
+                    ShortcutHint::with_keys(
+                        "Tab",
+                        "switch",
+                        [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Enter",
+                        "activate",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "s",
+                        "save",
+                        [KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "d",
+                        "discard",
+                        [KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)],
+                    ),
+                    ShortcutHint::with_keys(
+                        "Esc",
+                        "cancel",
+                        [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                    ),
+                ],
                 theme,
                 state,
             );
@@ -4906,11 +4956,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Keep running",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Cancel query + roll back",
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ],
@@ -5073,16 +5125,19 @@ fn render_overlay(
                 dialog::DialogButton {
                     label: "Commit",
                     tone: dialog::DialogTone::Normal,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
                 dialog::DialogButton {
                     label: "Rollback",
                     tone: dialog::DialogTone::Danger,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
                 dialog::DialogButton {
                     label: "Cancel",
                     tone: dialog::DialogTone::Normal,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
             ];
@@ -5137,11 +5192,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Cancel",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Clear after verification",
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ],
@@ -5479,11 +5536,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Cancel",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Delete console",
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ],
@@ -5570,11 +5629,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Cancel",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     dialog::DialogButton {
                         label: "Delete key",
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ],
@@ -5659,11 +5720,13 @@ fn render_overlay(
                     dialog::DialogButton {
                         label: "Cancel",
                         tone: dialog::DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: !*busy,
                     },
                     dialog::DialogButton {
                         label: if *busy { "Dropping..." } else { "Drop" },
                         tone: dialog::DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: !*busy,
                     },
                 ],
@@ -5750,11 +5813,13 @@ fn render_overlay(
                     DialogButton {
                         label: "Keep Editing",
                         tone: DialogTone::Normal,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                     DialogButton {
                         label: "Discard Changes",
                         tone: DialogTone::Danger,
+                        emphasis: dialog::DialogEmphasis::Secondary,
                         enabled: true,
                     },
                 ],
@@ -6909,11 +6974,13 @@ fn render_console_manager(
                 dialog::DialogButton {
                     label: "Cancel",
                     tone: dialog::DialogTone::Normal,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
                 dialog::DialogButton {
                     label: "Delete console",
                     tone: dialog::DialogTone::Danger,
+                    emphasis: dialog::DialogEmphasis::Secondary,
                     enabled: true,
                 },
             ],
@@ -7051,11 +7118,13 @@ fn render_catalog_drop_confirm(
             dialog::DialogButton {
                 label: "Cancel",
                 tone: dialog::DialogTone::Normal,
+                emphasis: dialog::DialogEmphasis::Secondary,
                 enabled: !busy,
             },
             dialog::DialogButton {
                 label: if *busy { "Dropping..." } else { "Drop" },
                 tone: dialog::DialogTone::Danger,
+                emphasis: dialog::DialogEmphasis::Secondary,
                 enabled: !busy,
             },
         ],

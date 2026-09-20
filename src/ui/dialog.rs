@@ -19,10 +19,18 @@ pub enum DialogTone {
     Danger,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DialogEmphasis {
+    #[default]
+    Secondary,
+    Primary,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DialogButton<'a> {
     pub label: &'a str,
     pub tone: DialogTone,
+    pub emphasis: DialogEmphasis,
     pub enabled: bool,
 }
 
@@ -30,6 +38,14 @@ pub struct DialogButton<'a> {
 pub struct DialogActionArea {
     pub index: usize,
     pub area: Rect,
+}
+
+#[allow(dead_code)] // Consumed by the staged footer migration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogActionAlignment {
+    Left,
+    Center,
+    Right,
 }
 
 pub fn render_actions(
@@ -51,11 +67,41 @@ pub fn render_actions_without_focus(
     render_actions_with_focus(frame, area, buttons, None, theme)
 }
 
+#[allow(dead_code)] // Consumed by the staged footer migration.
+pub fn render_actions_aligned(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    buttons: &[DialogButton<'_>],
+    focused: Option<usize>,
+    alignment: DialogActionAlignment,
+    theme: Theme,
+) -> Vec<DialogActionArea> {
+    render_actions_with_focus_and_alignment(frame, area, buttons, focused, alignment, theme)
+}
+
 fn render_actions_with_focus(
     frame: &mut Frame<'_>,
     area: Rect,
     buttons: &[DialogButton<'_>],
     focused: Option<usize>,
+    theme: Theme,
+) -> Vec<DialogActionArea> {
+    render_actions_with_focus_and_alignment(
+        frame,
+        area,
+        buttons,
+        focused,
+        DialogActionAlignment::Center,
+        theme,
+    )
+}
+
+fn render_actions_with_focus_and_alignment(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    buttons: &[DialogButton<'_>],
+    focused: Option<usize>,
+    alignment: DialogActionAlignment,
     theme: Theme,
 ) -> Vec<DialogActionArea> {
     if buttons.is_empty() || area.height == 0 || area.width == 0 {
@@ -91,9 +137,13 @@ fn render_actions_with_focus(
         return hit_regions;
     }
 
-    let mut x = area
-        .x
-        .saturating_add(area.width.saturating_sub(total_width) / 2);
+    let available = area.width.saturating_sub(total_width);
+    let offset = match alignment {
+        DialogActionAlignment::Left => 0,
+        DialogActionAlignment::Center => available / 2,
+        DialogActionAlignment::Right => available,
+    };
+    let mut x = area.x.saturating_add(offset);
     for (index, button) in buttons.iter().enumerate() {
         let label = format_button(button.label, focused == Some(index));
         let width = label.width() as u16;
@@ -156,7 +206,25 @@ pub fn render_interactive_hint(
         &hints,
         theme,
         theme.surface,
-        Alignment::Center,
+        Alignment::Left,
+        state,
+    );
+}
+
+pub fn render_interactive_hints(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    hints: &[ShortcutHint<'_>],
+    theme: Theme,
+    state: &mut UiState,
+) {
+    shortcut_hints::render_interactive(
+        frame,
+        area,
+        hints,
+        theme,
+        theme.surface,
+        Alignment::Left,
         state,
     );
 }
@@ -213,6 +281,11 @@ fn render_button(
         Style::new()
             .fg(theme.background)
             .bg(tone_color)
+            .add_modifier(Modifier::BOLD)
+    } else if matches!(button.emphasis, DialogEmphasis::Primary) {
+        Style::new()
+            .fg(tone_color)
+            .bg(theme.surface)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::new()

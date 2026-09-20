@@ -1159,10 +1159,7 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
     assert!(general.contains("GENERAL"), "{general}");
     assert!(general.contains("COLUMNS"), "{general}");
     assert!(general.contains("events"), "{general}");
-    assert!(
-        general.contains("Changes  table properties changed"),
-        "{general}"
-    );
+    assert!(general.contains("pending changes"), "{general}");
     assert!(general.contains("[ Review SQL ]"), "{general}");
     assert!(general.contains("[ Cancel ]"), "{general}");
     assert!(
@@ -1180,7 +1177,7 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
 
     let (compact, compact_state) = render_with_state(&app, 56, 16);
     assert!(compact.contains("events"), "{compact}");
-    assert!(compact.contains("[ SQL ]"), "{compact}");
+    assert!(compact.contains("[ Review SQL ]"), "{compact}");
     assert!(compact.contains("[ Cancel ]"), "{compact}");
     assert!(compact_state.hit_regions.iter().any(|region| {
         region.target
@@ -1202,8 +1199,8 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
     let (columns, _) = render_with_state(&app, 100, 30);
     assert!(columns.contains("COMMENT"), "{columns}");
     assert!(columns.contains("primary key note"), "{columns}");
-    assert!(columns.contains("a add below"), "{columns}");
-    assert!(columns.contains("e edit column"), "{columns}");
+    assert!(columns.contains("j/k · Up/Down move row"), "{columns}");
+    assert!(columns.contains("... (+"), "{columns}");
 
     if let Some(lazydb::model::catalog_editor::CatalogDraft::Table(draft)) = app
         .catalog_editor
@@ -1265,7 +1262,7 @@ fn table_editor_focus_drives_sections_details_actions_and_context_hints() {
     }
     let (actions, _) = render_with_state(&app, 100, 30);
     assert!(actions.contains("Review SQL"), "{actions}");
-    assert!(actions.contains("Enter/Space activate"), "{actions}");
+    assert!(actions.contains("Enter activate"), "{actions}");
 }
 
 #[test]
@@ -1721,11 +1718,11 @@ fn catalog_form_footer_hints_follow_focus_kind_without_moving_actions() {
         ),
         (
             lazydb::model::catalog_editor::CatalogFormFocus::SecurityBarrier,
-            "Space cycle",
+            "Left/Right change",
         ),
         (
             lazydb::model::catalog_editor::CatalogFormFocus::Review,
-            "Enter/Space activate",
+            "Enter activate",
         ),
     ] {
         if let Some(lazydb::model::catalog_editor::CatalogDraft::View(draft)) = app
@@ -1864,7 +1861,7 @@ fn redesigned_object_forms_keep_active_field_actions_and_footer_in_render_matrix
                         .any(|region| region.target == HitTarget::CatalogEditorCancel),
                     "{name} at {width}x{height} lost Cancel: {output}"
                 );
-                assert!(output.contains("Tab/Shift-Tab"), "{name}: {output}");
+                assert!(output.contains("Tab next field"), "{name}: {output}");
             }
         }
     }

@@ -67,6 +67,27 @@ prefix. Editor Insert Space remains text/completion input. A footer item can be
 display-only when the underlying mapper has no direct action for that
 presentation.
 
+## Overlay action and help rows
+
+Interactive overlays use three visual layers when applicable:
+
+1. Context actions are placed beside the content they mutate.
+2. Window actions such as Cancel, Review SQL, Save, or Apply stay in a stable
+   bottom action row.
+3. Keyboard help is rendered in a separate low-emphasis row. Keys are shown in
+   bold normal text and descriptions use muted text.
+
+The help row is contextual. For example, Table Editor General and Columns
+focus use `Enter` for SQL preview, while a focused action uses `Enter` to
+activate. Text fields keep their editing/navigation behavior. `Tab` and
+`Shift+Tab` are listed separately where both directions are available; a
+combined display string must not imply that one click executes both directions.
+
+The table editor also places Add Column and Remove/Restore beside the Columns
+heading, while Cancel and Review SQL remain in the bottom action row. A status
+row reports `No changes` or the number of pending changes. This arrangement is
+the reference hierarchy for other forms and confirmations.
+
 ## Result Pagination
 
 SQL Result Set and Relation Data share the same database-backed paginator. The

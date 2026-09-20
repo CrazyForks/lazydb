@@ -130,6 +130,7 @@ pub(crate) fn render(
         .map(|spec| dialog::DialogButton {
             label: spec.label,
             tone: dialog::DialogTone::Normal,
+            emphasis: dialog::DialogEmphasis::Secondary,
             enabled: true,
         })
         .collect::<Vec<_>>();
@@ -144,13 +145,14 @@ pub(crate) fn render(
         }
     }
 
-    shortcut_hints::render(
+    shortcut_hints::render_interactive(
         frame,
         footer_area,
         &view.hints(),
         theme,
         theme.surface,
-        Alignment::Center,
+        Alignment::Left,
+        state,
     );
 }
 
@@ -158,13 +160,41 @@ impl View {
     fn hints(&self) -> Vec<ShortcutHint<'static>> {
         let mut hints = Vec::new();
         if self.actions.len() > 1 {
-            hints.push(ShortcutHint::new("Tab/Left/Right", "select"));
+            hints.push(ShortcutHint::with_keys(
+                "Tab",
+                "select next",
+                [crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Tab,
+                    crossterm::event::KeyModifiers::NONE,
+                )],
+            ));
         }
-        hints.push(ShortcutHint::new("Enter", "confirm"));
+        hints.push(ShortcutHint::with_keys(
+            "Enter",
+            "confirm",
+            [crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )],
+        ));
         if self.can_check_again {
-            hints.push(ShortcutHint::new("r", "check again"));
+            hints.push(ShortcutHint::with_keys(
+                "r",
+                "check again",
+                [crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('r'),
+                    crossterm::event::KeyModifiers::NONE,
+                )],
+            ));
         }
-        hints.push(ShortcutHint::new("Esc/q", "close"));
+        hints.push(ShortcutHint::with_keys(
+            "Esc",
+            "close",
+            [crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            )],
+        ));
         hints
     }
 }

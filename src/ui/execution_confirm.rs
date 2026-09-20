@@ -198,11 +198,13 @@ pub(crate) fn render(
             dialog::DialogButton {
                 label: "Cancel",
                 tone: dialog::DialogTone::Normal,
+                emphasis: dialog::DialogEmphasis::Secondary,
                 enabled: true,
             },
             dialog::DialogButton {
                 label: "Execute",
                 tone: dialog::DialogTone::Danger,
+                emphasis: dialog::DialogEmphasis::Primary,
                 enabled: true,
             },
         ],

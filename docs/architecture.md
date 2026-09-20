@@ -267,6 +267,17 @@ its pointer capture in `UiState`, computes an anchored absolute size, and emits
 `AppLayout` remains the single owner of minimum and maximum layout constraints.
 Inactive effects cause no idle redraw.
 
+Interactive overlays use the shared dialog primitives in `src/ui/dialog.rs`,
+`src/ui/dialog_footer.rs`, and `src/ui/shortcut_hints.rs`. Context actions stay
+near the content they mutate; window actions use a stable bottom action row;
+keyboard help uses a separate low-emphasis row. Button drawing and mouse hit
+regions are derived from the same measured rectangles, and single-line shortcut
+rows omit complete hint items rather than clipping key/description pairs.
+`Theme` exposes semantic button/help styles so plain-color mode still has a
+non-color focus indicator. The table catalog editor is the reference
+implementation for this hierarchy; connection, Redis, catalog-form, update,
+and confirmation surfaces progressively consume the same primitives.
+
 Database text passes through terminal-control sanitization before it reaches
 diagnostic state or display-only editor/SQL-preview projections. Raw SQL remains
 unchanged when sent to the database. Completion labels/details and prompt text

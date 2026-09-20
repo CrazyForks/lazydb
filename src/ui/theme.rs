@@ -202,6 +202,50 @@ impl Theme {
             .add_modifier(Modifier::BOLD)
     }
 
+    pub fn dialog_button(self, tone: crate::ui::dialog::DialogTone) -> Style {
+        Style::new()
+            .fg(match tone {
+                crate::ui::dialog::DialogTone::Normal => self.text,
+                crate::ui::dialog::DialogTone::Danger => self.error,
+            })
+            .bg(self.surface)
+    }
+
+    pub fn dialog_primary_button(self, tone: crate::ui::dialog::DialogTone) -> Style {
+        Style::new()
+            .fg(match tone {
+                crate::ui::dialog::DialogTone::Normal => self.accent,
+                crate::ui::dialog::DialogTone::Danger => self.error,
+            })
+            .bg(self.surface)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn dialog_focused_button(self, tone: crate::ui::dialog::DialogTone) -> Style {
+        Style::new()
+            .fg(self.background)
+            .bg(match tone {
+                crate::ui::dialog::DialogTone::Normal => self.accent,
+                crate::ui::dialog::DialogTone::Danger => self.error,
+            })
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn dialog_disabled_button(self) -> Style {
+        Style::new().fg(self.muted).bg(self.surface)
+    }
+
+    pub fn dialog_help_key(self) -> Style {
+        Style::new()
+            .fg(self.text)
+            .bg(self.surface)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    pub fn dialog_help_description(self) -> Style {
+        Style::new().fg(self.muted).bg(self.surface)
+    }
+
     pub(crate) const fn syntax_color(self, kind: SyntaxColor) -> Color {
         match kind {
             SyntaxColor::Keyword => self.syntax_keyword,

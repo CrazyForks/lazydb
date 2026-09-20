@@ -24,6 +24,7 @@ use crate::{
 
 use super::{
     HitRegion, HitTarget, Theme, UiState,
+    dialog_footer::{self, FooterDensity},
     icons::IconSet,
     render_text_input,
     shortcut_hints::{self, ShortcutHint},
@@ -210,9 +211,17 @@ fn loading(
         "Esc cancels when the operation is safe to cancel"
     };
     let footer = if applying {
-        vec![ShortcutHint::new("Esc", "wait for completion")]
+        vec![ShortcutHint::with_keys(
+            "Esc",
+            "wait for completion",
+            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        )]
     } else {
-        vec![ShortcutHint::new("Esc", "cancel")]
+        vec![ShortcutHint::with_keys(
+            "Esc",
+            "cancel",
+            [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        )]
     };
     let mut lines = vec![
         Line::from(Span::styled(
@@ -244,60 +253,13 @@ fn render_interactive_hints(
     theme: Theme,
     ui: &mut UiState,
 ) {
-    let hints = hints
-        .iter()
-        .map(|hint| match hint.key.as_ref() {
-            "Esc" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
-            ),
-            "Enter" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            "dd" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [
-                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
-                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
-                ],
-            ),
-            "j/k · ↑/↓" | "↑/↓" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
-            ),
-            "Tab/Shift-Tab" | "Tab/Shift-Tab/Up/Down" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
-            ),
-            "Enter/Space" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
-            ),
-            "a" | "A" | "e" | "r" | "J/K" => ShortcutHint::with_keys(
-                hint.key.clone(),
-                hint.description.clone(),
-                [KeyEvent::new(
-                    KeyCode::Char(hint.key.chars().next().unwrap_or('a')),
-                    KeyModifiers::NONE,
-                )],
-            ),
-            _ => hint.clone(),
-        })
-        .collect::<Vec<_>>();
     shortcut_hints::render_interactive(
         frame,
         area,
-        &hints,
+        hints,
         theme,
         theme.surface,
-        ratatui::layout::Alignment::Center,
+        ratatui::layout::Alignment::Left,
         ui,
     );
 }
@@ -423,7 +385,18 @@ fn form(
             chunks[2],
         );
     } else {
-        let mut hints = vec![ShortcutHint::new("Tab/Shift-Tab", "fields")];
+        let mut hints = vec![
+            ShortcutHint::with_keys(
+                "Tab",
+                "next field",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Shift+Tab",
+                "previous field",
+                [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
+            ),
+        ];
         if let Some(
             draft @ (CatalogDraft::View(_)
             | CatalogDraft::MaterializedView(_)
@@ -439,13 +412,21 @@ fn form(
                     hints.push(ShortcutHint::new("Type", "edit"));
                 }
                 crate::model::catalog_editor::CatalogFormFocusKind::Choice => {
-                    hints.push(ShortcutHint::new("Space", "cycle"));
+                    hints.push(ShortcutHint::new("Left/Right", "change"));
                 }
                 crate::model::catalog_editor::CatalogFormFocusKind::Toggle => {
-                    hints.push(ShortcutHint::new("Space", "toggle"));
+                    hints.push(ShortcutHint::with_keys(
+                        "Space",
+                        "toggle",
+                        [KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)],
+                    ));
                 }
                 crate::model::catalog_editor::CatalogFormFocusKind::Action => {
-                    hints.push(ShortcutHint::new("Enter/Space", "activate"));
+                    hints.push(ShortcutHint::with_keys(
+                        "Enter",
+                        "activate",
+                        [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                    ));
                 }
                 crate::model::catalog_editor::CatalogFormFocusKind::Disabled => {
                     hints.push(ShortcutHint::new("Unavailable", "field"));
@@ -457,17 +438,41 @@ fn form(
         }
         if editor.owner_picker_active() {
             hints.extend([
-                ShortcutHint::new("Up/Down", "role"),
-                ShortcutHint::new("Enter", "choose owner"),
-                ShortcutHint::new("Esc", "close list"),
+                ShortcutHint::with_keys(
+                    "Up/Down",
+                    "role",
+                    [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Enter",
+                    "choose owner",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Esc",
+                    "close list",
+                    [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                ),
             ]);
         } else {
             if editor.owner_field_focused() && app.catalog_owner_choices().is_some() {
-                hints.push(ShortcutHint::new("Enter", "owner list"));
+                hints.push(ShortcutHint::with_keys(
+                    "Enter",
+                    "owner list",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ));
             } else {
-                hints.push(ShortcutHint::new("Enter", "preview"));
+                hints.push(ShortcutHint::with_keys(
+                    "Enter",
+                    "preview",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ));
             }
-            hints.push(ShortcutHint::new("Esc", "cancel"));
+            hints.push(ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ));
         }
         render_interactive_hints(frame, chunks[2], &hints, theme, ui);
     }
@@ -1863,12 +1868,32 @@ fn render_table(
         );
     }
     let hints = table_shortcut_hints(draft, compact);
-    let hint_lines = shortcut_hints::lines(&hints, area.width, theme, theme.surface);
-    // Keep the action row and wrapped shortcut footer inside the form's available area.
-    let footer_height = hint_lines.len().max(1) as u16;
-    let footer_y = area.bottom().saturating_sub(footer_height);
-    let action_y = footer_y.saturating_sub(1);
-    let content_bottom = action_y;
+    let footer_action_width = dialog_footer::action_width(&["[ Cancel ]", "[ Review SQL ]"], 3);
+    let footer = dialog_footer::measure(
+        area,
+        footer_action_width,
+        1,
+        if compact {
+            FooterDensity::Compact
+        } else {
+            FooterDensity::Standard
+        },
+    );
+    if let Some(separator) = footer.content_separator {
+        frame.render_widget(
+            Paragraph::new("─").style(Style::new().fg(theme.border).bg(theme.surface)),
+            separator,
+        );
+    }
+    if let Some(separator) = footer.help_separator {
+        frame.render_widget(
+            Paragraph::new("─").style(Style::new().fg(theme.border).bg(theme.surface)),
+            separator,
+        );
+    }
+    let content_bottom = footer
+        .content_separator
+        .map_or(footer.status_and_actions.y, |separator| separator.y);
     let baseline = match baseline {
         Some(crate::db::catalog_mutation::CatalogObjectDefinition::Table(definition)) => {
             Some(definition)
@@ -1876,21 +1901,101 @@ fn render_table(
         _ => None,
     };
     let summary = draft.change_summary(baseline);
-    let show_summary = !compact && area.height >= 20;
-    let list_bottom = content_bottom.saturating_sub(u16::from(show_summary));
+    let list_bottom = content_bottom;
     let columns_y = if compact {
         area.y.saturating_add(if columns_focus { 1 } else { 2 })
     } else {
         area.y.saturating_add(7)
     };
+    let column_action = if draft.selected_column_is_removed() {
+        (
+            if compact {
+                "[ Restore ]"
+            } else {
+                "[ Restore Column ]"
+            },
+            HitTarget::CatalogEditorRestoreTableColumn,
+            true,
+        )
+    } else {
+        (
+            if compact {
+                "[ Remove ]"
+            } else {
+                "[ Remove Column ]"
+            },
+            HitTarget::CatalogEditorRemoveTableColumn,
+            draft.selected_column().is_some()
+                && draft
+                    .columns
+                    .iter()
+                    .filter(|column| {
+                        !matches!(
+                            column.state,
+                            crate::model::catalog_editor::DraftRowState::Removed { .. }
+                        )
+                    })
+                    .count()
+                    > 1,
+        )
+    };
+    let column_action_width = dialog_footer::action_width(
+        &[
+            if compact { "[ Add ]" } else { "[ Add Column ]" },
+            if compact {
+                "[ Remove ]"
+            } else {
+                "[ Remove Column ]"
+            },
+            if compact {
+                "[ Restore ]"
+            } else {
+                "[ Restore Column ]"
+            },
+        ],
+        3,
+    );
     if columns_y < content_bottom {
+        let heading_width = area.width.saturating_sub(column_action_width);
         render_catalog_section_heading(
             frame,
-            Rect::new(area.x, columns_y, area.width, 1),
+            Rect::new(area.x, columns_y, heading_width, 1),
             "COLUMNS",
             columns_focus,
             theme,
         );
+        let context_actions = [
+            (
+                if compact { "[ Add ]" } else { "[ Add Column ]" },
+                TableEditorFocus::Action(TableActionField::AddColumn),
+                HitTarget::CatalogEditorAddTableColumn,
+                true,
+            ),
+            (
+                column_action.0,
+                TableEditorFocus::Action(TableActionField::RemoveColumn),
+                column_action.1,
+                column_action.2,
+            ),
+        ];
+        let mut x = area.right().saturating_sub(column_action_width);
+        for (label, field, target, enabled) in context_actions {
+            let width = label.width() as u16;
+            let action_area = Rect::new(x, columns_y, width.min(area.right().saturating_sub(x)), 1);
+            if action_area.width > 0 {
+                render_catalog_action(
+                    frame,
+                    action_area,
+                    label,
+                    draft.focus == field,
+                    enabled,
+                    target,
+                    ui,
+                    theme,
+                );
+            }
+            x = x.saturating_add(width + 3);
+        }
     }
     let header_y = columns_y.saturating_add(1);
     let list_start = columns_y.saturating_add(2);
@@ -2055,105 +2160,39 @@ fn render_table(
             &mut table_state,
         );
     }
-    if show_summary {
-        let summary_text = if summary.is_dirty() {
-            format!(
-                "Changes  {}{}{} added  {} modified  {} removed",
-                if summary.properties_changed {
-                    "table properties changed · "
-                } else {
-                    ""
-                },
-                if summary.column_order_changed {
-                    "column order changed · "
-                } else {
-                    ""
-                },
-                summary.added_columns,
-                summary.modified_columns,
-                summary.removed_columns
-            )
-        } else {
-            "Changes  No changes".into()
-        };
-        frame.render_widget(
-            Paragraph::new(summary_text).style(Style::new().fg(theme.muted).bg(theme.surface)),
-            Rect::new(area.x, content_bottom.saturating_sub(1), area.width, 1),
-        );
-    }
-    let column_action = if draft.selected_column_is_removed() {
-        (
-            if compact {
-                "[ Restore ]"
-            } else {
-                "[ Restore Column ]"
-            },
-            HitTarget::CatalogEditorRestoreTableColumn,
+    let summary_text = if summary.is_dirty() {
+        let pending = summary.added_columns
+            + summary.modified_columns
+            + summary.removed_columns
+            + usize::from(summary.properties_changed)
+            + usize::from(summary.column_order_changed);
+        format!(
+            "{} pending changes · {} added · {} modified · {} removed",
+            pending, summary.added_columns, summary.modified_columns, summary.removed_columns,
         )
     } else {
+        "No changes".into()
+    };
+    frame.render_widget(
+        Paragraph::new(summary_text).style(Style::new().fg(theme.muted).bg(theme.surface)),
+        footer.status_area(footer_action_width, 3),
+    );
+    let bottom_actions = [
         (
-            if compact {
-                "[ Remove ]"
-            } else {
-                "[ Remove Column ]"
-            },
-            HitTarget::CatalogEditorRemoveTableColumn,
-        )
-    };
-    let actions = if compact {
-        [
-            (
-                "[ Add ]",
-                TableEditorFocus::Action(TableActionField::AddColumn),
-                HitTarget::CatalogEditorAddTableColumn,
-            ),
-            (
-                column_action.0,
-                TableEditorFocus::Action(TableActionField::RemoveColumn),
-                column_action.1,
-            ),
-            (
-                "[ SQL ]",
-                TableEditorFocus::Action(TableActionField::Review),
-                HitTarget::CatalogEditorReview,
-            ),
-            (
-                "[ Cancel ]",
-                TableEditorFocus::Action(TableActionField::Cancel),
-                HitTarget::CatalogEditorCancel,
-            ),
-        ]
-    } else {
-        [
-            (
-                "[ Add Column ]",
-                TableEditorFocus::Action(TableActionField::AddColumn),
-                HitTarget::CatalogEditorAddTableColumn,
-            ),
-            (
-                column_action.0,
-                TableEditorFocus::Action(TableActionField::RemoveColumn),
-                column_action.1,
-            ),
-            (
-                "[ Review SQL ]",
-                TableEditorFocus::Action(TableActionField::Review),
-                HitTarget::CatalogEditorReview,
-            ),
-            (
-                "[ Cancel ]",
-                TableEditorFocus::Action(TableActionField::Cancel),
-                HitTarget::CatalogEditorCancel,
-            ),
-        ]
-    };
-    let mut x = area.x;
-    for (label, field, target) in actions {
-        let width = label.len() as u16;
-        let action_area = Rect::new(x, action_y, width.min(area.right().saturating_sub(x)), 1);
-        if action_area.width == 0 {
-            continue;
-        }
+            "[ Cancel ]",
+            TableEditorFocus::Action(TableActionField::Cancel),
+            HitTarget::CatalogEditorCancel,
+        ),
+        (
+            "[ Review SQL ]",
+            TableEditorFocus::Action(TableActionField::Review),
+            HitTarget::CatalogEditorReview,
+        ),
+    ];
+    let mut x = footer.action_area(footer_action_width, 3).x;
+    for (label, field, target) in bottom_actions {
+        let width = label.width() as u16;
+        let action_area = Rect::new(x, footer.status_and_actions.y, width, 1);
         render_catalog_action(
             frame,
             action_area,
@@ -2166,13 +2205,7 @@ fn render_table(
         );
         x = x.saturating_add(width + 3);
     }
-    render_interactive_hints(
-        frame,
-        Rect::new(area.x, footer_y, area.width, footer_height),
-        &table_shortcut_hints(draft, compact),
-        theme,
-        ui,
-    );
+    render_interactive_hints(frame, footer.help, &hints, theme, ui);
 }
 
 fn table_shortcut_hints(draft: &TableDraft, compact: bool) -> Vec<ShortcutHint<'static>> {
@@ -2181,32 +2214,95 @@ fn table_shortcut_hints(draft: &TableDraft, compact: bool) -> Vec<ShortcutHint<'
     }
     match draft.focus {
         TableEditorFocus::Columns if compact => vec![
+            ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
             ShortcutHint::new("A/a", "add"),
             ShortcutHint::new("J/K", "reorder"),
-            ShortcutHint::new("dd", "delete"),
-            ShortcutHint::new("Esc", "cancel"),
+            ShortcutHint::with_keys(
+                "dd",
+                "delete",
+                [
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                ],
+            ),
         ],
         TableEditorFocus::Columns => vec![
             ShortcutHint::new("j/k · Up/Down", "move row"),
-            ShortcutHint::new("Tab/Shift-Tab", "move focus"),
-            ShortcutHint::new("a", "add below"),
-            ShortcutHint::new("A", "add above"),
+            ShortcutHint::with_keys(
+                "Tab",
+                "next focus",
+                [KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Shift+Tab",
+                "previous focus",
+                [KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "a",
+                "add below",
+                [KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "A",
+                "add above",
+                [KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE)],
+            ),
             ShortcutHint::new("J/K", "reorder"),
-            ShortcutHint::new("e", "edit column"),
-            ShortcutHint::new("dd", "delete column"),
-            ShortcutHint::new("r", "restore"),
-            ShortcutHint::new("Esc", "close/cancel editor"),
+            ShortcutHint::with_keys(
+                "e",
+                "edit column",
+                [KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "dd",
+                "delete column",
+                [
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                    KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+                ],
+            ),
+            ShortcutHint::with_keys(
+                "r",
+                "restore",
+                [KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)],
+            ),
+            ShortcutHint::with_keys(
+                "Esc",
+                "close/cancel editor",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
         ],
         TableEditorFocus::ColumnDetails(_) => Vec::new(),
         TableEditorFocus::Action(_) => vec![
-            ShortcutHint::new("Enter/Space", "activate"),
+            ShortcutHint::with_keys(
+                "Enter",
+                "activate",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
             ShortcutHint::new("↑/↓", "move"),
-            ShortcutHint::new("Esc", "close/cancel editor"),
+            ShortcutHint::with_keys(
+                "Esc",
+                "close/cancel editor",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
         ],
         TableEditorFocus::General(_) => vec![
+            ShortcutHint::with_keys(
+                "Esc",
+                "cancel",
+                [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+            ),
             ShortcutHint::new("Tab/Shift-Tab/Up/Down", "move focus"),
-            ShortcutHint::new("Enter", "preview"),
-            ShortcutHint::new("Esc", "cancel"),
+            ShortcutHint::with_keys(
+                "Enter",
+                "preview",
+                [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+            ),
         ],
     }
 }
