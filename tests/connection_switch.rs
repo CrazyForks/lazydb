@@ -88,6 +88,17 @@ fn memory_profile(name: &str) -> ConnectionProfile {
         .profile
 }
 
+fn app_with_console(profiles: Vec<ConnectionProfile>) -> App {
+    let mut app = App::new(profiles);
+    let profile_id = app.profiles.first().map(|profile| profile.id);
+    app.active_workspace_profile = profile_id;
+    app.update(Action::OpenSqlEditorList);
+    app.update(Action::SqlEditorListCreate);
+    app.connection = Default::default();
+    app.sessions = Default::default();
+    app
+}
+
 async fn file_profile(path: &std::path::Path, name: &str, sentinel: &str) -> ConnectionProfile {
     let profile = import_connection_url(&format!("sqlite://{}", path.display()), Some(name))
         .unwrap()
@@ -264,7 +275,7 @@ fn pending_switch_keeps_active_identity_and_allows_its_existing_console() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = app
         .sessions
@@ -320,7 +331,7 @@ fn failed_switch_keeps_visible_workspace_and_editor_text_unchanged() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = match app
         .update(Action::RequestProfileConnect {
@@ -370,7 +381,7 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
@@ -440,7 +451,7 @@ fn target_selector_binds_only_the_selected_console_before_connection_success() {
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -600,7 +611,7 @@ fn switching_to_a_console_reconnects_its_target_before_execution() {
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.connection.profile_id = Some(profile_id);
     app.connection.generation = 1;
     app.connection.status = ConnectionStatus::Connected;
@@ -676,7 +687,7 @@ fn console_target_reconnect_updates_the_active_target_before_sql_runs() {
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.connection.profile_id = Some(profile_id);
     app.connection.generation = 1;
     app.connection.status = ConnectionStatus::Connected;
@@ -716,7 +727,7 @@ fn query_page_result_returns_to_console_after_switching_to_another_profile() {
     let second_id = second.id;
     let first_target = ExecutionTarget::from_profile(&first);
     let second_target = ExecutionTarget::from_profile(&second);
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     app.update(Action::ConnectionSucceeded {
         profile_id: first_id,
@@ -808,7 +819,7 @@ fn failed_console_target_reconnect_preserves_old_connection_and_allows_retry() {
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -860,7 +871,7 @@ fn executing_while_console_target_is_connecting_does_not_start_a_second_connecti
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 1,
@@ -891,7 +902,7 @@ fn target_selector_reconnects_when_console_target_is_selected_but_connection_doe
         database: ":memory:".into(),
         schema: Some("attached".into()),
     };
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 1,
@@ -956,7 +967,7 @@ fn target_selector_reconnects_when_console_target_is_selected_but_connection_doe
 fn target_selector_requires_an_active_connection_and_blocks_manual_transactions() {
     let profile = memory_profile("target");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.connection.profile_id = None;
     app.update(Action::OpenTargetSelector);
     assert!(app.overlay.is_none());
@@ -987,7 +998,7 @@ fn running_sql_blocks_connection_switch_without_changing_workspace() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1016,7 +1027,7 @@ fn all_manual_console_transactions_are_deferred_and_cancel_keeps_connection() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1052,7 +1063,7 @@ fn disconnecting_one_profile_does_not_review_another_profiles_transaction() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1103,7 +1114,7 @@ fn invalidating_one_connection_preserves_other_console_transaction() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     app.tabs
         .push(WorkspaceTab::Sql(lazydb::model::tab::ConsoleTab::new(
             "first",
@@ -1211,7 +1222,7 @@ fn profile_root_safe_switch_keeps_old_online_while_target_links_then_fails_local
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let first_generation = match app
         .update(Action::RequestProfileConnect {
             profile_id: first_id,
@@ -1273,7 +1284,7 @@ fn opening_second_profile_preserves_first_connection_state() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let first_generation = match app
         .update(Action::RequestProfileConnect {
             profile_id: first_id,
@@ -1362,7 +1373,7 @@ fn late_success_for_an_older_connect_attempt_does_not_steal_selected_connection(
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
     let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1413,7 +1424,7 @@ fn catalog_request_stays_with_profile_that_finished_connecting() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
@@ -1457,7 +1468,7 @@ fn catalog_request_stays_with_profile_that_finished_connecting() {
 fn expanding_online_profile_without_catalog_starts_a_request() {
     let profile = memory_profile("first");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = app
         .sessions
         .start_attempt(ExecutionTarget::from_profile(&app.profiles[0]))
@@ -1508,7 +1519,7 @@ fn second_profile_connection_does_not_clear_first_catalog_entries() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = match app
         .update(Action::RequestProfileConnect {
@@ -1581,7 +1592,7 @@ fn console_query_uses_its_session_when_another_profile_is_globally_active() {
     let first_id = first.id;
     let second_id = second.id;
     let first_target = ExecutionTarget::from_profile(&first);
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let first_generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
@@ -1628,7 +1639,7 @@ fn connection_success_reconciles_without_clearing_a_newer_attempt() {
     let second = memory_profile("second");
     let first_id = first.id;
     let second_id = second.id;
-    let mut app = App::new(vec![first, second]);
+    let mut app = app_with_console(vec![first, second]);
 
     let old_generation = app
         .sessions
@@ -1678,7 +1689,7 @@ fn connection_success_reconciles_without_clearing_a_newer_attempt() {
 fn exhausted_connection_generation_refuses_to_wrap() {
     let profile = memory_profile("profile");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     app.connection.profile_id = Some(profile_id);
     app.connection.generation = u64::MAX;
     app.connection.status = ConnectionStatus::Connected;
@@ -1699,7 +1710,7 @@ fn exhausted_connection_generation_refuses_to_wrap() {
 fn disconnected_identity_cannot_be_resurrected_by_a_stale_success() {
     let profile = memory_profile("profile");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1733,7 +1744,7 @@ fn disconnected_identity_cannot_be_resurrected_by_a_stale_success() {
 fn unrelated_disconnect_completion_does_not_change_failed_state() {
     let profile = memory_profile("profile");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1758,7 +1769,7 @@ fn unrelated_disconnect_completion_does_not_change_failed_state() {
 fn active_disconnect_caches_and_hides_workspace_until_reconnect() {
     let profile = memory_profile("profile");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1808,7 +1819,7 @@ fn active_disconnect_caches_and_hides_workspace_until_reconnect() {
 fn active_invalidation_caches_and_hides_workspace_but_stale_invalidation_is_ignored() {
     let profile = memory_profile("profile");
     let profile_id = profile.id;
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1993,7 +2004,7 @@ async fn late_disconnect_cannot_close_a_new_generation_of_the_same_profile() {
         Arc::new(MissingSecretStore::default()),
         None,
     );
-    let mut app = App::new(vec![profile]);
+    let mut app = app_with_console(vec![profile]);
 
     let old = connect(&mut app, &mut runtime, &mut receiver, profile_id).await;
     let new_generation = old.generation + 1;

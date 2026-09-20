@@ -796,7 +796,6 @@ impl App {
         } else {
             (Vec::new(), Vec::new())
         };
-
         let placeholder_console_id = tabs
             .iter()
             .find_map(WorkspaceTab::as_console)
@@ -1230,33 +1229,7 @@ impl App {
         self.normalize_focus();
     }
 
-    fn empty_workspace_for(
-        &mut self,
-        _profile_id: Uuid,
-        target: ExecutionTarget,
-    ) -> ConnectionWorkspace {
-        let mut tab = ConsoleTab::new("console");
-        tab.execution_target = Some(target.clone());
-        let id = tab.id;
-        ConnectionWorkspace {
-            tabs: vec![WorkspaceTab::Sql(tab)],
-            sql_editors: vec![ConsoleRecord {
-                id,
-                name: "console".into(),
-                execution_target: Some(target),
-                transaction_mode: TransactionMode::Auto,
-                open: true,
-            }],
-            sql: vec![(id, String::new())],
-            active_tab_id: Some(id),
-        }
-    }
-
-    fn activate_profile_workspace(
-        &mut self,
-        profile_id: Uuid,
-        target: ExecutionTarget,
-    ) -> Vec<Command> {
+    fn activate_profile_workspace(&mut self, profile_id: Uuid) -> Vec<Command> {
         self.remove_placeholder_console();
         let commands = Vec::new();
         if self.active_workspace_profile != Some(profile_id) || self.tabs.is_empty() {
@@ -1265,10 +1238,7 @@ impl App {
             {
                 self.workspaces.insert(old_profile_id, workspace);
             }
-            let workspace = self
-                .workspaces
-                .remove(&profile_id)
-                .unwrap_or_else(|| self.empty_workspace_for(profile_id, target.clone()));
+            let workspace = self.workspaces.remove(&profile_id).unwrap_or_default();
             let workspace = workspace;
             let workspace_tab_ids = workspace
                 .tabs
@@ -11712,7 +11682,7 @@ impl App {
                         || self.connection.profile_id.is_none()
                         || self.connection.profile_id == Some(profile_id));
                 let mut workspace_commands = if should_activate_workspace {
-                    self.activate_profile_workspace(profile_id, target.clone())
+                    self.activate_profile_workspace(profile_id)
                 } else {
                     Vec::new()
                 };
@@ -16420,7 +16390,7 @@ impl App {
             if let Some(workspace) = self.workspaces.remove(&profile_id) {
                 self.install_workspace(profile_id, workspace);
             } else if self.connection.profile_id == Some(profile_id) {
-                let workspace = self.empty_workspace_for(profile_id, target);
+                let workspace = ConnectionWorkspace::default();
                 self.install_workspace(profile_id, workspace);
             } else {
                 self.active_workspace_profile = Some(profile_id);
@@ -17365,7 +17335,7 @@ impl App {
             if let Some(state) = self.explorer.normalized.profiles.get_mut(&profile_id) {
                 state.status = ExplorerConnectionStatus::Online;
             }
-            let mut commands = self.activate_profile_workspace(profile_id, target);
+            let mut commands = self.activate_profile_workspace(profile_id);
             commands.extend(self.dashboard_metadata_commands(identity));
             if self.is_active_relation_tab() {
                 commands.extend(self.load_active_relation(false));
@@ -25958,7 +25928,8 @@ mod tests {
             .unwrap()
             .profile;
         let profile_id = profile.id;
-        let mut app = App::new(vec![profile]);
+        let mut app = App::new(Vec::new());
+        app.profiles.push(profile);
         let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
             commands => panic!("unexpected commands: {commands:?}"),
@@ -26981,6 +26952,9 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
+        app.active_workspace_profile = Some(profile_id);
+        let target = ExecutionTarget::from_profile(&app.profiles[0]);
+        app.create_sql_editor_named("console".into(), Some(target));
         let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
             commands => panic!("unexpected commands: {commands:?}"),

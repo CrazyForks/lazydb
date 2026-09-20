@@ -408,7 +408,7 @@ pub struct ConnectionState {
 /// representation is being converted to the global document surface.
 /// ConsoleRecord and SQL text are restoration inputs only; App's shared
 /// collections remain authoritative after installation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ConnectionWorkspace {
     pub tabs: Vec<WorkspaceTab>,
     pub sql_editors: Vec<ConsoleRecord>,

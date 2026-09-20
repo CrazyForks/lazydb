@@ -7,6 +7,38 @@ use lazydb::{
 };
 use uuid::Uuid;
 
+fn server() -> lazydb::db::ServerInfo {
+    lazydb::db::ServerInfo {
+        kind: lazydb::profile::DatabaseKind::Sqlite,
+        version: "test".into(),
+        database: ":memory:".into(),
+        current_user: None,
+    }
+}
+
+#[test]
+fn connecting_a_profile_without_saved_consoles_keeps_workspace_empty() {
+    let profile = import_connection_url(":memory:", Some("connected"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+        [Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
+
+    app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: server(),
+        mutation_capabilities: Default::default(),
+    });
+
+    assert!(app.tabs.is_empty());
+    assert!(app.sql_editors.is_empty());
+}
+
 fn console(id: Uuid, name: &str, target: ExecutionTarget) -> PersistedConsole {
     PersistedConsole {
         id,
