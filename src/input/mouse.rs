@@ -160,6 +160,20 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 ui.update_text_gesture(end);
                 return None;
             }
+            if let Some(drag) = *ui.panel_scrollbar_drag.borrow() {
+                let offset = crate::ui::scrollbar::ScrollbarGeometry {
+                    rail: ratatui::layout::Rect::new(0, drag.track_start, 1, drag.track_length),
+                    thumb_start: 0,
+                    thumb_length: drag.thumb_length,
+                    max_offset: drag.max_offset,
+                }
+                .offset_at(event.row, drag.pointer_offset);
+                return Some(if drag.help {
+                    Action::HelpSetScroll(offset)
+                } else {
+                    Action::OmniSetScroll(offset)
+                });
+            }
             if app.overlay.is_some()
                 && !matches!(app.overlay, Some(Overlay::RelationTransactionConfirm(_)))
             {
@@ -343,13 +357,19 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             let was_editor_scrollbar_drag = ui.editor_scrollbar_drag.borrow_mut().take().is_some();
             let was_explorer_scrollbar_drag =
                 ui.explorer_scrollbar_drag.borrow_mut().take().is_some();
+            let was_panel_scrollbar_drag = ui.panel_scrollbar_drag.borrow_mut().take().is_some();
             if was_column_resize
                 || was_scrollbar_drag
                 || was_editor_scrollbar_drag
                 || was_explorer_scrollbar_drag
+                || was_panel_scrollbar_drag
             {
                 ui.mouse_gesture.borrow_mut().take();
-                Some(Action::GridEndColumnResize)
+                if was_panel_scrollbar_drag {
+                    None
+                } else {
+                    Some(Action::GridEndColumnResize)
+                }
             } else {
                 None
             }
@@ -444,6 +464,14 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             };
             if !matches!(target, HitTarget::ExplorerRow(_)) {
                 ui.clear_click_tracker();
+            }
+            match target {
+                HitTarget::HelpItem(index) => return Some(Action::HelpSelect(index)),
+                HitTarget::HelpTogglePanel | HitTarget::OmniTogglePanel => {
+                    return Some(Action::ToggleHelpPanel);
+                }
+                HitTarget::OmniItem(index) => return Some(Action::OmniSelect(index)),
+                _ => {}
             }
             if let HitTarget::OpenTextDetail(request) = target {
                 return Some(Action::OpenTextDetail(request));
@@ -617,6 +645,14 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 | HitTarget::TransactionExitCancel
                                 | HitTarget::UpdateButton { .. }
                                 | HitTarget::OpenTextDetail(_)
+                                | HitTarget::HelpItem(_)
+                                | HitTarget::HelpTogglePanel
+                                | HitTarget::HelpScrollbarPage { .. }
+                                | HitTarget::HelpScrollbarThumb { .. }
+                                | HitTarget::OmniTogglePanel
+                                | HitTarget::OmniItem(_)
+                                | HitTarget::OmniScrollbarPage { .. }
+                                | HitTarget::OmniScrollbarThumb { .. }
                                 | HitTarget::Shortcut(_)
                         )))
             {
@@ -756,6 +792,66 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::Help => Some(Action::ShowHelp),
                 HitTarget::Omni => None,
                 HitTarget::OmniItem(index) => Some(Action::OmniSelect(index)),
+                HitTarget::HelpItem(index) => Some(Action::HelpSelect(index)),
+                HitTarget::HelpTogglePanel | HitTarget::OmniTogglePanel => {
+                    Some(Action::ToggleHelpPanel)
+                }
+                HitTarget::HelpScrollbarPage { offset } => Some(Action::HelpSetScroll(offset)),
+                HitTarget::OmniScrollbarPage { offset } => Some(Action::OmniSetScroll(offset)),
+                HitTarget::HelpScrollbarThumb {
+                    track_start,
+                    track_length,
+                    thumb_start,
+                    thumb_length,
+                    max_offset,
+                } => {
+                    *ui.panel_scrollbar_drag.borrow_mut() = Some(crate::ui::PanelScrollbarDrag {
+                        help: true,
+                        track_start,
+                        track_length,
+                        thumb_length,
+                        pointer_offset: event.row.saturating_sub(thumb_start),
+                        max_offset,
+                    });
+                    *ui.mouse_gesture.borrow_mut() =
+                        Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
+                    Some(Action::HelpSetScroll(
+                        crate::ui::scrollbar::ScrollbarGeometry {
+                            rail: ratatui::layout::Rect::new(0, track_start, 1, track_length),
+                            thumb_start: 0,
+                            thumb_length,
+                            max_offset,
+                        }
+                        .offset_at(event.row, event.row.saturating_sub(thumb_start)),
+                    ))
+                }
+                HitTarget::OmniScrollbarThumb {
+                    track_start,
+                    track_length,
+                    thumb_start,
+                    thumb_length,
+                    max_offset,
+                } => {
+                    *ui.panel_scrollbar_drag.borrow_mut() = Some(crate::ui::PanelScrollbarDrag {
+                        help: false,
+                        track_start,
+                        track_length,
+                        thumb_length,
+                        pointer_offset: event.row.saturating_sub(thumb_start),
+                        max_offset,
+                    });
+                    *ui.mouse_gesture.borrow_mut() =
+                        Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
+                    Some(Action::OmniSetScroll(
+                        crate::ui::scrollbar::ScrollbarGeometry {
+                            rail: ratatui::layout::Rect::new(0, track_start, 1, track_length),
+                            thumb_start: 0,
+                            thumb_length,
+                            max_offset,
+                        }
+                        .offset_at(event.row, event.row.saturating_sub(thumb_start)),
+                    ))
+                }
                 HitTarget::UpdateCenter => Some(Action::OpenUpdateCenter),
                 HitTarget::UpdateButton { action } => Some(Action::UpdateOverlayActivate(action)),
                 HitTarget::ToggleResultView => Some(Action::ToggleResultView),
@@ -1074,6 +1170,34 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if matches!(app.overlay, Some(Overlay::NotificationHistory(_))) {
                 return Some(Action::NotificationHistoryMove(3));
             }
+            if app.omni.is_some()
+                && ui.target_at(event.column, event.row).is_some_and(|target| {
+                    matches!(
+                        target,
+                        HitTarget::Omni
+                            | HitTarget::OmniItem(_)
+                            | HitTarget::OmniTogglePanel
+                            | HitTarget::OmniScrollbarPage { .. }
+                            | HitTarget::OmniScrollbarThumb { .. }
+                    )
+                })
+            {
+                return Some(Action::OmniScroll(3));
+            }
+            if matches!(app.overlay, Some(Overlay::Help(_)))
+                && ui.target_at(event.column, event.row).is_some_and(|target| {
+                    matches!(
+                        target,
+                        HitTarget::Help
+                            | HitTarget::HelpItem(_)
+                            | HitTarget::HelpTogglePanel
+                            | HitTarget::HelpScrollbarPage { .. }
+                            | HitTarget::HelpScrollbarThumb { .. }
+                    )
+                })
+            {
+                return Some(Action::HelpScroll(3));
+            }
             if app.overlay.is_some() {
                 return None;
             }
@@ -1157,6 +1281,34 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             if matches!(app.overlay, Some(Overlay::NotificationHistory(_))) {
                 return Some(Action::NotificationHistoryMove(-3));
+            }
+            if app.omni.is_some()
+                && ui.target_at(event.column, event.row).is_some_and(|target| {
+                    matches!(
+                        target,
+                        HitTarget::Omni
+                            | HitTarget::OmniItem(_)
+                            | HitTarget::OmniTogglePanel
+                            | HitTarget::OmniScrollbarPage { .. }
+                            | HitTarget::OmniScrollbarThumb { .. }
+                    )
+                })
+            {
+                return Some(Action::OmniScroll(-3));
+            }
+            if matches!(app.overlay, Some(Overlay::Help(_)))
+                && ui.target_at(event.column, event.row).is_some_and(|target| {
+                    matches!(
+                        target,
+                        HitTarget::Help
+                            | HitTarget::HelpItem(_)
+                            | HitTarget::HelpTogglePanel
+                            | HitTarget::HelpScrollbarPage { .. }
+                            | HitTarget::HelpScrollbarThumb { .. }
+                    )
+                })
+            {
+                return Some(Action::HelpScroll(-3));
             }
             if app.overlay.is_some() {
                 return None;
@@ -1336,6 +1488,15 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::ExplorerScrollbarPage { .. } | HitTarget::ExplorerScrollbarThumb { .. } => {
             Some(Focus::Explorer)
         }
+        HitTarget::HelpItem(_)
+        | HitTarget::HelpTogglePanel
+        | HitTarget::HelpScrollbarPage { .. }
+        | HitTarget::HelpScrollbarThumb { .. }
+        | HitTarget::Omni
+        | HitTarget::OmniItem(_)
+        | HitTarget::OmniTogglePanel
+        | HitTarget::OmniScrollbarPage { .. }
+        | HitTarget::OmniScrollbarThumb { .. } => None,
         HitTarget::EditorScrollbarPage { .. } | HitTarget::EditorScrollbarThumb { .. } => {
             Some(Focus::Editor)
         }
@@ -1385,9 +1546,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::CatalogEditorDiscardChanges
         | HitTarget::CatalogEditorColumnDetailsConfirm
         | HitTarget::CatalogEditorColumnDetailsCancel
-        | HitTarget::CatalogOwnerChoice(_)
-        | HitTarget::Omni
-        | HitTarget::OmniItem(_) => None,
+        | HitTarget::CatalogOwnerChoice(_) => None,
         HitTarget::TargetSelectorRow(_)
         | HitTarget::TargetSelectorCancel
         | HitTarget::DatabaseSelectorRow(_)

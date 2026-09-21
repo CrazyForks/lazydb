@@ -351,7 +351,7 @@ fn readonly_regions_register_help_dashboard_and_relation_detail_targets() {
         help_state
             .hit_regions
             .iter()
-            .any(|region| { matches!(region.target, HitTarget::OpenTextDetail(_)) })
+            .any(|region| { matches!(region.target, HitTarget::HelpItem(_)) })
     );
 
     app.overlay = None;

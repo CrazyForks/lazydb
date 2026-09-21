@@ -268,12 +268,35 @@ pub enum HitTarget {
     SqlEditorListSearch,
     SqlEditorListRename,
     HelpSearch,
+    HelpItem(usize),
+    HelpTogglePanel,
+    HelpScrollbarPage {
+        offset: usize,
+    },
+    HelpScrollbarThumb {
+        track_start: u16,
+        track_length: u16,
+        thumb_start: u16,
+        thumb_length: u16,
+        max_offset: usize,
+    },
     ProfileGroupName,
     KeySequencePopup,
     TextDetailCopyAll,
     TextDetailClose,
     Omni,
     OmniItem(usize),
+    OmniTogglePanel,
+    OmniScrollbarPage {
+        offset: usize,
+    },
+    OmniScrollbarThumb {
+        track_start: u16,
+        track_length: u16,
+        thumb_start: u16,
+        thumb_length: u16,
+        max_offset: usize,
+    },
     RecordViewCopyCell,
     RecordViewCopyRow,
     RecordViewViewValue,
@@ -325,6 +348,8 @@ pub struct UiState {
     pub grid_horizontal_scroll: Option<GridHorizontalScrollTargets>,
     pub record_view_fields: Option<(Uuid, usize)>,
     pub explorer_viewport_rows: Option<usize>,
+    pub help_viewport_rows: Option<usize>,
+    pub omni_viewport_rows: Option<usize>,
     pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
     pub redis_preview_viewport_rows: Option<(Uuid, usize, usize)>,
     pub redis_editor_viewport: Option<(Uuid, crate::model::editor::EditorViewport)>,
@@ -340,6 +365,7 @@ pub struct UiState {
     pub grid_scrollbar_drag: RefCell<Option<GridScrollbarDrag>>,
     pub editor_scrollbar_drag: RefCell<Option<EditorScrollbarDrag>>,
     pub explorer_scrollbar_drag: RefCell<Option<ExplorerScrollbarDrag>>,
+    pub panel_scrollbar_drag: RefCell<Option<PanelScrollbarDrag>>,
     pub pane_resize_drag: RefCell<Option<PaneResizeDrag>>,
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
     pub text_gesture: RefCell<Option<text_selection::TextGesture>>,
@@ -417,6 +443,16 @@ pub struct ExplorerScrollbarDrag {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanelScrollbarDrag {
+    pub help: bool,
+    pub track_start: u16,
+    pub track_length: u16,
+    pub thumb_length: u16,
+    pub pointer_offset: u16,
+    pub max_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PaneResizeDrag {
     pub split: PaneSplit,
     pub start_pointer: u16,
@@ -478,6 +514,8 @@ impl UiState {
             grid_horizontal_scroll: None,
             record_view_fields: None,
             explorer_viewport_rows: None,
+            help_viewport_rows: None,
+            omni_viewport_rows: None,
             redis_keys_viewport_rows: None,
             redis_preview_viewport_rows: None,
             redis_editor_viewport: None,
@@ -492,6 +530,7 @@ impl UiState {
             grid_scrollbar_drag: RefCell::new(None),
             editor_scrollbar_drag: RefCell::new(None),
             explorer_scrollbar_drag: RefCell::new(None),
+            panel_scrollbar_drag: RefCell::new(None),
             pane_resize_drag: RefCell::new(None),
             mouse_gesture: RefCell::new(None),
             text_gesture: RefCell::new(None),
@@ -1046,6 +1085,8 @@ fn render_with_state_at(
     state.grid_horizontal_scroll = None;
     state.record_view_fields = None;
     state.explorer_viewport_rows = None;
+    state.help_viewport_rows = None;
+    state.omni_viewport_rows = None;
     state.redis_keys_viewport_rows = None;
     state.redis_preview_viewport_rows = None;
     state.redis_editor_viewport = None;
@@ -7027,6 +7068,17 @@ fn render_help(
         area: chunks[0],
         target: HitTarget::HelpSearch,
     });
+    let toggle_label = " Tab -> Omni ";
+    let toggle_width = toggle_label.chars().count() as u16;
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            popup.right().saturating_sub(1).saturating_sub(toggle_width),
+            popup.y,
+            toggle_width.min(popup.width.saturating_sub(2)),
+            1,
+        ),
+        target: HitTarget::HelpTogglePanel,
+    });
     register_input_selection_target(
         state,
         text_selection::InputSelectionTarget::HelpSearch,
@@ -7036,12 +7088,26 @@ fn render_help(
         text_input_horizontal_offset(chunks[0], "Search ", &help.query),
     );
     let visible_height = chunks[2].height as usize;
-    let start = if visible_height == 0 {
-        0
-    } else {
-        help.selected
-            .saturating_sub(visible_height.saturating_sub(1))
-    };
+    state.help_viewport_rows = Some(visible_height);
+    let scrollbar_track = Rect::new(
+        chunks[2].right().saturating_sub(1),
+        chunks[2].y,
+        1,
+        chunks[2].height,
+    );
+    let scrollbar =
+        crate::ui::scrollbar::geometry(scrollbar_track, visible_height, entries.len(), help.scroll);
+    let list_area = scrollbar.map_or(chunks[2], |_| {
+        Rect::new(
+            chunks[2].x,
+            chunks[2].y,
+            chunks[2].width.saturating_sub(1),
+            chunks[2].height,
+        )
+    });
+    let start = help
+        .scroll
+        .min(entries.len().saturating_sub(visible_height));
     let rows = entries
         .iter()
         .enumerate()
@@ -7057,7 +7123,13 @@ fn render_help(
                     ),
                     Style::new().fg(theme.action).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(shortcut.description, Style::new().fg(theme.text)),
+                Span::styled(
+                    truncate_to_cells(
+                        shortcut.description,
+                        usize::from(list_area.width).saturating_sub(20),
+                    ),
+                    Style::new().fg(theme.text),
+                ),
             ])
         })
         .collect::<Vec<_>>();
@@ -7072,26 +7144,68 @@ fn render_help(
     frame.render_widget(
         Paragraph::new(list)
             .style(Style::new().fg(theme.text).bg(theme.surface_raised))
-            .wrap(Wrap { trim: false }),
-        chunks[2],
+            .wrap(Wrap { trim: true }),
+        list_area,
     );
-    for (offset, shortcut) in entries.iter().enumerate().skip(start).take(visible_height) {
+    for (offset, _shortcut) in entries.iter().enumerate().skip(start).take(visible_height) {
         let row = Rect::new(
-            chunks[2].x,
-            chunks[2].y.saturating_add(offset as u16 - start as u16),
-            chunks[2].width,
+            list_area.x,
+            list_area.y.saturating_add(offset as u16 - start as u16),
+            list_area.width,
             1,
         );
         state.hit_regions.push(HitRegion {
             area: row,
-            target: HitTarget::OpenTextDetail(readonly_detail_request(
-                "Keyboard shortcut",
-                format!(
-                    "{}  {}",
-                    crate::help::configured_sequence(shortcut, Some(&help.bindings)),
-                    shortcut.description
-                ),
-            )),
+            target: HitTarget::HelpItem(offset),
+        });
+    }
+    if let Some(geometry) = scrollbar {
+        let track = scrollbar_track;
+        let before = geometry.thumb_start;
+        let after = track
+            .height
+            .saturating_sub(before)
+            .saturating_sub(geometry.thumb_length);
+        let mut lines = Vec::with_capacity(track.height as usize);
+        lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+        lines.extend(
+            (0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+        );
+        lines.extend(
+            (0..geometry.thumb_length)
+                .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+        );
+        lines.extend(
+            (0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+        );
+        lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(theme.surface_raised)),
+            track,
+        );
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(track.x, track.y + 1, 1, before),
+            target: HitTarget::HelpScrollbarPage {
+                offset: start.saturating_sub(visible_height),
+            },
+        });
+        state.hit_regions.push(HitRegion {
+            area: geometry.thumb_area(),
+            target: HitTarget::HelpScrollbarThumb {
+                track_start: geometry.rail.y,
+                track_length: geometry.rail.height,
+                thumb_start: geometry.thumb_start + geometry.rail.y,
+                thumb_length: geometry.thumb_length,
+                max_offset: geometry.max_offset,
+            },
+        });
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(track.x, geometry.thumb_area().bottom(), 1, after),
+            target: HitTarget::HelpScrollbarPage {
+                offset: start
+                    .saturating_add(visible_height)
+                    .min(geometry.max_offset),
+            },
         });
     }
     frame.render_widget(

@@ -6275,6 +6275,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         sync_grid_viewport(&mut app, &mut runtime, &ui_state);
         sync_record_view_fields(&mut app, &mut runtime, &ui_state);
         sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+        sync_panel_viewports(&mut app, &mut runtime, &ui_state);
         sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
         sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
         sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
@@ -6504,6 +6505,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 sync_grid_viewport(&mut app, &mut runtime, &ui_state);
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
                 sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+                sync_panel_viewports(&mut app, &mut runtime, &ui_state);
                 sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
                 sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
                 sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
@@ -6856,6 +6858,26 @@ fn sync_explorer_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState)
     };
     if app.explorer.normalized.viewport_height != rows {
         apply_action(app, runtime, Action::ExplorerViewportChanged(rows));
+    }
+}
+
+fn sync_panel_viewports(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    if let Some(rows) = state.help_viewport_rows
+        && matches!(app.overlay, Some(crate::model::workspace::Overlay::Help(_)))
+        && app
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| matches!(overlay, crate::model::workspace::Overlay::Help(help) if help.viewport_rows != rows))
+    {
+        apply_action(app, runtime, Action::HelpViewportChanged(rows));
+    }
+    if let Some(rows) = state.omni_viewport_rows
+        && app
+            .omni
+            .as_ref()
+            .is_some_and(|omni| omni.viewport_rows != rows)
+    {
+        apply_action(app, runtime, Action::OmniViewportChanged(rows));
     }
 }
 

@@ -1,8 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use lazydb::{
-    action::Action, app::App, config::HelpPanelView, input::keymap::Keymap,
+    action::Action,
+    app::App,
+    config::HelpPanelView,
+    input::keymap::Keymap,
+    input::mouse::map_mouse,
     model::workspace::Overlay,
+    ui::{self, HitTarget, UiState},
 };
+use ratatui::{Terminal, backend::TestBackend};
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -75,4 +82,81 @@ fn unified_panel_restores_the_real_overlay_after_closing() {
     app.update(Action::OmniDismiss);
 
     assert!(matches!(app.overlay, Some(Overlay::Message { .. })));
+}
+
+#[test]
+fn help_and_omni_render_toggle_targets_and_help_rows_are_selectable() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::ShowHelp);
+    let mut state = UiState::new();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut state))
+        .unwrap();
+    let toggle = state
+        .hit_regions
+        .iter()
+        .find(|region| region.target == HitTarget::HelpTogglePanel)
+        .unwrap();
+    assert_eq!(
+        map_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: toggle.area.x,
+                row: toggle.area.y,
+                modifiers: crossterm::event::KeyModifiers::NONE
+            },
+            &state,
+            &app
+        ),
+        Some(Action::ToggleHelpPanel)
+    );
+    let row = state
+        .hit_regions
+        .iter()
+        .find(|region| matches!(region.target, HitTarget::HelpItem(_)))
+        .unwrap();
+    assert!(matches!(
+        map_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: row.area.x,
+                row: row.area.y,
+                modifiers: crossterm::event::KeyModifiers::NONE
+            },
+            &state,
+            &app
+        ),
+        Some(Action::HelpSelect(_))
+    ));
+}
+
+#[test]
+fn rendered_panel_scrollbar_targets_map_to_panel_actions() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::ShowHelp);
+    let mut state = UiState::new();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| ui::render_with_state(frame, &app, &mut state))
+        .unwrap();
+    let help_bar = state.hit_regions.iter().find(|region| {
+        matches!(
+            region.target,
+            HitTarget::HelpScrollbarPage { .. } | HitTarget::HelpScrollbarThumb { .. }
+        )
+    });
+    if let Some(region) = help_bar {
+        let action = map_mouse(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: region.area.x,
+                row: region.area.y,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            &state,
+            &app,
+        );
+        assert!(matches!(action, Some(Action::HelpSetScroll(_))));
+    }
 }
