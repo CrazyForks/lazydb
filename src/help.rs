@@ -208,6 +208,8 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::WorkspaceSaveFailed { .. } => ShortcutContext::Message,
                 Overlay::SubstituteConfirm { .. } => ShortcutContext::SubstituteConfirmation,
                 Overlay::ExecutionConfirm { .. } => ShortcutContext::ExecutionConfirmation,
+                Overlay::PrincipalMutationConfirm { .. } => ShortcutContext::ExecutionConfirmation,
+                Overlay::PrincipalMutationForm(_) => ShortcutContext::ExecutionConfirmation,
                 Overlay::ManualCancelConfirm { .. } => ShortcutContext::ManualCancelConfirmation,
                 Overlay::TransactionExitConfirm { .. } => {
                     ShortcutContext::TransactionExitConfirmation

@@ -242,6 +242,22 @@ pub enum Action {
     },
     PrincipalDropCancel,
     PrincipalDropConfirm,
+    PlanPrincipalMutation {
+        request: crate::db::principal::PrincipalMutationRequest,
+    },
+    PrincipalMutationPlanReady(crate::db::principal::PrincipalMutationPlan),
+    PrincipalMutationPlanFailed {
+        request: crate::db::principal::PrincipalMutationRequest,
+        message: String,
+    },
+    ExecutePrincipalMutation(crate::db::principal::PrincipalMutationPlan),
+    PrincipalMutationSucceeded {
+        plan: crate::db::principal::PrincipalMutationPlan,
+    },
+    PrincipalMutationFailed {
+        plan: crate::db::principal::PrincipalMutationPlan,
+        message: String,
+    },
     TogglePrincipalDropFocus,
     PrincipalDropSucceeded {
         plan: crate::db::principal_drop::PrincipalDropPlan,
@@ -620,6 +636,9 @@ pub enum Action {
     ConfirmExecution,
     CancelExecution,
     ToggleExecutionConfirmationFocus,
+    ConfirmPrincipalMutation,
+    CancelPrincipalMutation,
+    TogglePrincipalMutationFocus,
     ScrollExecutionConfirmation {
         rows: isize,
     },
@@ -703,6 +722,19 @@ pub enum Action {
         entry: crate::db::principal::PrincipalEntry,
     },
     RefreshActivePrincipal,
+    SetPrincipalView(crate::model::principal::PrincipalView),
+    OpenPrincipalPermissionMutation {
+        grant: bool,
+    },
+    ConfirmPrincipalMutationForm,
+    CancelPrincipalMutationForm,
+    TogglePrincipalMutationFormField,
+    TogglePrincipalMutationFormOption,
+    SelectPrincipalPermission(usize),
+    MovePrincipalPermission(isize),
+    PrincipalMutationFieldNext,
+    PrincipalMutationToggleOperation,
+    PrincipalMutationToggleOption,
     CancelActivePrincipalRequest,
     PrincipalPageLoaded {
         profile_id: Uuid,
@@ -717,6 +749,14 @@ pub enum Action {
     PrincipalDdlLoaded {
         request: crate::model::principal::PrincipalDdlRequest,
         ddl: crate::db::principal::PrincipalDdl,
+    },
+    PrincipalDetailsLoaded {
+        request: crate::model::principal::PrincipalDetailsRequest,
+        details: crate::db::principal::PrincipalDetails,
+    },
+    PrincipalDetailsFailed {
+        request: crate::model::principal::PrincipalDetailsRequest,
+        message: String,
     },
     PrincipalDdlFailed {
         request: crate::model::principal::PrincipalDdlRequest,
@@ -1552,6 +1592,8 @@ pub enum Command {
     },
     PlanCatalogDrop(CatalogDropRequest),
     PlanPrincipalDrop(crate::db::principal_drop::PrincipalDropRequest),
+    PlanPrincipalMutation(crate::db::principal::PrincipalMutationRequest),
+    ExecutePrincipalMutation(crate::db::principal::PrincipalMutationPlan),
     ExecutePrincipalDrop(crate::db::principal_drop::PrincipalDropPlan),
     ExecuteCatalogDrop(CatalogDropPlan),
     PlanCatalogMutation {
@@ -1564,6 +1606,7 @@ pub enum Command {
     LoadRelationDdl(crate::model::relation::RelationRequest),
     LoadPrincipals(crate::model::principal::PrincipalListRequest),
     LoadPrincipalDdl(crate::model::principal::PrincipalDdlRequest),
+    LoadPrincipalDetails(crate::model::principal::PrincipalDetailsRequest),
     CancelPrincipalDdl(crate::model::principal::PrincipalDdlRequest),
     CancelRelationRequest(crate::model::relation::RelationRequest),
     RunQuery {

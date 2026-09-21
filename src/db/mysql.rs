@@ -232,6 +232,18 @@ pub struct MySqlAdapter {
     catalog_scope: CatalogScope,
 }
 
+pub(crate) fn mysql_membership_coverage() -> crate::db::principal::PrincipalCoverage {
+    crate::db::principal::PrincipalCoverage::Unavailable(
+        "MySQL/MariaDB role membership is dialect-specific and not normalized in this path".into(),
+    )
+}
+
+pub(crate) fn mysql_show_grants_coverage() -> crate::db::principal::PrincipalCoverage {
+    crate::db::principal::PrincipalCoverage::Partial(
+        "SHOW GRANTS is retained as native text until dialect-specific parsing completes".into(),
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ServerCapabilities {
     pub catalog: bool,
@@ -2980,6 +2992,107 @@ impl MySqlAdapter {
         );
         Ok(PrincipalDdl {
             principal: principal.clone(),
+            sql,
+        })
+    }
+
+    pub async fn principal_details(
+        &self,
+        principal: &PrincipalEntry,
+        target: &crate::db::principal::PrincipalReadTarget,
+    ) -> Result<crate::db::principal::PrincipalDetails, DatabaseError> {
+        if principal.id.profile_id != self.connection_id || target.principal != principal.id {
+            return Err(DatabaseError::configuration(
+                "principal details target does not match this connection",
+            ));
+        }
+        let grants = self
+            .principal_grants(
+                &principal.id.native_id,
+                principal.id.host.as_deref().unwrap_or("%"),
+            )
+            .await?;
+        let permissions = grants
+            .into_iter()
+            .map(|grant| crate::db::principal::PrincipalPermission {
+                target: "native SHOW GRANTS".to_owned(),
+                privilege: grant,
+                source: "native grant".to_owned(),
+                grantable: false,
+                source_kind: crate::db::principal::PrincipalPermissionSource::Direct,
+            })
+            .collect();
+        Ok(crate::db::principal::PrincipalDetails {
+            principal: principal.clone(),
+            database: target.database.clone(),
+            permissions,
+            member_of: Vec::new(),
+            members: Vec::new(),
+            permissions_coverage: mysql_show_grants_coverage(),
+            membership_coverage: mysql_membership_coverage(),
+        })
+    }
+
+    pub fn plan_principal_mutation(
+        &self,
+        principal: &PrincipalEntry,
+        connection: crate::identity::ConnectionIdentity,
+        database: Option<&str>,
+        mutation: crate::db::principal::PrincipalMutation,
+    ) -> Result<crate::db::principal::PrincipalMutationPlan, DatabaseError> {
+        if principal.id.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "principal does not belong to this connection",
+            ));
+        }
+        let account = format!(
+            "{}@{}",
+            quote_literal(&principal.id.native_id),
+            quote_literal(principal.id.host.as_deref().unwrap_or("%"))
+        );
+        let sql = match mutation {
+            crate::db::principal::PrincipalMutation::Grant {
+                target, privilege, ..
+            } => {
+                let crate::db::principal::PrincipalMutationTarget::Relation { schema, relation } =
+                    target
+                else {
+                    return Err(DatabaseError::unsupported(
+                        "MySQL grants currently require a relation target",
+                    ));
+                };
+                format!(
+                    "GRANT {privilege} ON {}.{} TO {account};",
+                    quote_identifier(&schema),
+                    quote_identifier(&relation)
+                )
+            }
+            crate::db::principal::PrincipalMutation::Revoke {
+                target, privilege, ..
+            } => {
+                let crate::db::principal::PrincipalMutationTarget::Relation { schema, relation } =
+                    target
+                else {
+                    return Err(DatabaseError::unsupported(
+                        "MySQL revokes currently require a relation target",
+                    ));
+                };
+                format!(
+                    "REVOKE {privilege} ON {}.{} FROM {account};",
+                    quote_identifier(&schema),
+                    quote_identifier(&relation)
+                )
+            }
+            _ => {
+                return Err(DatabaseError::unsupported(
+                    "MySQL role membership mutations are not enabled yet",
+                ));
+            }
+        };
+        Ok(crate::db::principal::PrincipalMutationPlan {
+            connection,
+            principal: principal.clone(),
+            database: database.map(str::to_owned),
             sql,
         })
     }

@@ -1,7 +1,19 @@
 use uuid::Uuid;
 
-use crate::db::principal::{PrincipalDdl, PrincipalEntry, PrincipalPage};
+use crate::db::principal::{
+    PrincipalDdl, PrincipalDetails, PrincipalEntry, PrincipalPage, PrincipalReadTarget,
+};
+use crate::db::principal::{
+    PrincipalMutationDraft, PrincipalMutationSection, PrincipalMutationTarget,
+};
 use crate::identity::ConnectionIdentity;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PrincipalView {
+    #[default]
+    Overview,
+    Ddl,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrincipalListRequest {
@@ -17,6 +29,117 @@ pub struct PrincipalDdlRequest {
     pub request_id: u64,
     pub connection: ConnectionIdentity,
     pub entry: PrincipalEntry,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PrincipalDetailsRequest {
+    pub tab_id: Uuid,
+    pub tab_generation: u64,
+    pub request_id: u64,
+    pub connection: ConnectionIdentity,
+    pub entry: PrincipalEntry,
+    pub target: PrincipalReadTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrincipalMutationForm {
+    pub draft: PrincipalMutationDraft,
+    pub selected_field: PrincipalMutationField,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrincipalMutationField {
+    Operation,
+    Target,
+    Privilege,
+    GrantOption,
+    Role,
+    AdminOption,
+}
+
+impl PrincipalMutationForm {
+    pub fn permission(target: PrincipalMutationTarget) -> Self {
+        Self {
+            draft: PrincipalMutationDraft::permission(target),
+            selected_field: PrincipalMutationField::Operation,
+        }
+    }
+    pub fn membership(role: impl Into<String>) -> Self {
+        Self {
+            draft: PrincipalMutationDraft::membership(role),
+            selected_field: PrincipalMutationField::Operation,
+        }
+    }
+    pub fn toggle_operation(&mut self) {
+        self.draft.set_grant(!self.draft.grant);
+    }
+    pub fn toggle_option(&mut self) {
+        if self.draft.section == PrincipalMutationSection::Membership {
+            self.draft.admin_option = !self.draft.admin_option;
+        } else {
+            self.draft.grant_option = !self.draft.grant_option;
+        }
+    }
+    pub fn set_privilege(&mut self, privilege: impl Into<String>) {
+        self.draft.set_privilege(privilege);
+    }
+    pub fn set_target(&mut self, target: PrincipalMutationTarget) {
+        self.draft.set_target(target);
+    }
+    pub fn set_role(&mut self, role: impl Into<String>) {
+        self.draft.set_role(role);
+    }
+    pub fn next_field(&mut self) {
+        self.selected_field = match self.selected_field {
+            PrincipalMutationField::Operation => PrincipalMutationField::Target,
+            PrincipalMutationField::Target => PrincipalMutationField::Privilege,
+            PrincipalMutationField::Privilege => PrincipalMutationField::GrantOption,
+            PrincipalMutationField::GrantOption => PrincipalMutationField::Role,
+            PrincipalMutationField::Role => PrincipalMutationField::AdminOption,
+            PrincipalMutationField::AdminOption => PrincipalMutationField::Operation,
+        };
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PrincipalDetailsLoad {
+    Empty,
+    Loading {
+        request: PrincipalDetailsRequest,
+        previous: Option<PrincipalDetails>,
+    },
+    Ready(PrincipalDetails),
+    Failed {
+        request: PrincipalDetailsRequest,
+        message: String,
+        previous: Option<PrincipalDetails>,
+    },
+}
+
+impl PrincipalDetailsLoad {
+    pub fn pending_request(&self) -> Option<&PrincipalDetailsRequest> {
+        match self {
+            Self::Loading { request, .. } => Some(request),
+            _ => None,
+        }
+    }
+
+    pub fn snapshot(&self) -> Option<&PrincipalDetails> {
+        match self {
+            Self::Ready(details) => Some(details),
+            Self::Loading { previous, .. } | Self::Failed { previous, .. } => previous.as_ref(),
+            Self::Empty => None,
+        }
+    }
+
+    pub fn status(&self) -> Option<(String, bool)> {
+        match self {
+            Self::Empty => Some(("Loading permissions".to_owned(), false)),
+            Self::Loading { .. } => Some(("Refreshing permissions".to_owned(), false)),
+            Self::Failed { message, .. } => Some((message.clone(), true)),
+            Self::Ready(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +212,10 @@ pub struct PrincipalDdlTab {
     pub next_request_id: u64,
     pub entry: PrincipalEntry,
     pub load: PrincipalDdlLoad,
+    pub view: PrincipalView,
+    pub details: PrincipalDetailsLoad,
+    pub selected_permission: usize,
+    pub mutation_draft: Option<PrincipalMutationForm>,
 }
 
 impl PrincipalDdlTab {
@@ -100,6 +227,10 @@ impl PrincipalDdlTab {
             next_request_id: 0,
             entry,
             load: PrincipalDdlLoad::Empty,
+            view: PrincipalView::Overview,
+            details: PrincipalDetailsLoad::Empty,
+            selected_permission: 0,
+            mutation_draft: None,
         }
     }
 
@@ -124,6 +255,71 @@ impl PrincipalDdlTab {
 
     pub fn title(&self) -> &str {
         &self.entry.name
+    }
+
+    pub fn allocate_details_request(
+        &mut self,
+        connection: ConnectionIdentity,
+        database: Option<String>,
+    ) -> Option<PrincipalDetailsRequest> {
+        let request_id = self.next_request_id.checked_add(1)?;
+        self.next_request_id = request_id;
+        Some(PrincipalDetailsRequest {
+            tab_id: self.id,
+            tab_generation: self.generation,
+            request_id,
+            connection,
+            entry: self.entry.clone(),
+            target: PrincipalReadTarget {
+                principal: self.entry.id.clone(),
+                database,
+            },
+        })
+    }
+
+    pub fn begin_details_load(&mut self, request: PrincipalDetailsRequest) {
+        let previous = match std::mem::replace(&mut self.details, PrincipalDetailsLoad::Empty) {
+            PrincipalDetailsLoad::Ready(details) => Some(details),
+            PrincipalDetailsLoad::Loading { previous, .. }
+            | PrincipalDetailsLoad::Failed { previous, .. } => previous,
+            PrincipalDetailsLoad::Empty => None,
+        };
+        self.details = PrincipalDetailsLoad::Loading { request, previous };
+    }
+
+    pub fn apply_details_success(
+        &mut self,
+        request: &PrincipalDetailsRequest,
+        details: PrincipalDetails,
+    ) -> bool {
+        if self.details.pending_request() != Some(request) {
+            return false;
+        }
+        self.details = PrincipalDetailsLoad::Ready(details);
+        true
+    }
+
+    pub fn apply_details_failure(
+        &mut self,
+        request: &PrincipalDetailsRequest,
+        message: String,
+    ) -> bool {
+        if self.details.pending_request() != Some(request) {
+            return false;
+        }
+        let previous = match std::mem::replace(&mut self.details, PrincipalDetailsLoad::Empty) {
+            PrincipalDetailsLoad::Loading { previous, .. } => previous,
+            other => {
+                self.details = other;
+                return false;
+            }
+        };
+        self.details = PrincipalDetailsLoad::Failed {
+            request: request.clone(),
+            message,
+            previous,
+        };
+        true
     }
 
     pub fn begin_load(&mut self, request: PrincipalDdlRequest) {

@@ -510,6 +510,26 @@ enum CompletionAfterEdit {
 }
 
 impl App {
+    pub(crate) fn principal_capability(
+        &self,
+        profile_id: Uuid,
+    ) -> Option<crate::db::principal::PrincipalCapability> {
+        let profile = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)?;
+        Some(match profile.kind {
+            DatabaseKind::Postgres => crate::db::principal::PrincipalCapability::DetailsAndMutation,
+            DatabaseKind::MySql
+            | DatabaseKind::MariaDb
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle => crate::db::principal::PrincipalCapability::DdlOnly,
+            DatabaseKind::Sqlite | DatabaseKind::Redis => {
+                crate::db::principal::PrincipalCapability::Unsupported
+            }
+        })
+    }
+
     fn sync_sql_history_editor(&mut self) {
         let Some(Overlay::SqlHistory(view)) = self.overlay.as_ref() else {
             return;
@@ -4336,6 +4356,147 @@ impl App {
                     *error = Some(message);
                 }
                 let _ = plan;
+                Vec::new()
+            }
+            Action::PlanPrincipalMutation { request } => {
+                vec![Command::PlanPrincipalMutation(request)]
+            }
+            Action::PrincipalMutationPlanReady(plan) => {
+                self.overlay = Some(Overlay::PrincipalMutationConfirm {
+                    plan,
+                    focus: crate::model::workspace::PrincipalMutationConfirmFocus::Cancel,
+                });
+                Vec::new()
+            }
+            Action::PrincipalMutationPlanFailed {
+                request: _,
+                message,
+            } => {
+                self.notify_error("Principal", message);
+                Vec::new()
+            }
+            Action::ExecutePrincipalMutation(plan) => {
+                vec![Command::ExecutePrincipalMutation(plan)]
+            }
+            Action::PrincipalMutationSucceeded { plan: _ } => {
+                self.notify_success("Principal", "Permission change applied");
+                self.refresh_active_principal()
+            }
+            Action::PrincipalMutationFailed { plan: _, message } => {
+                self.notify_error("Principal", message);
+                Vec::new()
+            }
+            Action::TogglePrincipalMutationFocus => {
+                if let Some(Overlay::PrincipalMutationConfirm { focus, .. }) = self.overlay.as_mut()
+                {
+                    *focus = match focus {
+                        crate::model::workspace::PrincipalMutationConfirmFocus::Cancel => {
+                            crate::model::workspace::PrincipalMutationConfirmFocus::Apply
+                        }
+                        crate::model::workspace::PrincipalMutationConfirmFocus::Apply => {
+                            crate::model::workspace::PrincipalMutationConfirmFocus::Cancel
+                        }
+                    };
+                }
+                Vec::new()
+            }
+            Action::CancelPrincipalMutation => {
+                self.overlay = None;
+                Vec::new()
+            }
+            Action::ConfirmPrincipalMutation => {
+                let Some(Overlay::PrincipalMutationConfirm { plan, focus, .. }) =
+                    self.overlay.take()
+                else {
+                    return Vec::new();
+                };
+                if focus == crate::model::workspace::PrincipalMutationConfirmFocus::Apply {
+                    vec![Command::ExecutePrincipalMutation(plan)]
+                } else {
+                    Vec::new()
+                }
+            }
+            Action::TogglePrincipalMutationFormField => {
+                if let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.as_mut() {
+                    form.next_field();
+                }
+                Vec::new()
+            }
+            Action::TogglePrincipalMutationFormOption => {
+                if let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.as_mut() {
+                    form.toggle_option();
+                }
+                Vec::new()
+            }
+            Action::CancelPrincipalMutationForm => {
+                self.overlay = None;
+                Vec::new()
+            }
+            Action::ConfirmPrincipalMutationForm => {
+                let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.take() else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
+                    return Vec::new();
+                };
+                let Some(connection) = self.principal_connection(tab.entry.id.profile_id) else {
+                    return Vec::new();
+                };
+                let Some(request_id) = tab.next_request_id.checked_add(1) else {
+                    return Vec::new();
+                };
+                vec![Command::PlanPrincipalMutation(
+                    crate::db::principal::PrincipalMutationRequest {
+                        connection,
+                        request_id,
+                        principal: tab.entry.clone(),
+                        database: self
+                            .profiles
+                            .iter()
+                            .find(|profile| profile.id == tab.entry.id.profile_id)
+                            .and_then(|profile| profile.database.clone()),
+                        mutation: form.draft.mutation(),
+                    },
+                )]
+            }
+            Action::SelectPrincipalPermission(index) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.selected_permission = index;
+                }
+                Vec::new()
+            }
+            Action::MovePrincipalPermission(delta) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let max = details.permissions.len().saturating_sub(1) as isize;
+                    tab.selected_permission =
+                        (tab.selected_permission as isize + delta).clamp(0, max) as usize;
+                }
+                Vec::new()
+            }
+            Action::PrincipalMutationFieldNext => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(form) = tab.mutation_draft.as_mut()
+                {
+                    form.next_field();
+                }
+                Vec::new()
+            }
+            Action::PrincipalMutationToggleOperation => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(form) = tab.mutation_draft.as_mut()
+                {
+                    form.toggle_operation();
+                }
+                Vec::new()
+            }
+            Action::PrincipalMutationToggleOption => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(form) = tab.mutation_draft.as_mut()
+                {
+                    form.toggle_option();
+                }
                 Vec::new()
             }
             Action::BeginMouseInputSelection { target, cursor } => {
@@ -11167,6 +11328,61 @@ impl App {
                     .collect()
             }
             Action::OpenPrincipal { profile_id, entry } => self.open_principal(profile_id, entry),
+            Action::SetPrincipalView(view) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.view = view;
+                }
+                Vec::new()
+            }
+            Action::OpenPrincipalPermissionMutation { grant } => {
+                let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
+                    return Vec::new();
+                };
+                let Some(details) = tab.details.snapshot() else {
+                    self.notify_warning("Principal", "Permissions are still loading");
+                    return Vec::new();
+                };
+                let Some(permission) = details.permissions.get(tab.selected_permission) else {
+                    self.notify_warning("Principal", "No structured permission is available");
+                    return Vec::new();
+                };
+                let Some((schema, relation)) = permission.target.split_once('.') else {
+                    self.notify_warning("Principal", "This permission target is not editable yet");
+                    return Vec::new();
+                };
+                let draft = crate::db::principal::PrincipalMutationDraft {
+                    section: crate::db::principal::PrincipalMutationSection::Permission,
+                    grant,
+                    target: crate::db::principal::PrincipalMutationTarget::Relation {
+                        schema: schema.to_owned(),
+                        relation: relation.to_owned(),
+                    },
+                    privilege: permission.privilege.clone(),
+                    grant_option: grant && permission.grantable,
+                    role: None,
+                    admin_option: false,
+                };
+                self.overlay = Some(Overlay::PrincipalMutationForm(Box::new(
+                    crate::model::principal::PrincipalMutationForm {
+                        draft,
+                        selected_field: crate::model::principal::PrincipalMutationField::Operation,
+                    },
+                )));
+                Vec::new()
+                /* let mutation = draft.mutation();
+                let Some(request_id) = request_id else {
+                    return Vec::new();
+                };
+                vec![Command::PlanPrincipalMutation(
+                    crate::db::principal::PrincipalMutationRequest {
+                        connection,
+                        request_id,
+                        principal,
+                        database,
+                        mutation,
+                    },
+                )] */
+            }
             Action::RefreshActivePrincipal => self.refresh_active_principal(),
             Action::CancelActivePrincipalRequest => self.cancel_active_principal_request(),
             Action::PrincipalPageLoaded {
@@ -11225,6 +11441,33 @@ impl App {
                     (tab.editor_id, sql)
                 };
                 self.editor.open_read_only(editor_id, &sql);
+                Vec::new()
+            }
+            Action::PrincipalDetailsLoaded { request, details } => {
+                let Some(index) = self.tabs.iter().position(|tab| {
+                    matches!(tab, WorkspaceTab::PrincipalDdl(tab) if tab.id == request.tab_id)
+                }) else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) else {
+                    return Vec::new();
+                };
+                if tab.generation != request.tab_generation
+                    || !tab.apply_details_success(&request, details)
+                {
+                    return Vec::new();
+                }
+                Vec::new()
+            }
+            Action::PrincipalDetailsFailed { request, message } => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| matches!(tab, WorkspaceTab::PrincipalDdl(tab) if tab.id == request.tab_id))
+                    && tab.generation == request.tab_generation
+                {
+                    tab.apply_details_failure(&request, message);
+                }
                 Vec::new()
             }
             Action::PrincipalDdlFailed { request, message } => {
@@ -19648,7 +19891,9 @@ impl App {
         }) {
             self.active_tab = index;
             self.focus = Focus::Results;
-            return self.load_principal_ddl(index, false);
+            let mut commands = self.load_principal_ddl(index, false);
+            commands.extend(self.load_principal_details(index, false));
+            return commands;
         }
         let tab = crate::model::principal::PrincipalDdlTab::new(entry);
         let editor_id = tab.editor_id;
@@ -19656,7 +19901,9 @@ impl App {
         self.editor.open_read_only(editor_id, "");
         self.active_tab = self.tabs.len() - 1;
         self.focus = Focus::Results;
-        self.load_principal_ddl(self.active_tab, true)
+        let mut commands = self.load_principal_ddl(self.active_tab, true);
+        commands.extend(self.load_principal_details(self.active_tab, true));
+        commands
     }
 
     fn load_principal_ddl(&mut self, index: usize, force: bool) -> Vec<Command> {
@@ -19683,6 +19930,34 @@ impl App {
         };
         tab.begin_load(request.clone());
         vec![Command::LoadPrincipalDdl(request)]
+    }
+
+    fn load_principal_details(&mut self, index: usize, force: bool) -> Vec<Command> {
+        let Some(profile_id) = self.tabs.get(index).and_then(|tab| match tab {
+            WorkspaceTab::PrincipalDdl(tab) => Some(tab.entry.id.profile_id),
+            _ => None,
+        }) else {
+            return Vec::new();
+        };
+        let Some(connection) = self.principal_connection(profile_id) else {
+            return Vec::new();
+        };
+        let database = self
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .and_then(|profile| profile.database.clone());
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) else {
+            return Vec::new();
+        };
+        if tab.details.pending_request().is_some() || (!force && tab.details.snapshot().is_some()) {
+            return Vec::new();
+        }
+        let Some(request) = tab.allocate_details_request(connection, database) else {
+            return Vec::new();
+        };
+        tab.begin_details_load(request.clone());
+        vec![Command::LoadPrincipalDetails(request)]
     }
 
     fn refresh_active_principal(&mut self) -> Vec<Command> {

@@ -187,6 +187,11 @@ pub enum Overlay {
         focus: ExecutionConfirmFocus,
         preview_offset: usize,
     },
+    PrincipalMutationConfirm {
+        plan: crate::db::principal::PrincipalMutationPlan,
+        focus: PrincipalMutationConfirmFocus,
+    },
+    PrincipalMutationForm(Box<crate::model::principal::PrincipalMutationForm>),
     ManualCancelConfirm {
         intent: CancellationIntent,
         focus: ManualCancelFocus,
@@ -254,6 +259,12 @@ pub enum Overlay {
     CatalogEditorDiscardConfirm {
         focus: CatalogEditorDiscardFocus,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrincipalMutationConfirmFocus {
+    Cancel,
+    Apply,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

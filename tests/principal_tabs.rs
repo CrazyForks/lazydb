@@ -1,15 +1,21 @@
-//! Integration tests for the DDL-only principal (user/role) workspace tab.
+//! Integration tests for the principal (user/role) workspace tab.
 //!
 //! Verifies the user-visible contract: a single reused tab, the
-//! `{name}@{connection}` title, DDL-only content with no DATA/DDL selector or
-//! `RELATION DDL` chrome, and rejection of stale responses.
+//! `{name}@{connection}` title, the Overview/DDL selector, and rejection of
+//! stale responses.
 
 use lazydb::{
     action::Action,
     app::App,
-    db::principal::{PrincipalDdl, PrincipalEntry, PrincipalId, PrincipalKind, PrincipalScope},
+    db::principal::{
+        PrincipalDdl, PrincipalDetails, PrincipalEntry, PrincipalId, PrincipalKind,
+        PrincipalMembership, PrincipalPermission, PrincipalReadTarget, PrincipalScope,
+    },
     identity::ConnectionIdentity,
-    model::{principal::PrincipalDdlRequest, tab::WorkspaceTab},
+    model::{
+        principal::{PrincipalDdlRequest, PrincipalDetailsRequest, PrincipalView},
+        tab::WorkspaceTab,
+    },
     profile::import_connection_url,
     ui::{self, UiState},
 };
@@ -110,8 +116,28 @@ fn principal_tab_title_is_name_at_connection_and_has_no_relation_chrome() {
     let output = render(&app, 120, 30);
     assert!(output.contains("alice@orbital-lab"), "{output}");
     assert!(!output.contains("RELATION DDL"), "{output}");
-    assert!(!output.contains(" DATA "), "{output}");
-    assert!(!output.contains("(ctrl-o)"), "{output}");
+    assert!(output.contains("OVERVIEW"), "{output}");
+    assert!(output.contains("DDL"), "{output}");
+    assert!(output.contains("Permissions"), "{output}");
+}
+
+#[test]
+fn principal_tab_defaults_to_overview_and_can_switch_to_ddl() {
+    let (mut app, profile_id) = app_with_profile();
+    app.update(Action::OpenPrincipal {
+        profile_id,
+        entry: entry(profile_id),
+    });
+    let index = principal_tab_index(&app);
+    assert!(matches!(
+        &app.tabs[index],
+        WorkspaceTab::PrincipalDdl(tab) if tab.view == PrincipalView::Overview
+    ));
+    app.update(Action::SetPrincipalView(PrincipalView::Ddl));
+    assert!(matches!(
+        &app.tabs[index],
+        WorkspaceTab::PrincipalDdl(tab) if tab.view == PrincipalView::Ddl
+    ));
 }
 
 #[test]
@@ -139,6 +165,7 @@ fn applying_ddl_fills_the_read_only_editor_and_stale_responses_are_rejected() {
     };
     if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[index] {
         tab.begin_load(request.clone());
+        tab.view = PrincipalView::Ddl;
     }
 
     // A stale request id must be ignored.
@@ -157,10 +184,66 @@ fn applying_ddl_fills_the_read_only_editor_and_stale_responses_are_rejected() {
     app.update(Action::PrincipalDdlLoaded {
         request,
         ddl: PrincipalDdl {
-            principal: entry,
-            sql: "CREATE ROLE alice LOGIN;".to_owned(),
+            principal: entry.clone(),
+            sql: "CREATE ROLE alice LOGIN;\nGRANT readers TO alice;".to_owned(),
         },
     });
     let output = render(&app, 120, 30);
     assert!(output.contains("CREATE ROLE alice LOGIN;"), "{output}");
+    app.update(Action::SetPrincipalView(PrincipalView::Overview));
+    let details = PrincipalDetails {
+        principal: entry.clone(),
+        database: None,
+        permissions: vec![PrincipalPermission {
+            target: "public.orders".to_owned(),
+            privilege: "SELECT".to_owned(),
+            source: "direct".to_owned(),
+            grantable: false,
+            source_kind: lazydb::db::principal::PrincipalPermissionSource::Direct,
+        }],
+        member_of: vec![PrincipalMembership {
+            role: "readers".to_owned(),
+            member: "alice".to_owned(),
+            admin_option: false,
+        }],
+        members: Vec::new(),
+        permissions_coverage: lazydb::db::principal::PrincipalCoverage::Complete,
+        membership_coverage: lazydb::db::principal::PrincipalCoverage::Complete,
+    };
+    let details_request = match &app.tabs[index] {
+        WorkspaceTab::PrincipalDdl(tab) => {
+            let mut request = details_request_for_test(tab);
+            request.request_id = 99;
+            request
+        }
+        _ => unreachable!(),
+    };
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[index] {
+        tab.begin_details_load(details_request.clone());
+    }
+    app.update(Action::PrincipalDetailsLoaded {
+        request: details_request,
+        details,
+    });
+    let output = render(&app, 120, 30);
+    assert!(output.contains("public.orders  SELECT  direct"), "{output}");
+}
+
+fn details_request_for_test(
+    tab: &lazydb::model::principal::PrincipalDdlTab,
+) -> PrincipalDetailsRequest {
+    PrincipalDetailsRequest {
+        tab_id: tab.id,
+        tab_generation: tab.generation,
+        request_id: tab.next_request_id,
+        connection: ConnectionIdentity {
+            profile_id: tab.entry.id.profile_id,
+            generation: 1,
+        },
+        entry: tab.entry.clone(),
+        target: PrincipalReadTarget {
+            principal: tab.entry.id.clone(),
+            database: None,
+        },
+    }
 }
