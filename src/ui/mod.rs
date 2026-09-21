@@ -50,10 +50,6 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-fn footer_hint_width(mode_badge: &str, area_width: u16) -> u16 {
-    area_width.saturating_sub(mode_badge.cell_width().saturating_add(2))
-}
-
 fn truncate_to_cells(value: &str, width: usize) -> String {
     let mut used = 0;
     value
@@ -1077,7 +1073,6 @@ fn render_with_state_at(
         return;
     }
 
-    render_header(frame, layout.header, app, theme, state);
     if let Some(area) = layout.tabs {
         render_tabs(frame, area, app, theme, state, icons);
     }
@@ -1092,6 +1087,10 @@ fn render_with_state_at(
         if let Some(area) = layout.relation {
             redis_browser::render(frame, area, app, state, theme, icons);
         }
+        state.hit_regions.push(HitRegion {
+            area: layout.footer,
+            target: HitTarget::Help,
+        });
         render_footer(frame, layout.footer, app, theme, sequence, state);
     } else if is_dashboard {
         if let Some(area) = layout.explorer {
@@ -1121,6 +1120,10 @@ fn render_with_state_at(
                 dashboard::render(frame, area, app, theme, state);
             }
         }
+        state.hit_regions.push(HitRegion {
+            area: layout.footer,
+            target: HitTarget::Help,
+        });
         render_footer(frame, layout.footer, app, theme, sequence, state);
     } else if is_relation || is_principal {
         if let Some(area) = layout.explorer {
@@ -1141,11 +1144,11 @@ fn render_with_state_at(
                 relation::render(frame, area, app, theme, state);
             }
         }
-        render_footer(frame, layout.footer, app, theme, sequence, state);
         state.hit_regions.push(HitRegion {
             area: layout.footer,
             target: HitTarget::Help,
         });
+        render_footer(frame, layout.footer, app, theme, sequence, state);
     } else {
         if let Some(area) = layout.explorer {
             state.hit_regions.push(HitRegion {
@@ -1179,12 +1182,12 @@ fn render_with_state_at(
             }
         }
         if !matches!(app.overlay, Some(Overlay::CatalogEditor)) {
+            state.hit_regions.push(HitRegion {
+                area: layout.footer,
+                target: HitTarget::Help,
+            });
             render_footer(frame, layout.footer, app, theme, sequence, state);
         }
-        state.hit_regions.push(HitRegion {
-            area: layout.footer,
-            target: HitTarget::Help,
-        });
     }
 
     if app.overlay.is_none() {
@@ -2054,7 +2057,7 @@ fn completion_popup_rect(
     Some(Rect::new(x, y, width, height))
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state: &mut UiState) {
+fn connection_summary(app: &App) -> (String, String) {
     let profile = app.active_profile().map_or_else(
         || "NO PROFILE".to_owned(),
         |profile| header_text(&profile.name),
@@ -2063,8 +2066,11 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
         || "not connected".to_owned(),
         |server| header_text(&server.database),
     );
-    let profile_width = profile.as_str().cell_width();
-    let status = if app.is_editor_target_switch_pending() {
+    (profile, database)
+}
+
+fn connection_state(app: &App, theme: Theme) -> Option<(&'static str, Color)> {
+    if app.is_editor_target_switch_pending() {
         Some(("TARGET", theme.warning))
     } else {
         match app.connection.status {
@@ -2072,9 +2078,11 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
             ConnectionStatus::Failed => Some(("FAILED", theme.error)),
             ConnectionStatus::Disconnected | ConnectionStatus::Connected => None,
         }
-    };
-    let update_badge = app
-        .update_inspection()
+    }
+}
+
+fn update_badge(app: &App) -> Option<String> {
+    app.update_inspection()
         .and_then(|inspection| match inspection.status {
             crate::update::UpdateStatus::Available => inspection
                 .target_version
@@ -2085,127 +2093,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, sta
                 .as_ref()
                 .map(|version| format!(" RESTART {version} ")),
             _ => None,
-        });
-    let update_width = update_badge
-        .as_deref()
-        .map_or(0, |value| value.cell_width());
-    let status_width = status.map_or(0, |(status, _)| status.cell_width().saturating_add(2));
-    let right_width = update_width.saturating_add(status_width);
-    let main_area = Rect::new(
-        area.x,
-        area.y,
-        area.width.saturating_sub(right_width),
-        area.height,
-    );
-    let running_version = format!(" v{} ", env!("CARGO_PKG_VERSION"));
-    let spans = vec![
-        Span::styled(
-            " LAZYDB ",
-            Style::new()
-                .fg(theme.background)
-                .bg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            running_version.clone(),
-            Style::new().fg(theme.action).bg(theme.surface),
-        ),
-        Span::styled("  ", Style::new().bg(theme.surface)),
-        Span::styled(
-            profile,
-            Style::new()
-                .fg(theme.text)
-                .bg(theme.surface)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  /  ", Style::new().fg(theme.border).bg(theme.surface)),
-        Span::styled(
-            database.clone(),
-            Style::new().fg(theme.action).bg(theme.surface),
-        ),
-    ];
-    let line = Line::from(spans);
-    frame.render_widget(
-        Paragraph::new(line).style(Style::new().bg(theme.surface)),
-        main_area,
-    );
-    let version_x = area.x.saturating_add(8);
-    let version_width = running_version.cell_width();
-    if version_width > 0 && version_x < main_area.right() {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
-                version_x,
-                area.y,
-                version_width.min(main_area.right().saturating_sub(version_x)),
-                1,
-            ),
-            target: HitTarget::UpdateCenter,
-        });
-    }
-    if let Some((status, color)) = status {
-        frame.render_widget(
-            Paragraph::new(format!(" {status} "))
-                .style(
-                    Style::new()
-                        .fg(color)
-                        .bg(theme.surface)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .alignment(Alignment::Right),
-            Rect::new(
-                area.right().saturating_sub(status_width),
-                area.y,
-                status_width,
-                area.height,
-            ),
-        );
-    }
-    if let Some(update_badge) = update_badge {
-        let update_area = Rect::new(
-            area.right().saturating_sub(right_width),
-            area.y,
-            update_width,
-            area.height,
-        );
-        frame.render_widget(
-            Paragraph::new(update_badge)
-                .style(
-                    Style::new()
-                        .fg(theme.warning)
-                        .bg(theme.surface)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .alignment(Alignment::Right),
-            update_area,
-        );
-        state.hit_regions.push(HitRegion {
-            area: update_area,
-            target: HitTarget::UpdateCenter,
-        });
-    }
-    let profile_x = area.x.saturating_add(10 + running_version.cell_width() + 2);
-    let profile_width = profile_width.min(main_area.right().saturating_sub(profile_x));
-    if profile_width > 0 {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(profile_x, area.y, profile_width, 1),
-            target: HitTarget::HeaderProfile,
-        });
-    }
-    let database_x = profile_x
-        .saturating_add(profile_width)
-        .saturating_add("  /  ".cell_width());
-    let database_width = database.cell_width();
-    if app.connection.server.is_some() && database_width > 0 && database_x < main_area.right() {
-        state.hit_regions.push(HitRegion {
-            area: Rect::new(
-                database_x,
-                area.y,
-                database_width.min(main_area.right().saturating_sub(database_x)),
-                1,
-            ),
-            target: HitTarget::HeaderDatabase,
-        });
-    }
+        })
 }
 
 fn header_text(value: &str) -> String {
@@ -4606,16 +4494,11 @@ fn render_footer(
     app: &App,
     theme: Theme,
     _sequence: Option<&crate::input::keymap::KeySequenceState>,
-    state: &UiState,
+    state: &mut UiState,
 ) {
-    if state.terminal_selection_mode {
-        frame.render_widget(
-            Paragraph::new(" TERMINAL SELECTION  |  mouse released  |  press Esc to return ")
-                .style(Style::new().fg(theme.warning).bg(theme.surface)),
-            area,
-        );
-        return;
-    }
+    let (profile, database) = connection_summary(app);
+    let status = connection_state(app, theme);
+    let update = update_badge(app);
     let (mode, mode_color) = match app.focus {
         Focus::Editor => match app.active_editor_mode() {
             EditorMode::Normal => ("NORMAL", theme.accent),
@@ -4662,13 +4545,43 @@ fn render_footer(
             })
             .collect::<Vec<_>>();
     let mode_badge = format!(" {mode} ");
-    let hint_line = shortcut_hints::line(
-        &hint_values,
-        footer_hint_width(&mode_badge, area.width),
-        theme,
-        theme.surface,
+    let identity_width = area.width.saturating_sub(
+        mode_badge.cell_width()
+            + 2
+            + status.map_or(0, |(value, _)| value.cell_width() + 2)
+            + update.as_deref().map_or(0, |value| value.cell_width())
+            + 24,
     );
+    let profile_budget = identity_width.saturating_sub(12).max(1) / 2;
+    let database_budget = identity_width.saturating_sub(profile_budget + 8).max(1);
+    let profile = truncate_to_cell_width(&profile, profile_budget);
+    let database = truncate_to_cell_width(&database, database_budget);
+    let identity_prefix = format!(
+        " v{}  {}  /  {}  ",
+        env!("CARGO_PKG_VERSION"),
+        profile,
+        database
+    );
+    let hints_width = area
+        .width
+        .saturating_sub(identity_prefix.cell_width() as u16)
+        .saturating_sub(mode_badge.cell_width())
+        .saturating_sub(2)
+        .saturating_sub(status.map_or(0, |(value, _)| value.cell_width() + 2))
+        .saturating_sub(update.as_deref().map_or(0, |value| value.cell_width()));
+    let hint_line = shortcut_hints::line(&hint_values, hints_width, theme, theme.surface);
     let mut spans = vec![
+        Span::styled(
+            " LAZYDB ",
+            Style::new()
+                .fg(theme.background)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            identity_prefix.clone(),
+            Style::new().fg(theme.text).bg(theme.surface),
+        ),
         Span::styled(
             mode_badge,
             Style::new()
@@ -4677,16 +4590,85 @@ fn render_footer(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::new().bg(theme.surface)),
-        Span::styled("", Style::new().bg(theme.surface)),
     ];
-    spans.pop();
     spans.extend(hint_line.spans);
-    spans.push(Span::styled("", Style::new().bg(theme.surface)));
+    if let Some((value, color)) = status {
+        spans.push(Span::styled(
+            format!(" {value} "),
+            Style::new()
+                .fg(color)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(value) = update {
+        spans.push(Span::styled(
+            value,
+            Style::new()
+                .fg(theme.warning)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if state.terminal_selection_mode {
+        spans.push(Span::styled(
+            " TERMINAL SELECTION | Esc ",
+            Style::new().fg(theme.warning).bg(theme.surface),
+        ));
+    }
     let line = Line::from(spans);
     frame.render_widget(
         Paragraph::new(line).style(Style::new().bg(theme.surface)),
         area,
     );
+
+    let mut x = area.x;
+    let lazydb_width = " LAZYDB ".cell_width();
+    x = x.saturating_add(lazydb_width);
+    let version_start = x;
+    let version_width = format!(" v{}", env!("CARGO_PKG_VERSION")).cell_width();
+    if version_width > 0 && version_start < area.right() {
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(
+                version_start,
+                area.y,
+                version_width.min(area.right() - version_start),
+                1,
+            ),
+            target: HitTarget::UpdateCenter,
+        });
+    }
+    x = x.saturating_add(format!(" v{}  ", env!("CARGO_PKG_VERSION")).cell_width());
+    let profile_start = x;
+    let profile_width = profile.cell_width() as u16;
+    if profile_width > 0 && profile_start < area.right() {
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(
+                profile_start,
+                area.y,
+                profile_width.min(area.right() - profile_start),
+                1,
+            ),
+            target: HitTarget::HeaderProfile,
+        });
+    }
+    x = x.saturating_add(profile_width + "  /  ".cell_width());
+    let database_width = database.cell_width() as u16;
+    if app.connection.server.is_some() && database_width > 0 && x < area.right() {
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(x, area.y, database_width.min(area.right() - x), 1),
+            target: HitTarget::HeaderDatabase,
+        });
+    }
+    if let Some(update) = update_badge(app) {
+        let width = update.cell_width();
+        if width > 0 && width <= area.width {
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(area.right().saturating_sub(width), area.y, width, 1),
+                target: HitTarget::UpdateCenter,
+            });
+        }
+    }
 }
 
 fn render_overlay(
@@ -7555,18 +7537,6 @@ fn centered(area: Rect, max_width: u16, max_height: u16) -> Rect {
 
 fn contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
-}
-
-#[cfg(test)]
-mod footer_tests {
-    use super::*;
-
-    #[test]
-    fn footer_hint_width_uses_the_rendered_badge_width() {
-        assert_eq!(footer_hint_width(" NORMAL ", 40), 30);
-        assert_eq!(footer_hint_width(" VISUAL LINE ", 40), 25);
-        assert_eq!(footer_hint_width(" NORMAL ", 4), 0);
-    }
 }
 
 #[cfg(test)]

@@ -6325,8 +6325,10 @@ fn workspace_header_and_footer_render_without_redundant_status_rows() {
     let output = render(&fixture(), 120, 36);
     let lines = output.lines().collect::<Vec<_>>();
 
-    assert!(lines[0].contains("LAZYDB"), "{output}");
-    assert!(lines[0].contains("orbital-lab"), "{output}");
+    let footer = lines.last().unwrap();
+    assert!(footer.contains("LAZYDB"), "{output}");
+    assert!(footer.contains("orbital-lab"), "{output}");
+    assert!(!lines[0].contains("LAZYDB"), "{output}");
     assert!(!output.contains("ONLINE"), "{output}");
     assert!(!output.contains("QUERY IDLE"), "{output}");
     assert!(!output.contains("Ready"), "{output}");
@@ -6344,14 +6346,14 @@ fn one_row_header_retains_only_transitional_and_failed_connection_status() {
     app.connection.status = ConnectionStatus::Connecting;
     let linking = render(&app, 80, 24);
     assert!(
-        linking.lines().next().unwrap().contains("LINKING"),
+        linking.lines().last().unwrap().contains("LINKING"),
         "{linking}"
     );
 
     app.connection.status = ConnectionStatus::Failed;
     let failed = render(&app, 80, 24);
     assert!(
-        failed.lines().next().unwrap().contains("FAILED"),
+        failed.lines().last().unwrap().contains("FAILED"),
         "{failed}"
     );
 
@@ -6368,7 +6370,7 @@ fn one_row_header_keeps_failure_status_after_long_context() {
     app.connection.status = ConnectionStatus::Failed;
 
     let output = render(&app, 56, 24);
-    let header = output.lines().next().unwrap();
+    let header = output.lines().last().unwrap();
 
     assert!(header.contains("LAZYDB"), "{output}");
     assert!(header.ends_with(" FAILED "), "{output}");

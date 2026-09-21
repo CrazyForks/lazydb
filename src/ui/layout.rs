@@ -5,7 +5,6 @@ use crate::model::workspace::{Focus, PaneLayoutMetrics, PaneSizePreferences, Pan
 const MIN_EXPLORER_WIDTH: u16 = 34;
 const MAX_DEFAULT_EXPLORER_WIDTH: u16 = 56;
 const MIN_RIGHT_WIDTH: u16 = 60;
-const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 const WORKSPACE_TABS_HEIGHT: u16 = 2;
 const RESULT_TABS_HEIGHT: u16 = 2;
@@ -76,7 +75,6 @@ pub enum LayoutMode {
 #[derive(Clone, Copy, Debug)]
 pub struct AppLayout {
     pub mode: LayoutMode,
-    pub header: Rect,
     pub tabs: Option<Rect>,
     pub body: Rect,
     pub explorer: Option<Rect>,
@@ -99,7 +97,6 @@ impl AppLayout {
         if area.width < 56 || area.height < 16 {
             return Self {
                 mode: LayoutMode::TooSmall,
-                header: area,
                 tabs: None,
                 body: area,
                 explorer: None,
@@ -114,21 +111,15 @@ impl AppLayout {
 
         let vertical = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(HEADER_HEIGHT),
-                Constraint::Min(8),
-                Constraint::Length(FOOTER_HEIGHT),
-            ])
+            .constraints([Constraint::Min(8), Constraint::Length(FOOTER_HEIGHT)])
             .split(area);
-        let header = vertical[0];
-        let body = vertical[1];
-        let footer = vertical[2];
+        let body = vertical[0];
+        let footer = vertical[1];
 
         if pane_maximized || area.width < 100 {
             return match focus {
                 Focus::Explorer => Self {
                     mode: LayoutMode::Focus,
-                    header,
                     tabs: None,
                     body,
                     explorer: Some(body),
@@ -143,7 +134,6 @@ impl AppLayout {
                     let (tabs, content) = split_main_content(body);
                     Self {
                         mode: LayoutMode::Focus,
-                        header,
                         tabs: Some(tabs),
                         body,
                         explorer: None,
@@ -160,7 +150,6 @@ impl AppLayout {
                         let (tabs, content) = split_main_content(body);
                         return Self {
                             mode: LayoutMode::Focus,
-                            header,
                             tabs: Some(tabs),
                             body,
                             explorer: None,
@@ -176,7 +165,6 @@ impl AppLayout {
                     let result = split_results(content);
                     Self {
                         mode: LayoutMode::Focus,
-                        header,
                         tabs: Some(tabs),
                         body,
                         explorer: None,
@@ -225,7 +213,6 @@ impl AppLayout {
             .split(content_area);
         Self {
             mode,
-            header,
             tabs: Some(main[0]),
             body,
             explorer: Some(horizontal[0]),
@@ -321,15 +308,10 @@ mod tests {
             false,
         );
 
-        assert_eq!(layout.header.height, 1);
         assert_eq!(layout.footer.height, 1);
-        assert_eq!(layout.header.y, area.y);
-        assert_eq!(layout.body.y, area.y + 1);
+        assert_eq!(layout.body.y, area.y);
         assert_eq!(layout.footer.y, area.bottom() - 1);
-        assert_eq!(
-            layout.header.height + layout.body.height + layout.footer.height,
-            area.height
-        );
+        assert_eq!(layout.body.height + layout.footer.height, area.height);
     }
 
     #[test]
@@ -549,7 +531,7 @@ mod tests {
         );
 
         assert_eq!(layout.explorer.unwrap().width, 60);
-        assert_eq!(layout.editor.unwrap().height, 17);
+        assert_eq!(layout.editor.unwrap().height, 18);
         assert_eq!(layout.results.unwrap().height, 7);
     }
 

@@ -691,14 +691,14 @@ fn rendered_editor_header_maps_target_and_transaction_clicks() {
     assert_click_maps(
         &ui_state,
         &app,
-        &HitTarget::EditorTransactionMenu,
-        Action::ActivateEditorTransaction,
+        &HitTarget::HeaderProfile,
+        Action::ExplorerSelect(ExplorerNodeId::Profile(profile.id)),
     );
     assert_click_maps(
         &ui_state,
         &app,
-        &HitTarget::EditorExecutionTarget,
-        Action::OpenTargetSelector,
+        &HitTarget::HeaderDatabase,
+        Action::OpenDatabaseSelector,
     );
 }
 
