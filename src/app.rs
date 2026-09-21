@@ -17218,9 +17218,6 @@ impl App {
         }) else {
             return Vec::new();
         };
-        if manager.commit_url().is_err() {
-            return Vec::new();
-        }
         let Some(draft) = manager.draft.as_ref() else {
             return Vec::new();
         };
@@ -17256,6 +17253,18 @@ impl App {
             submission,
             connect,
         }]
+    }
+
+    pub fn advance_profile_url_parse(&mut self, now: Instant) -> bool {
+        let Some(manager) = self.profile_manager.as_mut().filter(|manager| {
+            manager.page == ProfileManagerPage::Form && manager.operation.is_none()
+        }) else {
+            return false;
+        };
+        manager
+            .draft
+            .as_mut()
+            .is_some_and(|draft| draft.parse_url_if_due_at(now))
     }
 
     fn profile_saved(

@@ -4,6 +4,7 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     path::PathBuf,
+    time::{Duration, Instant},
 };
 
 use crate::db::descriptor::{DatabaseCategory, descriptor, drivers_in};
@@ -18,6 +19,7 @@ const URL_COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
     .add(b'<')
     .add(b'>')
     .add(b'`');
+const URL_PARSE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 use crate::{
     db::{
@@ -28,7 +30,8 @@ use crate::{
     profile::{
         CatalogScope, CatalogScopeValidationError, CatalogSelection, ConnectionProfile,
         ConnectionUrlFormat, CredentialPolicy, DatabaseKind, DatabaseScope, Environment,
-        PasswordStorageChoice, ProfileAccess, SslMode, format_connection_url, parse_connection_url,
+        ParsedConnectionUrl, PasswordStorageChoice, ProfileAccess, SslMode, format_connection_url,
+        parse_connection_url,
     },
 };
 
@@ -361,6 +364,7 @@ pub struct ProfileDraft {
     url: SecretTextInput,
     url_selection: Option<(usize, usize)>,
     url_pending: bool,
+    url_parse_deadline: Option<Instant>,
     url_error: Option<String>,
     url_generation_error: Option<ProfileValidationError>,
     pub name: TextInput,
@@ -442,6 +446,7 @@ impl ProfileDraft {
             url: SecretTextInput::default(),
             url_selection: None,
             url_pending: false,
+            url_parse_deadline: None,
             url_error: None,
             url_generation_error: None,
             name: TextInput::default(),
@@ -507,6 +512,7 @@ impl ProfileDraft {
             url: SecretTextInput::default(),
             url_selection: None,
             url_pending: false,
+            url_parse_deadline: None,
             url_error: None,
             url_generation_error: None,
             name: TextInput::from(profile.name.clone()),
@@ -648,6 +654,33 @@ impl ProfileDraft {
         self.url_pending
     }
 
+    pub fn url_parse_is_due_at(&self, now: Instant) -> bool {
+        self.url_pending
+            && self
+                .url_parse_deadline
+                .is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(crate) fn parse_url_if_due_at(&mut self, now: Instant) -> bool {
+        if !self.url_parse_is_due_at(now) {
+            return false;
+        }
+
+        let result = parse_connection_url(self.url.value());
+        match result {
+            Ok(parsed) => {
+                self.apply_parsed_url(parsed);
+                true
+            }
+            Err(error) => {
+                self.url_pending = false;
+                self.url_parse_deadline = None;
+                self.url_error = Some(error.to_string());
+                true
+            }
+        }
+    }
+
     pub fn url_error(&self) -> Option<&str> {
         self.url_error.as_deref()
     }
@@ -668,6 +701,12 @@ impl ProfileDraft {
             ProfileValidationError::new(ProfileField::Url, message)
         })?;
 
+        self.apply_parsed_url(parsed);
+        self.refresh_url();
+        Ok(())
+    }
+
+    fn apply_parsed_url(&mut self, parsed: ParsedConnectionUrl) {
         self.recent_drivers[usize::from(self.category() == DatabaseCategory::NonRelational)] =
             Some(self.kind);
         self.kind = parsed.kind;
@@ -692,11 +731,10 @@ impl ProfileDraft {
             self.set_password(password.expose_secret().to_owned());
         }
         self.url_pending = false;
+        self.url_parse_deadline = None;
         self.url_error = None;
         self.invalidate_catalog_discovery();
         self.sync_derived_catalog_scope();
-        self.refresh_url();
-        Ok(())
     }
 
     pub fn set_password(&mut self, password: impl Into<String>) {
@@ -1356,7 +1394,12 @@ impl ProfileDraft {
     }
 
     fn mark_url_edited(&mut self) {
+        self.mark_url_edited_at(Instant::now());
+    }
+
+    fn mark_url_edited_at(&mut self, now: Instant) {
         self.url_pending = true;
+        self.url_parse_deadline = Some(now + URL_PARSE_DEBOUNCE);
         self.url_error = None;
         self.url_generation_error = None;
         self.url_selection = None;
@@ -1369,6 +1412,7 @@ impl ProfileDraft {
                 self.url.set("");
                 self.url_selection = None;
                 self.url_pending = false;
+                self.url_parse_deadline = None;
                 self.url_error = None;
                 self.url_generation_error = Some(error);
                 return;
@@ -1380,6 +1424,7 @@ impl ProfileDraft {
                 self.url.set("");
                 self.url_selection = None;
                 self.url_pending = false;
+                self.url_parse_deadline = None;
                 self.url_error = None;
                 self.url_generation_error = Some(url_generation_error(error));
                 return;
@@ -1388,6 +1433,7 @@ impl ProfileDraft {
         self.url.set(url);
         self.url_selection = None;
         self.url_pending = false;
+        self.url_parse_deadline = None;
         self.url_error = None;
         self.url_generation_error = None;
     }
@@ -1525,6 +1571,72 @@ impl ProfileDraft {
             environment: self.environment,
             catalog_scope: self.catalog_scope.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_parse_deadline_is_trailing_and_not_due_early() {
+        let start = Instant::now();
+        let mut draft = ProfileDraft::new(DatabaseKind::Postgres);
+
+        draft.mark_url_edited_at(start);
+        assert!(!draft.url_parse_is_due_at(start + Duration::from_millis(299)));
+        assert!(draft.url_parse_is_due_at(start + Duration::from_millis(300)));
+
+        let later = start + Duration::from_millis(100);
+        draft.mark_url_edited_at(later);
+        assert!(!draft.url_parse_is_due_at(start + Duration::from_millis(300)));
+        assert!(draft.url_parse_is_due_at(later + Duration::from_millis(300)));
+    }
+
+    #[test]
+    fn generated_urls_are_not_left_pending_for_auto_parse() {
+        let draft = ProfileDraft::new(DatabaseKind::Postgres);
+
+        assert!(!draft.url_is_pending());
+        assert!(!draft.url_parse_is_due_at(Instant::now()));
+    }
+
+    #[test]
+    fn due_url_parse_updates_fields_without_rewriting_the_editor() {
+        let mut draft = ProfileDraft::new(DatabaseKind::Postgres);
+        while draft.url_cursor() > 0 {
+            draft.backspace(ProfileField::Url);
+        }
+        draft.paste(
+            ProfileField::Url,
+            "postgresql://alice:secret@db.example:5440/app?sslmode=require",
+        );
+        draft.move_left(ProfileField::Url);
+        let url = draft.url_display();
+        let cursor = draft.url_cursor();
+
+        assert!(draft.parse_url_if_due_at(Instant::now() + Duration::from_secs(1)));
+        assert_eq!(draft.url_display(), url);
+        assert_eq!(draft.url_cursor(), cursor);
+        assert_eq!(draft.host.value(), "db.example");
+        assert_eq!(draft.port.value(), "5440");
+        assert_eq!(draft.password().expose_secret(), "secret");
+        assert!(!draft.url_is_pending());
+        assert!(draft.validate(&[]).is_err());
+    }
+
+    #[test]
+    fn due_invalid_url_keeps_structured_fields_and_stops_retrying() {
+        let mut draft = ProfileDraft::new(DatabaseKind::Postgres);
+        let host = draft.host.value().to_owned();
+        draft.move_home(ProfileField::Url);
+        draft.paste(ProfileField::Url, "not-a-url");
+
+        assert!(draft.parse_url_if_due_at(Instant::now() + Duration::from_secs(1)));
+        assert_eq!(draft.host.value(), host);
+        assert!(draft.url_error().is_some());
+        assert!(!draft.url_is_pending());
+        assert!(!draft.parse_url_if_due_at(Instant::now() + Duration::from_secs(2)));
     }
 }
 

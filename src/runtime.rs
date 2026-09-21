@@ -6462,6 +6462,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 }
                 _ = ticker.tick() => {
                     let now = std::time::Instant::now();
+                    let profile_url_changed = app.advance_profile_url_parse(now);
                     let expired = keymap.expire_pending(&app, now);
                     let after = keymap.sequence_state(&app, now);
                     let now_millis = std::time::SystemTime::now()
@@ -6475,7 +6476,8 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                     for command in app.update(Action::RedisPreviewTick) {
                         runtime.dispatch(command);
                     }
-                    redraw = app.notifications.expire(now)
+                    redraw = profile_url_changed
+                        || app.notifications.expire(now)
                         || ui_state.advance_animations(now)
                         || expired
                         || sequence_redraw_needed(&rendered_sequence, &after);

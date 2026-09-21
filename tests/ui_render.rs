@@ -34,7 +34,8 @@ use lazydb::{
             CatalogGroupState, ExplorerLoadState, ExplorerNodeId, ExplorerOwnerId, ProfilePlacement,
         },
         profile_manager::{
-            ProfileField, ProfileManagerPage, ProfileMessage, ProfileMessageLevel, ProfileOperation,
+            ProfileField, ProfileInput, ProfileManagerPage, ProfileMessage, ProfileMessageLevel,
+            ProfileOperation,
         },
         relation::RelationTab,
         tab::WorkspaceTab,
@@ -7354,6 +7355,22 @@ fn profile_url_help_follows_the_selected_driver_when_focused() {
             assert!(focused.contains(help), "missing URL help: {focused}");
         }
     }
+}
+
+#[test]
+fn profile_url_render_shows_pending_sync_status() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    app.update(Action::ProfileFocusField(ProfileField::Url));
+    app.update(Action::ProfilePaste(ProfileInput::from(
+        "postgresql://db.example/app",
+    )));
+
+    let output = render(&app, 120, 36);
+    assert!(
+        output.contains("URL syncing"),
+        "missing URL sync status: {output}"
+    );
 }
 
 #[test]

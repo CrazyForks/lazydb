@@ -27,6 +27,20 @@ statement or complete buffer), `Space d` (execution target selector), and
 `F6` is also a global console-manager shortcut and works while no connection or
 Console tab is active.
 
+## Connection profile form
+
+The connection URL field is parsed automatically after URL content stops
+changing briefly (currently 300ms). Typing, pasting, deleting, undo, and redo
+schedule the same trailing parse; cursor movement alone does not. Automatic
+parsing updates the structured connection fields without changing the URL
+editor contents or its cursor.
+
+`Enter` in the URL field remains the form's **save and connect** action. It does
+not manually parse or normalize the URL. Saving while the latest URL is still
+syncing, or when its latest parse failed, is rejected; wait for synchronization
+and press `Enter` again. `Esc` still closes the form, and `Tab`/`Shift-Tab`
+continue to move between fields with their existing end-of-field validation.
+
 In the SQL Editor, the target and transaction status shown on the editor's
 top-right border are also mouse controls. Clicking the target opens the same
 execution-target selector as `Space d`; clicking a valid target row confirms it
