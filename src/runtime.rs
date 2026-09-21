@@ -6314,6 +6314,7 @@ mod key_sequence_redraw_tests {
             prefix: crate::help::ShortcutPrefix::Leader,
             display: display.to_owned(),
             selected: 0,
+            candidates: Vec::new(),
         }
     }
 

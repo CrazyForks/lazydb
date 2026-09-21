@@ -118,6 +118,13 @@ pub enum ConfigError {
         first: String,
         second: String,
     },
+    #[error("invalid keybinding for `{command}`: `{key}` (token `{token}`: {reason})")]
+    InvalidKeybindingDetail {
+        command: String,
+        key: String,
+        token: String,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -307,6 +314,10 @@ pub struct KeyBindings {
 }
 
 impl KeyBindings {
+    pub fn configured_sequences(&self, command: &str) -> &[Vec<KeyEvent>] {
+        self.commands.get(command).map_or(&[], Vec::as_slice)
+    }
+
     pub fn matches(&self, command: &str, event: KeyEvent) -> bool {
         self.commands
             .get(command)
@@ -330,6 +341,12 @@ impl KeyBindings {
 
     pub fn is_configured(&self, command: &str) -> bool {
         self.commands.contains_key(command)
+    }
+
+    pub fn configured_for(&self, command: &str) -> bool {
+        self.commands
+            .get(command)
+            .is_some_and(|sequences| !sequences.is_empty())
     }
 
     pub fn has_any_prefix(&self, events: &[KeyEvent]) -> bool {
@@ -358,6 +375,45 @@ impl KeyBindings {
     }
 }
 
+pub(crate) fn keybinding_display(event: &KeyEvent) -> String {
+    let mut parts = Vec::new();
+    for (modifier, name) in [
+        (KeyModifiers::CONTROL, "Ctrl"),
+        (KeyModifiers::ALT, "Alt"),
+        (KeyModifiers::SHIFT, "Shift"),
+        (KeyModifiers::SUPER, "Cmd"),
+        (KeyModifiers::META, "Meta"),
+        (KeyModifiers::HYPER, "Hyper"),
+    ] {
+        if event.modifiers.contains(modifier) {
+            parts.push(name.to_owned());
+        }
+    }
+    let key = match event.code {
+        KeyCode::Char(' ') => "Space".to_owned(),
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::F(number) => format!("F{number}"),
+        KeyCode::Esc => "Esc".into(),
+        KeyCode::Enter => "Enter".into(),
+        KeyCode::Tab => "Tab".into(),
+        KeyCode::BackTab => "BackTab".into(),
+        KeyCode::Backspace => "Backspace".into(),
+        KeyCode::Delete => "Delete".into(),
+        KeyCode::Insert => "Insert".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        KeyCode::Left => "Left".into(),
+        KeyCode::Right => "Right".into(),
+        KeyCode::Up => "Up".into(),
+        KeyCode::Down => "Down".into(),
+        KeyCode::PageUp => "PageUp".into(),
+        KeyCode::PageDown => "PageDown".into(),
+        _ => format!("{:?}", event.code),
+    };
+    parts.push(key);
+    parts.join("+")
+}
+
 impl KeybindingConfig {
     pub fn key_bindings(&self) -> Result<KeyBindings, ConfigError> {
         let groups = [
@@ -369,7 +425,7 @@ impl KeybindingConfig {
             ("", &self.editor),
             ("", &self.overlays),
         ];
-        let mut commands = BTreeMap::new();
+        let mut commands: BTreeMap<String, Vec<Vec<KeyEvent>>> = BTreeMap::new();
         let mut display = BTreeMap::new();
         for (prefix, group) in groups {
             for (name, keys) in group {
@@ -384,6 +440,11 @@ impl KeybindingConfig {
                         key: "unknown command".to_owned(),
                     });
                 }
+                if keys.is_empty() {
+                    commands.remove(&command);
+                    display.insert(command, Vec::new());
+                    continue;
+                }
                 let sequences = keys
                     .iter()
                     .map(|key| {
@@ -395,9 +456,13 @@ impl KeybindingConfig {
                         }
                         key.split_whitespace()
                             .map(|part| {
-                                parse_key(part).ok_or_else(|| ConfigError::InvalidKeybinding {
-                                    command: command.clone(),
-                                    key: key.clone(),
+                                parse_key(part).ok_or_else(|| {
+                                    ConfigError::InvalidKeybindingDetail {
+                                        command: command.clone(),
+                                        key: key.clone(),
+                                        token: part.to_owned(),
+                                        reason: "unsupported key or modifier".into(),
+                                    }
                                 })
                             })
                             .collect()
@@ -408,6 +473,23 @@ impl KeybindingConfig {
             }
         }
         let entries = commands.iter().collect::<Vec<_>>();
+        for command in crate::input::panes::PaneCommand::ALL {
+            for sequence in commands.get(command.name()).into_iter().flatten() {
+                if sequence.len() >= 2
+                    && sequence[0] == KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
+                    && sequence[1] == KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
+                {
+                    return Err(ConfigError::InvalidKeybinding {
+                        command: command.name().to_owned(),
+                        key: display
+                            .get(command.name())
+                            .and_then(|values| values.first())
+                            .cloned()
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+        }
         for (index, (first_command, first_sequences)) in entries.iter().enumerate() {
             for (second_command, second_sequences) in entries.iter().skip(index + 1) {
                 if commands_share_context(first_command, second_command)
@@ -420,6 +502,15 @@ impl KeybindingConfig {
                         .and_then(|keys| keys.first())
                         .cloned()
                         .unwrap_or_default();
+                    let key = if key.is_empty() {
+                        display
+                            .get(*second_command)
+                            .and_then(|keys| keys.first())
+                            .cloned()
+                            .unwrap_or_default()
+                    } else {
+                        key
+                    };
                     return Err(ConfigError::ConflictingKeybindings {
                         key,
                         first: (*first_command).clone(),
@@ -580,13 +671,49 @@ impl AppConfig {
 fn parse_key(value: &str) -> Option<KeyEvent> {
     let mut modifiers = KeyModifiers::NONE;
     let mut key = value;
-    if let Some((prefix, rest)) = value.rsplit_once('-') {
+    let has_plus = value.contains('+');
+    let has_hyphen = value.contains('-');
+    if has_plus && has_hyphen {
+        return None;
+    }
+    if (has_plus && value.matches('+').count() > 1)
+        || (has_hyphen && value != "-" && value.matches('-').count() > 1)
+    {
+        let separator = if has_plus { '+' } else { '-' };
+        if value.split(separator).any(|part| part.is_empty()) {
+            return None;
+        }
+    }
+    let separator = if has_plus {
+        value.rsplit_once('+')
+    } else if has_hyphen && value != "-" {
+        value.rsplit_once('-')
+    } else {
+        None
+    };
+    if let Some((prefix, rest)) = separator {
         key = rest;
-        for modifier in prefix.split('-') {
+        let separator = if prefix.contains('+') { '+' } else { '-' };
+        for modifier in prefix.split(separator) {
             match modifier.to_ascii_lowercase().as_str() {
-                "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
-                "shift" => modifiers |= KeyModifiers::SHIFT,
-                "alt" => modifiers |= KeyModifiers::ALT,
+                "ctrl" | "control" if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    modifiers |= KeyModifiers::CONTROL
+                }
+                "shift" if !modifiers.contains(KeyModifiers::SHIFT) => {
+                    modifiers |= KeyModifiers::SHIFT
+                }
+                "alt" | "option" if !modifiers.contains(KeyModifiers::ALT) => {
+                    modifiers |= KeyModifiers::ALT
+                }
+                "cmd" | "command" | "super" if !modifiers.contains(KeyModifiers::SUPER) => {
+                    modifiers |= KeyModifiers::SUPER
+                }
+                "meta" if !modifiers.contains(KeyModifiers::META) => {
+                    modifiers |= KeyModifiers::META
+                }
+                "hyper" if !modifiers.contains(KeyModifiers::HYPER) => {
+                    modifiers |= KeyModifiers::HYPER
+                }
                 _ => return None,
             }
         }
@@ -606,6 +733,8 @@ fn parse_key(value: &str) -> Option<KeyEvent> {
         "f11" => KeyCode::F(11),
         "f12" => KeyCode::F(12),
         "space" => KeyCode::Char(' '),
+        "plus" => KeyCode::Char('+'),
+        "minus" => KeyCode::Char('-'),
         "esc" | "escape" => KeyCode::Esc,
         "enter" => KeyCode::Enter,
         "tab" if modifiers.contains(KeyModifiers::SHIFT) => {
@@ -613,9 +742,16 @@ fn parse_key(value: &str) -> Option<KeyEvent> {
             KeyCode::BackTab
         }
         "tab" => KeyCode::Tab,
+        "backtab" => KeyCode::BackTab,
         "backspace" => KeyCode::Backspace,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
         _ => {
@@ -657,6 +793,51 @@ mod tests {
         HelpPanelView,
     };
     use crate::{cli::MotionMode, ui::icons::IconMode};
+
+    #[test]
+    fn cmd_ctrl_pane_binding_loads_and_preserves_other_defaults() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("settings.toml");
+        fs::write(
+            &path,
+            "[keybindings.panes]\nfocus-pane-left = [\"Cmd+Ctrl+h\"]\n",
+        )
+        .unwrap();
+
+        let config = AppConfig::load(path).unwrap();
+        let bindings = config.keybindings.key_bindings().unwrap();
+
+        assert!(bindings.matches(
+            "focus-pane-left",
+            KeyEvent::new(
+                KeyCode::Char('h'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL
+            )
+        ));
+        assert!(bindings.matches("help", KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn pane_binding_modifier_aliases_and_special_keys_are_supported() {
+        let mut config = AppConfig::default();
+        config.keybindings.panes.insert(
+            "focus-pane-left".into(),
+            vec!["Super+Control+Left".into(), "Command-Control-Plus".into()],
+        );
+        let bindings = config.keybindings.key_bindings().unwrap();
+
+        assert!(bindings.matches(
+            "focus-pane-left",
+            KeyEvent::new(KeyCode::Left, KeyModifiers::SUPER | KeyModifiers::CONTROL)
+        ));
+        assert!(bindings.matches(
+            "focus-pane-left",
+            KeyEvent::new(
+                KeyCode::Char('+'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL
+            )
+        ));
+    }
 
     #[test]
     fn embedded_default_configuration_is_complete_and_valid() {
@@ -832,7 +1013,59 @@ mod tests {
             "#,
         )
         .unwrap_err();
-        assert!(matches!(error, ConfigError::InvalidKeybinding { .. }));
+        assert!(matches!(
+            error,
+            ConfigError::InvalidKeybinding { .. } | ConfigError::InvalidKeybindingDetail { .. }
+        ));
+    }
+
+    #[test]
+    fn pane_binding_rejects_unknown_modifier_with_original_value() {
+        let mut config = AppConfig::default();
+        config
+            .keybindings
+            .panes
+            .insert("focus-pane-left".into(), vec!["Cmd+Mispelled+h".into()]);
+
+        let error = config.keybindings.key_bindings().unwrap_err();
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidKeybindingDetail { command, key, token, .. }
+                if command == "focus-pane-left"
+                    && key == "Cmd+Mispelled+h"
+                    && token == "Cmd+Mispelled+h"
+        ));
+    }
+
+    #[test]
+    fn all_pane_commands_are_known_and_empty_bindings_disable_them() {
+        let mut config = AppConfig::default();
+        for command in [
+            "focus-pane-left",
+            "focus-pane-down",
+            "focus-pane-up",
+            "focus-pane-right",
+            "toggle-pane-maximized",
+            "reset-pane-sizes",
+        ] {
+            config.keybindings.panes.insert(command.into(), Vec::new());
+        }
+        let bindings = config.keybindings.key_bindings().unwrap();
+        for command in [
+            "focus-pane-left",
+            "focus-pane-down",
+            "focus-pane-up",
+            "focus-pane-right",
+            "toggle-pane-maximized",
+            "reset-pane-sizes",
+        ] {
+            assert!(
+                !bindings.configured_for(command),
+                "{command} remained enabled"
+            );
+            assert!(bindings.configured_sequences(command).is_empty());
+        }
     }
 
     #[test]

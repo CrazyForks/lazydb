@@ -15,6 +15,26 @@ events or space-separated key sequences. They are organized as `global`,
 the active panel. `keybindings.sequence_timeout_ms`
 configures the timeout for adjacent-key sequences used by this preset.
 
+Pane commands accept configurable modifier chords and key sequences. Modifier
+aliases include `Cmd`/`Command`/`Super`, `Ctrl`/`Control`, `Alt`/`Option`,
+`Shift`, `Meta`, and `Hyper`; join one chord with `+` or `-`, and separate
+sequence steps with spaces. For example:
+
+```toml
+[keybindings.panes]
+focus-pane-left = ["Cmd+Ctrl+h", "Ctrl-w h"]
+focus-pane-down = ["Alt+j"]
+```
+
+An override replaces that command's built-in bindings. Use an empty list to
+disable it, or include the default sequence explicitly to retain both. The
+configurable pane actions are focus left/down/up/right, maximize/restore, and
+reset pane sizes. Ordinary character sequences are handled in navigation modes;
+modified pane chords can also be used while editing SQL text. In Insert/Replace,
+`Ctrl-w` remains the editor's delete-previous-word command and Space remains
+text input. Terminals must forward Command as a Super key event; a valid
+configuration cannot make a terminal deliver a key combination it intercepts.
+
 The navigation commands for Explorer and SQL Results are also configurable.
 Their default `j/k/h/l` bindings are scoped to their respective context, so
 the same key can safely mean different movements in different views.

@@ -649,6 +649,7 @@ fn vim_operator_text_object_visual_and_undo_sequences_use_app_pipeline() {
 #[test]
 fn accepting_completion_places_cursor_after_inserted_text() {
     let mut app = App::new(Vec::new());
+    app.update(Action::NewConsole);
     for character in ['s', 'e', 'l'] {
         editor_key(&mut app, KeyCode::Char(character), KeyModifiers::NONE);
     }
@@ -743,6 +744,7 @@ fn connected_completion_app() -> App {
         .unwrap()
         .profile;
     let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
     let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -1098,6 +1100,7 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
     let profile = imported.profile;
     let profile_id = profile.id;
     let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
     let (events, mut receiver) = mpsc::unbounded_channel();
     let mut runtime = Runtime::new(
         vec![profile],

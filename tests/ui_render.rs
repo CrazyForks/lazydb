@@ -113,7 +113,7 @@ fn fixture() -> App {
 
 #[test]
 fn transaction_menu_renders_state_aware_disabled_reasons() {
-    let mut app = fixture();
+    let mut app = App::new(Vec::new());
     app.update(Action::OpenTransactionMenu);
     let output = render(&app, 100, 30);
     assert!(output.contains("TRANSACTION MODE"));
@@ -128,7 +128,7 @@ fn transaction_menu_renders_state_aware_disabled_reasons() {
 
 #[test]
 fn catalog_sync_notifications_are_concise_and_terminal_safe() {
-    let mut app = fixture();
+    let mut app = App::new(Vec::new());
     app.notifications.push(
         lazydb::model::notification::NotificationLevel::Info,
         "Catalog",
@@ -3696,6 +3696,35 @@ fn counted_pending_prefix_keeps_count_in_footer_label() {
         .collect::<String>();
     assert!(output.contains("10 Ctrl-w  Up/Down select  Enter run  Esc/Ctrl-C cancel"));
     assert!(output.contains("restore default pane sizes"));
+}
+
+#[test]
+fn configured_pane_prefix_renders_its_candidate() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    let mut config = lazydb::config::AppConfig::default();
+    config
+        .keybindings
+        .panes
+        .insert("focus-pane-right".into(), vec!["Alt+x h".into()]);
+    let bindings = config.keybindings.key_bindings().unwrap();
+    let mut keymap = lazydb::input::keymap::Keymap::with_sequence_timeout_and_bindings(
+        std::time::Duration::from_millis(750),
+        bindings,
+    );
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT), &app),
+        None
+    );
+    let sequence = keymap
+        .sequence_state(&app, std::time::Instant::now())
+        .unwrap();
+    assert!(
+        sequence
+            .candidates
+            .iter()
+            .any(|(command, suffix)| { command == "focus-pane-right" && suffix == "h" })
+    );
 }
 
 #[test]

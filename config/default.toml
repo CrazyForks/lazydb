@@ -59,6 +59,10 @@ check_interval_hours = 24
 # The preset covers the complete Vim editing contract documented in
 # docs/keybindings.md. The grouped tables below follow the panel where each
 # application shortcut is active.
+# Key chords accept Ctrl/Control, Alt/Option, Shift, and Cmd/Command/Super
+# modifiers joined with + or - (for example Cmd+Ctrl+h). Separate sequence
+# steps with spaces (for example Ctrl-w h). Arrays replace defaults; use [] to
+# disable a configurable binding, or list both values to keep both bindings.
 preset = "vim"
 sequence_timeout_ms = 750
 

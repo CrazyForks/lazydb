@@ -3300,18 +3300,49 @@ pub(crate) fn filtered_shortcuts_with_bindings(
         .collect::<Vec<_>>();
     shortcuts(context, capabilities)
         .into_iter()
+        .filter(|shortcut| pane_binding_configured(shortcut.id, bindings))
         .filter(|shortcut| {
-            let sequence = configured_sequence(shortcut, bindings);
+            let configured = pane_command_for_shortcut(shortcut.id)
+                .and_then(|command| bindings.and_then(|bindings| bindings.display_for(command)));
+            let sequence = configured.unwrap_or_else(|| shortcut.sequence.to_owned());
             let haystack = format!("{} {}", sequence, shortcut.description).to_lowercase();
             tokens.iter().all(|token| haystack.contains(token))
         })
         .collect()
 }
 
+pub(crate) fn pane_command_for_shortcut(id: HelpShortcutId) -> Option<&'static str> {
+    match id {
+        HelpShortcutId::FocusExplorer => Some("focus-pane-left"),
+        HelpShortcutId::FocusResults => Some("focus-pane-down"),
+        HelpShortcutId::FocusEditorFromK => Some("focus-pane-up"),
+        HelpShortcutId::FocusResultsFromL | HelpShortcutId::FocusEditorFromL => {
+            Some("focus-pane-right")
+        }
+        HelpShortcutId::TogglePaneMaximized => Some("toggle-pane-maximized"),
+        HelpShortcutId::ResetPaneSizes => Some("reset-pane-sizes"),
+        _ => None,
+    }
+}
+
+fn pane_binding_configured(
+    id: HelpShortcutId,
+    bindings: Option<&crate::config::KeyBindings>,
+) -> bool {
+    pane_command_for_shortcut(id)
+        .and_then(|command| bindings.map(|bindings| bindings.configured_for(command)))
+        .unwrap_or(true)
+}
+
 pub(crate) fn configured_sequence(
     shortcut: &Shortcut,
     bindings: Option<&crate::config::KeyBindings>,
 ) -> String {
+    if let Some(command) = pane_command_for_shortcut(shortcut.id)
+        && let Some(bindings) = bindings
+    {
+        return bindings.display_for(command).unwrap_or_default();
+    }
     let command = match shortcut.id {
         HelpShortcutId::Help => Some("help"),
         HelpShortcutId::OpenOmni => Some("omni"),
@@ -3372,6 +3403,15 @@ pub(crate) fn prefix_shortcuts(
     capabilities: ShortcutCapabilities,
     prefix: ShortcutPrefix,
 ) -> Vec<Shortcut> {
+    prefix_shortcuts_with_bindings(context, capabilities, prefix, None)
+}
+
+pub(crate) fn prefix_shortcuts_with_bindings(
+    context: ShortcutContext,
+    capabilities: ShortcutCapabilities,
+    prefix: ShortcutPrefix,
+    bindings: Option<&crate::config::KeyBindings>,
+) -> Vec<Shortcut> {
     let mut candidates = SHORTCUT_CATALOG
         .iter()
         .copied()
@@ -3391,6 +3431,7 @@ pub(crate) fn prefix_shortcuts(
                     && prefix == ShortcutPrefix::Leader
                     && shortcut.id == HelpShortcutId::OpenNotificationHistoryLeader)
                 && available(shortcut, capabilities)
+                && pane_binding_configured(shortcut.id, bindings)
         })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(index, shortcut)| {
@@ -3492,10 +3533,11 @@ pub(crate) fn footer_shortcuts(
 pub(crate) fn footer_shortcuts_with_bindings(
     context: ShortcutContext,
     capabilities: ShortcutCapabilities,
-    _bindings: Option<&crate::config::KeyBindings>,
+    bindings: Option<&crate::config::KeyBindings>,
 ) -> Vec<Shortcut> {
     let mut indexed = shortcuts(context, capabilities)
         .into_iter()
+        .filter(|shortcut| pane_binding_configured(shortcut.id, bindings))
         .enumerate()
         .filter_map(|(index, mut shortcut)| {
             let priority = footer_rank(context, capabilities, shortcut.id)?;
@@ -3829,6 +3871,32 @@ mod tests {
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::collections::HashSet;
+
+    #[test]
+    fn pane_help_uses_configured_binding_and_hides_disabled_commands() {
+        let mut config = crate::config::AppConfig::default();
+        config
+            .keybindings
+            .panes
+            .insert("focus-pane-left".into(), vec!["Cmd+Ctrl+h".into()]);
+        config
+            .keybindings
+            .panes
+            .insert("focus-pane-right".into(), Vec::new());
+        let bindings = config.keybindings.key_bindings().unwrap();
+        let explorer = shortcut_catalog()
+            .iter()
+            .find(|shortcut| shortcut.id == HelpShortcutId::FocusExplorer)
+            .unwrap();
+        let right = shortcut_catalog()
+            .iter()
+            .find(|shortcut| shortcut.id == HelpShortcutId::FocusResultsFromL)
+            .unwrap();
+
+        assert_eq!(configured_sequence(explorer, Some(&bindings)), "Cmd+Ctrl+h");
+        assert!(pane_binding_configured(explorer.id, Some(&bindings)));
+        assert!(!pane_binding_configured(right.id, Some(&bindings)));
+    }
 
     #[test]
     fn help_lists_selectable_quit_in_every_help_enabled_context() {

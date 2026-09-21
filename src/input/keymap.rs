@@ -16,11 +16,12 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Pending {
     Leader,
     EditorLeader,
     Window { count: u32 },
+    PaneSequence { events: Vec<KeyEvent>, count: u32 },
     WindowCount { count: u32 },
     Previous,
     Next,
@@ -39,6 +40,7 @@ pub struct KeySequenceState {
     pub prefix: crate::help::ShortcutPrefix,
     pub display: String,
     pub selected: usize,
+    pub candidates: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -797,7 +799,12 @@ impl Keymap {
                 find.phase == crate::model::workspace::ExplorerSearchPhase::Confirmed
             });
             if !confirmed {
-                self.pending = None;
+                if !matches!(
+                    self.pending.as_ref().map(|pending| &pending.pending),
+                    Some(Pending::EditorLeader)
+                ) {
+                    self.pending = None;
+                }
                 if is_text_redo(event) {
                     return Some(Action::ExplorerFindRedo);
                 }
@@ -1035,10 +1042,73 @@ impl Keymap {
                 _ => None,
             };
         }
+        if app.overlay.is_none()
+            && event.kind == KeyEventKind::Press
+            && (app.focus != Focus::Editor
+                || (matches!(
+                    app.active_editor_mode(),
+                    EditorMode::Normal
+                        | EditorMode::VisualChar
+                        | EditorMode::VisualLine
+                        | EditorMode::VisualBlock
+                ) && event.modifiers != KeyModifiers::NONE))
+            && !(event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('w'))
+            && let Some((command, sequences)) = crate::input::panes::PaneCommand::ALL
+                .into_iter()
+                .find_map(|command| {
+                    let sequences = self.bindings.configured_sequences(command.name());
+                    sequences
+                        .iter()
+                        .any(|sequence| sequence.first() == Some(&event))
+                        .then_some((command, sequences))
+                })
+        {
+            let matching = sequences
+                .iter()
+                .filter(|sequence| sequence.first() == Some(&event))
+                .collect::<Vec<_>>();
+            if matching.iter().any(|sequence| sequence.len() == 1) {
+                return match crate::input::panes::dispatch(command, app) {
+                    crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                    _ => None,
+                };
+            }
+            self.set_pending(
+                Pending::PaneSequence {
+                    events: vec![event],
+                    count: 1,
+                },
+                app,
+            );
+            return None;
+        }
         if active_data_query_has_focus(app)
             && let Some(action) = map_data_query(event, app)
         {
             return Some(action);
+        }
+        if app.overlay.is_none()
+            && app.focus == Focus::Editor
+            && matches!(
+                app.active_editor_mode(),
+                EditorMode::Insert | EditorMode::Replace
+            )
+            && event.kind == KeyEventKind::Press
+            && event.modifiers.intersects(
+                KeyModifiers::CONTROL
+                    | KeyModifiers::ALT
+                    | KeyModifiers::SUPER
+                    | KeyModifiers::META
+                    | KeyModifiers::HYPER,
+            )
+            && let Some(command) = crate::input::panes::PaneCommand::ALL
+                .into_iter()
+                .find(|command| self.bindings.matches(command.name(), event))
+        {
+            return match crate::input::panes::dispatch(command, app) {
+                crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                crate::input::panes::PaneDispatch::Consumed => None,
+            };
         }
 
         // Redis panes have input handlers that intentionally run before the
@@ -1050,11 +1120,22 @@ impl Keymap {
             return Some(Action::ShowHelp);
         }
 
-        if app.focus == Focus::Editor && self.bindings.matches("focus-previous-pane", event) {
+        if app.focus == Focus::Editor
+            && app.active_editor_mode() != EditorMode::Normal
+            && self.bindings.matches("focus-previous-pane", event)
+        {
             return Some(Action::FocusPrevious);
         }
 
-        if app.focus == Focus::Editor && app.active_editor_mode() == EditorMode::Normal {
+        if app.focus == Focus::Editor
+            && matches!(
+                app.active_editor_mode(),
+                EditorMode::Normal
+                    | EditorMode::VisualChar
+                    | EditorMode::VisualLine
+                    | EditorMode::VisualBlock
+            )
+        {
             match event.code {
                 _ if self.bindings.matches("help", event) => return Some(Action::ShowHelp),
                 _ if self.bindings.matches("focus-next-pane", event) => {
@@ -1150,14 +1231,70 @@ impl Keymap {
             let prefix = self
                 .pending
                 .as_ref()
-                .and_then(|pending| pending_display(pending.pending))
+                .and_then(|pending| pending_display(pending.pending.clone()))
                 .map(|(prefix, _)| prefix);
             if let Some(prefix) = prefix {
-                let shortcuts = crate::help::prefix_shortcuts(
-                    crate::help::shortcut_context(app),
-                    crate::help::shortcut_capabilities(app),
-                    prefix,
+                let pane_sequence = matches!(
+                    self.pending.as_ref().map(|pending| &pending.pending),
+                    Some(Pending::PaneSequence { .. })
                 );
+                let shortcuts = if pane_sequence {
+                    Vec::new()
+                } else {
+                    crate::help::prefix_shortcuts_with_bindings(
+                        crate::help::shortcut_context(app),
+                        crate::help::shortcut_capabilities(app),
+                        prefix,
+                        Some(&self.bindings),
+                    )
+                };
+                if pane_sequence
+                    && let Some(Pending::PaneSequence { events, count }) =
+                        self.pending.as_ref().map(|pending| &pending.pending)
+                {
+                    let mut next = events.clone();
+                    next.push(event);
+                    if let Some(command) =
+                        crate::input::panes::PaneCommand::ALL
+                            .into_iter()
+                            .find(|command| {
+                                self.bindings
+                                    .configured_sequences(command.name())
+                                    .iter()
+                                    .any(|sequence| sequence.as_slice() == next.as_slice())
+                            })
+                        && self.bindings.matches_sequence(command.name(), &next)
+                    {
+                        self.pending = None;
+                        return match crate::input::panes::dispatch(command, app) {
+                            crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                            _ => None,
+                        };
+                    }
+                    let continues = crate::input::panes::PaneCommand::ALL
+                        .into_iter()
+                        .any(|command| self.bindings.has_sequence_prefix(command.name(), &next));
+                    if continues {
+                        self.continue_pending(
+                            Pending::PaneSequence {
+                                events: next,
+                                count: *count + 1,
+                            },
+                            app.focus,
+                            app.active_editor_mode(),
+                            app.tabs
+                                .get(app.active_tab)
+                                .map_or(Uuid::nil(), |tab| tab.id()),
+                            matches!(app.overlay, Some(Overlay::RecordView(_))),
+                        );
+                        return None;
+                    }
+                    if let Some(Pending::PaneSequence { .. }) =
+                        self.pending.as_ref().map(|pending| &pending.pending)
+                    {
+                        return None;
+                    }
+                }
                 match event.code {
                     KeyCode::Up if !shortcuts.is_empty() => {
                         self.sequence_selected = self
@@ -1193,6 +1330,53 @@ impl Keymap {
                 tab_id,
                 ..
             } = self.pending.take().unwrap();
+            if let Pending::PaneSequence { events, count } = &pending {
+                if event.code == KeyCode::Esc
+                    || event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('c')
+                {
+                    return None;
+                }
+                let mut next = events.clone();
+                next.push(event);
+                if let Some(command) = crate::input::panes::PaneCommand::ALL
+                    .into_iter()
+                    .find(|command| self.bindings.matches_sequence(command.name(), &next))
+                {
+                    return match crate::input::panes::dispatch(command, app) {
+                        crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                        _ => None,
+                    };
+                }
+                if crate::input::panes::PaneCommand::ALL
+                    .into_iter()
+                    .any(|command| self.bindings.has_sequence_prefix(command.name(), &next))
+                {
+                    self.continue_pending(
+                        Pending::PaneSequence {
+                            events: next,
+                            count: *count + 1,
+                        },
+                        focus,
+                        editor_mode,
+                        tab_id,
+                        matches!(app.overlay, Some(Overlay::RecordView(_))),
+                    );
+                }
+                return None;
+            }
+            if pending == Pending::EditorLeader {
+                if app.focus == Focus::Editor {
+                    return Some(Action::EditorKey(event));
+                }
+                self.continue_pending(
+                    pending,
+                    focus,
+                    editor_mode,
+                    tab_id,
+                    matches!(app.overlay, Some(Overlay::RecordView(_))),
+                );
+                return Some(Action::EditorKey(event));
+            }
             if matches!(pending, Pending::CatalogColumnDelete { .. }) {
                 if event.kind == KeyEventKind::Press
                     && event.modifiers.is_empty()
@@ -1203,7 +1387,7 @@ impl Keymap {
                 return map_catalog_editor(event, app);
             }
             if pending == Pending::EditorLeader {
-                if app.focus == Focus::Editor && app.active_editor_mode() == EditorMode::Normal {
+                if app.focus == Focus::Editor {
                     if event.modifiers.is_empty() && event.code == KeyCode::Char('t') {
                         self.continue_pending(
                             Pending::LeaderTransaction,
@@ -1268,6 +1452,25 @@ impl Keymap {
                 return Some(Action::EditorKey(event));
             }
             if matches!(pending, Pending::Window { .. }) {
+                if event.kind == KeyEventKind::Press
+                    && let Some(command) =
+                        crate::input::panes::PaneCommand::ALL
+                            .into_iter()
+                            .find(|command| {
+                                self.bindings.matches_sequence(
+                                    command.name(),
+                                    &[
+                                        KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+                                        event,
+                                    ],
+                                )
+                            })
+                {
+                    return match crate::input::panes::dispatch(command, app) {
+                        crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                        _ => None,
+                    };
+                }
                 let sequence = [
                     KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
                     event,
@@ -1391,7 +1594,7 @@ impl Keymap {
                     ));
                 }
             }
-            if let Some(action) = map_pending(pending, event, app, &self.bindings) {
+            if let Some(action) = map_pending(pending.clone(), event, app, &self.bindings) {
                 return Some(action);
             }
             self.continue_pending(
@@ -1777,6 +1980,40 @@ impl Keymap {
             }
         }
 
+        if app.overlay.is_none()
+            && event.kind == KeyEventKind::Press
+            && app.focus != Focus::Editor
+            && event.modifiers != KeyModifiers::NONE
+            && !(event.modifiers == KeyModifiers::CONTROL && event.code == KeyCode::Char('w'))
+            && let Some((command, sequences)) = crate::input::panes::PaneCommand::ALL
+                .into_iter()
+                .find_map(|command| {
+                    let sequences = self.bindings.configured_sequences(command.name());
+                    sequences
+                        .iter()
+                        .any(|sequence| sequence.first() == Some(&event))
+                        .then_some((command, sequences))
+                })
+        {
+            let matching = sequences
+                .iter()
+                .filter(|sequence| sequence.first() == Some(&event))
+                .collect::<Vec<_>>();
+            if matching.iter().any(|sequence| sequence.len() == 1) {
+                return match crate::input::panes::dispatch(command, app) {
+                    crate::input::panes::PaneDispatch::Action(action) => Some(*action),
+                    _ => None,
+                };
+            }
+            self.set_pending(
+                Pending::PaneSequence {
+                    events: vec![event],
+                    count: 1,
+                },
+                app,
+            );
+            return None;
+        }
         if let Some(action) = map_data_query(event, app) {
             return Some(action);
         }
@@ -2312,7 +2549,12 @@ impl Keymap {
         if self.observed != Some(state) {
             if self.observed.is_some() {
                 self.generation = self.generation.wrapping_add(1);
-                self.pending = None;
+                if !matches!(
+                    self.pending.as_ref().map(|pending| &pending.pending),
+                    Some(Pending::EditorLeader)
+                ) {
+                    self.pending = None;
+                }
             }
             self.observed = Some(state);
         }
@@ -2326,11 +2568,49 @@ impl Keymap {
             return None;
         }
         let pending = &pending.pending;
-        let (prefix, display) = pending_display(*pending)?;
+        let (prefix, display) = pending_display(pending.clone())?;
+        let candidates = if matches!(
+            pending,
+            Pending::Window { .. } | Pending::PaneSequence { .. }
+        ) {
+            crate::input::panes::PaneCommand::ALL
+                .into_iter()
+                .flat_map(|command| {
+                    self.bindings
+                        .configured_sequences(command.name())
+                        .iter()
+                        .filter(|sequence| sequence.len() > 1)
+                        .filter(|sequence| {
+                            if let Pending::PaneSequence { events, .. } = pending {
+                                sequence.starts_with(events)
+                            } else {
+                                true
+                            }
+                        })
+                        .map(|sequence| {
+                            let offset = if let Pending::PaneSequence { events, .. } = pending {
+                                events.len()
+                            } else {
+                                1
+                            };
+                            let suffix = sequence[offset..]
+                                .iter()
+                                .map(crate::config::keybinding_display)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            (command.name().to_owned(), suffix)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(KeySequenceState {
             prefix,
             display,
             selected: self.sequence_selected,
+            candidates,
         })
     }
 
@@ -2342,7 +2622,7 @@ impl Keymap {
         if pending_is_valid(pending, app, now, self.generation, self.sequence_timeout) {
             return false;
         }
-        let was_visible = pending_display(pending.pending).is_some();
+        let was_visible = pending_display(pending.pending.clone()).is_some();
         self.pending = None;
         was_visible
     }
@@ -3041,9 +3321,10 @@ fn pending_is_valid(
     generation: u64,
     sequence_timeout: Duration,
 ) -> bool {
+    let editor_leader = matches!(pending.pending, Pending::EditorLeader);
     let base_valid = now.saturating_duration_since(pending.started_at) < sequence_timeout
-        && pending.focus == app.focus
-        && pending.editor_mode == app.active_editor_mode()
+        && (editor_leader || pending.focus == app.focus)
+        && (editor_leader || pending.editor_mode == app.active_editor_mode())
         && pending.generation == generation
         && pending.record_view_active == matches!(app.overlay, Some(Overlay::RecordView(_)))
         && app
@@ -3075,6 +3356,9 @@ fn pending_display(pending: Pending) -> Option<(crate::help::ShortcutPrefix, Str
                 format!("{count} Ctrl-w")
             },
         )),
+        Pending::PaneSequence { count, .. } => {
+            Some((ShortcutPrefix::Window, format!("pane sequence ({count})")))
+        }
         Pending::WindowCount { count } => {
             Some((ShortcutPrefix::WindowCount(count), count.to_string()))
         }
@@ -3323,10 +3607,18 @@ pub fn map_paste(value: String, app: &App) -> Vec<Action> {
     if is_relation_data_focus(app) {
         return vec![Action::RelationPaste];
     }
-    if app.focus != Focus::Editor || app.active_editor_mode() != EditorMode::Insert {
+    if app.focus != Focus::Editor {
         return Vec::new();
     }
-    vec![Action::EditorPaste(value)]
+    match app.active_editor_mode() {
+        EditorMode::Insert | EditorMode::Replace => vec![Action::EditorPaste(value)],
+        EditorMode::Normal
+        | EditorMode::VisualChar
+        | EditorMode::VisualLine
+        | EditorMode::VisualBlock => {
+            vec![Action::EditorPaste(value)]
+        }
+    }
 }
 
 fn map_omni(event: KeyEvent, app: &App) -> Option<Action> {
