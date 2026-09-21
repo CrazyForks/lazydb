@@ -4,6 +4,7 @@ use std::time::Duration;
 pub struct ReconnectPolicy {
     pub attempts: usize,
     pub initial_delay: Duration,
+    pub max_delay: Duration,
 }
 
 impl ReconnectPolicy {
@@ -11,6 +12,7 @@ impl ReconnectPolicy {
         Self {
             attempts: 3,
             initial_delay: Duration::from_millis(250),
+            max_delay: Duration::from_secs(1),
         }
     }
 
@@ -18,6 +20,10 @@ impl ReconnectPolicy {
         let multiplier = if attempt > 10 { 1024 } else { 1u64 << attempt };
         self.initial_delay.saturating_mul(multiplier as u32)
     }
+}
+
+pub const fn policy() -> ReconnectPolicy {
+    ReconnectPolicy::default()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +51,7 @@ mod tests {
         assert_eq!(policy.delay_for(0), Duration::from_millis(250));
         assert_eq!(policy.delay_for(2), Duration::from_millis(1000));
         assert_eq!(policy.attempts, 3);
+        assert_eq!(policy.max_delay, Duration::from_secs(1));
     }
 
     #[test]
