@@ -48,6 +48,15 @@ Redis scans and value pages are not snapshots. A key may disappear or change
 type between metadata and value reads. Old responses are discarded after a
 database switch, refresh, tab close, or connection generation change.
 
+Redis connections use a shared reconnecting connection manager. If a SCAN
+request encounters a dropped transport such as `broken pipe`, the manager
+reconnects using the original profile, credentials, TLS mode, and database;
+the SCAN itself may be issued once more with the same cursor and pattern.
+Reconnect attempts are bounded. If the server remains unavailable, the tab
+shows the normal failed state and `r` starts a fresh scan after the next
+connection attempt. Redis writes are not automatically replayed when their
+response is lost, because the server may already have applied the command.
+
 ## Navigation and panes
 
 Opening a Redis database from Explorer focuses the Keys pane. As soon as the

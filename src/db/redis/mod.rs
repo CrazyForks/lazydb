@@ -11,7 +11,10 @@ pub mod reply;
 pub mod scan_scheduler;
 pub mod types;
 
-use redis::{AsyncConnectionConfig, Client, aio::MultiplexedConnection};
+use redis::{
+    Client,
+    aio::{ConnectionManager, ConnectionManagerConfig},
+};
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -24,7 +27,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct RedisAdapter {
-    connection: MultiplexedConnection,
+    connection: ConnectionManager,
     target_database: u32,
     connection_id: Uuid,
     metadata_cache: Arc<Mutex<metadata_cache::MetadataCache>>,
@@ -83,11 +86,14 @@ impl RedisAdapter {
         let url = format!("{scheme}://{credentials}{host}:{port}/{database}");
         let client =
             Client::open(url).map_err(|error| redis_error(error, ErrorCategory::Configuration))?;
-        let config = AsyncConnectionConfig::new()
-            .set_connection_timeout(Some(std::time::Duration::from_secs(5)))
-            .set_response_timeout(Some(std::time::Duration::from_secs(10)));
-        let connection = client
-            .get_multiplexed_async_connection_with_config(&config)
+        let reconnect = reconnect::policy();
+        let manager_config = ConnectionManagerConfig::new()
+            .set_connection_timeout(Some(Duration::from_secs(5)))
+            .set_response_timeout(Some(Duration::from_secs(10)))
+            .set_number_of_retries(reconnect.attempts)
+            .set_min_delay(reconnect.initial_delay)
+            .set_max_delay(reconnect.max_delay);
+        let connection = ConnectionManager::new_with_config(client, manager_config)
             .await
             .map_err(|error| {
                 let category = if password.is_some() {
@@ -125,16 +131,22 @@ impl RedisAdapter {
         pattern: &[u8],
         count_hint: u32,
     ) -> Result<(u64, Vec<Vec<u8>>), DatabaseError> {
-        let mut connection = self.connection.clone();
-        let mut command = redis::cmd("SCAN");
-        command.arg(cursor).arg("MATCH").arg(pattern);
-        if count_hint > 0 {
-            command.arg("COUNT").arg(count_hint);
+        let scan = || async {
+            let mut connection = self.connection.clone();
+            let mut command = redis::cmd("SCAN");
+            command.arg(cursor).arg("MATCH").arg(pattern);
+            if count_hint > 0 {
+                command.arg("COUNT").arg(count_hint);
+            }
+            command.query_async(&mut connection).await
+        };
+        match scan().await {
+            Ok(result) => Ok(result),
+            Err(error) if error.is_connection_dropped() => scan()
+                .await
+                .map_err(|error| redis_error(error, ErrorCategory::Network)),
+            Err(error) => Err(redis_error(error, ErrorCategory::Network)),
         }
-        command
-            .query_async(&mut connection)
-            .await
-            .map_err(|error| redis_error(error, ErrorCategory::Network))
     }
 
     pub async fn delete_key(&self, key: &[u8]) -> Result<u64, DatabaseError> {
@@ -175,7 +187,7 @@ impl RedisAdapter {
         drop(self.connection);
     }
 
-    pub(crate) fn connection_clone(&self) -> MultiplexedConnection {
+    pub(crate) fn connection_clone(&self) -> ConnectionManager {
         self.connection.clone()
     }
 
