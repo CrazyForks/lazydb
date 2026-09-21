@@ -762,6 +762,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::ToggleResultView => Some(Action::ToggleResultView),
                 HitTarget::ResultView(view) => Some(Action::SetResultView(view)),
                 HitTarget::RelationView(view) => Some(Action::SetRelationView(view)),
+                HitTarget::PrincipalView(view) => Some(Action::SetPrincipalView(view)),
                 HitTarget::DashboardView(page) => Some(Action::DashboardSetPage(page)),
                 HitTarget::RelationRetry => Some(Action::RefreshActiveRelation),
                 HitTarget::RelationCancel => Some(Action::CancelActiveRelationRequest),
@@ -985,6 +986,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 }
                 HitTarget::ManualCancellationConfirm => Some(Action::ConfirmManualCancellation),
                 HitTarget::ExecutionConfirm => Some(Action::ConfirmExecution),
+                HitTarget::PrincipalMutationCancel => Some(Action::CancelPrincipalMutation),
+                HitTarget::PrincipalMutationApply => Some(Action::ConfirmPrincipalMutation),
+                HitTarget::PrincipalPermission(index) => {
+                    Some(Action::SelectPrincipalPermission(index))
+                }
+                HitTarget::PrincipalMutationForm => None,
                 HitTarget::ExecutionCancel => Some(Action::CancelExecution),
                 HitTarget::ClearTransactionConfirm => Some(Action::ConfirmClearTransactionOutcome),
                 HitTarget::ClearTransactionCancel => Some(Action::CancelClearTransactionOutcome),
@@ -1323,6 +1330,7 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::ToggleResultView
         | HitTarget::ResultView(_)
         | HitTarget::RelationView(_)
+        | HitTarget::PrincipalView(_)
         | HitTarget::DashboardView(_)
         | HitTarget::RelationRetry
         | HitTarget::GridColumnSort(_)
@@ -1408,6 +1416,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::SqlEditorListDeleteCancel => None,
         HitTarget::ManualCancellationKeepRunning | HitTarget::ManualCancellationConfirm => None,
         HitTarget::ExecutionConfirm | HitTarget::ExecutionCancel => None,
+        HitTarget::PrincipalMutationCancel | HitTarget::PrincipalMutationApply => None,
+        HitTarget::PrincipalPermission(_) => Some(Focus::Results),
+        HitTarget::PrincipalMutationForm => None,
         HitTarget::ClearTransactionConfirm | HitTarget::ClearTransactionCancel => None,
         HitTarget::TextDetailCopyAll
         | HitTarget::TextDetailClose

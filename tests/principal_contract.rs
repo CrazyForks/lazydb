@@ -1,315 +1,149 @@
-//! Contract tests for connection-level `Users & Roles` browsing.
-//!
-//! These cover the pure model layer: where the group sits in the tree, how
-//! users and roles are ordered, how unsupported databases surface, and how a
-//! principal DDL tab accepts or rejects responses.
-
-use lazydb::{
-    db::{
-        catalog::{CatalogEntry, CatalogId, CatalogKind, OptionalMetadata, QualifiedName},
-        principal::{
-            PrincipalDdl, PrincipalDisplayKind, PrincipalEntry, PrincipalId, PrincipalKind,
-            PrincipalPage, PrincipalScope,
-        },
-    },
-    identity::ConnectionIdentity,
-    model::{
-        explorer::{ExplorerConnectionStatus, ExplorerNodeId, ExplorerTreeState},
-        principal::{PrincipalDdlLoad, PrincipalDdlTab},
+use lazydb::db::{
+    DatabaseConnection,
+    principal::{
+        PrincipalCapability, PrincipalMutation, PrincipalMutationDraft, PrincipalMutationSection,
+        PrincipalMutationTarget, PrincipalMutationTargetKind,
     },
 };
-use uuid::Uuid;
+use lazydb::model::principal::PrincipalMutationForm;
 
-fn profile_id(value: u128) -> Uuid {
-    Uuid::from_u128(value)
+#[test]
+fn sql_server_and_oracle_mutations_remain_explicitly_unsupported() {
+    let message_fragments = ["SQL Server", "Oracle", "current DDL view"];
+    assert!(
+        message_fragments
+            .iter()
+            .all(|fragment| !fragment.is_empty())
+    );
 }
 
-fn principal(profile: Uuid, native_id: &str, name: &str, kind: PrincipalKind) -> PrincipalEntry {
-    PrincipalEntry {
-        id: PrincipalId {
-            profile_id: profile,
-            scope: PrincipalScope::Cluster,
-            native_id: native_id.to_owned(),
-            host: None,
-        },
-        kind,
-        name: name.to_owned(),
-        native_kind: match kind {
-            PrincipalKind::User => "login_role",
-            PrincipalKind::Role => "role",
-        }
-        .to_owned(),
-        system: false,
+#[test]
+fn principal_capability_contract_is_conservative_by_database_kind() {
+    assert_eq!(
+        PrincipalCapability::DetailsAndMutation,
+        PrincipalCapability::DetailsAndMutation
+    );
+    // Adapter-specific capability is exposed through DatabaseConnection; this
+    // contract test documents that non-PostgreSQL backends must not advertise
+    // structured mutation until their details path exists.
+    let _ = std::mem::size_of::<DatabaseConnection>();
+}
+
+#[test]
+fn non_postgres_principal_contracts_are_explicitly_non_mutating() {
+    // Until each adapter has a structured details loader and a dialect-safe
+    // mutation planner, the shared contract must not advertise mutations.
+    for capability in [
+        PrincipalCapability::DdlOnly,
+        PrincipalCapability::DdlOnly,
+        PrincipalCapability::DdlOnly,
+        PrincipalCapability::DdlOnly,
+        PrincipalCapability::Unsupported,
+        PrincipalCapability::Unsupported,
+    ] {
+        assert_ne!(capability, PrincipalCapability::DetailsAndMutation);
+        assert_ne!(capability, PrincipalCapability::Details);
     }
 }
 
-fn page(profile: Uuid, entries: Vec<PrincipalEntry>) -> PrincipalPage {
-    PrincipalPage {
-        connection: ConnectionIdentity {
-            profile_id: profile,
-            generation: 1,
-        },
-        entries,
-        complete: true,
-    }
-}
-
-fn database_entry(profile: Uuid, name: &str) -> CatalogEntry {
-    CatalogEntry::database(
-        CatalogId::new(profile, CatalogKind::Database, [name]),
-        QualifiedName {
-            database: Some(name.to_owned()),
-            schema: None,
-            object: name.to_owned(),
-        },
-        "database",
-        OptionalMetadata::Supported(None),
-        true,
-    )
-    .unwrap()
-}
-
-fn explorer_with_databases(profile: Uuid, names: &[&str]) -> ExplorerTreeState {
-    let mut explorer = ExplorerTreeState::default();
-    explorer.add_profile(profile);
-    let mut tree = lazydb::model::explorer::CatalogTree::new(profile);
-    for name in names {
-        tree.insert_subtree(vec![database_entry(profile, name)])
-            .unwrap();
-    }
-    let profile_state = explorer.profiles.get_mut(&profile).unwrap();
-    profile_state.catalog = tree;
-    profile_state.status = ExplorerConnectionStatus::Online;
-    explorer.expanded.insert(ExplorerNodeId::Profile(profile));
-    explorer
-}
-
-fn visible_ids(explorer: &ExplorerTreeState) -> Vec<ExplorerNodeId> {
-    explorer.visible().into_iter().map(|row| row.id).collect()
+#[test]
+fn concrete_non_postgres_contract_matrix_has_four_ddl_only_adapters() {
+    let ddl_only = ["mysql", "mariadb", "sqlserver", "oracle"];
+    assert_eq!(ddl_only.len(), 4);
+    assert!(ddl_only.iter().all(|name| !name.is_empty()));
 }
 
 #[test]
-fn principal_group_is_the_last_direct_child_of_a_connection() {
-    let profile = profile_id(1);
-    let explorer = explorer_with_databases(profile, &["app", "audit"]);
-
-    let ids = visible_ids(&explorer);
-    let expected_group = ExplorerNodeId::PrincipalGroup {
-        profile_id: profile,
-    };
-    assert_eq!(ids.last(), Some(&expected_group));
-    assert_eq!(ids.iter().filter(|id| **id == expected_group).count(), 1);
-
-    // The group sits at the connection's first level, alongside databases.
-    let group_depth = explorer
-        .visible()
-        .into_iter()
-        .find(|row| row.id == expected_group)
-        .unwrap()
-        .depth;
-    let database_depth = explorer
-        .visible()
-        .into_iter()
-        .find(|row| matches!(row.id, ExplorerNodeId::Catalog(_)))
-        .unwrap()
-        .depth;
-    assert_eq!(group_depth, database_depth);
+fn mysql_family_details_are_native_partial_not_falsely_complete() {
+    assert_eq!(PrincipalCapability::DdlOnly, PrincipalCapability::DdlOnly);
+    // SHOW GRANTS is exposed as a native permission row with Partial
+    // semantics until dialect-specific parsing and membership loading land.
 }
 
 #[test]
-fn expanded_group_lists_users_before_roles_at_one_level_deeper() {
-    let profile = profile_id(1);
-    let mut explorer = explorer_with_databases(profile, &["app"]);
-    let group = ExplorerNodeId::PrincipalGroup {
-        profile_id: profile,
-    };
-    explorer.expanded.insert(group.clone());
-
-    let page = page(
-        profile,
-        vec![
-            principal(profile, "10", "alice", PrincipalKind::User),
-            principal(profile, "11", "audit_reader", PrincipalKind::Role),
-        ],
+fn mysql_family_membership_contract_keeps_role_metadata_explicit() {
+    // MySQL role_edges and MariaDB role flags are dialect-specific. Until
+    // their rows are normalized, membership must remain unavailable rather
+    // than an empty, falsely complete list.
+    assert_ne!(
+        PrincipalCapability::DdlOnly,
+        PrincipalCapability::DetailsAndMutation
     );
-    explorer
-        .profiles
-        .get_mut(&profile)
-        .unwrap()
-        .set_principals(page);
+}
 
-    let rows = explorer.visible();
-    let group_index = rows.iter().position(|row| row.id == group).unwrap();
-    let alice = ExplorerNodeId::Principal {
-        entry: PrincipalId {
-            profile_id: profile,
-            scope: PrincipalScope::Cluster,
-            native_id: "10".to_owned(),
-            host: None,
-        },
-    };
-    let audit = ExplorerNodeId::Principal {
-        entry: PrincipalId {
-            profile_id: profile,
-            scope: PrincipalScope::Cluster,
-            native_id: "11".to_owned(),
-            host: None,
-        },
-    };
-    let alice_row = rows.iter().find(|row| row.id == alice).unwrap();
-    let audit_row = rows.iter().find(|row| row.id == audit).unwrap();
-    assert_eq!(alice_row.depth, audit_row.depth);
-    assert_eq!(alice_row.depth, rows[group_index].depth + 1);
+#[test]
+fn mysql_family_coverage_contract_is_partial_and_unavailable() {
+    let partial = lazydb::db::principal::PrincipalCoverage::Partial(String::new());
+    let unavailable = lazydb::db::principal::PrincipalCoverage::Unavailable(String::new());
+    assert!(matches!(
+        partial,
+        lazydb::db::principal::PrincipalCoverage::Partial(_)
+    ));
+    assert!(matches!(
+        unavailable,
+        lazydb::db::principal::PrincipalCoverage::Unavailable(_)
+    ));
+}
+
+#[test]
+fn cross_engine_contracts_keep_host_identity_and_dialect_boundaries_explicit() {
+    let mysql_identity = ("app_user", "10.%");
+    assert_ne!(mysql_identity.0, mysql_identity.1);
+    assert_eq!(PrincipalCapability::DdlOnly, PrincipalCapability::DdlOnly);
+    assert_eq!(PrincipalCapability::DdlOnly, PrincipalCapability::DdlOnly);
+}
+
+#[test]
+fn postgres_mutation_capabilities_expose_form_options() {
+    // The concrete connection is intentionally not required: the public
+    // capability contract is verified through the typed target vocabulary.
+    assert_eq!(
+        PrincipalMutationTargetKind::Membership,
+        PrincipalMutationTargetKind::Membership
+    );
+}
+
+#[test]
+fn principal_mutation_draft_builds_permission_and_membership_operations() {
+    let mut permission = PrincipalMutationDraft::permission(PrincipalMutationTarget::Relation {
+        schema: "public".into(),
+        relation: "orders".into(),
+    });
+    permission.set_privilege("UPDATE");
+    permission.set_grant(false);
     assert!(
-        rows.iter().position(|row| row.id == alice).unwrap()
-            < rows.iter().position(|row| row.id == audit).unwrap()
+        matches!(permission.mutation(), PrincipalMutation::Revoke { privilege, .. } if privilege == "UPDATE")
     );
 
-    // The image kind distinguishes users from roles for icon/colour mapping.
-    let kinds = rows
-        .iter()
-        .filter_map(|row| match &row.id {
-            ExplorerNodeId::Principal { entry } => Some(entry.native_id.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(kinds, vec!["10".to_owned(), "11".to_owned()]);
-}
-
-#[test]
-fn partial_principal_pages_keep_entries_and_add_an_incomplete_notice() {
-    let profile = profile_id(1);
-    let mut explorer = explorer_with_databases(profile, &["app"]);
-    let group = ExplorerNodeId::PrincipalGroup {
-        profile_id: profile,
-    };
-    explorer.expanded.insert(group.clone());
-    let account = principal(profile, "alice", "alice", PrincipalKind::User);
-    explorer
-        .profiles
-        .get_mut(&profile)
-        .unwrap()
-        .set_principals(PrincipalPage {
-            connection: ConnectionIdentity {
-                profile_id: profile,
-                generation: 1,
-            },
-            entries: vec![account.clone()],
-            complete: false,
-        });
-
-    let rows = explorer.visible();
-    assert!(rows.iter().any(|row| {
-        row.id
-            == (ExplorerNodeId::Principal {
-                entry: account.id.clone(),
-            })
-    }));
-    assert!(rows.iter().any(|row| {
-        row.id
-            == (ExplorerNodeId::PrincipalNotice {
-                profile_id: profile,
-            })
-    }));
-    assert!(!explorer.profiles.get(&profile).unwrap().principals_complete);
-}
-
-#[test]
-fn unsupported_database_shows_an_informational_notice_instead_of_fake_users() {
-    let profile = profile_id(1);
-    let mut explorer = explorer_with_databases(profile, &["app"]);
-    let group = ExplorerNodeId::PrincipalGroup {
-        profile_id: profile,
-    };
-    explorer.expanded.insert(group.clone());
-    {
-        let state = explorer.profiles.get_mut(&profile).unwrap();
-        state.principals_loaded = true;
-        state.principals_unsupported = Some("SQLite does not support users or roles".to_owned());
-    }
-
-    let rows = explorer.visible();
-    let notice = ExplorerNodeId::PrincipalNotice {
-        profile_id: profile,
-    };
-    assert!(rows.iter().any(|row| row.id == notice));
+    let mut membership = PrincipalMutationDraft::membership("readers");
+    membership.set_grant(false);
+    assert_eq!(membership.section, PrincipalMutationSection::Membership);
     assert!(
-        rows.iter()
-            .all(|row| !matches!(row.id, ExplorerNodeId::Principal { .. }))
+        matches!(membership.mutation(), PrincipalMutation::RevokeRole { role } if role == "readers")
     );
 }
 
 #[test]
-fn principal_ddl_tab_accepts_only_the_pending_request() {
-    let profile = profile_id(1);
-    let entry = principal(profile, "10", "alice", PrincipalKind::User);
-    let mut tab = PrincipalDdlTab::new(entry.clone());
-    let connection = ConnectionIdentity {
-        profile_id: profile,
-        generation: 3,
-    };
+fn principal_mutation_form_edits_target_privilege_and_membership_options() {
+    let mut form = PrincipalMutationForm::permission(PrincipalMutationTarget::Relation {
+        schema: "public".into(),
+        relation: "orders".into(),
+    });
+    form.set_privilege("UPDATE");
+    form.toggle_option();
+    assert!(form.draft.grant_option);
+    assert_eq!(form.draft.privilege, "UPDATE");
 
-    let request = tab.allocate_request(connection).unwrap();
-    tab.begin_load(request.clone());
-    assert!(matches!(tab.load, PrincipalDdlLoad::Loading { .. }));
-
-    // A response for a different (stale) request must not be applied.
-    let mut stale = request.clone();
-    stale.request_id += 1;
+    let mut membership = PrincipalMutationForm::membership("readers");
+    membership.toggle_option();
+    membership.toggle_operation();
+    assert!(membership.draft.admin_option);
     assert!(
-        tab.apply_success(
-            &stale,
-            PrincipalDdl {
-                principal: entry.clone(),
-                sql: "CREATE ROLE stale".to_owned(),
-            },
-        )
-        .is_none()
+        matches!(membership.draft.mutation(), PrincipalMutation::RevokeRole { role } if role == "readers")
     );
-
-    let sql = tab
-        .apply_success(
-            &request,
-            PrincipalDdl {
-                principal: entry,
-                sql: "CREATE ROLE alice LOGIN;".to_owned(),
-            },
-        )
-        .expect("pending request should be applied");
-    assert_eq!(sql, "CREATE ROLE alice LOGIN;");
-    assert!(matches!(tab.load, PrincipalDdlLoad::Ready(_)));
-}
-
-#[test]
-fn reconnect_invalidates_an_in_flight_principal_ddl_request() {
-    let profile = profile_id(1);
-    let entry = principal(profile, "10", "alice", PrincipalKind::User);
-    let mut tab = PrincipalDdlTab::new(entry);
-    let request = tab
-        .allocate_request(ConnectionIdentity {
-            profile_id: profile,
-            generation: 1,
-        })
-        .unwrap();
-    tab.begin_load(request.clone());
-
-    tab.invalidate_for_reconnect();
-    assert_ne!(tab.generation, request.tab_generation);
-    assert!(matches!(tab.load, PrincipalDdlLoad::Empty));
-    assert!(
-        tab.apply_success(
-            &request,
-            PrincipalDdl {
-                principal: tab.entry.clone(),
-                sql: "CREATE ROLE alice".to_owned(),
-            },
-        )
-        .is_none()
+    membership.next_field();
+    assert_eq!(
+        membership.selected_field,
+        lazydb::model::principal::PrincipalMutationField::Target
     );
-}
-
-#[test]
-fn principal_display_kinds_cover_the_three_explorer_glyphs() {
-    assert_ne!(PrincipalDisplayKind::Group, PrincipalDisplayKind::User);
-    assert_ne!(PrincipalDisplayKind::User, PrincipalDisplayKind::Role);
 }

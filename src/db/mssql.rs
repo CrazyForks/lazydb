@@ -349,6 +349,63 @@ impl fmt::Debug for MsSqlAdapter {
 }
 
 impl MsSqlAdapter {
+    pub fn plan_principal_mutation(
+        &self,
+        principal: &PrincipalEntry,
+        connection: crate::identity::ConnectionIdentity,
+        database: Option<&str>,
+        mutation: crate::db::principal::PrincipalMutation,
+    ) -> Result<crate::db::principal::PrincipalMutationPlan, DatabaseError> {
+        if principal.id.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "principal does not belong to this connection",
+            ));
+        }
+        let grantee = quote_identifier(&principal.name);
+        let sql = match mutation {
+            crate::db::principal::PrincipalMutation::Grant {
+                target,
+                privilege,
+                grant_option,
+            } => {
+                let target = mssql_principal_target(target)?;
+                format!(
+                    "GRANT {privilege} ON {target} TO {grantee}{};",
+                    if grant_option {
+                        " WITH GRANT OPTION"
+                    } else {
+                        ""
+                    }
+                )
+            }
+            crate::db::principal::PrincipalMutation::Revoke {
+                target,
+                privilege,
+                grant_option,
+            } => {
+                let target = mssql_principal_target(target)?;
+                if grant_option {
+                    format!("REVOKE GRANT OPTION FOR {privilege} ON {target} FROM {grantee};")
+                } else {
+                    format!("REVOKE {privilege} ON {target} FROM {grantee};")
+                }
+            }
+            crate::db::principal::PrincipalMutation::GrantRole { role, .. } => format!(
+                "ALTER ROLE {} ADD MEMBER {grantee};",
+                quote_identifier(&role)
+            ),
+            crate::db::principal::PrincipalMutation::RevokeRole { role } => format!(
+                "ALTER ROLE {} DROP MEMBER {grantee};",
+                quote_identifier(&role)
+            ),
+        };
+        Ok(crate::db::principal::PrincipalMutationPlan {
+            connection,
+            principal: principal.clone(),
+            database: database.map(str::to_owned),
+            sql,
+        })
+    }
     pub async fn preview_relation_with_scope(
         &self,
         relation: &CatalogId,
@@ -2454,6 +2511,66 @@ impl MsSqlAdapter {
         })
     }
 
+    pub async fn principal_details(
+        &self,
+        principal: &PrincipalEntry,
+        target: &crate::db::principal::PrincipalReadTarget,
+    ) -> Result<crate::db::principal::PrincipalDetails, DatabaseError> {
+        if principal.id.profile_id != self.connection_id || target.principal != principal.id {
+            return Err(DatabaseError::configuration(
+                "principal details target mismatch",
+            ));
+        }
+        let database = match &principal.id.scope {
+            PrincipalScope::Database(name) => name.clone(),
+            _ => self.settings.database.clone(),
+        };
+        let pool = self.pool_for_database(&database).await?;
+        let id: i32 = principal
+            .id
+            .native_id
+            .parse()
+            .map_err(|_| DatabaseError::configuration("invalid principal id"))?;
+        let quoted = quote_identifier(&database);
+        let rows = query_rows(&pool, &format!(
+            "SELECT p.state_desc, p.permission_name, p.class_desc, sc.name AS schema_name, ob.name AS object_name, CASE WHEN p.minor_id <> 0 THEN 1 ELSE 0 END AS is_column FROM {quoted}.sys.database_permissions p LEFT JOIN {quoted}.sys.schemas sc ON sc.schema_id=p.major_id AND p.class=3 LEFT JOIN {quoted}.sys.objects ob ON ob.object_id=p.major_id AND p.class=1 WHERE p.grantee_principal_id={id} ORDER BY p.permission_name"
+        )).await?;
+        let permissions = rows
+            .into_iter()
+            .filter_map(|row| {
+                let state = optional_string(&row, "state_desc").ok().flatten()?;
+                let privilege = optional_string(&row, "permission_name").ok().flatten()?;
+                let class = optional_string(&row, "class_desc").ok().flatten()?;
+                let schema = optional_string(&row, "schema_name").ok().flatten();
+                let object = optional_string(&row, "object_name").ok().flatten();
+                let target = schema
+                    .zip(object)
+                    .map(|(schema, object)| format!("{schema}.{object}"))
+                    .unwrap_or_else(|| class.clone());
+                Some(crate::db::principal::PrincipalPermission {
+                    target,
+                    privilege: format!("{state} {privilege}"),
+                    source: "direct".into(),
+                    grantable: state == "GRANT_WITH_GRANT_OPTION",
+                    source_kind: crate::db::principal::PrincipalPermissionSource::Direct,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(crate::db::principal::PrincipalDetails {
+            principal: principal.clone(),
+            database: target.database.clone(),
+            permissions,
+            member_of: Vec::new(),
+            members: Vec::new(),
+            permissions_coverage: crate::db::principal::PrincipalCoverage::Partial(
+                "SQL Server column and role inheritance details are not fully expanded".into(),
+            ),
+            membership_coverage: crate::db::principal::PrincipalCoverage::Partial(
+                "SQL Server membership rows are not yet normalized".into(),
+            ),
+        })
+    }
+
     pub async fn object_ddl(
         &self,
         kind: CatalogKind,
@@ -3928,6 +4045,28 @@ fn format_permission(
     Some(format!(
         "{verb} {permission_name}{target} TO {grantee}{with_grant_option};"
     ))
+}
+
+fn mssql_principal_target(
+    target: crate::db::principal::PrincipalMutationTarget,
+) -> Result<String, DatabaseError> {
+    match target {
+        crate::db::principal::PrincipalMutationTarget::Database => Ok("DATABASE::[current]".into()),
+        crate::db::principal::PrincipalMutationTarget::Schema { schema } => {
+            Ok(format!("SCHEMA::{}", quote_identifier(&schema)))
+        }
+        crate::db::principal::PrincipalMutationTarget::Relation { schema, relation } => {
+            Ok(format!(
+                "OBJECT::{}",
+                quote_identifier(&format!("{schema}.{relation}"))
+            ))
+        }
+        crate::db::principal::PrincipalMutationTarget::Column { .. } => {
+            Err(DatabaseError::unsupported(
+                "SQL Server column mutation requires column-specific target metadata",
+            ))
+        }
+    }
 }
 
 /// Build a readable definition for a SQL Server database principal.

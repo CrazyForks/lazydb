@@ -271,6 +271,8 @@ pub struct Runtime {
     redis_mutation_tasks: HashMap<(ConnectionIdentity, u64), JoinHandle<()>>,
     relation_tasks: HashMap<crate::model::relation::RelationRequest, JoinHandle<()>>,
     principal_tasks: HashMap<crate::model::principal::PrincipalDdlRequest, JoinHandle<()>>,
+    principal_details_tasks:
+        HashMap<crate::model::principal::PrincipalDetailsRequest, JoinHandle<()>>,
     dashboard_metric_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_metadata_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
     dashboard_process_tasks: HashMap<(Uuid, u64), JoinHandle<()>>,
@@ -395,6 +397,7 @@ impl Runtime {
             redis_mutation_tasks: HashMap::new(),
             relation_tasks: HashMap::new(),
             principal_tasks: HashMap::new(),
+            principal_details_tasks: HashMap::new(),
             dashboard_metric_tasks: HashMap::new(),
             dashboard_metadata_tasks: HashMap::new(),
             dashboard_process_tasks: HashMap::new(),
@@ -613,6 +616,8 @@ impl Runtime {
             }
             Command::PlanCatalogDrop(request) => self.plan_catalog_drop(request),
             Command::PlanPrincipalDrop(request) => self.plan_principal_drop(request),
+            Command::PlanPrincipalMutation(request) => self.plan_principal_mutation(request),
+            Command::ExecutePrincipalMutation(plan) => self.execute_principal_mutation(plan),
             Command::ExecutePrincipalDrop(plan) => self.execute_principal_drop(plan),
             Command::ExecuteCatalogDrop(plan) => self.execute_catalog_drop(plan),
             Command::PlanCatalogMutation {
@@ -631,6 +636,7 @@ impl Runtime {
             }
             Command::LoadPrincipals(request) => self.load_principals(request),
             Command::LoadPrincipalDdl(request) => self.load_principal_ddl(request),
+            Command::LoadPrincipalDetails(request) => self.load_principal_details(request),
             Command::CancelPrincipalDdl(request) => {
                 if let Some(task) = self.principal_tasks.remove(&request) {
                     task.abort();
@@ -2526,6 +2532,76 @@ impl Runtime {
         }));
     }
 
+    fn plan_principal_mutation(&mut self, request: crate::db::principal::PrincipalMutationRequest) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let task_request = request.clone();
+        self.background_tasks.push(tokio::spawn(async move {
+            let Some(database) = active_database(connection, request.connection).await else {
+                let _ = sender.send(Action::PrincipalMutationPlanFailed {
+                    request: task_request,
+                    message: "principal mutation connection is no longer active".into(),
+                });
+                return;
+            };
+            match database.plan_principal_mutation(
+                &request.principal,
+                request.connection,
+                request.database.as_deref(),
+                request.mutation,
+            ) {
+                Ok(plan) => {
+                    let _ = sender.send(Action::PrincipalMutationPlanReady(plan));
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalMutationPlanFailed {
+                        request: task_request,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
+    fn execute_principal_mutation(&mut self, plan: crate::db::principal::PrincipalMutationPlan) {
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let registry = Arc::clone(&self.registry);
+        self.background_tasks.push(tokio::spawn(async move {
+            let Some(database) = active_database(connection, plan.connection).await else {
+                let _ = sender.send(Action::PrincipalMutationFailed {
+                    plan,
+                    message: "principal mutation connection is no longer active".into(),
+                });
+                return;
+            };
+            let read_only = registry
+                .lock()
+                .await
+                .profiles
+                .get(&plan.principal.id.profile_id)
+                .is_some_and(|profile| profile.read_only);
+            if read_only {
+                let _ = sender.send(Action::PrincipalMutationFailed {
+                    plan,
+                    message: "principal mutation is unavailable on a read-only profile".into(),
+                });
+                return;
+            }
+            match database.execute(&plan.sql).await {
+                Ok(_) => {
+                    let _ = sender.send(Action::PrincipalMutationSucceeded { plan });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalMutationFailed {
+                        plan,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }));
+    }
+
     fn execute_principal_drop(&mut self, plan: crate::db::principal_drop::PrincipalDropPlan) {
         let sender = self.event_sender.clone();
         let connection = Arc::clone(&self.connection);
@@ -3206,6 +3282,45 @@ impl Runtime {
             }
         });
         self.principal_tasks.insert(request, task);
+    }
+
+    fn load_principal_details(
+        &mut self,
+        request: crate::model::principal::PrincipalDetailsRequest,
+    ) {
+        if self.principal_details_tasks.contains_key(&request) {
+            return;
+        }
+        let sender = self.event_sender.clone();
+        let connection = Arc::clone(&self.connection);
+        let task_request = request.clone();
+        let task = tokio::spawn(async move {
+            let Some(database) = active_database(connection, task_request.connection).await else {
+                let _ = sender.send(Action::PrincipalDetailsFailed {
+                    request: task_request,
+                    message: "principal details connection is no longer active".to_owned(),
+                });
+                return;
+            };
+            match database
+                .principal_details(&task_request.entry, &task_request.target)
+                .await
+            {
+                Ok(details) => {
+                    let _ = sender.send(Action::PrincipalDetailsLoaded {
+                        request: task_request,
+                        details,
+                    });
+                }
+                Err(error) => {
+                    let _ = sender.send(Action::PrincipalDetailsFailed {
+                        request: task_request,
+                        message: error.to_string(),
+                    });
+                }
+            }
+        });
+        self.principal_details_tasks.insert(request, task);
     }
 
     fn run_query(
@@ -4848,6 +4963,10 @@ impl Runtime {
             let _ = task.await;
         }
         for (_, task) in self.principal_tasks.drain() {
+            task.abort();
+            let _ = task.await;
+        }
+        for (_, task) in self.principal_details_tasks.drain() {
             task.abort();
             let _ = task.await;
         }

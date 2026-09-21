@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    identity::ConnectionIdentity,
     model::execution_target::ExecutionTarget,
     profile::{ConnectionProfile, DatabaseKind},
     security::sanitize_terminal_text,
@@ -291,6 +292,50 @@ pub enum DatabaseConnection {
 }
 
 impl DatabaseConnection {
+    pub fn principal_capability(&self) -> principal::PrincipalCapability {
+        match self {
+            Self::Postgres(_) => principal::PrincipalCapability::DetailsAndMutation,
+            Self::MySql(_) | Self::MariaDb(_) | Self::SqlServer(_) | Self::Oracle(_) => {
+                principal::PrincipalCapability::DdlOnly
+            }
+            Self::Sqlite(_) | Self::Redis(_) => principal::PrincipalCapability::Unsupported,
+        }
+    }
+
+    pub fn principal_mutation_capabilities(&self) -> principal::PrincipalMutationCapabilities {
+        match self {
+            Self::Postgres(_) => principal::PrincipalMutationCapabilities {
+                permission_targets: vec![
+                    principal::PrincipalMutationTargetKind::Database,
+                    principal::PrincipalMutationTargetKind::Schema,
+                    principal::PrincipalMutationTargetKind::Relation,
+                    principal::PrincipalMutationTargetKind::Column,
+                    principal::PrincipalMutationTargetKind::Membership,
+                ],
+                privileges: ["SELECT", "INSERT", "UPDATE", "DELETE", "USAGE", "EXECUTE"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                memberships: true,
+            },
+            Self::MySql(_) | Self::MariaDb(_) => principal::PrincipalMutationCapabilities {
+                permission_targets: vec![principal::PrincipalMutationTargetKind::Relation],
+                privileges: Vec::new(),
+                memberships: false,
+            },
+            Self::SqlServer(_) | Self::Oracle(_) => principal::PrincipalMutationCapabilities {
+                permission_targets: Vec::new(),
+                privileges: Vec::new(),
+                memberships: false,
+            },
+            Self::Sqlite(_) | Self::Redis(_) => principal::PrincipalMutationCapabilities {
+                permission_targets: Vec::new(),
+                privileges: Vec::new(),
+                memberships: false,
+            },
+        }
+    }
+
     pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
         match self {
             Self::Postgres(adapter) => adapter.list_principals().await,
@@ -313,6 +358,50 @@ impl DatabaseConnection {
             Self::Oracle(adapter) => adapter.principal_ddl(principal).await,
             Self::Sqlite(_) => Err(DatabaseError::unsupported("SQLite has no SQL principals")),
             Self::Redis(_) => Err(DatabaseError::unsupported("Redis has no SQL principals")),
+        }
+    }
+
+    pub async fn principal_details(
+        &self,
+        principal: &PrincipalEntry,
+        target: &principal::PrincipalReadTarget,
+    ) -> Result<principal::PrincipalDetails, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => adapter.principal_details(principal, target).await,
+            Self::MySql(adapter) | Self::MariaDb(adapter) => {
+                adapter.principal_details(principal, target).await
+            }
+            Self::SqlServer(adapter) => adapter.principal_details(principal, target).await,
+            Self::Oracle(adapter) => adapter.principal_details(principal, target).await,
+            Self::Sqlite(_) | Self::Redis(_) => Err(DatabaseError::unsupported(
+                "This database does not support SQL principal permission details",
+            )),
+        }
+    }
+
+    pub fn plan_principal_mutation(
+        &self,
+        principal: &PrincipalEntry,
+        connection: ConnectionIdentity,
+        database: Option<&str>,
+        mutation: principal::PrincipalMutation,
+    ) -> Result<principal::PrincipalMutationPlan, DatabaseError> {
+        match self {
+            Self::Postgres(adapter) => {
+                adapter.plan_principal_mutation(principal, connection, database, mutation)
+            }
+            Self::MySql(adapter) | Self::MariaDb(adapter) => {
+                adapter.plan_principal_mutation(principal, connection, database, mutation)
+            }
+            Self::SqlServer(adapter) => {
+                adapter.plan_principal_mutation(principal, connection, database, mutation)
+            }
+            Self::Oracle(_) => {
+                oracle::plan_principal_mutation(principal, connection, database, mutation)
+            }
+            _ => Err(DatabaseError::unsupported(
+                "principal mutations are DDL-only for this adapter (structured mutations are not implemented)",
+            )),
         }
     }
     pub async fn load_monitor_snapshot(&self) -> Result<monitor::MonitorSnapshot, DatabaseError> {

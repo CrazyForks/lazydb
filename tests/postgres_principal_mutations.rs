@@ -7,7 +7,10 @@ use lazydb::{
             CatalogObjectDefinitionRequest, CatalogObjectType,
         },
         postgres::PostgresAdapter,
-        principal::{PrincipalEntry, PrincipalId, PrincipalKind, PrincipalScope},
+        principal::{
+            PrincipalEntry, PrincipalId, PrincipalKind, PrincipalMutation, PrincipalMutationTarget,
+            PrincipalReadTarget, PrincipalScope,
+        },
         value::CellValue,
     },
     identity::ConnectionIdentity,
@@ -160,5 +163,116 @@ async fn postgres_principal_mutation_environment_is_explicit() {
         .execute(&format!("DROP ROLE IF EXISTS \"{renamed}\""))
         .await
         .expect("cleanup renamed role");
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
+    let Some(url) = std::env::var_os("LAZYDB_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let imported = import_connection_url(&url.to_string_lossy(), Some("principal-round-trip"))
+        .expect("PostgreSQL URL should parse");
+    let profile = imported.profile.clone();
+    let connection = match DatabaseConnection::connect(&profile, None).await {
+        Ok(connection) => connection,
+        Err(error) => {
+            eprintln!("PostgreSQL grant round-trip skipped: {error}");
+            return;
+        }
+    };
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let role = format!("lazydb_acl_{suffix}");
+    let table = format!("lazydb_acl_table_{suffix}");
+    connection
+        .execute(&format!("CREATE ROLE \"{role}\" NOLOGIN"))
+        .await
+        .expect("create role");
+    connection
+        .execute(&format!("CREATE TABLE \"{table}\" (id integer)"))
+        .await
+        .expect("create table");
+    let page = connection.list_principals().await.expect("list principals");
+    let principal = page
+        .entries
+        .into_iter()
+        .find(|entry| entry.name == role)
+        .expect("created role should be listed");
+    let database = profile
+        .database
+        .clone()
+        .unwrap_or_else(|| "postgres".into());
+    let connection_id = ConnectionIdentity {
+        profile_id: profile.id,
+        generation: 1,
+    };
+    let plan = connection
+        .plan_principal_mutation(
+            &principal,
+            connection_id,
+            Some(&database),
+            PrincipalMutation::Grant {
+                target: PrincipalMutationTarget::Relation {
+                    schema: "public".into(),
+                    relation: table.clone(),
+                },
+                privilege: "SELECT".into(),
+                grant_option: false,
+            },
+        )
+        .expect("grant plan");
+    connection.execute(&plan.sql).await.expect("grant");
+    let details = connection
+        .principal_details(
+            &principal,
+            &PrincipalReadTarget {
+                principal: principal.id.clone(),
+                database: Some(database.clone()),
+            },
+        )
+        .await
+        .expect("read granted permission");
+    assert!(details.permissions.iter().any(|permission| {
+        permission.target == format!("public.{table}") && permission.privilege == "SELECT"
+    }));
+    let revoke = connection
+        .plan_principal_mutation(
+            &principal,
+            connection_id,
+            Some(&database),
+            PrincipalMutation::Revoke {
+                target: PrincipalMutationTarget::Relation {
+                    schema: "public".into(),
+                    relation: table.clone(),
+                },
+                privilege: "SELECT".into(),
+                grant_option: false,
+            },
+        )
+        .expect("revoke plan");
+    connection.execute(&revoke.sql).await.expect("revoke");
+    let after = connection
+        .principal_details(
+            &principal,
+            &PrincipalReadTarget {
+                principal: principal.id.clone(),
+                database: Some(database),
+            },
+        )
+        .await
+        .expect("read revoked permission");
+    assert!(!after.permissions.iter().any(|permission| {
+        permission.target == format!("public.{table}")
+            && permission.privilege == "SELECT"
+            && permission.source == "direct"
+    }));
+    connection
+        .execute(&format!("DROP TABLE IF EXISTS \"{table}\""))
+        .await
+        .expect("drop table");
+    connection
+        .execute(&format!("DROP ROLE IF EXISTS \"{role}\""))
+        .await
+        .expect("drop role");
     connection.close().await;
 }

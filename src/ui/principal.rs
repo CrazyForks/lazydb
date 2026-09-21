@@ -1,7 +1,6 @@
-//! DDL-only workspace view for database users and roles.
+//! Workspace view for database users and roles.
 //!
-//! The view intentionally has no DATA/DDL selector, no `RELATION DDL` title,
-//! and no relation data grid: a principal tab only ever shows read-only DDL.
+//! A principal tab has a compact overview and a read-only DDL view.
 //! Rendering is delegated to [`super::read_only_sql::ReadOnlySqlEditor`] so the
 //! syntax highlighting, scrollbars, mouse handling and Vim bindings match the
 //! existing relation DDL view exactly.
@@ -9,7 +8,9 @@
 use super::{loading, panel_block, read_only_sql::ReadOnlySqlEditor, theme::Theme};
 use crate::{
     app::App,
-    model::{editor::EditorViewport, tab::WorkspaceTab, workspace::Focus},
+    model::{
+        editor::EditorViewport, principal::PrincipalView, tab::WorkspaceTab, workspace::Focus,
+    },
     ui::{HitRegion, HitTarget},
 };
 use ratatui::{
@@ -22,18 +23,50 @@ use ratatui::{
 
 /// Vertical split used by the principal DDL view.
 ///
-/// The first chunk is an optional status row shown while loading or after a
-/// failure; the second chunk always owns the editor. Unlike the relation view
-/// there is no selector row, so the editor keeps every remaining row.
-pub(crate) fn principal_ddl_layout(area: Rect, has_status: bool) -> [Rect; 2] {
-    if has_status {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(2), Constraint::Min(1)])
-            .split(area);
-        [chunks[0], chunks[1]]
-    } else {
-        [Rect::default(), area]
+/// The first chunk contains the Overview/DDL selector, the second is an
+/// optional status row, and the third owns the editor.
+pub(crate) fn principal_ddl_layout(area: Rect, has_status: bool) -> [Rect; 3] {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if has_status {
+            vec![
+                Constraint::Length(2),
+                Constraint::Length(2),
+                Constraint::Min(1),
+            ]
+        } else {
+            vec![
+                Constraint::Length(2),
+                Constraint::Length(0),
+                Constraint::Min(1),
+            ]
+        })
+        .split(area);
+    [chunks[0], chunks[1], chunks[2]]
+}
+
+fn render_tabs(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    view: PrincipalView,
+    theme: Theme,
+    state: &mut super::UiState,
+) {
+    let regions = super::render_tab_selectors(
+        frame,
+        area,
+        &["OVERVIEW", "DDL"],
+        usize::from(view == PrincipalView::Ddl),
+        theme,
+    );
+    for (region, view) in regions
+        .into_iter()
+        .zip([PrincipalView::Overview, PrincipalView::Ddl])
+    {
+        state.hit_regions.push(HitRegion {
+            area: region,
+            target: HitTarget::PrincipalView(view),
+        });
     }
 }
 
@@ -48,9 +81,12 @@ pub(crate) fn principal_ddl_viewport(
     let Some(WorkspaceTab::PrincipalDdl(tab)) = app.tabs.get(app.active_tab) else {
         return None;
     };
+    if tab.view != PrincipalView::Ddl {
+        return None;
+    }
     let layout = principal_ddl_layout(area, tab.load.status().is_some());
     let block = ddl_block(app.focus == Focus::Results, Theme::default());
-    let inner = block.inner(layout[1]);
+    let inner = block.inner(layout[2]);
     Some((
         tab.editor_id,
         EditorViewport {
@@ -61,8 +97,6 @@ pub(crate) fn principal_ddl_viewport(
 }
 
 fn ddl_block(focused: bool, theme: Theme) -> ratatui::widgets::Block<'static> {
-    // No title: the requirement removes the "DDL" sub-tab and its label
-    // because the principal tab contains nothing else.
     panel_block("", focused, theme)
 }
 
@@ -78,9 +112,14 @@ pub(crate) fn render(
     };
     let status = tab.load.status();
     let has_status = status.is_some();
+    if tab.view == PrincipalView::Overview {
+        render_overview(frame, area, app, theme, state);
+        return;
+    }
     let layout = principal_ddl_layout(area, has_status);
+    render_tabs(frame, layout[0], tab.view, theme, state);
     state.hit_regions.push(HitRegion {
-        area,
+        area: layout[2],
         target: HitTarget::Focus(Focus::Results),
     });
     let mut block = ddl_block(app.focus == Focus::Results, theme);
@@ -89,7 +128,7 @@ pub(crate) fn render(
         block = block.title_top(Line::raw(format!(" {provenance} ")).right_aligned());
     }
     if let Some((message, is_error)) = status {
-        let inner = panel_block("", false, theme).inner(layout[0]);
+        let inner = panel_block("", false, theme).inner(layout[1]);
         render_status(
             frame,
             inner,
@@ -99,7 +138,144 @@ pub(crate) fn render(
             theme,
         );
     }
-    render_ddl_editor(frame, layout[1], app, theme, state, block);
+    render_ddl_editor(frame, layout[2], app, theme, state, block);
+}
+
+fn render_overview(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    theme: Theme,
+    state: &mut super::UiState,
+) {
+    let Some(WorkspaceTab::PrincipalDdl(tab)) = app.tabs.get(app.active_tab) else {
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ])
+        .split(area);
+    render_tabs(frame, chunks[0], tab.view, theme, state);
+    let identity = match tab.entry.kind {
+        crate::db::principal::PrincipalKind::User => "USER",
+        crate::db::principal::PrincipalKind::Role => "ROLE",
+    };
+    let summary = format!(
+        " {identity}  {}   native: {}   scope: {}",
+        tab.entry.name,
+        tab.entry.native_kind,
+        principal_scope(&tab.entry.id.scope),
+    );
+    frame.render_widget(
+        Paragraph::new(summary)
+            .block(panel_block(
+                " PRINCIPAL ",
+                app.focus == Focus::Results,
+                theme,
+            ))
+            .style(Style::new().fg(theme.text).bg(theme.surface)),
+        chunks[1],
+    );
+    let details = tab.details.snapshot();
+    let status = if tab.entry.system {
+        "System-managed principal; modification is restricted."
+    } else if details.is_none() {
+        "Permissions are loading from the active database.  Press o for DDL."
+    } else {
+        "Current statements from the active database.  Press o for DDL."
+    };
+    let mut access_lines = vec![Line::raw("Permissions     Member of     Members")];
+    if let Some(details) = details {
+        for (index, permission) in details.permissions.iter().take(5).enumerate() {
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(
+                    chunks[2].x,
+                    chunks[2].y.saturating_add(1 + index as u16),
+                    chunks[2].width,
+                    1,
+                ),
+                target: HitTarget::PrincipalPermission(index),
+            });
+            access_lines.push(Line::raw(format!(
+                "{} {}  {}  {}:{:?}{}",
+                if index == tab.selected_permission {
+                    ">"
+                } else {
+                    " "
+                },
+                permission.target,
+                permission.privilege,
+                permission.source,
+                format_args!(":{:?}", permission.source_kind),
+                if permission.grantable {
+                    "  GRANTABLE"
+                } else {
+                    ""
+                }
+            )));
+        }
+        for membership in details.member_of.iter().take(2) {
+            access_lines.push(Line::raw(format!(
+                "MEMBER OF  {}{}",
+                membership.role,
+                if membership.admin_option {
+                    "  ADMIN"
+                } else {
+                    ""
+                }
+            )));
+        }
+    } else {
+        access_lines.push(Line::styled(
+            "No permission snapshot available.",
+            Style::new().fg(theme.muted),
+        ));
+    }
+    access_lines.push(Line::styled(status, Style::new().fg(theme.muted)));
+    access_lines.push(Line::styled(
+        match app.principal_capability(tab.entry.id.profile_id) {
+            Some(crate::db::principal::PrincipalCapability::DetailsAndMutation) =>
+                "Grant/Revoke: select a permission, then g/v; DDL is applied only after confirmation.",
+            Some(crate::db::principal::PrincipalCapability::Details) =>
+                "Permissions are read-only for this database connection.",
+            Some(crate::db::principal::PrincipalCapability::DdlOnly) =>
+                "This database exposes principal DDL only.",
+            _ => "Principal permissions are unsupported for this database.",
+        },
+        Style::new().fg(theme.muted),
+    ));
+    if let Some(form) = tab.mutation_draft.as_ref() {
+        access_lines.push(Line::styled(
+            format!(
+                "FORM {:?}  {:?}  {}  {}",
+                form.selected_field,
+                form.draft.section,
+                if form.draft.grant { "GRANT" } else { "REVOKE" },
+                form.draft.privilege
+            ),
+            Style::new().fg(theme.action),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(access_lines).block(panel_block(" ACCESS ", false, theme)),
+        chunks[2],
+    );
+    state.hit_regions.push(HitRegion {
+        area,
+        target: HitTarget::Focus(Focus::Results),
+    });
+}
+
+fn principal_scope(scope: &crate::db::principal::PrincipalScope) -> String {
+    match scope {
+        crate::db::principal::PrincipalScope::Cluster => "cluster".to_owned(),
+        crate::db::principal::PrincipalScope::Server => "server".to_owned(),
+        crate::db::principal::PrincipalScope::Database(database) => format!("database:{database}"),
+    }
 }
 
 fn render_status(

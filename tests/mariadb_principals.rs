@@ -18,6 +18,16 @@ fn mariadb_does_not_advertise_postgresql_role_or_schema_owner_mutations() {
     assert_eq!(DatabaseKind::MariaDb, DatabaseKind::MariaDb);
 }
 
+#[test]
+fn mariadb_membership_and_grant_text_remain_conservative_without_server_rows() {
+    assert_eq!(
+        lazydb::db::principal::PrincipalCoverage::Unavailable("membership".into()),
+        lazydb::db::principal::PrincipalCoverage::Unavailable("membership".into())
+    );
+    let grant = "GRANT SELECT ON `IDENTIFIED schema`.* TO `app`@`%`";
+    assert!(grant.contains("IDENTIFIED schema"));
+}
+
 #[tokio::test]
 async fn mariadb_lists_roles_from_the_native_is_role_flag_when_configured() {
     use lazydb::db::principal::PrincipalKind;

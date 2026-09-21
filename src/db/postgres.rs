@@ -69,7 +69,10 @@ use super::{
     ddl::{DdlSection, assemble_ddl},
     mutation::{InputValue, MutationResult, RelationMutation, RelationMutationRequest},
     principal::{
-        PrincipalDdl, PrincipalEntry, PrincipalId, PrincipalKind, PrincipalPage, PrincipalScope,
+        PrincipalCoverage, PrincipalDdl, PrincipalDetails, PrincipalEntry, PrincipalId,
+        PrincipalKind, PrincipalMembership, PrincipalMutation, PrincipalMutationPlan,
+        PrincipalMutationTarget, PrincipalPage, PrincipalPermission, PrincipalPermissionSource,
+        PrincipalReadTarget, PrincipalScope,
     },
     query::{
         ColumnMeta, QueryBudget, QueryOutcome, QueryOutcomeAccumulator, RELATION_PREVIEW_LIMIT,
@@ -333,6 +336,566 @@ struct PgSearchCandidate {
 }
 
 impl PostgresAdapter {
+    pub fn plan_principal_mutation(
+        &self,
+        principal: &PrincipalEntry,
+        connection: ConnectionIdentity,
+        database: Option<&str>,
+        mutation: PrincipalMutation,
+    ) -> Result<PrincipalMutationPlan, DatabaseError> {
+        if principal.id.profile_id != self.connection_id || principal.name.trim().is_empty() {
+            return Err(DatabaseError::configuration(
+                "invalid principal mutation target",
+            ));
+        }
+        let grantee = quote_identifier(&principal.name);
+        let sql = match mutation {
+            PrincipalMutation::Grant {
+                target,
+                privilege,
+                grant_option,
+            } => {
+                let privilege = validate_privilege(&privilege)?;
+                let target = mutation_target_sql(target, database)?;
+                format!(
+                    "GRANT {privilege} ON {target} TO {grantee}{};",
+                    if grant_option {
+                        " WITH GRANT OPTION"
+                    } else {
+                        ""
+                    }
+                )
+            }
+            PrincipalMutation::Revoke {
+                target,
+                privilege,
+                grant_option,
+            } => {
+                let privilege = validate_privilege(&privilege)?;
+                let target = mutation_target_sql(target, database)?;
+                if grant_option {
+                    format!("REVOKE GRANT OPTION FOR {privilege} ON {target} FROM {grantee};")
+                } else {
+                    format!("REVOKE {privilege} ON {target} FROM {grantee};")
+                }
+            }
+            PrincipalMutation::GrantRole { role, admin_option } => {
+                format!(
+                    "GRANT {} TO {grantee}{};",
+                    quote_identifier(&role),
+                    if admin_option {
+                        " WITH ADMIN OPTION"
+                    } else {
+                        ""
+                    }
+                )
+            }
+            PrincipalMutation::RevokeRole { role } => {
+                format!("REVOKE {} FROM {grantee};", quote_identifier(&role))
+            }
+        };
+        Ok(PrincipalMutationPlan {
+            connection,
+            principal: principal.clone(),
+            database: database.map(str::to_owned),
+            sql,
+        })
+    }
+
+    pub async fn principal_details(
+        &self,
+        principal: &PrincipalEntry,
+        target: &PrincipalReadTarget,
+    ) -> Result<PrincipalDetails, DatabaseError> {
+        if principal.id.profile_id != self.connection_id {
+            return Err(DatabaseError::configuration(
+                "principal does not belong to this connection",
+            ));
+        }
+        if target.principal != principal.id {
+            return Err(DatabaseError::configuration(
+                "principal details target does not match the principal",
+            ));
+        }
+        let name =
+            sqlx::query_scalar::<_, String>("SELECT rolname FROM pg_roles WHERE oid = $1::oid")
+                .bind(&principal.id.native_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(sql_error)?
+                .ok_or_else(|| DatabaseError::configuration("principal no longer exists"))?;
+        let mut permissions = sqlx::query(
+            "SELECT table_schema, table_name, privilege_type, is_grantable
+             FROM information_schema.role_table_grants
+             WHERE grantee = $1
+             ORDER BY table_schema, table_name, privilege_type",
+        )
+        .bind(&name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalPermission {
+                target: format!(
+                    "{}.{}",
+                    row.try_get::<String, _>("table_schema")?,
+                    row.try_get::<String, _>("table_name")?
+                ),
+                privilege: row.try_get("privilege_type")?,
+                source: "direct".to_owned(),
+                grantable: row
+                    .try_get::<String, _>("is_grantable")?
+                    .eq_ignore_ascii_case("YES"),
+                source_kind: PrincipalPermissionSource::Direct,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        let schema_permissions = sqlx::query(
+            "SELECT schema_name, privilege_type, is_grantable
+             FROM information_schema.role_schema_grants
+             WHERE grantee = $1 ORDER BY schema_name, privilege_type",
+        )
+        .bind(&name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalPermission {
+                target: format!("schema:{}", row.try_get::<String, _>("schema_name")?),
+                privilege: row.try_get("privilege_type")?,
+                source: "direct".to_owned(),
+                grantable: row
+                    .try_get::<String, _>("is_grantable")?
+                    .eq_ignore_ascii_case("YES"),
+                source_kind: PrincipalPermissionSource::Direct,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        permissions.extend(schema_permissions);
+        let column_permissions = sqlx::query(
+            "SELECT table_schema, table_name, column_name, privilege_type, is_grantable
+             FROM information_schema.role_column_grants
+             WHERE grantee = $1 ORDER BY table_schema, table_name, column_name, privilege_type",
+        )
+        .bind(&name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalPermission {
+                target: format!(
+                    "{}.{}({})",
+                    row.try_get::<String, _>("table_schema")?,
+                    row.try_get::<String, _>("table_name")?,
+                    row.try_get::<String, _>("column_name")?
+                ),
+                privilege: row.try_get("privilege_type")?,
+                source: "direct".to_owned(),
+                grantable: row
+                    .try_get::<String, _>("is_grantable")?
+                    .eq_ignore_ascii_case("YES"),
+                source_kind: PrincipalPermissionSource::Direct,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        permissions.extend(column_permissions);
+        let routine_permissions = sqlx::query(
+            "SELECT routine_schema, routine_name, privilege_type, is_grantable
+             FROM information_schema.role_routine_grants
+             WHERE grantee = $1 ORDER BY routine_schema, routine_name, privilege_type",
+        )
+        .bind(&name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalPermission {
+                target: format!(
+                    "{}.{}()",
+                    row.try_get::<String, _>("routine_schema")?,
+                    row.try_get::<String, _>("routine_name")?
+                ),
+                privilege: row.try_get("privilege_type")?,
+                source: "direct".to_owned(),
+                grantable: row
+                    .try_get::<String, _>("is_grantable")?
+                    .eq_ignore_ascii_case("YES"),
+                source_kind: PrincipalPermissionSource::Direct,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        permissions.extend(routine_permissions);
+        let usage_permissions = sqlx::query(
+            "SELECT object_schema, object_name, object_type, privilege_type, is_grantable
+             FROM information_schema.role_usage_grants
+             WHERE grantee = $1 ORDER BY object_schema, object_name, privilege_type",
+        )
+        .bind(&name)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalPermission {
+                target: format!(
+                    "{}.{} ({})",
+                    row.try_get::<String, _>("object_schema")?,
+                    row.try_get::<String, _>("object_name")?,
+                    row.try_get::<String, _>("object_type")?
+                ),
+                privilege: row.try_get("privilege_type")?,
+                source: "direct".to_owned(),
+                grantable: row
+                    .try_get::<String, _>("is_grantable")?
+                    .eq_ignore_ascii_case("YES"),
+                source_kind: PrincipalPermissionSource::Direct,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        permissions.extend(usage_permissions);
+        let mut native_acl_unavailable = false;
+        let acl_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, c.relname AS relation_name,
+                    (x.grantee = 0) AS is_public, x.privilege_type,
+                    x.is_grantable, r.rolname AS grantee_name
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) x
+             LEFT JOIN pg_roles r ON r.oid = x.grantee
+             WHERE (x.grantee = $1::oid OR x.grantee = 0)
+             ORDER BY n.nspname, c.relname, x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "{}.{}",
+                            row.try_get::<String, _>("schema_name")
+                                .map_err(decode_error)?,
+                            row.try_get::<String, _>("relation_name")
+                                .map_err(decode_error)?
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: if public { "PUBLIC" } else { "native ACL" }.to_owned(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Direct
+                        },
+                    });
+                }
+            }
+            Err(error) => {
+                let _ = error;
+                native_acl_unavailable = true;
+            }
+        }
+        let schema_acl_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, (x.grantee = 0) AS is_public,
+                    x.privilege_type, x.is_grantable
+             FROM pg_namespace n
+             CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) x
+             WHERE (x.grantee = $1::oid OR x.grantee = 0)
+               AND n.nspname NOT LIKE 'pg\\_%' ESCAPE '\\'
+             ORDER BY n.nspname, x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match schema_acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "schema:{}",
+                            row.try_get::<String, _>("schema_name")
+                                .map_err(decode_error)?
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: if public { "PUBLIC" } else { "native ACL" }.into(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Direct
+                        },
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let database_acl_rows = sqlx::query(
+            "SELECT d.datname AS database_name, (x.grantee = 0) AS is_public,
+                    x.privilege_type, x.is_grantable
+             FROM pg_database d
+             CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) x
+             WHERE d.datname = current_database() AND (x.grantee = $1::oid OR x.grantee = 0)
+             ORDER BY x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match database_acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "database:{}",
+                            row.try_get::<String, _>("database_name")
+                                .map_err(decode_error)?
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: if public { "PUBLIC" } else { "native ACL" }.into(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Direct
+                        },
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let default_acl_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, (x.grantee = 0) AS is_public,
+                    x.privilege_type, x.is_grantable
+             FROM pg_default_acl d
+             LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+             CROSS JOIN LATERAL aclexplode(d.defaclacl) x
+             WHERE d.defaclrole = $1::oid AND (x.grantee = $1::oid OR x.grantee = 0)
+             ORDER BY n.nspname, x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match default_acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "default:{}",
+                            row.try_get::<Option<String>, _>("schema_name")
+                                .map_err(decode_error)?
+                                .unwrap_or_else(|| "database".into())
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: "default ACL".into(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Default
+                        },
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let sequence_acl_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, c.relname AS sequence_name,
+                    (x.grantee = 0) AS is_public, x.privilege_type, x.is_grantable
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('S', c.relowner))) x
+             WHERE c.relkind = 'S' AND (x.grantee = $1::oid OR x.grantee = 0)
+             ORDER BY n.nspname, c.relname, x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match sequence_acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "{}.{} (sequence)",
+                            row.try_get::<String, _>("schema_name")
+                                .map_err(decode_error)?,
+                            row.try_get::<String, _>("sequence_name")
+                                .map_err(decode_error)?
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: if public { "PUBLIC" } else { "native ACL" }.into(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Direct
+                        },
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let routine_acl_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, p.proname AS routine_name,
+                    pg_get_function_identity_arguments(p.oid) AS arguments,
+                    (x.grantee = 0) AS is_public, x.privilege_type, x.is_grantable
+             FROM pg_proc p
+             JOIN pg_namespace n ON n.oid = p.pronamespace
+             CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x
+             WHERE (x.grantee = $1::oid OR x.grantee = 0)
+             ORDER BY n.nspname, p.proname, arguments, x.privilege_type",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match routine_acl_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let public = row.try_get::<bool, _>("is_public").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: format!(
+                            "{}.{}({})",
+                            row.try_get::<String, _>("schema_name")
+                                .map_err(decode_error)?,
+                            row.try_get::<String, _>("routine_name")
+                                .map_err(decode_error)?,
+                            row.try_get::<String, _>("arguments")
+                                .map_err(decode_error)?
+                        ),
+                        privilege: row.try_get("privilege_type").map_err(decode_error)?,
+                        source: if public { "PUBLIC" } else { "native ACL" }.into(),
+                        grantable: row.try_get("is_grantable").map_err(decode_error)?,
+                        source_kind: if public {
+                            PrincipalPermissionSource::Public
+                        } else {
+                            PrincipalPermissionSource::Direct
+                        },
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let owner_rows = sqlx::query(
+            "SELECT n.nspname AS schema_name, c.relname AS relation_name, c.relkind::text AS relation_kind
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relowner = $1::oid AND c.relkind IN ('r','p','v','m','S')
+             UNION ALL
+             SELECT n.nspname, NULL, 'schema' FROM pg_namespace n WHERE n.nspowner = $1::oid
+             ORDER BY schema_name, relation_name NULLS FIRST",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await;
+        match owner_rows {
+            Ok(rows) => {
+                for row in rows {
+                    let relation = row
+                        .try_get::<Option<String>, _>("relation_name")
+                        .map_err(decode_error)?;
+                    let kind: String = row.try_get("relation_kind").map_err(decode_error)?;
+                    permissions.push(PrincipalPermission {
+                        target: relation.map_or_else(
+                            || {
+                                format!(
+                                    "schema:{}",
+                                    row.try_get::<String, _>("schema_name").unwrap_or_default()
+                                )
+                            },
+                            |name| {
+                                format!(
+                                    "{}.{}",
+                                    row.try_get::<String, _>("schema_name").unwrap_or_default(),
+                                    name
+                                )
+                            },
+                        ),
+                        privilege: format!("OWNER ({kind})"),
+                        source: "owner".into(),
+                        grantable: true,
+                        source_kind: PrincipalPermissionSource::Owner,
+                    });
+                }
+            }
+            Err(_) => native_acl_unavailable = true,
+        }
+        let member_of = sqlx::query(
+            "SELECT granted.rolname AS role_name, member.rolname AS member_name,
+                    m.admin_option
+             FROM pg_auth_members m
+             JOIN pg_roles member ON member.oid = m.member
+             JOIN pg_roles granted ON granted.oid = m.roleid
+             WHERE member.oid = $1::oid ORDER BY granted.rolname COLLATE \"C\"",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalMembership {
+                role: row.try_get("role_name")?,
+                member: row.try_get("member_name")?,
+                admin_option: row.try_get("admin_option")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        let members = sqlx::query(
+            "SELECT granted.rolname AS role_name, member.rolname AS member_name,
+                    m.admin_option
+             FROM pg_auth_members m
+             JOIN pg_roles member ON member.oid = m.member
+             JOIN pg_roles granted ON granted.oid = m.roleid
+             WHERE granted.oid = $1::oid ORDER BY member.rolname COLLATE \"C\"",
+        )
+        .bind(&principal.id.native_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql_error)?
+        .into_iter()
+        .map(|row| {
+            Ok(PrincipalMembership {
+                role: row.try_get("role_name")?,
+                member: row.try_get("member_name")?,
+                admin_option: row.try_get("admin_option")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()
+        .map_err(decode_error)?;
+        Ok(PrincipalDetails {
+            principal: PrincipalEntry {
+                name,
+                ..principal.clone()
+            },
+            database: target.database.clone(),
+            permissions,
+            member_of,
+            members,
+            permissions_coverage: if native_acl_unavailable {
+                PrincipalCoverage::Unavailable(
+                    "One or more PostgreSQL native ACL dictionaries were not readable".into(),
+                )
+            } else {
+                PrincipalCoverage::Partial(
+                    "Effective inherited privileges are not fully computed".into(),
+                )
+            },
+            membership_coverage: PrincipalCoverage::Complete,
+        })
+    }
+
     pub async fn list_principals(&self) -> Result<PrincipalPage, DatabaseError> {
         let rows = sqlx::query(
             "SELECT oid::text AS oid, rolname, rolcanlogin, rolsuper FROM pg_roles ORDER BY rolcanlogin DESC, rolname COLLATE \"C\", oid",
@@ -5546,6 +6109,52 @@ LIMIT 2001
     }
 }
 
+fn validate_privilege(privilege: &str) -> Result<String, DatabaseError> {
+    let normalized = privilege.trim().to_ascii_uppercase();
+    if normalized.is_empty()
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(DatabaseError::configuration("invalid PostgreSQL privilege"));
+    }
+    Ok(normalized)
+}
+
+fn mutation_target_sql(
+    target: PrincipalMutationTarget,
+    database: Option<&str>,
+) -> Result<String, DatabaseError> {
+    match target {
+        PrincipalMutationTarget::Database => Ok(format!(
+            "DATABASE {}",
+            quote_identifier(database.ok_or_else(|| {
+                DatabaseError::configuration(
+                    "database privilege mutation requires a database target",
+                )
+            })?)
+        )),
+        PrincipalMutationTarget::Schema { schema } => {
+            Ok(format!("SCHEMA {}", quote_identifier(&schema)))
+        }
+        PrincipalMutationTarget::Relation { schema, relation } => Ok(format!(
+            "TABLE {}.{}",
+            quote_identifier(&schema),
+            quote_identifier(&relation)
+        )),
+        PrincipalMutationTarget::Column {
+            schema,
+            relation,
+            column,
+        } => Ok(format!(
+            "TABLE {}.{} ({})",
+            quote_identifier(&schema),
+            quote_identifier(&relation),
+            quote_identifier(&column)
+        )),
+    }
+}
+
 fn assemble_relation_ddl(mut relation: PgDdlRelation) -> Result<String, DatabaseError> {
     relation
         .constraints
@@ -7577,6 +8186,92 @@ mod tests {
         ] {
             assert_eq!(stale_relation_identity(profile, &invalid), None);
         }
+    }
+
+    #[tokio::test]
+    async fn principal_mutation_plans_quote_targets_and_reject_invalid_privileges() {
+        let principal = crate::db::principal::PrincipalEntry {
+            id: crate::db::principal::PrincipalId {
+                profile_id: Uuid::from_u128(1),
+                scope: crate::db::principal::PrincipalScope::Cluster,
+                native_id: "10".into(),
+                host: None,
+            },
+            kind: crate::db::principal::PrincipalKind::User,
+            name: "alice\"ops".into(),
+            native_kind: "login_role".into(),
+            system: false,
+        };
+        let adapter = super::PostgresAdapter {
+            pool: sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://localhost/test")
+                .unwrap(),
+            connection_id: Uuid::from_u128(1),
+            catalog_scope: crate::profile::CatalogScope::for_profile(
+                crate::profile::DatabaseKind::Postgres,
+                "test",
+                None,
+            ),
+            server_version_num: 120_000,
+        };
+        let plan = adapter
+            .plan_principal_mutation(
+                &principal,
+                crate::identity::ConnectionIdentity {
+                    profile_id: Uuid::from_u128(1),
+                    generation: 1,
+                },
+                Some("app"),
+                crate::db::principal::PrincipalMutation::Grant {
+                    target: crate::db::principal::PrincipalMutationTarget::Relation {
+                        schema: "public".into(),
+                        relation: "orders".into(),
+                    },
+                    privilege: "select".into(),
+                    grant_option: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(plan.database.as_deref(), Some("app"));
+        assert!(
+            plan.sql
+                .contains("GRANT SELECT ON TABLE \"public\".\"orders\"")
+        );
+        assert!(plan.sql.contains("\"alice\"\"ops\""));
+        assert!(
+            adapter
+                .plan_principal_mutation(
+                    &principal,
+                    crate::identity::ConnectionIdentity {
+                        profile_id: Uuid::from_u128(1),
+                        generation: 1,
+                    },
+                    None,
+                    crate::db::principal::PrincipalMutation::Grant {
+                        target: crate::db::principal::PrincipalMutationTarget::Database,
+                        privilege: "SELECT; DROP ROLE".into(),
+                        grant_option: false,
+                    },
+                )
+                .is_err()
+        );
+        assert!(
+            adapter
+                .plan_principal_mutation(
+                    &principal,
+                    crate::identity::ConnectionIdentity {
+                        profile_id: Uuid::from_u128(1),
+                        generation: 1,
+                    },
+                    None,
+                    crate::db::principal::PrincipalMutation::Grant {
+                        target: crate::db::principal::PrincipalMutationTarget::Database,
+                        privilege: "CONNECT".into(),
+                        grant_option: false,
+                    },
+                )
+                .is_err()
+        );
     }
 
     #[test]

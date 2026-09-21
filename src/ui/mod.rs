@@ -12,6 +12,8 @@ pub mod notifications;
 mod omni;
 pub mod pagination;
 pub(crate) mod principal;
+pub(crate) mod principal_mutation_confirm;
+pub(crate) mod principal_mutation_form;
 pub mod profiles;
 pub mod query_bar;
 pub(crate) mod read_only_sql;
@@ -147,6 +149,7 @@ pub enum HitTarget {
     ToggleResultView,
     ResultView(ResultView),
     RelationView(crate::model::relation::RelationView),
+    PrincipalView(crate::model::principal::PrincipalView),
     DashboardView(crate::model::dashboard::DashboardPage),
     RelationRetry,
     RelationCancel,
@@ -250,6 +253,10 @@ pub enum HitTarget {
     ManualCancellationKeepRunning,
     ManualCancellationConfirm,
     ExecutionConfirm,
+    PrincipalMutationCancel,
+    PrincipalMutationApply,
+    PrincipalPermission(usize),
+    PrincipalMutationForm,
     ExecutionCancel,
     ClearTransactionConfirm,
     ClearTransactionCancel,
@@ -1441,6 +1448,8 @@ fn overlay_key(overlay: &Overlay) -> animation::OverlayKey {
         Overlay::WorkspaceSaveFailed { .. } => animation::OverlayKey::WorkspaceSaveFailed,
         Overlay::SubstituteConfirm { .. } => animation::OverlayKey::SubstituteConfirm,
         Overlay::ExecutionConfirm { .. } => animation::OverlayKey::ExecutionConfirm,
+        Overlay::PrincipalMutationConfirm { .. } => animation::OverlayKey::ExecutionConfirm,
+        Overlay::PrincipalMutationForm(_) => animation::OverlayKey::ExecutionConfirm,
         Overlay::ManualCancelConfirm { .. } => animation::OverlayKey::ManualCancelConfirm,
         Overlay::TransactionExitConfirm { .. } => animation::OverlayKey::TransactionExitConfirm,
         Overlay::RelationTransactionConfirm(_) => animation::OverlayKey::RelationTransactionConfirm,
@@ -4929,6 +4938,12 @@ fn render_overlay(
             state,
             theme,
         ),
+        Overlay::PrincipalMutationConfirm { plan, focus } => {
+            principal_mutation_confirm::render(frame, area, plan, *focus, state, theme)
+        }
+        Overlay::PrincipalMutationForm(form) => {
+            principal_mutation_form::render(frame, area, form, state, theme)
+        }
         Overlay::ManualCancelConfirm { focus, .. } => {
             use crate::model::workspace::ManualCancelFocus;
             let popup = centered(area, 76, 12);

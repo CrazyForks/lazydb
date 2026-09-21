@@ -946,6 +946,57 @@ impl OracleAdapter {
         }
     }
 
+    pub async fn principal_details(
+        &self,
+        principal: &PrincipalEntry,
+        target: &crate::db::principal::PrincipalReadTarget,
+    ) -> Result<crate::db::principal::PrincipalDetails, DatabaseError> {
+        if principal.id.profile_id != self.connection_id || target.principal != principal.id {
+            return Err(DatabaseError::configuration(
+                "principal details target mismatch",
+            ));
+        }
+        #[cfg(not(feature = "driver-oracle"))]
+        {
+            let _ = target;
+            Err(oracle_disabled())
+        }
+        #[cfg(feature = "driver-oracle")]
+        {
+            let connection = Arc::clone(&self.connection);
+            let name = principal.name.clone();
+            let entry = principal.clone();
+            let database = target.database.clone();
+            tokio::task::spawn_blocking(move || {
+                let connection = connection.lock().map_err(|_| oracle_error("Oracle connection lock poisoned"))?;
+                let rows = connection.query(
+                    "SELECT owner, table_name, privilege, grantable FROM dba_tab_privs WHERE grantee = :1 ORDER BY owner, table_name, privilege",
+                    &[&name],
+                ).map_err(|error| oracle_error_with_query(error, "dba_tab_privs"))?;
+                let mut permissions = Vec::new();
+                for row in rows {
+                    let row = row.map_err(oracle_error)?;
+                    permissions.push(crate::db::principal::PrincipalPermission {
+                        target: format!("{}.{}", row.get::<usize, String>(0).map_err(oracle_error)?, row.get::<usize, String>(1).map_err(oracle_error)?),
+                        privilege: row.get::<usize, String>(2).map_err(oracle_error)?,
+                        source: "direct".into(),
+                        grantable: row.get::<usize, String>(3).map_err(oracle_error)?.eq_ignore_ascii_case("YES"),
+                        source_kind: crate::db::principal::PrincipalPermissionSource::Direct,
+                    });
+                }
+                Ok(crate::db::principal::PrincipalDetails {
+                    principal: entry,
+                    database,
+                    permissions,
+                    member_of: Vec::new(),
+                    members: Vec::new(),
+                    permissions_coverage: crate::db::principal::PrincipalCoverage::Partial("Oracle system and column privilege dictionaries are not fully normalized".into()),
+                    membership_coverage: crate::db::principal::PrincipalCoverage::Partial("Oracle role membership is not normalized in this read path".into()),
+                })
+            }).await.map_err(oracle_error)?
+        }
+    }
+
     pub async fn discover_catalog_scope(
         &self,
     ) -> Result<super::catalog::CatalogDiscovery, DatabaseError> {
@@ -1338,6 +1389,17 @@ impl OracleAdapter {
             depth: 0,
         })
     }
+}
+
+pub fn plan_principal_mutation(
+    _principal: &PrincipalEntry,
+    _connection: crate::identity::ConnectionIdentity,
+    _database: Option<&str>,
+    _mutation: crate::db::principal::PrincipalMutation,
+) -> Result<crate::db::principal::PrincipalMutationPlan, DatabaseError> {
+    Err(DatabaseError::unsupported(
+        "Oracle structured principal mutations require dialect-specific privilege metadata; use the current DDL view",
+    ))
 }
 
 pub(crate) struct OracleTransactionBackend {

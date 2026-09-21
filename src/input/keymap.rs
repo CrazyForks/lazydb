@@ -541,6 +541,35 @@ impl Keymap {
                 _ => None,
             };
         }
+        if matches!(app.overlay, Some(Overlay::PrincipalMutationConfirm { .. })) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Enter => match app.overlay {
+                    Some(Overlay::PrincipalMutationConfirm {
+                        focus: crate::model::workspace::PrincipalMutationConfirmFocus::Apply,
+                        ..
+                    }) => Some(Action::ConfirmPrincipalMutation),
+                    _ => Some(Action::CancelPrincipalMutation),
+                },
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                    Some(Action::CancelPrincipalMutation)
+                }
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+                    Some(Action::TogglePrincipalMutationFocus)
+                }
+                _ => None,
+            };
+        }
+        if matches!(app.overlay, Some(Overlay::PrincipalMutationForm(_))) {
+            self.pending = None;
+            return match event.code {
+                KeyCode::Tab | KeyCode::BackTab => Some(Action::TogglePrincipalMutationFormField),
+                KeyCode::Char(' ') => Some(Action::TogglePrincipalMutationFormOption),
+                KeyCode::Enter => Some(Action::ConfirmPrincipalMutationForm),
+                KeyCode::Esc | KeyCode::Char('q') => Some(Action::CancelPrincipalMutationForm),
+                _ => None,
+            };
+        }
         if matches!(app.overlay, Some(Overlay::ManualCancelConfirm { .. })) {
             self.pending = None;
             return match event.code {
@@ -1756,6 +1785,12 @@ impl Keymap {
             if (event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT)
                 && relation_grid_is_browse(app)
             {
+                if matches!(event.code, KeyCode::Char('j') | KeyCode::Down) {
+                    return Some(Action::MovePrincipalPermission(1));
+                }
+                if matches!(event.code, KeyCode::Char('k') | KeyCode::Up) {
+                    return Some(Action::MovePrincipalPermission(-1));
+                }
                 match event.code {
                     KeyCode::Char('d') => {
                         self.set_pending(Pending::RelationDelete, app);
@@ -2113,7 +2148,45 @@ impl Keymap {
                 Some(crate::model::tab::WorkspaceTab::PrincipalDdl(_))
             )
         {
-            if let Some(session_id) = ddl_only_session_id(app)
+            if event.modifiers.is_empty()
+                && matches!(
+                    app.tabs.get(app.active_tab),
+                    Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                        if tab.view == crate::model::principal::PrincipalView::Overview
+                )
+            {
+                match event.code {
+                    KeyCode::Char('g') => {
+                        return Some(Action::OpenPrincipalPermissionMutation { grant: true });
+                    }
+                    KeyCode::Char('v') => {
+                        return Some(Action::OpenPrincipalPermissionMutation { grant: false });
+                    }
+                    KeyCode::Tab => return Some(Action::PrincipalMutationFieldNext),
+                    KeyCode::Char(' ') => return Some(Action::PrincipalMutationToggleOperation),
+                    _ => {}
+                }
+            }
+            if event.modifiers.is_empty() && event.code == KeyCode::Char('o') {
+                let Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab)) =
+                    app.tabs.get(app.active_tab)
+                else {
+                    return None;
+                };
+                return Some(Action::SetPrincipalView(match tab.view {
+                    crate::model::principal::PrincipalView::Overview => {
+                        crate::model::principal::PrincipalView::Ddl
+                    }
+                    crate::model::principal::PrincipalView::Ddl => {
+                        crate::model::principal::PrincipalView::Overview
+                    }
+                }));
+            }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                    if tab.view == crate::model::principal::PrincipalView::Ddl
+            ) && let Some(session_id) = ddl_only_session_id(app)
                 && is_read_only_editor_key(event)
             {
                 return Some(Action::ReadOnlyEditorKey { session_id, event });
