@@ -1083,6 +1083,103 @@ fn relation_grid_actions_update_relation_grid_using_preview_dimensions() {
 }
 
 #[test]
+fn relation_data_navigation_keys_move_selected_row() {
+    let mut app = lazydb::app::App::new(Vec::new());
+    let mut tab = RelationTab::new("users");
+    tab.data =
+        lazydb::model::relation::RelationLoad::Ready(lazydb::model::relation::OwnedSnapshot::new(
+            lazydb::db::RelationPreview {
+                sql: "select".into(),
+                result: QueryOutcome {
+                    result_sets: vec![ResultSet {
+                        columns: vec![
+                            ColumnMeta {
+                                name: "id".into(),
+                                type_name: "int".into(),
+                            },
+                            ColumnMeta {
+                                name: "name".into(),
+                                type_name: "text".into(),
+                            },
+                        ],
+                        rows: vec![
+                            vec![CellValue::Integer(1), CellValue::Text("a".into())],
+                            vec![CellValue::Integer(2), CellValue::Text("b".into())],
+                            vec![CellValue::Integer(3), CellValue::Text("c".into())],
+                        ],
+                        affected_rows: 0,
+                    }],
+                    stats: QueryStats::new(std::time::Duration::ZERO, std::time::Duration::ZERO, 3),
+                },
+                pagination: default_pagination(3),
+                row_versions: None,
+            },
+            lazydb::identity::ConnectionIdentity {
+                profile_id: Uuid::nil(),
+                generation: 0,
+            },
+            lazydb::profile::CatalogScope::for_profile(
+                lazydb::profile::DatabaseKind::Sqlite,
+                "db",
+                None,
+            ),
+        ));
+    app.tabs.push(WorkspaceTab::Relation(tab));
+    app.active_tab = 1;
+    app.focus = lazydb::model::workspace::Focus::Results;
+    app.update(Action::GridSelect { row: 1, column: 1 });
+
+    let mut keymap = lazydb::input::keymap::Keymap::default();
+    for (code, expected_row) in [
+        (crossterm::event::KeyCode::Char('j'), 2),
+        (crossterm::event::KeyCode::Char('k'), 1),
+        (crossterm::event::KeyCode::Down, 2),
+        (crossterm::event::KeyCode::Up, 1),
+    ] {
+        let action = keymap
+            .map(
+                crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+                &app,
+            )
+            .expect("Relation Data navigation key should map");
+        assert!(matches!(
+            action,
+            Action::GridMove {
+                rows: 1 | -1,
+                columns: 0
+            }
+        ));
+        assert!(app.update(action).is_empty());
+        let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
+            panic!("expected relation tab");
+        };
+        assert_eq!(tab.grid.selected_row, expected_row);
+        assert_eq!(tab.grid.selected_column, 1);
+    }
+
+    for code in [
+        crossterm::event::KeyCode::Up,
+        crossterm::event::KeyCode::Up,
+        crossterm::event::KeyCode::Down,
+        crossterm::event::KeyCode::Down,
+        crossterm::event::KeyCode::Down,
+    ] {
+        let action = keymap
+            .map(
+                crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+                &app,
+            )
+            .expect("Relation Data boundary key should map");
+        app.update(action);
+    }
+    let WorkspaceTab::Relation(tab) = &app.tabs[app.active_tab] else {
+        panic!("expected relation tab");
+    };
+    assert_eq!(tab.grid.selected_row, 2);
+    assert_eq!(tab.grid.selected_column, 1);
+}
+
+#[test]
 fn relation_data_y_copies_the_selected_cell_value() {
     let mut app = lazydb::app::App::new(Vec::new());
     let mut tab = RelationTab::new("users");

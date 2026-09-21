@@ -1785,12 +1785,6 @@ impl Keymap {
             if (event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT)
                 && relation_grid_is_browse(app)
             {
-                if matches!(event.code, KeyCode::Char('j') | KeyCode::Down) {
-                    return Some(Action::MovePrincipalPermission(1));
-                }
-                if matches!(event.code, KeyCode::Char('k') | KeyCode::Up) {
-                    return Some(Action::MovePrincipalPermission(-1));
-                }
                 match event.code {
                     KeyCode::Char('d') => {
                         self.set_pending(Pending::RelationDelete, app);
@@ -4447,7 +4441,7 @@ mod tests {
             workspace::Overlay,
         },
     };
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     fn relation_app(mode: RelationGridMode) -> App {
         let mut app = App::new(Vec::new());
@@ -4456,6 +4450,15 @@ mod tests {
         edit.mode = mode;
         tab.edit = Some(edit);
         app.tabs.push(WorkspaceTab::Relation(tab));
+        app.active_tab = 1;
+        app.focus = Focus::Results;
+        app
+    }
+
+    fn relation_app_without_edit() -> App {
+        let mut app = App::new(Vec::new());
+        app.tabs
+            .push(WorkspaceTab::Relation(RelationTab::new("users")));
         app.active_tab = 1;
         app.focus = Focus::Results;
         app
@@ -5270,6 +5273,54 @@ mod tests {
             })
         );
         assert!(keymap.pending.is_none());
+    }
+
+    #[test]
+    fn relation_data_browse_maps_row_navigation_keys_to_grid_moves() {
+        for app in [
+            relation_app(RelationGridMode::Browse),
+            relation_app_without_edit(),
+        ] {
+            let mut keymap = Keymap::default();
+
+            for (code, rows) in [
+                (KeyCode::Char('j'), 1),
+                (KeyCode::Down, 1),
+                (KeyCode::Char('k'), -1),
+                (KeyCode::Up, -1),
+            ] {
+                assert_eq!(
+                    keymap.map(KeyEvent::new(code, KeyModifiers::NONE), &app),
+                    Some(Action::GridMove { rows, columns: 0 })
+                );
+            }
+
+            assert_eq!(
+                keymap.map(
+                    KeyEvent::new_with_kind(
+                        KeyCode::Char('j'),
+                        KeyModifiers::NONE,
+                        KeyEventKind::Release,
+                    ),
+                    &app,
+                ),
+                None
+            );
+            assert_eq!(
+                keymap.map(
+                    KeyEvent::new_with_kind(
+                        KeyCode::Char('k'),
+                        KeyModifiers::NONE,
+                        KeyEventKind::Repeat,
+                    ),
+                    &app,
+                ),
+                Some(Action::GridMove {
+                    rows: -1,
+                    columns: 0,
+                })
+            );
+        }
     }
 
     #[test]
