@@ -3282,6 +3282,7 @@ pub(crate) fn shortcuts(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn filtered_shortcuts(
     context: ShortcutContext,
     capabilities: ShortcutCapabilities,
@@ -3745,6 +3746,8 @@ pub struct HelpState {
     pub(crate) capabilities: ShortcutCapabilities,
     pub(crate) query: TextInput,
     pub(crate) selected: usize,
+    pub(crate) scroll: usize,
+    pub(crate) viewport_rows: usize,
     pub(crate) bindings: crate::config::KeyBindings,
 }
 
@@ -3755,6 +3758,8 @@ impl HelpState {
             capabilities,
             query: TextInput::default(),
             selected: 0,
+            scroll: 0,
+            viewport_rows: 0,
             bindings: crate::config::AppConfig::default()
                 .keybindings
                 .key_bindings()
@@ -3772,12 +3777,15 @@ impl HelpState {
             capabilities,
             query: TextInput::default(),
             selected: 0,
+            scroll: 0,
+            viewport_rows: 0,
             bindings,
         }
     }
     pub(crate) fn edit(&mut self, edit: TextInputEdit) {
         self.query.apply(edit);
         self.selected = 0;
+        self.scroll = 0;
     }
     pub(crate) fn paste(&mut self, value: &str) {
         self.query.paste(
@@ -3790,6 +3798,7 @@ impl HelpState {
                 .collect::<String>(),
         );
         self.selected = 0;
+        self.scroll = 0;
     }
     pub(crate) fn move_selection(&mut self, delta: isize, count: usize) {
         self.query.finish_edit_group();
@@ -3804,6 +3813,70 @@ impl HelpState {
         } else {
             (self.selected + delta as usize) % count
         };
+        self.ensure_selected_visible(count);
+    }
+
+    pub(crate) fn set_viewport_rows(&mut self, rows: usize) {
+        self.viewport_rows = rows;
+        self.normalize_scroll(self.entries().len());
+        self.ensure_selected_visible(self.entries().len());
+    }
+
+    pub(crate) fn scroll_by(&mut self, delta: isize) {
+        let count = self.entries().len();
+        self.scroll = self.scroll.saturating_add_signed(delta);
+        self.normalize_scroll(count);
+        if count > 0 && self.viewport_rows > 0 {
+            self.selected = self.selected.clamp(
+                self.scroll,
+                (self.scroll + self.viewport_rows - 1).min(count - 1),
+            );
+        }
+    }
+
+    pub(crate) fn set_scroll(&mut self, offset: usize) {
+        let count = self.entries().len();
+        self.scroll = offset;
+        self.normalize_scroll(count);
+        if count > 0 && self.viewport_rows > 0 {
+            self.selected = self.selected.clamp(
+                self.scroll,
+                (self.scroll + self.viewport_rows - 1).min(count - 1),
+            );
+        }
+    }
+
+    pub(crate) fn entries(&self) -> Vec<Shortcut> {
+        filtered_shortcuts_with_bindings(
+            self.context,
+            self.capabilities,
+            self.query.value(),
+            Some(&self.bindings),
+        )
+    }
+
+    fn normalize_scroll(&mut self, count: usize) {
+        if self.viewport_rows > 0 {
+            self.scroll = self.scroll.min(count.saturating_sub(self.viewport_rows));
+        }
+        if count == 0 {
+            self.selected = 0;
+            self.scroll = 0;
+        }
+    }
+
+    fn ensure_selected_visible(&mut self, count: usize) {
+        if count == 0 || self.viewport_rows == 0 {
+            self.scroll = 0;
+            return;
+        }
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        }
+        if self.selected >= self.scroll + self.viewport_rows {
+            self.scroll = self.selected.saturating_sub(self.viewport_rows - 1);
+        }
+        self.normalize_scroll(count);
     }
     pub(crate) fn selected_id(&self) -> Option<HelpShortcutId> {
         filtered_shortcuts_with_bindings(

@@ -3908,6 +3908,9 @@ impl App {
                     | Action::OmniPaste(_)
                     | Action::OmniMove(_)
                     | Action::OmniSelect(_)
+                    | Action::OmniScroll(_)
+                    | Action::OmniSetScroll(_)
+                    | Action::OmniViewportChanged(_)
                     | Action::OmniConfirm
                     | Action::OmniCancel
                     | Action::OmniDismiss
@@ -6772,6 +6775,25 @@ impl App {
             Action::OmniSelect(index) => {
                 if let Some(omni) = self.omni.as_mut() {
                     omni.selected = omni.visible_items().get(index).map(|item| item.id.clone());
+                    omni.set_scroll(omni.scroll);
+                }
+                Vec::new()
+            }
+            Action::OmniScroll(delta) => {
+                if let Some(omni) = self.omni.as_mut() {
+                    omni.scroll_by(delta);
+                }
+                Vec::new()
+            }
+            Action::OmniSetScroll(offset) => {
+                if let Some(omni) = self.omni.as_mut() {
+                    omni.set_scroll(offset);
+                }
+                Vec::new()
+            }
+            Action::OmniViewportChanged(rows) => {
+                if let Some(omni) = self.omni.as_mut() {
+                    omni.set_viewport_rows(rows);
                 }
                 Vec::new()
             }
@@ -7090,13 +7112,34 @@ impl App {
             }
             Action::HelpMove(delta) => {
                 if let Some(Overlay::Help(help)) = self.overlay.as_mut() {
-                    let count = crate::help::filtered_shortcuts(
-                        help.context,
-                        help.capabilities,
-                        help.query.value(),
-                    )
-                    .len();
+                    let count = help.entries().len();
                     help.move_selection(delta, count);
+                }
+                Vec::new()
+            }
+            Action::HelpSelect(index) => {
+                if let Some(Overlay::Help(help)) = self.overlay.as_mut() {
+                    if index < help.entries().len() {
+                        help.selected = index;
+                    }
+                }
+                Vec::new()
+            }
+            Action::HelpScroll(delta) => {
+                if let Some(Overlay::Help(help)) = self.overlay.as_mut() {
+                    help.scroll_by(delta);
+                }
+                Vec::new()
+            }
+            Action::HelpSetScroll(offset) => {
+                if let Some(Overlay::Help(help)) = self.overlay.as_mut() {
+                    help.set_scroll(offset);
+                }
+                Vec::new()
+            }
+            Action::HelpViewportChanged(rows) => {
+                if let Some(Overlay::Help(help)) = self.overlay.as_mut() {
+                    help.set_viewport_rows(rows);
                 }
                 Vec::new()
             }

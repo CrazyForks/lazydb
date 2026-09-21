@@ -116,8 +116,20 @@ pub(super) fn render(
         area: popup,
         target: HitTarget::Omni,
     });
+    let toggle_label = " Tab -> Help ";
+    let toggle_width = toggle_label.chars().count() as u16;
+    state.hit_regions.push(HitRegion {
+        area: Rect::new(
+            popup.right().saturating_sub(1).saturating_sub(toggle_width),
+            popup.y,
+            toggle_width.min(popup.width.saturating_sub(2)),
+            1,
+        ),
+        target: HitTarget::OmniTogglePanel,
+    });
 
     let rows = usize::from(layout.results.height);
+    state.omni_viewport_rows = Some(rows);
     let (start, end) = visible_window(
         visible.len(),
         rows,
@@ -126,6 +138,21 @@ pub(super) fn render(
             .as_ref()
             .and_then(|id| visible.iter().position(|item| &item.id == id)),
     );
+    let scrollbar_track = Rect::new(
+        layout.results.right().saturating_sub(1),
+        layout.results.y,
+        1,
+        layout.results.height,
+    );
+    let scrollbar = crate::ui::scrollbar::geometry(scrollbar_track, rows, visible.len(), start);
+    let list_area = scrollbar.map_or(layout.results, |_| {
+        Rect::new(
+            layout.results.x,
+            layout.results.y,
+            layout.results.width.saturating_sub(1),
+            layout.results.height,
+        )
+    });
     let items = visible[start..end]
         .iter()
         .enumerate()
@@ -133,7 +160,7 @@ pub(super) fn render(
             let selected = Some(&item.id) == omni.selected.as_ref();
             let title = sanitize_terminal_text(&item.title);
             let subtitle = sanitize_terminal_text(&item.subtitle);
-            let width = usize::from(inner.width);
+            let width = usize::from(list_area.width);
             let marker = if selected { "> " } else { "  " };
             let marker_width = usize::from(marker.cell_width());
             let base_style = Style::new().fg(theme.text).bg(if selected {
@@ -236,7 +263,7 @@ pub(super) fn render(
             let line = Line::from(spans);
             let row = inner.y.saturating_add(2).saturating_add(offset as u16);
             state.hit_regions.push(HitRegion {
-                area: Rect::new(inner.x, row, inner.width, 1),
+                area: Rect::new(list_area.x, row, list_area.width, 1),
                 target: HitTarget::OmniItem(start + offset),
             });
             ListItem::new(line).style(base_style)
@@ -244,8 +271,55 @@ pub(super) fn render(
         .collect::<Vec<_>>();
     frame.render_widget(
         List::new(items).style(Style::new().bg(theme.surface_raised)),
-        layout.results,
+        list_area,
     );
+    if let Some(geometry) = scrollbar {
+        let track = scrollbar_track;
+        let before = geometry.thumb_start;
+        let after = track
+            .height
+            .saturating_sub(before)
+            .saturating_sub(geometry.thumb_length);
+        let mut lines = Vec::with_capacity(track.height as usize);
+        lines.push(Line::from(Span::styled("▲", Style::new().fg(theme.muted))));
+        lines.extend(
+            (0..before).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+        );
+        lines.extend(
+            (0..geometry.thumb_length)
+                .map(|_| Line::from(Span::styled("┃", Style::new().fg(theme.accent)))),
+        );
+        lines.extend(
+            (0..after).map(|_| Line::from(Span::styled("│", Style::new().fg(theme.muted)))),
+        );
+        lines.push(Line::from(Span::styled("▼", Style::new().fg(theme.muted))));
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(theme.surface_raised)),
+            track,
+        );
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(track.x, track.y + 1, 1, before),
+            target: HitTarget::OmniScrollbarPage {
+                offset: start.saturating_sub(rows),
+            },
+        });
+        state.hit_regions.push(HitRegion {
+            area: geometry.thumb_area(),
+            target: HitTarget::OmniScrollbarThumb {
+                track_start: geometry.rail.y,
+                track_length: geometry.rail.height,
+                thumb_start: geometry.thumb_start + geometry.rail.y,
+                thumb_length: geometry.thumb_length,
+                max_offset: geometry.max_offset,
+            },
+        });
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(track.x, geometry.thumb_area().bottom(), 1, after),
+            target: HitTarget::OmniScrollbarPage {
+                offset: start.saturating_add(rows).min(geometry.max_offset),
+            },
+        });
+    }
 
     if let Some(status_area) = layout.status {
         frame.render_widget(

@@ -167,6 +167,7 @@ pub struct OmniState {
     pub suspended_sessions: Vec<Uuid>,
     pub items: Vec<OmniItem>,
     pub scroll: usize,
+    pub viewport_rows: usize,
     pub status: Option<String>,
     history: Vec<OmniStepState>,
 }
@@ -188,6 +189,7 @@ impl OmniState {
             suspended_sessions: Vec::new(),
             items: Vec::new(),
             scroll: 0,
+            viewport_rows: 0,
             status: None,
             history: Vec::new(),
         }
@@ -292,18 +294,92 @@ impl OmniState {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
+        let (next_id, count) = {
+            let visible = self.visible_items();
+            if visible.is_empty() {
+                self.selected = None;
+                return;
+            }
+            let current = visible
+                .iter()
+                .position(|item| Some(&item.id) == self.selected.as_ref())
+                .unwrap_or(0);
+            let next = (current as isize + delta).rem_euclid(visible.len() as isize) as usize;
+            (visible[next].id.clone(), visible.len())
+        };
+        self.selected = Some(next_id);
+        self.ensure_selected_visible(count);
+        self.query.finish_edit_group();
+    }
+
+    pub fn set_viewport_rows(&mut self, rows: usize) {
+        self.viewport_rows = rows;
+        self.normalize_scroll();
+        if let Some(index) = self.selected_index() {
+            self.ensure_selected_visible(index + 1);
+        }
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll = self.scroll.saturating_add_signed(delta);
+        self.normalize_scroll();
+        if let Some(index) = self.selected_index()
+            && self.viewport_rows > 0
+        {
+            self.selected = Some(
+                self.visible_items()[index.clamp(
+                    self.scroll,
+                    (self.scroll + self.viewport_rows - 1).min(self.visible_items().len() - 1),
+                )]
+                .id
+                .clone(),
+            );
+        }
+    }
+
+    pub fn set_scroll(&mut self, offset: usize) {
+        self.scroll = offset;
+        self.normalize_scroll();
+        if let Some(index) = self.selected_index()
+            && self.viewport_rows > 0
+        {
+            let visible = self.visible_items();
+            let clamped = index.clamp(
+                self.scroll,
+                (self.scroll + self.viewport_rows - 1).min(visible.len() - 1),
+            );
+            self.selected = Some(visible[clamped].id.clone());
+        }
+    }
+
+    fn selected_index(&self) -> Option<usize> {
         let visible = self.visible_items();
-        if visible.is_empty() {
-            self.selected = None;
+        self.selected
+            .as_ref()
+            .and_then(|id| visible.iter().position(|item| &item.id == id))
+    }
+
+    fn ensure_selected_visible(&mut self, _count: usize) {
+        let Some(index) = self.selected_index() else {
+            return;
+        };
+        if self.viewport_rows == 0 {
             return;
         }
-        let current = visible
-            .iter()
-            .position(|item| Some(&item.id) == self.selected.as_ref())
-            .unwrap_or(0);
-        let next = (current as isize + delta).rem_euclid(visible.len() as isize) as usize;
-        self.selected = Some(visible[next].id.clone());
-        self.query.finish_edit_group();
+        if index < self.scroll {
+            self.scroll = index;
+        }
+        if index >= self.scroll + self.viewport_rows {
+            self.scroll = index - self.viewport_rows + 1;
+        }
+        self.normalize_scroll();
+    }
+
+    fn normalize_scroll(&mut self) {
+        let count = self.visible_items().len();
+        if self.viewport_rows > 0 {
+            self.scroll = self.scroll.min(count.saturating_sub(self.viewport_rows));
+        }
     }
 
     pub fn selected_item(&self) -> Option<&OmniItem> {

@@ -2071,7 +2071,7 @@ fn readonly_detail_target_wins_over_background_and_opens_from_help() {
 }
 
 #[test]
-fn rendered_help_rows_open_readonly_detail_without_consuming_form_input() {
+fn rendered_help_rows_select_without_opening_readonly_detail() {
     let mut app = App::new(Vec::new());
     app.overlay = Some(Overlay::Help(lazydb::help::HelpState::new(
         lazydb::help::ShortcutContext::EditorNormal,
@@ -2085,8 +2085,8 @@ fn rendered_help_rows_open_readonly_detail_without_consuming_form_input() {
     let region = state
         .hit_regions
         .iter()
-        .find(|region| matches!(region.target, HitTarget::OpenTextDetail(_)))
-        .expect("help detail region");
+        .find(|region| matches!(region.target, HitTarget::HelpItem(_)))
+        .expect("help row region");
 
     assert!(matches!(
         map_mouse(
@@ -2098,7 +2098,7 @@ fn rendered_help_rows_open_readonly_detail_without_consuming_form_input() {
             &state,
             &app,
         ),
-        Some(Action::OpenTextDetail(_))
+        Some(Action::HelpSelect(_))
     ));
 }
 
