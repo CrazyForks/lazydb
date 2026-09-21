@@ -24,6 +24,7 @@ use lazydb::{
         ProfileAccess, import_connection_url,
     },
 };
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 fn sqlite_profile(name: &str) -> ConnectionProfile {
@@ -966,6 +967,69 @@ fn test_commits_pending_url_atomically_before_validation() {
             .url_display()
             .contains("secret")
     );
+}
+
+#[test]
+fn save_rejects_a_url_that_has_not_been_auto_parsed() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    valid_new_profile(&mut app, "pending-url");
+
+    let manager = app.profile_manager.as_mut().unwrap();
+    let draft = manager.draft.as_mut().unwrap();
+    draft.move_home(ProfileField::Url);
+    draft.paste(
+        ProfileField::Url,
+        "postgresql://alice@db.example:5440/lazydb",
+    );
+
+    assert!(app.update(Action::ProfileSave { connect: true }).is_empty());
+    let manager = app.profile_manager.as_ref().unwrap();
+    let draft = manager.draft.as_ref().unwrap();
+    assert!(draft.url_is_pending());
+    assert_eq!(draft.host.value(), "localhost");
+    assert!(manager.operation.is_none());
+}
+
+#[test]
+fn profile_url_auto_parse_advances_only_after_the_debounce_deadline() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::OpenProfileManager);
+    valid_new_profile(&mut app, "auto-url");
+
+    let manager = app.profile_manager.as_mut().unwrap();
+    let draft = manager.draft.as_mut().unwrap();
+    draft.move_home(ProfileField::Url);
+    draft.paste(
+        ProfileField::Url,
+        "postgresql://alice@db.example:5440/lazydb",
+    );
+    let before = Instant::now();
+
+    assert!(!app.advance_profile_url_parse(before + Duration::from_millis(299)));
+    assert_eq!(
+        app.profile_manager
+            .as_ref()
+            .unwrap()
+            .draft
+            .as_ref()
+            .unwrap()
+            .host
+            .value(),
+        "localhost"
+    );
+
+    assert!(app.advance_profile_url_parse(before + Duration::from_secs(1)));
+    let draft = app
+        .profile_manager
+        .as_ref()
+        .unwrap()
+        .draft
+        .as_ref()
+        .unwrap();
+    assert_eq!(draft.host.value(), "db.example");
+    assert_eq!(draft.port.value(), "5440");
+    assert!(!app.advance_profile_url_parse(before + Duration::from_secs(2)));
 }
 
 #[test]

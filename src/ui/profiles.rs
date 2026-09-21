@@ -183,7 +183,11 @@ fn render_form(
     if manager.selected_field == ProfileField::Url && !busy {
         render_field_cursor(layout.url, draft, ProfileField::Url, state);
     }
-    let help = if let Some(error) = draft.url_generation_error() {
+    let help = if draft.url_is_pending() {
+        "URL syncing…".to_owned()
+    } else if let Some(error) = draft.url_error() {
+        format!("Invalid URL · {error}")
+    } else if let Some(error) = draft.url_generation_error() {
         if draft.oracle_url_preview().is_some() {
             format!("Preview only · {}", error.message)
         } else if manager.selected_field == ProfileField::Url {
