@@ -149,6 +149,7 @@ pub struct RelationEditSession {
     pub pending_mutation_history: Option<PendingMutationHistory>,
     pub pending_save: VecDeque<RelationMutationRequest>,
     pub save_after_metadata_load: bool,
+    pub(crate) display_revision: u64,
 }
 
 impl RelationEditSession {
@@ -273,6 +274,7 @@ impl RelationEditSession {
         };
         self.redo.push(self.rows.clone());
         self.rows = previous;
+        self.touch_display_revision();
         self.sync_history_depth();
         true
     }
@@ -283,6 +285,7 @@ impl RelationEditSession {
         };
         self.undo.push(self.rows.clone());
         self.rows = next;
+        self.touch_display_revision();
         self.sync_history_depth();
         true
     }
@@ -296,6 +299,7 @@ impl RelationEditSession {
             row.supplied_columns.clear();
         }
         self.clear_edit_bookkeeping();
+        self.touch_display_revision();
     }
 
     pub fn commit_changes(&mut self) {
@@ -307,6 +311,7 @@ impl RelationEditSession {
             row.supplied_columns.clear();
         }
         self.clear_edit_bookkeeping();
+        self.touch_display_revision();
     }
 
     pub fn sync_history_depth(&mut self) {
@@ -372,7 +377,12 @@ impl RelationEditSession {
     fn record_change(&mut self) {
         self.undo.push(self.rows.clone());
         self.redo.clear();
+        self.touch_display_revision();
         self.sync_history_depth();
+    }
+
+    fn touch_display_revision(&mut self) {
+        self.display_revision = self.display_revision.wrapping_add(1);
     }
 
     fn clear_edit_bookkeeping(&mut self) {

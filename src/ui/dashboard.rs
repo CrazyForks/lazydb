@@ -463,6 +463,7 @@ fn render_processes(
         area,
         tab.id,
         &result,
+        0,
         tab.grid.clone(),
         &tab.grid.column_widths,
         theme,

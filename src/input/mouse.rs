@@ -1105,10 +1105,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 {
                     Some(Action::RedisKeysScroll(3))
                 }
-                Focus::Results => Some(Action::GridScrollRows {
-                    direction: 1,
-                    amount: GridScrollAmount::Lines(3),
-                }),
+                Focus::Results => app
+                    .active_grid_can_scroll_rows(1, GridScrollAmount::Lines(3))
+                    .then_some(Action::GridScrollRows {
+                        direction: 1,
+                        amount: GridScrollAmount::Lines(3),
+                    }),
                 Focus::Editor => Some(Action::EditorScroll {
                     rows: 3,
                     columns: 0,
@@ -1187,10 +1189,12 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 {
                     Some(Action::RedisKeysScroll(-3))
                 }
-                Focus::Results => Some(Action::GridScrollRows {
-                    direction: -1,
-                    amount: GridScrollAmount::Lines(3),
-                }),
+                Focus::Results => app
+                    .active_grid_can_scroll_rows(-1, GridScrollAmount::Lines(3))
+                    .then_some(Action::GridScrollRows {
+                        direction: -1,
+                        amount: GridScrollAmount::Lines(3),
+                    }),
                 Focus::Editor => Some(Action::EditorScroll {
                     rows: -3,
                     columns: 0,

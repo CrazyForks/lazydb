@@ -38,6 +38,7 @@ pub(crate) fn render(
     area: Rect,
     tab_id: Uuid,
     result: &ResultSet,
+    data_revision: u64,
     grid: crate::model::tab::DataGridState,
     overrides: &[Option<u16>],
     theme: Theme,
@@ -64,7 +65,39 @@ pub(crate) fn render(
 
     let table_area = block.inner(area);
     let row_count = edit.map_or(result.rows.len(), |session| session.rows.len());
-    let widths = automatic_widths(result, edit, icons, sort_projection)
+    let cache_key = (
+        tab_id,
+        data_revision,
+        edit.map_or(0, |session| session.display_revision),
+        row_count,
+        result.columns.len(),
+    );
+    let natural_widths = state
+        .grid_width_cache
+        .as_ref()
+        .filter(|cache| {
+            (
+                cache.tab_id,
+                cache.result_revision,
+                cache.edit_revision,
+                cache.row_count,
+                cache.column_count,
+            ) == cache_key
+        })
+        .map(|cache| cache.widths.clone())
+        .unwrap_or_else(|| {
+            let widths = automatic_widths(result, edit, icons, sort_projection);
+            state.grid_width_cache = Some(super::GridWidthCache {
+                tab_id,
+                result_revision: cache_key.1,
+                edit_revision: cache_key.2,
+                row_count,
+                column_count: cache_key.4,
+                widths: widths.clone(),
+            });
+            widths
+        });
+    let widths = natural_widths
         .into_iter()
         .enumerate()
         .map(|(index, width)| {
@@ -355,7 +388,7 @@ fn automatic_widths(
             let content = rows
                 .clone()
                 .filter_map(|row| row.get(column_index))
-                .map(|value| value.preview(40).text)
+                .map(|value| value.display_text(40))
                 .map(|text| UnicodeWidthStr::width(text.as_str()))
                 .max()
                 .unwrap_or(0);
@@ -558,7 +591,7 @@ fn body_cells(
             cells.push(Cell::from("│").style(separator_style));
         }
         let value = row.get(column.index).unwrap_or(&CellValue::Null);
-        let preview = value.preview(column.rendered_width.saturating_sub(2) as usize);
+        let preview = value.display_text(column.rendered_width.saturating_sub(2) as usize);
         let style = match value {
             CellValue::Null => Style::new().fg(theme.muted).add_modifier(Modifier::ITALIC),
             CellValue::Unsupported { .. } => Style::new().fg(theme.warning),
@@ -570,7 +603,7 @@ fn body_cells(
             changed_columns.is_some_and(|columns| columns.contains(&column.index)),
             theme,
         );
-        cells.push(Cell::from(sanitize_terminal_text(&preview.text)).style(style));
+        cells.push(Cell::from(sanitize_terminal_text(&preview)).style(style));
     }
     cells
 }
@@ -921,6 +954,7 @@ mod tests {
                     Rect::new(0, 0, 24, 8),
                     uuid::Uuid::nil(),
                     &result,
+                    0,
                     crate::model::tab::DataGridState {
                         column_offset,
                         selected_column: column_offset,
@@ -960,6 +994,7 @@ mod tests {
                     Rect::new(0, 0, 24, 8),
                     uuid::Uuid::nil(),
                     &result,
+                    0,
                     crate::model::tab::DataGridState::default(),
                     &[Some(8)],
                     Theme::deep_space(),
@@ -1008,6 +1043,7 @@ mod tests {
                     Rect::new(0, 0, 40, 6),
                     uuid::Uuid::nil(),
                     &result,
+                    0,
                     crate::model::tab::DataGridState {
                         selected_column: 1,
                         ..Default::default()
@@ -1067,6 +1103,7 @@ mod tests {
                         Rect::new(0, 0, 30, 6),
                         uuid::Uuid::nil(),
                         &result,
+                        0,
                         crate::model::tab::DataGridState::default(),
                         &[Some(6); 2],
                         theme,
@@ -1116,6 +1153,7 @@ mod tests {
                     Rect::new(0, 0, 30, 6),
                     uuid::Uuid::nil(),
                     &result,
+                    0,
                     crate::model::tab::DataGridState {
                         selected_row: 1,
                         selected_column: 0,

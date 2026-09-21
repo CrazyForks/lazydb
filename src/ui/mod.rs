@@ -357,6 +357,17 @@ pub struct UiState {
     pub(crate) animations: animation::AnimationState,
     pub(crate) result_area: Option<Rect>,
     pub(crate) activity_icons: icons::IconSet,
+    pub(crate) grid_width_cache: Option<GridWidthCache>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GridWidthCache {
+    pub tab_id: Uuid,
+    pub result_revision: u64,
+    pub edit_revision: u64,
+    pub row_count: usize,
+    pub column_count: usize,
+    pub widths: Vec<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -492,6 +503,7 @@ impl UiState {
             animations: animation::AnimationState::new(mode, Instant::now()),
             result_area: None,
             activity_icons: icons::IconSet::default(),
+            grid_width_cache: None,
         }
     }
 
@@ -4333,6 +4345,9 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
                 body[1],
                 tab.id,
                 result,
+                tab.derived
+                    .as_ref()
+                    .map_or(tab.generation, |derived| derived.generation),
                 tab.grid.clone(),
                 theme,
                 Block::default().style(Style::new().bg(theme.surface)),
@@ -4381,6 +4396,9 @@ fn render_data(frame: &mut Frame<'_>, area: Rect, app: &App, theme: Theme, state
             body[1],
             tab.id,
             result,
+            tab.derived
+                .as_ref()
+                .map_or(tab.generation, |derived| derived.generation),
             tab.grid.clone(),
             theme,
             Block::default().style(Style::new().bg(theme.surface)),
@@ -4432,6 +4450,7 @@ pub(crate) fn render_result_table(
     area: Rect,
     tab_id: Uuid,
     result: &ResultSet,
+    data_revision: u64,
     grid: crate::model::tab::GridState,
     theme: Theme,
     block: Block<'_>,
@@ -4457,6 +4476,7 @@ pub(crate) fn render_result_table(
         area,
         tab_id,
         result,
+        data_revision,
         grid,
         &overrides,
         theme,
@@ -4464,7 +4484,7 @@ pub(crate) fn render_result_table(
         state,
         None,
         icons,
-        Some(&sort_projection),
+        Some(sort_projection.as_slice()),
         sort_interactive,
     );
 }

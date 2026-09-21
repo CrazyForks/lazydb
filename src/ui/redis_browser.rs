@@ -322,6 +322,7 @@ pub fn render(
             grid_area,
             tab.id,
             &result,
+            0,
             tab.preview_grid.clone(),
             &tab.preview_grid.column_widths,
             theme,

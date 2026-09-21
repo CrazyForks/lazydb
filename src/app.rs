@@ -23311,6 +23311,83 @@ impl App {
         self.active_grid_dimensions()
     }
 
+    pub(crate) fn active_grid_navigation_state(
+        &self,
+    ) -> Option<(usize, usize, usize, usize, usize)> {
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Data => Some((
+                tab.grid.selected_row,
+                tab.grid.selected_column,
+                tab.grid.row_offset,
+                tab.grid.column_offset,
+                tab.grid.viewport_rows,
+            )),
+            Some(WorkspaceTab::Sql(tab)) if tab.result_view == ResultView::Data => Some((
+                tab.grid.selected_row,
+                tab.grid.selected_column,
+                tab.grid.row_offset,
+                tab.grid.column_offset,
+                tab.grid.viewport_rows,
+            )),
+            Some(WorkspaceTab::Dashboard(tab))
+                if tab.page == crate::model::dashboard::DashboardPage::Processes =>
+            {
+                Some((
+                    tab.grid.selected_row,
+                    tab.grid.selected_column,
+                    tab.grid.row_offset,
+                    tab.grid.column_offset,
+                    tab.grid.viewport_rows,
+                ))
+            }
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                Some((
+                    tab.preview_grid.selected_row,
+                    tab.preview_grid.selected_column,
+                    tab.preview_grid.row_offset,
+                    tab.preview_grid.column_offset,
+                    tab.preview_grid.viewport_rows,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn active_grid_can_scroll_rows(
+        &self,
+        direction: isize,
+        amount: crate::model::tab::GridScrollAmount,
+    ) -> bool {
+        let row_count = self.active_grid_dimensions().0;
+        if row_count == 0 {
+            // Preserve the generic Results-focus mapping before a grid has
+            // been loaded. Loaded empty grids still reach their active branch.
+            return true;
+        }
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::Relation(tab)) if tab.view == RelationView::Data => {
+                tab.grid.can_scroll_rows(direction, amount, row_count)
+            }
+            Some(WorkspaceTab::Sql(tab)) if tab.result_view == ResultView::Data => {
+                tab.grid.can_scroll_rows(direction, amount, row_count)
+            }
+            Some(WorkspaceTab::Dashboard(tab))
+                if tab.page == crate::model::dashboard::DashboardPage::Processes =>
+            {
+                tab.grid.can_scroll_rows(direction, amount, row_count)
+            }
+            Some(WorkspaceTab::RedisBrowser(tab))
+                if tab.format.view() == crate::value_preview::ValueView::Table =>
+            {
+                tab.preview_grid
+                    .can_scroll_rows(direction, amount, row_count)
+            }
+            _ => false,
+        }
+    }
+
     fn with_active_grid(&mut self, f: impl FnOnce(&mut DataGridState, (usize, usize))) {
         let dimensions = self.active_grid_dimensions();
         match self.tabs.get_mut(self.active_tab) {

@@ -337,6 +337,17 @@ fn default_pagination() -> ResultPagination {
 }
 
 impl DataGridState {
+    pub fn can_scroll_rows(
+        &self,
+        direction: isize,
+        amount: GridScrollAmount,
+        row_count: usize,
+    ) -> bool {
+        let mut next = self.clone();
+        next.scroll_rows(direction, amount, row_count);
+        (self.selected_row, self.row_offset) != (next.selected_row, next.row_offset)
+    }
+
     pub fn select_column_target(&mut self, target: GridColumnTarget, column_count: usize) {
         if column_count == 0 {
             self.selected_column = 0;
@@ -885,6 +896,21 @@ mod tests {
 
         state.scroll_rows(-1, GridScrollAmount::Lines(20), 10);
         assert_eq!((state.selected_row, state.row_offset), (4, 0));
+    }
+
+    #[test]
+    fn row_scroll_reports_no_change_at_the_edges() {
+        let mut state = DataGridState {
+            selected_row: 9,
+            row_offset: 5,
+            viewport_rows: 5,
+            ..Default::default()
+        };
+        assert!(!state.can_scroll_rows(1, GridScrollAmount::Lines(3), 10));
+        assert!(state.can_scroll_rows(-1, GridScrollAmount::Lines(3), 10));
+        state.selected_row = 0;
+        state.row_offset = 0;
+        assert!(!state.can_scroll_rows(-1, GridScrollAmount::Lines(3), 10));
     }
 
     #[test]
