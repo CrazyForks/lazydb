@@ -28,6 +28,114 @@ fn control(code: KeyCode) -> KeyEvent {
 }
 
 #[test]
+fn pane_binding_cmd_ctrl_h_moves_focus_from_sql_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.toml");
+    std::fs::write(
+        &settings,
+        "[keybindings.panes]\nfocus-pane-left = [\"Cmd+Ctrl+h\"]\n",
+    )
+    .unwrap();
+    let config = lazydb::config::AppConfig::load(settings).unwrap();
+    let bindings = config.keybindings.key_bindings().unwrap();
+    let timeout = std::time::Duration::from_millis(config.keybindings.sequence_timeout_ms);
+    let event = KeyEvent::new(
+        KeyCode::Char('h'),
+        KeyModifiers::SUPER | KeyModifiers::CONTROL,
+    );
+    for (focus, mode) in [
+        (Focus::Results, None),
+        (Focus::Editor, Some(EditorMode::Normal)),
+        (Focus::Editor, Some(EditorMode::Insert)),
+    ] {
+        let mut keymap = Keymap::with_sequence_timeout_and_bindings(timeout, bindings.clone());
+        let mut app = App::new(Vec::new());
+        if let Some(mode) = mode {
+            app.update(Action::EditorKey(key(KeyCode::Esc)));
+            if mode == EditorMode::Insert {
+                app.update(Action::EditorKey(key(KeyCode::Char('i'))));
+            }
+        }
+        app.focus = focus;
+
+        let action = keymap.map(event, &app).expect("configured pane action");
+        app.update(action);
+
+        assert_eq!(app.focus, Focus::Explorer, "mode={mode:?}");
+        if let Some(mode) = mode {
+            assert_eq!(app.active_editor_mode(), mode);
+        }
+    }
+}
+
+#[test]
+fn pane_binding_rejects_ctrl_w_as_a_prefix_when_ctrl_w_cycles_panes() {
+    let mut config = lazydb::config::AppConfig::default();
+    config.keybindings.panes.insert(
+        "focus-pane-left".into(),
+        vec!["Ctrl-w h".into(), "Ctrl-w Ctrl-w".into()],
+    );
+    let result = config.keybindings.key_bindings();
+    assert!(result.is_err());
+}
+
+#[test]
+fn pane_binding_accepts_custom_two_key_prefix() {
+    let mut config = lazydb::config::AppConfig::default();
+    config
+        .keybindings
+        .panes
+        .insert("focus-pane-right".into(), vec!["Alt+x h".into()]);
+    let bindings = config.keybindings.key_bindings().unwrap();
+    let mut keymap =
+        Keymap::with_sequence_timeout_and_bindings(std::time::Duration::from_millis(750), bindings);
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+
+    assert_eq!(
+        keymap.map(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT), &app),
+        None
+    );
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('h')), &app),
+        Some(Action::Focus(Focus::Editor))
+    );
+    app.update(Action::Focus(Focus::Editor));
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn pane_binding_accepts_three_key_sequence_and_empty_array_disables() {
+    let mut config = lazydb::config::AppConfig::default();
+    config
+        .keybindings
+        .panes
+        .insert("focus-pane-right".into(), vec!["Alt+x a h".into()]);
+    config
+        .keybindings
+        .panes
+        .insert("focus-pane-left".into(), Vec::new());
+    let bindings = config.keybindings.key_bindings().unwrap();
+    assert!(!bindings.configured_for("focus-pane-left"));
+    assert_eq!(bindings.configured_sequences("focus-pane-right").len(), 1);
+
+    let mut keymap =
+        Keymap::with_sequence_timeout_and_bindings(std::time::Duration::from_millis(750), bindings);
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    for event in [
+        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
+        key(KeyCode::Char('a')),
+    ] {
+        assert_eq!(keymap.map(event, &app), None);
+    }
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('h')), &app),
+        Some(Action::Focus(Focus::Editor))
+    );
+}
+
+#[test]
 fn sql_history_overlay_routes_navigation_by_mode() {
     let mut app = App::new(Vec::new());
     app.focus = Focus::Results;
@@ -3673,6 +3781,8 @@ fn editor_leader_opens_connection_target_selector() {
         },
         mutation_capabilities: Default::default(),
     });
+    app.update(Action::NewConsole);
+    app.focus = Focus::Editor;
     app.update(Action::EditorKey(key(KeyCode::Esc)));
     app.update(Action::EditorKey(key(KeyCode::Char(' '))));
     assert_eq!(

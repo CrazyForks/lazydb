@@ -396,6 +396,7 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
     app.update(Action::ReplaceEditor("SELECT first".into()));
     let first_tab = app.active_console().id;
     let first_target = app.active_console().execution_target.clone();
+    let first_workspace = app.active_workspace_profile;
 
     let second_generation = match app.update(Action::RequestConnect(second_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
@@ -407,6 +408,13 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
         server: server("second"),
         mutation_capabilities: Default::default(),
     });
+    app.update(Action::NewConsole);
+    app.active_console_mut().execution_target = Some(ExecutionTarget::from_profile(
+        app.profiles
+            .iter()
+            .find(|profile| profile.id == second_id)
+            .unwrap(),
+    ));
     assert_eq!(app.active_workspace_profile, Some(second_id));
     assert_eq!(app.tabs.len(), 2);
     assert_eq!(app.sql_editors.len(), 2);
@@ -438,6 +446,7 @@ fn successful_switch_keeps_profile_workspaces_available_together() {
         first_target
     );
     assert_eq!(app.tabs.len(), 2);
+    assert_eq!(first_workspace, Some(first_id));
 }
 
 #[test]
@@ -599,11 +608,11 @@ fn switching_to_a_console_does_not_reconnect_its_target() {
         schema: Some("attached".into()),
     };
     let mut app = app_with_console(vec![profile]);
+    app.update(Action::NewConsole);
     app.connection.profile_id = Some(profile_id);
     app.connection.generation = 1;
     app.connection.status = ConnectionStatus::Connected;
     app.connection.target = Some(default.clone());
-    app.update(Action::NewConsole);
     app.tabs[0]
         .as_console_mut()
         .expect("default console")
@@ -632,9 +641,9 @@ fn activating_another_console_while_connecting_does_not_defer_activation() {
     let second_id = second.id;
     let second_target = ExecutionTarget::from_profile(&second);
     let mut app = App::new(vec![first.clone(), second.clone()]);
+    app.update(Action::NewConsole);
+    app.update(Action::NewConsole);
     app.connection.profile_id = Some(first_id);
-    app.update(Action::NewConsole);
-    app.update(Action::NewConsole);
     app.tabs[1].as_console_mut().unwrap().execution_target = Some(second_target.clone());
 
     app.update(Action::ActivateTab(0));
@@ -947,7 +956,7 @@ fn target_selector_reconnects_when_console_target_is_selected_but_connection_doe
 fn target_selector_requires_an_active_connection_and_blocks_manual_transactions() {
     let profile = memory_profile("target");
     let profile_id = profile.id;
-    let mut app = app_with_console(vec![profile]);
+    let mut app = App::new(vec![profile]);
     app.connection.profile_id = None;
     app.update(Action::OpenTargetSelector);
     assert!(app.overlay.is_none());
@@ -956,6 +965,8 @@ fn target_selector_requires_an_active_connection_and_blocks_manual_transactions(
             && notification.body.contains("No active connection")
     }));
 
+    app.update(Action::OpenSqlEditorList);
+    app.update(Action::SqlEditorListCreate);
     app.connection.profile_id = Some(profile_id);
     app.connection.generation = 1;
     app.connection.status = ConnectionStatus::Connected;
@@ -1849,6 +1860,7 @@ async fn connecting_second_profile_keeps_first_runtime_console_usable() {
         None,
     );
     let mut app = App::new(profiles);
+    app.update(Action::NewConsole);
 
     let first_identity = connect(&mut app, &mut runtime, &mut receiver, first_id).await;
     assert_eq!(
@@ -1911,6 +1923,13 @@ async fn connecting_second_profile_keeps_first_runtime_console_usable() {
     drain_catalog(&mut app, &mut runtime, &mut receiver).await;
     assert_eq!(app.connection.profile_id, Some(second_id));
     assert!(app.connection.pending_profile_id.is_none());
+    app.update(Action::NewConsole);
+    app.active_console_mut().execution_target = Some(ExecutionTarget::from_profile(
+        app.profiles
+            .iter()
+            .find(|profile| profile.id == second_id)
+            .unwrap(),
+    ));
     assert_eq!(
         run_marker_query(&mut app, &mut runtime, &mut receiver).await,
         "beta"
@@ -2090,6 +2109,7 @@ async fn runtime_accepts_same_generation_for_independent_profiles() {
         None,
     );
     let mut app = App::new(profiles);
+    app.update(Action::NewConsole);
     let first_identity = connect(&mut app, &mut runtime, &mut receiver, first_id).await;
 
     runtime.dispatch(Command::Connect {
@@ -2179,6 +2199,7 @@ async fn failed_switch_restores_the_previous_database() {
         None,
     );
     let mut app = App::new(profiles);
+    app.update(Action::NewConsole);
     connect(&mut app, &mut runtime, &mut receiver, first_id).await;
 
     dispatch(&mut app, &mut runtime, Action::RequestConnect(failing_id));

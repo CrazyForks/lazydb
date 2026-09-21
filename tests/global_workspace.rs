@@ -23,6 +23,9 @@ fn server(database: &str) -> ServerInfo {
 }
 
 fn connect(app: &mut App, profile_id: uuid::Uuid, database: &str) {
+    if app.active_console_opt().is_none() {
+        app.update(Action::NewConsole);
+    }
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
@@ -48,6 +51,7 @@ fn saving_after_opening_two_profiles_does_not_duplicate_console_ids() {
     let first_console_id = app.active_console().id;
 
     connect(&mut app, second_id, "second");
+    app.update(Action::NewConsole);
     app.update(Action::ReplaceEditor("SELECT second".into()));
 
     let temp = TempDir::new().unwrap();
@@ -106,6 +110,7 @@ fn restoring_a_saved_two_profile_workspace_keeps_both_console_documents_visible(
     connect(&mut app, first_id, "first");
     app.update(Action::ReplaceEditor("SELECT first".into()));
     connect(&mut app, second_id, "second");
+    app.update(Action::NewConsole);
     app.update(Action::ReplaceEditor("SELECT second".into()));
 
     let temp = TempDir::new().unwrap();

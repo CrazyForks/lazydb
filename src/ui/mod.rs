@@ -1384,10 +1384,60 @@ fn render_key_sequence_popup(
     theme: Theme,
     sequence: &crate::input::keymap::KeySequenceState,
 ) {
-    let shortcuts = crate::help::prefix_shortcuts(
+    if !sequence.candidates.is_empty() {
+        let rows = sequence.candidates.len();
+        let height = (rows as u16 + 2).min(area.height.saturating_sub(2));
+        let popup = Rect::new(
+            area.x.saturating_add(1),
+            area.bottom().saturating_sub(2).saturating_sub(height),
+            area.width.saturating_sub(2),
+            height,
+        );
+        let lines = sequence
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, (command, suffix))| {
+                let label = match command.as_str() {
+                    "focus-pane-left" => "focus left",
+                    "focus-pane-down" => "focus down",
+                    "focus-pane-up" => "focus up",
+                    "focus-pane-right" => "focus right",
+                    "toggle-pane-maximized" => "maximize/restore",
+                    "reset-pane-sizes" => "reset sizes",
+                    _ => command.as_str(),
+                };
+                let style = Style::new()
+                    .fg(theme.text)
+                    .bg(if index == sequence.selected {
+                        theme.selection
+                    } else {
+                        theme.surface_raised
+                    });
+                Line::from(Span::styled(format!(" {suffix:<12} {label}"), style))
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(theme.accent))
+                    .title(format!(
+                        " {}  Up/Down select  Enter run  Esc cancel ",
+                        sequence.display
+                    )),
+            ),
+            popup,
+        );
+        return;
+    }
+    let shortcuts = crate::help::prefix_shortcuts_with_bindings(
         crate::help::shortcut_context(app),
         crate::help::shortcut_capabilities(app),
         sequence.prefix,
+        Some(&app.key_bindings),
     );
     if shortcuts.is_empty() || area.width < 16 || area.height < 5 {
         return;

@@ -2694,6 +2694,15 @@ impl App {
         if !crate::help::shortcut_is_available_in_app(self, id) {
             return Vec::new();
         }
+        if let Some(command) = crate::help::pane_command_for_shortcut(id) {
+            let action = crate::input::panes::action_for_help(command, self);
+            self.overlay = None;
+            self.help_panel_session = None;
+            return action
+                .into_iter()
+                .flat_map(|action| self.update(action))
+                .collect();
+        }
         self.overlay = None;
         self.help_panel_session = None;
         if let Some(command_id) = crate::commands::command_for_help(id) {
@@ -26311,6 +26320,9 @@ mod tests {
         let first_id = first.id;
         let second_id = second.id;
         let mut app = App::new(vec![first, second]);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
 
         let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
@@ -26402,6 +26414,7 @@ mod tests {
         let profile_id = profile.id;
         let mut app = App::new(Vec::new());
         app.profiles.push(profile);
+        app.update(Action::NewConsole);
         let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
             commands => panic!("unexpected commands: {commands:?}"),
@@ -26455,6 +26468,8 @@ mod tests {
         let first_id = first.id;
         let second_id = second.id;
         let mut app = App::new(vec![first, second]);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
 
         let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
@@ -26556,6 +26571,7 @@ mod tests {
         let first_id = first.id;
         let second_id = second.id;
         let mut app = App::new(vec![first, second]);
+        app.update(Action::NewConsole);
 
         let generation = match app.update(Action::RequestConnect(first_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
@@ -26718,6 +26734,7 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
         let connect = app.update(Action::RequestProfileConnect {
             profile_id: profile.id,
         });
@@ -26773,6 +26790,7 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
         let connect = app.update(Action::RequestProfileConnect {
             profile_id: profile.id,
         });
@@ -26904,6 +26922,7 @@ mod tests {
         .unwrap()
         .profile;
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
         let connect = app.update(Action::RequestProfileConnect {
             profile_id: profile.id,
         });
@@ -27252,6 +27271,9 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
         app.connection.profile_id = Some(profile_id);
         app.connection.generation = 1;
         app.connection.status = ConnectionStatus::Connected;
@@ -27317,7 +27339,8 @@ mod tests {
             message: "permission denied".into(),
         });
 
-        let WorkspaceTab::Dashboard(tab) = &app.tabs[0] else {
+        let Some(WorkspaceTab::Dashboard(tab)) = app.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
             panic!("dashboard tab expected")
         };
         assert_eq!(tab.metadata_error.as_deref(), Some("permission denied"));
@@ -27370,7 +27393,8 @@ mod tests {
             metadata: Default::default(),
         });
 
-        let WorkspaceTab::Dashboard(tab) = &app.tabs[0] else {
+        let Some(WorkspaceTab::Dashboard(tab)) = app.tabs.iter().find(|tab| tab.id() == tab_id)
+        else {
             panic!("dashboard tab expected")
         };
         assert_eq!(tab.connection.unwrap().profile_id, first_id);
@@ -27989,6 +28013,9 @@ mod tests {
             object_id: relation_id.clone(),
         };
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
         app.connection.profile_id = Some(profile_id);
         app.connection.generation = connection.generation;
         app.connection.status = ConnectionStatus::Connected;
@@ -28095,6 +28122,9 @@ mod tests {
             object_id: relation_id.clone(),
         };
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
+        app.update(Action::NewConsole);
         app.connection.profile_id = Some(profile_id);
         app.connection.generation = connection.generation;
         app.connection.status = ConnectionStatus::Connected;
@@ -30380,6 +30410,7 @@ mod tests {
             .profile;
         let profile_id = profile.id;
         let mut app = App::new(vec![profile]);
+        app.update(Action::NewConsole);
         let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
             commands => panic!("unexpected commands: {commands:?}"),
@@ -30461,6 +30492,7 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![first.clone()]);
+        app.update(Action::NewConsole);
         let connect = app.update(Action::RequestProfileConnect {
             profile_id: first.id,
         });
@@ -30575,6 +30607,7 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
         let connection = ConnectionIdentity {
             profile_id: profile.id,
             generation: 1,
@@ -30630,6 +30663,7 @@ mod tests {
             .unwrap()
             .profile;
         let mut app = App::new(vec![profile.clone()]);
+        app.update(Action::NewConsole);
         let generation = match app.update(Action::RequestConnect(profile.id)).as_slice() {
             [Command::Connect { generation, .. }] => *generation,
             commands => panic!("unexpected commands: {commands:?}"),
