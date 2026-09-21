@@ -609,7 +609,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                                 | HitTarget::TargetSelectorRow(_)
                                 | HitTarget::TargetSelectorCancel
                                 | HitTarget::DatabaseSelectorRow(_)
-                                | HitTarget::HeaderDatabase
                                 | HitTarget::EditorExecutionTarget
                                 | HitTarget::EditorTransactionMenu
                                 | HitTarget::TransactionMenuItem(_)
@@ -902,15 +901,6 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                         offset,
                     })
                 }
-                HitTarget::HeaderProfile => app.connection.profile_id.map_or(
-                    Some(Action::Focus(Focus::Explorer)),
-                    |profile_id| {
-                        Some(Action::ExplorerSelect(
-                            crate::model::explorer::ExplorerNodeId::Profile(profile_id),
-                        ))
-                    },
-                ),
-                HitTarget::HeaderDatabase => Some(Action::OpenDatabaseSelector),
                 HitTarget::ProfileField(field) => Some(Action::ProfileFocusField(field)),
                 HitTarget::ProfileDriver(kind) => Some(Action::ProfileSelectDriver(kind)),
                 HitTarget::ProfileCategory(category) => {
@@ -1363,8 +1353,6 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::Help
         | HitTarget::UpdateCenter
         | HitTarget::UpdateButton { .. }
-        | HitTarget::HeaderProfile
-        | HitTarget::HeaderDatabase
         | HitTarget::ProfileField(_)
         | HitTarget::ProfileDriver(_)
         | HitTarget::ProfileCategory(_)

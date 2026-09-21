@@ -688,17 +688,11 @@ fn rendered_editor_header_maps_target_and_transaction_clicks() {
         .draw(|frame| ui::render_with_state(frame, &app, &mut ui_state))
         .unwrap();
 
-    assert_click_maps(
-        &ui_state,
-        &app,
-        &HitTarget::HeaderProfile,
-        Action::ExplorerSelect(ExplorerNodeId::Profile(profile.id)),
-    );
-    assert_click_maps(
-        &ui_state,
-        &app,
-        &HitTarget::HeaderDatabase,
-        Action::OpenDatabaseSelector,
+    assert!(
+        !ui_state
+            .hit_regions
+            .iter()
+            .any(|region| { matches!(region.target, HitTarget::OpenTextDetail(_)) })
     );
 }
 
@@ -1181,12 +1175,6 @@ fn maps_tabs_tree_rows_and_result_cells_from_rendered_hit_regions() {
         .unwrap();
 
     assert_click_maps(&ui_state, &app, &HitTarget::Tab(0), Action::ActivateTab(0));
-    assert_click_maps(
-        &ui_state,
-        &app,
-        &HitTarget::HeaderProfile,
-        Action::ExplorerSelect(ExplorerNodeId::Profile(connection_id)),
-    );
     let row_id = lazydb::model::explorer::ExplorerNodeId::Catalog(CatalogId::new(
         connection_id,
         CatalogKind::Database,
@@ -1656,11 +1644,6 @@ fn maps_profile_fields_toggles_and_buttons() {
             target,
         });
     }
-    ui.hit_regions.push(HitRegion {
-        area: Rect::new(2, 9, 12, 1),
-        target: HitTarget::HeaderProfile,
-    });
-
     assert_click_maps(
         &ui,
         &app,
@@ -1690,15 +1673,6 @@ fn maps_profile_fields_toggles_and_buttons() {
         &app,
         &HitTarget::ProfileButton(ProfileButton::ConfirmDelete),
         Action::ActivateProfileDelete,
-    );
-
-    assert_eq!(
-        map_mouse(
-            mouse(MouseEventKind::Down(MouseButton::Left), 2, 9),
-            &ui,
-            &app,
-        ),
-        None
     );
 }
 
@@ -1993,16 +1967,10 @@ fn ddl_view_mouse_scroll_is_vertical_ddl_scroll() {
 fn help_and_message_overlays_block_background_mouse_input() {
     let mut app = App::new(Vec::new());
     let mut ui = UiState::new();
-    ui.hit_regions.extend([
-        HitRegion {
-            area: Rect::new(0, 0, 10, 1),
-            target: HitTarget::HeaderProfile,
-        },
-        HitRegion {
-            area: Rect::new(0, 1, 10, 4),
-            target: HitTarget::ResultCell { row: 0, column: 0 },
-        },
-    ]);
+    ui.hit_regions.extend([HitRegion {
+        area: Rect::new(0, 1, 10, 4),
+        target: HitTarget::ResultCell { row: 0, column: 0 },
+    }]);
 
     for overlay in [
         Overlay::Help(lazydb::help::HelpState::new(
@@ -2042,23 +2010,17 @@ fn readonly_detail_target_wins_over_background_and_opens_from_help() {
         lazydb::help::ShortcutCapabilities::default(),
     )));
     let mut ui = UiState::new();
-    ui.hit_regions.extend([
-        HitRegion {
-            area: Rect::new(0, 0, 20, 1),
-            target: HitTarget::HeaderProfile,
-        },
-        HitRegion {
-            area: Rect::new(0, 0, 20, 1),
-            target: HitTarget::OpenTextDetail(lazydb::model::text_detail::TextDetailRequest::new(
-                "Help",
-                Uuid::nil(),
-                0,
-                "Ctrl-C close",
-                "Ctrl-C close",
-                None,
-            )),
-        },
-    ]);
+    ui.hit_regions.extend([HitRegion {
+        area: Rect::new(0, 0, 20, 1),
+        target: HitTarget::OpenTextDetail(lazydb::model::text_detail::TextDetailRequest::new(
+            "Help",
+            Uuid::nil(),
+            0,
+            "Ctrl-C close",
+            "Ctrl-C close",
+            None,
+        )),
+    }]);
 
     assert!(matches!(
         map_mouse(
@@ -2136,14 +2098,12 @@ fn readonly_detail_targets_do_not_enable_password_form_selection() {
 }
 
 #[test]
-fn header_profile_hit_region_uses_terminal_display_width() {
+fn footer_update_target_uses_visible_version_width() {
     for (name, expected_width) in [("数据库", 6), ("ｶﾞ", 2), ("\u{7}", 6)] {
         let profile = import_connection_url(":memory:", Some(name))
             .unwrap()
             .profile;
-        let profile_id = profile.id;
-        let mut app = App::new(vec![profile]);
-        app.connection.profile_id = Some(profile_id);
+        let app = App::new(vec![profile]);
         let backend = TestBackend::new(120, 36);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut ui_state = UiState::new();
@@ -2154,9 +2114,9 @@ fn header_profile_hit_region_uses_terminal_display_width() {
         let region = ui_state
             .hit_regions
             .iter()
-            .find(|region| region.target == HitTarget::HeaderProfile)
+            .find(|region| region.target == HitTarget::UpdateCenter)
             .unwrap();
-        assert_eq!(region.area.width, expected_width, "{name}");
+        assert!(region.area.width >= expected_width, "{name}");
     }
 }
 

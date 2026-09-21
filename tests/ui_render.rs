@@ -370,14 +370,18 @@ fn readonly_regions_register_help_dashboard_and_relation_detail_targets() {
 }
 
 #[test]
-fn connected_header_database_summary_opens_database_selector() {
+fn footer_does_not_publish_connection_summary_targets() {
     let app = fixture();
     let (_, state) = render_with_state(&app, 120, 36);
+    let footer = state
+        .hit_regions
+        .iter()
+        .filter(|region| region.area.y == 35)
+        .collect::<Vec<_>>();
     assert!(
-        state
-            .hit_regions
+        footer
             .iter()
-            .any(|region| region.target == HitTarget::HeaderDatabase)
+            .all(|region| { !matches!(region.target, HitTarget::OpenTextDetail(_)) })
     );
     assert!(!state.hit_regions.iter().any(|region| {
         matches!(&region.target, HitTarget::OpenTextDetail(request) if request.title == "Connection database")
@@ -6327,17 +6331,15 @@ fn workspace_header_and_footer_render_without_redundant_status_rows() {
 
     let footer = lines.last().unwrap();
     assert!(footer.contains("LAZYDB"), "{output}");
-    assert!(footer.contains("orbital-lab"), "{output}");
+    assert!(!footer.contains("orbital-lab"), "{output}");
+    assert!(!footer.contains(" / "), "{output}");
     assert!(!lines[0].contains("LAZYDB"), "{output}");
     assert!(!output.contains("ONLINE"), "{output}");
     assert!(!output.contains("QUERY IDLE"), "{output}");
     assert!(!output.contains("Ready"), "{output}");
-    assert!(
-        lines.last().unwrap().contains("NORMAL")
-            || lines.last().unwrap().contains("EXPLORE")
-            || lines.last().unwrap().contains("DATA"),
-        "{output}"
-    );
+    assert!(!footer.contains("NORMAL"), "{output}");
+    assert!(!footer.contains("EXPLORE"), "{output}");
+    assert!(!footer.contains("DATA"), "{output}");
 }
 
 #[test]
