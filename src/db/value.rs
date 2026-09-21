@@ -26,6 +26,26 @@ pub struct CellPreview {
 }
 
 impl CellValue {
+    /// Render-only representation which avoids calculating the full source
+    /// length. The grid only needs the visible prefix and an ellipsis marker.
+    pub fn display_text(&self, max_len: usize) -> String {
+        match self {
+            Self::Null => "<null>".into(),
+            Self::Boolean(value) => value.to_string(),
+            Self::Integer(value) => value.to_string(),
+            Self::Unsigned(value) => value.to_string(),
+            Self::Float(value) => value.to_string(),
+            Self::Text(value) => bounded_text(value, max_len),
+            Self::Bytes(value) => bounded_bytes(value, max_len),
+            Self::MySqlGeometry { wkt, .. } => bounded_text(wkt, max_len),
+            Self::Date(value) => bounded_text(&value.format("%Y-%m-%d").to_string(), max_len),
+            Self::Time(value) => bounded_text(&format_time(*value), max_len),
+            Self::DateTime(value) => bounded_text(&format_datetime(*value), max_len),
+            Self::Timestamp(value) => bounded_text(&format_timestamp(*value), max_len),
+            Self::Unsupported { preview, .. } => bounded_text(preview, max_len),
+        }
+    }
+
     pub fn clipboard_text(&self) -> String {
         match self {
             Self::Null => String::new(),
@@ -121,6 +141,28 @@ fn preview_text(value: &str, max_len: usize) -> CellPreview {
     }
 }
 
+fn bounded_text(value: &str, max_len: usize) -> String {
+    let mut chars = value.chars();
+    let mut text = chars.by_ref().take(max_len).collect::<String>();
+    if chars.next().is_some() {
+        text.push_str("...");
+    }
+    text
+}
+
+fn bounded_bytes(value: &[u8], max_len: usize) -> String {
+    let mut text = String::with_capacity(2 + max_len.saturating_mul(2) + 3);
+    text.push_str("0x");
+    for byte in value.iter().take(max_len) {
+        use std::fmt::Write;
+        let _ = write!(text, "{byte:02X}");
+    }
+    if value.len() > max_len {
+        text.push_str("...");
+    }
+    text
+}
+
 fn preview_bytes(value: &[u8], max_len: usize) -> CellPreview {
     let truncated = value.len() > max_len;
     let mut text = String::with_capacity(2 + max_len.saturating_mul(2) + 3);
@@ -149,6 +191,26 @@ mod tests {
     fn null_is_distinct_from_empty_values() {
         assert_ne!(CellValue::Null, CellValue::Text(String::new()));
         assert_ne!(CellValue::Null, CellValue::Bytes(Vec::new()));
+    }
+
+    #[test]
+    fn display_text_matches_preview_text_without_full_length_scan() {
+        let values = [
+            CellValue::Null,
+            CellValue::Boolean(true),
+            CellValue::Integer(-7),
+            CellValue::Unsigned(8),
+            CellValue::Float(1.5),
+            CellValue::Text("alpha-beta".into()),
+            CellValue::Bytes(vec![0, 1, 255]),
+            CellValue::Unsupported {
+                type_name: "CUSTOM".into(),
+                preview: "unsupported-value".into(),
+            },
+        ];
+        for value in values {
+            assert_eq!(value.display_text(5), value.preview(5).text);
+        }
     }
 
     #[test]

@@ -42,11 +42,138 @@ use crate::{
     ui::{self, UiState, theme::Theme},
 };
 use anyhow::{Context, Result};
-use crossterm::event::{Event, EventStream, MouseEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
+use futures_util::FutureExt;
 use futures_util::StreamExt;
 use secrecy::SecretString;
 
 const EXPLORER_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+const GRID_INPUT_BATCH_MAX_EVENTS: usize = 64;
+const GRID_INPUT_BATCH_BUDGET: Duration = Duration::from_millis(2);
+
+fn is_grid_navigation_action(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::GridMove { .. }
+            | Action::GridScrollRows { .. }
+            | Action::GridScrollColumns { .. }
+            | Action::GridSelectRow(_)
+            | Action::GridSelectColumn(_)
+            | Action::GridAlignSelectedRow(_)
+    )
+}
+
+fn is_candidate_grid_key(key: KeyEvent) -> bool {
+    if !key.modifiers.is_empty() || matches!(key.kind, KeyEventKind::Release) {
+        return false;
+    }
+    matches!(
+        key.code,
+        KeyCode::Char('h' | 'j' | 'k' | 'l' | 'H' | 'L' | 'M' | 'G')
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+    )
+}
+
+#[cfg(test)]
+mod grid_input_batch_tests {
+    use super::{is_candidate_grid_key, is_grid_navigation_action};
+    use crate::action::Action;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, KeyEventKind::Press)
+    }
+
+    #[test]
+    fn candidate_keys_are_limited_to_unmodified_grid_navigation() {
+        for code in [
+            KeyCode::Char('h'),
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('l'),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert!(is_candidate_grid_key(key(code)));
+        }
+        assert!(!is_candidate_grid_key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!is_candidate_grid_key(KeyEvent::new_with_kind(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        )));
+        assert!(!is_candidate_grid_key(key(KeyCode::Char('x'))));
+    }
+
+    #[test]
+    fn only_grid_actions_are_eligible_for_batching() {
+        assert!(is_grid_navigation_action(&Action::GridMove {
+            rows: 1,
+            columns: 0,
+        }));
+        assert!(is_grid_navigation_action(&Action::GridScrollRows {
+            direction: 1,
+            amount: crate::model::tab::GridScrollAmount::Lines(3),
+        }));
+        assert!(!is_grid_navigation_action(&Action::Focus(
+            crate::model::workspace::Focus::Results,
+        )));
+        assert!(!is_grid_navigation_action(&Action::GridSelect {
+            row: 1,
+            column: 0,
+        }));
+    }
+}
+
+fn drain_grid_navigation_events(
+    events: &mut EventStream,
+    pending: &mut Option<std::io::Result<Event>>,
+    app: &mut App,
+    runtime: &mut Runtime,
+    keymap: &mut Keymap,
+) -> bool {
+    let started = std::time::Instant::now();
+    let mut redraw = false;
+    for _ in 0..GRID_INPUT_BATCH_MAX_EVENTS {
+        if started.elapsed() >= GRID_INPUT_BATCH_BUDGET {
+            break;
+        }
+        let Some(next) = events.next().now_or_never().flatten() else {
+            break;
+        };
+        let Ok(Event::Key(key)) = next else {
+            *pending = Some(next);
+            break;
+        };
+        if !is_candidate_grid_key(key) {
+            *pending = Some(Ok(Event::Key(key)));
+            break;
+        }
+        let Some(action) = keymap.map(key, app) else {
+            *pending = Some(Ok(Event::Key(key)));
+            break;
+        };
+        if !is_grid_navigation_action(&action) {
+            apply_action(app, runtime, action);
+            redraw = true;
+            break;
+        }
+        let before = app.active_grid_navigation_state();
+        apply_action(app, runtime, action);
+        redraw |= before != app.active_grid_navigation_state();
+    }
+    redraw
+}
 use tokio::{
     sync::{Mutex, mpsc},
     task::{self, JoinHandle},
@@ -6152,10 +6279,16 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
         sync_ddl_viewport(&mut app, &mut runtime, &ui_state);
 
+        let mut pending_terminal_event: Option<std::io::Result<Event>> = None;
         while !app.should_quit {
             let mut redraw = false;
             tokio::select! {
-                terminal_event = terminal_events.next() => {
+                terminal_event = async {
+                    match pending_terminal_event.take() {
+                        Some(event) => Some(event),
+                        None => terminal_events.next().await,
+                    }
+                } => {
                         let Some(terminal_event) = terminal_event else { break; };
                         match terminal_event.context("terminal input failed")? {
                         Event::Key(key) => {
@@ -6177,7 +6310,18 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                             let now = std::time::Instant::now();
                             let before = keymap.sequence_state(&app, now);
                             let cancelled_pane_drag = ui_state.pane_resize_drag.borrow_mut().take().is_some();
+                            let grid_before = app.active_grid_navigation_state();
                             if let Some(action) = keymap.map(key, &app) {
+                                let is_grid_navigation = matches!(
+                                    &action,
+                                    Action::GridMove { .. }
+                                        | Action::GridScrollRows { .. }
+                                        | Action::GridScrollColumns { .. }
+                                        | Action::GridSelectRow(_)
+                                        | Action::GridSelectColumn(_)
+                                        | Action::GridAlignSelectedRow(_)
+                                );
+                                let force_grid_redraw = matches!(&action, Action::GridSelect { .. });
                                 if action == Action::ToggleTerminalSelection {
                                     if !terminal.mouse_captured() {
                                         app.notify_warning(
@@ -6203,12 +6347,23 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                 } else {
                                     apply_action(&mut app, &mut runtime, action);
                                 }
-                                redraw = true;
+                                redraw = !is_grid_navigation
+                                    || grid_before != app.active_grid_navigation_state()
+                                    || force_grid_redraw;
                             }
                             redraw |= cancelled_pane_drag;
                             redraw |= had_text_gesture;
                             let after = keymap.sequence_state(&app, now);
                             redraw |= sequence_redraw_needed(&before, &after);
+                            }
+                            if redraw && !app.should_quit {
+                                redraw |= drain_grid_navigation_events(
+                                    &mut terminal_events,
+                                    &mut pending_terminal_event,
+                                    &mut app,
+                                    &mut runtime,
+                                    &mut keymap,
+                                );
                             }
                         }
                         Event::Mouse(mouse) => {
@@ -6220,9 +6375,22 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                             }
                             let was_pane_drag = ui_state.pane_resize_drag.borrow().is_some();
                             let before_text_gesture = *ui_state.text_gesture.borrow();
+                            let grid_before = app.active_grid_navigation_state();
                             if let Some(action) = map_mouse(mouse, &ui_state, &app) {
+                                let is_grid_navigation = matches!(
+                                    &action,
+                                    Action::GridMove { .. }
+                                        | Action::GridScrollRows { .. }
+                                        | Action::GridScrollColumns { .. }
+                                        | Action::GridSelectRow(_)
+                                        | Action::GridSelectColumn(_)
+                                        | Action::GridAlignSelectedRow(_)
+                                );
+                                let force_grid_redraw = matches!(&action, Action::GridSelect { .. });
                                 apply_action(&mut app, &mut runtime, action);
-                                redraw = true;
+                                redraw = !is_grid_navigation
+                                    || grid_before != app.active_grid_navigation_state()
+                                    || force_grid_redraw;
                             }
                             redraw |= was_pane_drag
                                 != ui_state.pane_resize_drag.borrow().is_some();

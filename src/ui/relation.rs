@@ -785,16 +785,17 @@ fn render_data(
         status
     };
     if let Some(snapshot) = snapshot {
-        let mut result = snapshot
+        let empty_result = crate::db::query::ResultSet::default();
+        let result = snapshot
             .value
             .result
             .result_sets
             .last()
-            .cloned()
-            .unwrap_or_default();
-        if let Some(edit) = &tab.edit {
-            result.rows = edit.rows.iter().map(|row| row.current.clone()).collect();
-        }
+            .unwrap_or(&empty_result);
+        let row_count = tab
+            .edit
+            .as_ref()
+            .map_or(result.rows.len(), |edit| edit.rows.len());
         let block = panel_block(" RELATION DATA ", app.focus == Focus::Results, theme);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -837,7 +838,8 @@ fn render_data(
             frame,
             body[2],
             tab.id,
-            &result,
+            result,
+            tab.generation,
             tab.grid.clone(),
             &tab.grid.column_widths,
             theme,
@@ -863,8 +865,7 @@ fn render_data(
             .unwrap_or("UNKNOWN");
         frame.render_widget(
             Paragraph::new(format!(
-                "SQL: {sql}  {} rows  Snapshot: {provenance}",
-                result.rows.len()
+                "SQL: {sql}  {row_count} rows  Snapshot: {provenance}",
             ))
             .style(Style::new().fg(theme.muted).bg(theme.surface)),
             footer,
@@ -873,10 +874,7 @@ fn render_data(
             area: footer,
             target: HitTarget::OpenTextDetail(super::readonly_detail_request(
                 "Relation snapshot",
-                format!(
-                    "SQL: {sql}\nRows: {}\nSnapshot: {provenance}",
-                    result.rows.len()
-                ),
+                format!("SQL: {sql}\nRows: {row_count}\nSnapshot: {provenance}",),
             )),
         });
         super::pagination::render(
@@ -1047,6 +1045,7 @@ fn render_relation_result_table(
     area: Rect,
     tab_id: uuid::Uuid,
     result: &crate::db::query::ResultSet,
+    data_revision: u64,
     grid: crate::model::tab::DataGridState,
     overrides: &[Option<u16>],
     theme: Theme,
@@ -1070,6 +1069,7 @@ fn render_relation_result_table(
         area,
         tab_id,
         result,
+        data_revision,
         grid,
         overrides,
         theme,
@@ -1077,7 +1077,7 @@ fn render_relation_result_table(
         state,
         edit,
         icons,
-        Some(&sort_projection),
+        Some(sort_projection.as_slice()),
         true,
     );
 }
