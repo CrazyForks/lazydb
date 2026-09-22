@@ -6609,7 +6609,7 @@ fn render_console_manager(
         }
         _ => mode_height,
     };
-    let popup = centered(area, 72, desired_height.clamp(8, 24));
+    let popup = centered(area, 80, desired_height.clamp(8, 24));
     frame.render_widget(Clear, popup);
 
     let title = match &list.mode {
@@ -6618,7 +6618,21 @@ fn render_console_manager(
         SqlEditorListMode::Rename { .. } => " CONSOLES // RENAME ",
         SqlEditorListMode::DeleteConfirm { .. } => " CONSOLES // DELETE ",
     };
-    let inner = popup.inner(ratatui::layout::Margin::new(1, 1));
+    let block = panel_block(title, true, theme);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    if inner.is_empty() {
+        return;
+    }
+    let deleting = matches!(&list.mode, SqlEditorListMode::DeleteConfirm { .. });
+    let reserved_rows = if deleting { 2 } else { 1 };
+    let body = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width,
+        inner.height.saturating_sub(reserved_rows),
+    );
+    let footer_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
     let mut lines = Vec::new();
     match &list.mode {
         SqlEditorListMode::Browse | SqlEditorListMode::Search => {
@@ -6771,16 +6785,6 @@ fn render_console_manager(
                     ])
                 }));
             }
-            lines.push(Line::raw(""));
-            let footer = if matches!(&list.mode, SqlEditorListMode::Search) {
-                "Enter open  Esc cancel"
-            } else {
-                "j/k move  Enter open  a new  d delete  r rename  / search  Esc close"
-            };
-            lines.push(Line::from(Span::styled(
-                truncate_to_cells(footer, usize::from(inner.width)),
-                theme.muted,
-            )));
         }
         SqlEditorListMode::Rename {
             console_id,
@@ -6799,10 +6803,6 @@ fn render_console_manager(
             if let Some(error) = error {
                 lines.push(Line::from(Span::styled(error.clone(), theme.error)));
             }
-            lines.push(Line::from(Span::styled(
-                "Enter save  Esc cancel",
-                theme.muted,
-            )));
         }
         SqlEditorListMode::DeleteConfirm { console_id } => {
             let name = app
@@ -6818,46 +6818,144 @@ fn render_console_manager(
             lines.push(Line::raw(""));
         }
     }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(panel_block(title, true, theme))
-            .style(theme.base()),
-        popup,
-    );
+    if !body.is_empty() {
+        frame.render_widget(Paragraph::new(lines).style(theme.base()), body);
+    }
     match &list.mode {
         SqlEditorListMode::Search => {
-            let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
-            state.hit_regions.push(HitRegion {
-                area: input_area,
-                target: HitTarget::SqlEditorListSearch,
-            });
-            render_text_input(frame, input_area, "/", &list.query, theme.base(), state);
-            register_input_selection_target(
-                state,
-                text_selection::InputSelectionTarget::ConsoleManagerSearch,
-                input_area,
-                "/",
-                &list.query,
-                text_input_horizontal_offset(input_area, "/", &list.query),
-            );
+            let input_area = Rect::new(body.x, body.y, body.width, 1);
+            if !input_area.is_empty() {
+                state.hit_regions.push(HitRegion {
+                    area: input_area,
+                    target: HitTarget::SqlEditorListSearch,
+                });
+                render_text_input(frame, input_area, "/", &list.query, theme.base(), state);
+                register_input_selection_target(
+                    state,
+                    text_selection::InputSelectionTarget::ConsoleManagerSearch,
+                    input_area,
+                    "/",
+                    &list.query,
+                    text_input_horizontal_offset(input_area, "/", &list.query),
+                );
+            }
         }
         SqlEditorListMode::Rename { input, .. } => {
-            let input_area = Rect::new(inner.x, inner.y + 2, inner.width, 1);
-            state.hit_regions.push(HitRegion {
-                area: input_area,
-                target: HitTarget::SqlEditorListRename,
-            });
-            render_text_input(frame, input_area, "Name: ", input, theme.base(), state);
-            register_input_selection_target(
-                state,
-                text_selection::InputSelectionTarget::ConsoleManagerRename,
-                input_area,
-                "Name: ",
-                input,
-                text_input_horizontal_offset(input_area, "Name: ", input),
-            );
+            let input_area = Rect::new(body.x, body.y.saturating_add(2), body.width, 1);
+            if input_area.y < body.bottom() && !input_area.is_empty() {
+                state.hit_regions.push(HitRegion {
+                    area: input_area,
+                    target: HitTarget::SqlEditorListRename,
+                });
+                render_text_input(frame, input_area, "Name: ", input, theme.base(), state);
+                register_input_selection_target(
+                    state,
+                    text_selection::InputSelectionTarget::ConsoleManagerRename,
+                    input_area,
+                    "Name: ",
+                    input,
+                    text_input_horizontal_offset(input_area, "Name: ", input),
+                );
+            }
         }
         _ => {}
+    }
+    match &list.mode {
+        SqlEditorListMode::Browse => {
+            let hints = vec![
+                ShortcutHint::with_keys(
+                    "j/k",
+                    "move",
+                    [KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Enter",
+                    "open",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "a",
+                    "new",
+                    [KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "d",
+                    "delete",
+                    [KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "r",
+                    "rename",
+                    [KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "/",
+                    "search",
+                    [KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Esc",
+                    "close",
+                    [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                ),
+            ];
+            shortcut_hints::render_interactive(
+                frame,
+                footer_area,
+                &hints,
+                theme,
+                theme.surface,
+                Alignment::Center,
+                state,
+            );
+        }
+        SqlEditorListMode::Search => {
+            let hints = vec![
+                ShortcutHint::with_keys(
+                    "Enter",
+                    "open",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Esc",
+                    "cancel",
+                    [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                ),
+            ];
+            shortcut_hints::render_interactive(
+                frame,
+                footer_area,
+                &hints,
+                theme,
+                theme.surface,
+                Alignment::Center,
+                state,
+            );
+        }
+        SqlEditorListMode::Rename { .. } => {
+            let hints = vec![
+                ShortcutHint::with_keys(
+                    "Enter",
+                    "save",
+                    [KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+                ),
+                ShortcutHint::with_keys(
+                    "Esc",
+                    "cancel",
+                    [KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+                ),
+            ];
+            shortcut_hints::render_interactive(
+                frame,
+                footer_area,
+                &hints,
+                theme,
+                theme.surface,
+                Alignment::Center,
+                state,
+            );
+        }
+        SqlEditorListMode::DeleteConfirm { .. } => {}
     }
     if let SqlEditorListMode::DeleteConfirm { .. } = &list.mode {
         let actions = dialog::render_actions(

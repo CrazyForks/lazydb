@@ -3280,6 +3280,17 @@ fn console_manager_compact_popup_keeps_border_and_footer() {
     assert!(output.contains("CONSOLES"), "{output}");
     assert!(output.contains("Esc close"), "{output}");
     assert!(output.lines().any(|line| line.contains("╭")), "{output}");
+    let footer_line = output
+        .lines()
+        .position(|line| line.contains("Esc close"))
+        .expect("console footer should be rendered");
+    assert!(
+        output
+            .lines()
+            .nth(footer_line + 1)
+            .is_some_and(|line| line.contains("╰")),
+        "footer should be immediately above the popup bottom border:\n{output}"
+    );
 }
 
 #[test]
