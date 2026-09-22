@@ -2305,7 +2305,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             PrincipalDdl
         ],
         "Cmd+Ctrl+Shift+h",
-        "smart resize left boundary",
+        "move visible pane divider left",
         smart_resize
     ),
     row!(
@@ -2320,7 +2320,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             PrincipalDdl
         ],
         "Cmd+Ctrl+Shift+j",
-        "smart resize down boundary",
+        "move visible pane divider down",
         smart_resize
     ),
     row!(
@@ -2335,7 +2335,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             PrincipalDdl
         ],
         "Cmd+Ctrl+Shift+k",
-        "smart resize up boundary",
+        "move visible pane divider up",
         smart_resize
     ),
     row!(
@@ -2350,7 +2350,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
             PrincipalDdl
         ],
         "Cmd+Ctrl+Shift+l",
-        "smart resize right boundary",
+        "move visible pane divider right",
         smart_resize
     ),
     row!(
@@ -2813,7 +2813,7 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "cancel",
         display
     ),
-    row!(MessageClose, [Message], "Esc", "close message", display),
+    row!(MessageClose, [Message], "Esc/q", "close message", display),
     row!(
         WorkspaceSaveMove,
         [WorkspaceSaveFailure],

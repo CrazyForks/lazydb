@@ -195,7 +195,7 @@ async fn handle_smart_resize(
     use crate::model::redis_browser::RedisBrowserFocus;
     use crate::ui::layout::{AppLayout, RedisBrowserLayout};
 
-    if app.overlay.is_some() {
+    if app.overlay.is_some() || app.omni.is_some() {
         return;
     }
     let Ok(area) = terminal.size() else {
@@ -221,6 +221,9 @@ async fn handle_smart_resize(
         app.pane_sizes,
         app.pane_maximized,
     );
+    if matches!(layout.mode, crate::ui::layout::LayoutMode::TooSmall) {
+        return;
+    }
     let redis_layout = layout
         .relation
         .map(|rect| RedisBrowserLayout::calculate(rect, app.pane_sizes.redis_keys_width));
@@ -243,25 +246,9 @@ async fn handle_smart_resize(
             crate::model::workspace::Focus::Explorer => SmartResizePane::Explorer,
         }
     };
-    let explorer = layout.pane_metrics.explorer_width.map(|current| {
-        let maximum = area.width.saturating_sub(60);
-        (current, 34.min(maximum), maximum)
-    });
-    let editor = layout.pane_metrics.editor_height.map(|current| {
-        let content_height = layout.body.height.saturating_sub(3);
-        let maximum = content_height.saturating_sub(2 + 7);
-        (current, 5.min(maximum), maximum)
-    });
-    let redis = redis_layout.and_then(|r| {
-        r.keys_width.map(|current| {
-            let maximum = r
-                .keys
-                .width
-                .saturating_add(r.preview.width)
-                .saturating_sub(24);
-            (current, 16, maximum)
-        })
-    });
+    let explorer = layout.resize_bounds(crate::model::workspace::PaneSplit::ExplorerWidth);
+    let editor = layout.resize_bounds(crate::model::workspace::PaneSplit::EditorHeight);
+    let redis = redis_layout.and_then(|layout| layout.resize_bounds());
     match decide(source, direction, explorer, editor, redis) {
         SmartResizeDecision::Internal { split, size } => {
             let mut metrics = layout.pane_metrics;

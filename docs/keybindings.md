@@ -42,9 +42,9 @@ Kitty to focus the neighboring Kitty window. They require Kitty mappings for
 `IS_LAZYDB`; see the Kitty integration guide. The existing `Ctrl-w` pane
 commands and pane-resize behavior are unchanged.
 
-Smart pane resizing is opt-in as well. It uses the visible LazyDB boundary in
+Smart pane resizing is opt-in as well. It moves the visible LazyDB divider in
 the requested direction first and asks Kitty to resize the current Kitty
-window when that boundary is unavailable:
+window only when that divider is unavailable or already at its limit:
 
 ```toml
 [keybindings.panes]
@@ -56,6 +56,11 @@ smart-resize-pane-right = ["Cmd+Ctrl+Shift+l"]
 
 An override replaces that command's built-in bindings. Use an empty list to
 disable it, or include the default sequence explicitly to retain both. The
+`h`/`l` bindings move the Explorer/main divider left/right; in the SQL editor
+`k`/`j` move the editor/results divider up/down. A partial final step is
+clamped to the available space, and a divider that cannot move falls back to
+Kitty. The visible Redis Keys/Preview divider takes priority for Redis pane
+resizing. The
 configurable pane actions are focus left/down/up/right, maximize/restore, and
 reset pane sizes. Ordinary character sequences are handled in navigation modes;
 modified pane chords can also be used while editing SQL text. In Insert/Replace,

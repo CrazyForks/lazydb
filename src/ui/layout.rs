@@ -62,6 +62,17 @@ impl RedisBrowserLayout {
             )
         })
     }
+
+    pub fn resize_bounds(&self) -> Option<(u16, u16, u16)> {
+        self.keys_width.map(|current| {
+            let maximum = self
+                .keys
+                .width
+                .saturating_add(self.preview.width)
+                .saturating_sub(MIN_REDIS_PREVIEW_WIDTH);
+            (current, MIN_REDIS_KEYS_WIDTH.min(maximum), maximum)
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,6 +272,25 @@ impl AppLayout {
             PaneSplit::RedisKeysWidth => None,
         }
     }
+
+    pub fn resize_bounds(&self, split: PaneSplit) -> Option<(u16, u16, u16)> {
+        match split {
+            PaneSplit::ExplorerWidth => self.pane_metrics.explorer_width.map(|current| {
+                let maximum = self.body.width.saturating_sub(MIN_RIGHT_WIDTH);
+                (current, MIN_EXPLORER_WIDTH.min(maximum), maximum)
+            }),
+            PaneSplit::EditorHeight => {
+                let current = self.pane_metrics.editor_height?;
+                self.result_tabs?;
+                self.results?;
+                let content_height = self.body.height.saturating_sub(WORKSPACE_TABS_HEIGHT);
+                let maximum =
+                    content_height.saturating_sub(RESULT_TABS_HEIGHT + MIN_RESULTS_HEIGHT);
+                Some((current, MIN_EDITOR_HEIGHT.min(maximum), maximum))
+            }
+            PaneSplit::RedisKeysWidth => None,
+        }
+    }
 }
 
 fn explorer_width(area_width: u16, preference: Option<u16>) -> u16 {
@@ -367,6 +397,41 @@ mod tests {
                 1,
                 explorer.height - 2,
             ))
+        );
+    }
+
+    #[test]
+    fn resize_bounds_follow_the_actual_layout() {
+        let layout = AppLayout::calculate(
+            Rect::new(0, 0, 180, 50),
+            Focus::Editor,
+            false,
+            PaneSizePreferences {
+                explorer_width: Some(50),
+                editor_height: Some(20),
+                ..PaneSizePreferences::default()
+            },
+            false,
+        );
+
+        assert_eq!(
+            layout.resize_bounds(PaneSplit::ExplorerWidth),
+            Some((50, 34, 120))
+        );
+        assert_eq!(
+            layout.resize_bounds(PaneSplit::EditorHeight),
+            Some((20, 5, 38))
+        );
+        assert_eq!(
+            AppLayout::calculate(
+                Rect::new(0, 0, 99, 40),
+                Focus::Editor,
+                false,
+                PaneSizePreferences::default(),
+                false,
+            )
+            .resize_bounds(PaneSplit::ExplorerWidth),
+            None
         );
     }
 
