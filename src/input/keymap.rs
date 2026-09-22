@@ -353,7 +353,18 @@ impl Keymap {
         ) {
             self.pending = None;
             return match event.code {
-                KeyCode::Char('r') => Some(Action::RetryWorkspaceQuitSave),
+                KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                    Some(Action::WorkspaceSaveFocusNext)
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                    Some(Action::WorkspaceSaveFocusPrevious)
+                }
+                KeyCode::Enter => Some(Action::WorkspaceSaveActivate),
+                KeyCode::PageUp => Some(Action::WorkspaceSaveScroll(-1)),
+                KeyCode::PageDown => Some(Action::WorkspaceSaveScroll(1)),
+                KeyCode::Char('r') if event.modifiers == KeyModifiers::NONE => {
+                    Some(Action::RetryWorkspaceQuitSave)
+                }
                 KeyCode::Char('d') => Some(Action::DiscardWorkspaceQuitSave),
                 KeyCode::Esc => Some(Action::DismissOverlay),
                 _ => None,
@@ -362,6 +373,15 @@ impl Keymap {
         if matches!(app.overlay, Some(Overlay::WorkspaceSaveFailed { .. })) {
             self.pending = None;
             return match event.code {
+                KeyCode::Tab | KeyCode::Right | KeyCode::Down => {
+                    Some(Action::WorkspaceSaveFocusNext)
+                }
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Up => {
+                    Some(Action::WorkspaceSaveFocusPrevious)
+                }
+                KeyCode::Enter => Some(Action::WorkspaceSaveActivate),
+                KeyCode::PageUp => Some(Action::WorkspaceSaveScroll(-1)),
+                KeyCode::PageDown => Some(Action::WorkspaceSaveScroll(1)),
                 KeyCode::Char('d') => Some(Action::DiscardWorkspaceQuitSave),
                 KeyCode::Esc => Some(Action::DismissOverlay),
                 _ => None,

@@ -58,6 +58,7 @@ pub enum ShortcutContext {
     ProfileAccess,
     ProfileGroup,
     Message,
+    WorkspaceSaveFailure,
     SubstituteConfirmation,
     ExecutionConfirmation,
     ManualCancelConfirmation,
@@ -116,6 +117,7 @@ const ALL_SHORTCUT_CONTEXTS: &[ShortcutContext] = &[
     ShortcutContext::Help,
     ShortcutContext::ProfileAccess,
     ShortcutContext::Message,
+    ShortcutContext::WorkspaceSaveFailure,
     ShortcutContext::SubstituteConfirmation,
     ShortcutContext::ExecutionConfirmation,
     ShortcutContext::ManualCancelConfirmation,
@@ -205,7 +207,7 @@ fn shortcut_context_with_overlay(app: &App, include_help: bool) -> ShortcutConte
                 Overlay::ProfileGroup(_) => ShortcutContext::ProfileGroup,
                 Overlay::ExplorerAdd(_) => ShortcutContext::Explorer,
                 Overlay::Message { .. } => ShortcutContext::Message,
-                Overlay::WorkspaceSaveFailed { .. } => ShortcutContext::Message,
+                Overlay::WorkspaceSaveFailed { .. } => ShortcutContext::WorkspaceSaveFailure,
                 Overlay::SubstituteConfirm { .. } => ShortcutContext::SubstituteConfirmation,
                 Overlay::ExecutionConfirm { .. } => ShortcutContext::ExecutionConfirmation,
                 Overlay::PrincipalMutationConfirm { .. } => ShortcutContext::ExecutionConfirmation,
@@ -512,6 +514,11 @@ pub enum HelpShortcutId {
     ProfileAccessConfirm,
     ProfileAccessClose,
     MessageClose,
+    WorkspaceSaveMove,
+    WorkspaceSaveActivate,
+    WorkspaceSaveRetry,
+    WorkspaceSaveQuit,
+    WorkspaceSaveScroll,
     SubstituteChoices,
     SubstituteClose,
     ExecutionConfirm,
@@ -642,6 +649,11 @@ const fn footer_priority(id: HelpShortcutId) -> Option<u8> {
         | HelpEdit
         | ProfileAccessMove
         | MessageClose
+        | WorkspaceSaveMove
+        | WorkspaceSaveActivate
+        | WorkspaceSaveRetry
+        | WorkspaceSaveQuit
+        | WorkspaceSaveScroll
         | SubstituteChoices
         | ExecutionConfirm
         | ManualCancelConfirm
@@ -2731,7 +2743,42 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "cancel",
         display
     ),
-    row!(MessageClose, [Message], "Esc/q", "close message", display),
+    row!(MessageClose, [Message], "Esc", "close message", display),
+    row!(
+        WorkspaceSaveMove,
+        [WorkspaceSaveFailure],
+        "Tab/Arrows",
+        "move action focus",
+        display
+    ),
+    row!(
+        WorkspaceSaveActivate,
+        [WorkspaceSaveFailure],
+        "Enter",
+        "activate action",
+        display
+    ),
+    row!(
+        WorkspaceSaveRetry,
+        [WorkspaceSaveFailure],
+        "r",
+        "retry save when available",
+        display
+    ),
+    row!(
+        WorkspaceSaveQuit,
+        [WorkspaceSaveFailure],
+        "d",
+        "quit without saving",
+        display
+    ),
+    row!(
+        WorkspaceSaveScroll,
+        [WorkspaceSaveFailure],
+        "PageUp/PageDown",
+        "scroll save error details",
+        display
+    ),
     row!(
         SubstituteChoices,
         [SubstituteConfirmation],
@@ -3792,6 +3839,7 @@ pub(crate) fn context_name(context: ShortcutContext) -> &'static str {
         ShortcutContext::ProfileAccess => "PROFILE ACCESS",
         ShortcutContext::ProfileGroup => "PROFILE GROUP",
         ShortcutContext::Message => "MESSAGE",
+        ShortcutContext::WorkspaceSaveFailure => "WORKSPACE SAVE FAILURE",
         ShortcutContext::SubstituteConfirmation => "SUBSTITUTE",
         ShortcutContext::ExecutionConfirmation => "EXECUTION",
         ShortcutContext::ManualCancelConfirmation => "CANCELLATION",

@@ -60,6 +60,33 @@ pub enum QuitSaveState {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceSaveFocus {
+    Stay,
+    Retry,
+    Quit,
+}
+
+impl WorkspaceSaveFocus {
+    pub const fn index(self, retryable: bool) -> usize {
+        match (self, retryable) {
+            (Self::Stay, _) => 0,
+            (Self::Retry, true) => 1,
+            (Self::Retry, false) => 0,
+            (Self::Quit, true) => 2,
+            (Self::Quit, false) => 1,
+        }
+    }
+
+    pub const fn from_index(index: usize, retryable: bool) -> Self {
+        match (retryable, index) {
+            (true, 1) => Self::Retry,
+            (true, 2) | (false, 1) => Self::Quit,
+            _ => Self::Stay,
+        }
+    }
+}
+
 impl Default for SaveState {
     fn default() -> Self {
         Self {
@@ -106,7 +133,7 @@ impl SaveState {
 
 #[cfg(test)]
 mod tests {
-    use super::{SaveRevision, SaveState, SaveStatus};
+    use super::{SaveRevision, SaveState, SaveStatus, WorkspaceSaveFocus};
 
     #[test]
     fn save_status_has_explicit_lifecycle_states() {
@@ -150,5 +177,18 @@ mod tests {
         assert_eq!(state.status, SaveStatus::Saving);
         state.failed(2);
         assert_eq!(state.status, SaveStatus::Failed);
+    }
+
+    #[test]
+    fn workspace_save_focus_maps_retryable_and_non_retryable_actions() {
+        assert_eq!(WorkspaceSaveFocus::Stay.index(true), 0);
+        assert_eq!(WorkspaceSaveFocus::Retry.index(true), 1);
+        assert_eq!(WorkspaceSaveFocus::Quit.index(true), 2);
+        assert_eq!(WorkspaceSaveFocus::Retry.index(false), 0);
+        assert_eq!(WorkspaceSaveFocus::Quit.index(false), 1);
+        assert_eq!(
+            WorkspaceSaveFocus::from_index(2, false),
+            WorkspaceSaveFocus::Stay
+        );
     }
 }
