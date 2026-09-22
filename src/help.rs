@@ -4431,6 +4431,7 @@ mod tests {
                     candidates: Vec::new(),
                     selected: 0,
                     console_id: None,
+                    execution: None,
                 },
                 ShortcutContext::TargetSelector,
             ),

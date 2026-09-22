@@ -16,6 +16,72 @@ use lazydb::{
 use uuid::Uuid;
 
 #[test]
+fn unbound_console_automatically_offers_generic_keywords() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::NewUnboundConsoleNamed("scratch".into()));
+    for character in ['s', 'e', 'l'] {
+        app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(character),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+
+    let key = app
+        .active_console()
+        .completion_request
+        .as_ref()
+        .map(|request| lazydb::sql::CompletionScheduleKey {
+            console_id: app.active_console().id,
+            document_revision: request.revision,
+            cursor: request.cursor,
+            connection: request.connection,
+            target: request.target.clone(),
+            catalog_generation: request.catalog_generation,
+        })
+        .expect("unbound completion should schedule automatically");
+    app.update(Action::CompletionDue(key));
+
+    let popup = app
+        .active_console()
+        .completion
+        .as_ref()
+        .expect("generic completion popup");
+    assert!(
+        popup
+            .candidates
+            .iter()
+            .any(|candidate| candidate.insert_text == "SELECT")
+    );
+    assert!(popup.candidates.iter().all(|candidate| {
+        !matches!(
+            candidate.kind,
+            CompletionKind::Table | CompletionKind::Column
+        )
+    }));
+}
+
+#[test]
+fn unbound_console_explicit_completion_does_not_connect() {
+    let mut app = App::new(Vec::new());
+    app.update(Action::NewUnboundConsoleNamed("scratch".into()));
+    for character in ['s', 'e', 'l'] {
+        app.update(Action::EditorKey(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(character),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+    let commands = app
+        .update(Action::CompletionExplicit)
+        .into_iter()
+        .find_map(|command| match command {
+            Command::ScheduleCompletion(key) => Some(key),
+            _ => None,
+        });
+    assert!(commands.is_none());
+    assert!(app.active_console().completion.is_some());
+}
+
+#[test]
 fn builtin_default_current_timestamp_without_catalog() {
     let sql = "CREATE TABLE test1(\n id BIGINT NOT NULL,\n \"name\" text,\n create_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIM\n)";
     let cursor = sql.find("CURRENT_TIM").unwrap() + "CURRENT_TIM".len();

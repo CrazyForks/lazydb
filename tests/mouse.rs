@@ -600,6 +600,7 @@ fn overlay_hit_target_takes_precedence_over_underlying_text_selection() {
         candidates: Vec::new(),
         selected: 0,
         console_id: None,
+        execution: None,
     });
     let mut ui = UiState::new();
     let session_id = Uuid::new_v4();
@@ -633,6 +634,7 @@ fn target_selector_rows_and_cancel_map_to_selection_actions() {
         candidates: Vec::new(),
         selected: 0,
         console_id: None,
+        execution: None,
     });
     let mut ui = UiState::new();
     ui.hit_regions.extend([
@@ -778,6 +780,7 @@ fn selecting_target_selector_row_confirms_on_click() {
         )],
         selected: 0,
         console_id: None,
+        execution: None,
     });
 
     app.update(Action::SelectTargetSelector(0));
