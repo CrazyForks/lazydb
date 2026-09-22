@@ -42,6 +42,18 @@ Kitty to focus the neighboring Kitty window. They require Kitty mappings for
 `IS_LAZYDB`; see the Kitty integration guide. The existing `Ctrl-w` pane
 commands and pane-resize behavior are unchanged.
 
+Smart pane resizing is opt-in as well. It uses the visible LazyDB boundary in
+the requested direction first and asks Kitty to resize the current Kitty
+window when that boundary is unavailable:
+
+```toml
+[keybindings.panes]
+smart-resize-pane-left = ["Cmd+Ctrl+Shift+h"]
+smart-resize-pane-down = ["Cmd+Ctrl+Shift+j"]
+smart-resize-pane-up = ["Cmd+Ctrl+Shift+k"]
+smart-resize-pane-right = ["Cmd+Ctrl+Shift+l"]
+```
+
 An override replaces that command's built-in bindings. Use an empty list to
 disable it, or include the default sequence explicitly to retain both. The
 configurable pane actions are focus left/down/up/right, maximize/restore, and

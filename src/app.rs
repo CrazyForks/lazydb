@@ -6372,6 +6372,7 @@ impl App {
                 self.prepare_active_tab_after_focus_change(previous_focus)
             }
             Action::SmartFocusPane(_) => Vec::new(),
+            Action::SmartResizePane(_) => Vec::new(),
             Action::TogglePaneMaximized => {
                 self.pane_maximized = !self.pane_maximized;
                 Vec::new()

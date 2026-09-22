@@ -1,4 +1,4 @@
-# Kitty smart pane focus
+# Kitty smart pane focus and resize
 
 LazyDB can hand the same directional shortcut to Kitty only after it has
 exhausted its own visible panes. The integration is opt-in and has two parts.
@@ -33,6 +33,28 @@ inherit `KITTY_LISTEN_ON` and `KITTY_WINDOW_ID`. LazyDB uses Kitty's `kitten
 Neovim kitten.
 
 If Kitty is unavailable, internal LazyDB navigation still works and a
-boundary focus request is ignored. The feature changes focus only; it does
-not add cross-application pane resizing. Existing Neovim `IS_NVIM` mappings
-and LazyDB `Ctrl-w` bindings remain independent.
+boundary focus request is ignored.
+
+## Smart pane resize
+
+Add the four optional LazyDB bindings shown in the keybindings guide. Kitty
+must pass the modified keys through while LazyDB owns the focused window:
+
+```conf
+map --when-focus-on var:IS_LAZYDB kitty_mod+shift+h
+map --when-focus-on var:IS_LAZYDB kitty_mod+shift+j
+map --when-focus-on var:IS_LAZYDB kitty_mod+shift+k
+map --when-focus-on var:IS_LAZYDB kitty_mod+shift+l
+```
+
+Install the project's `contrib/kitty/lazydb_resize.py` in Kitty's config
+directory. It is intentionally separate from Neovim's `relative_resize.py`.
+LazyDB first resizes a visible internal boundary in the requested direction.
+At an internal boundary it invokes the helper through Kitty remote control to
+resize the current Kitty window without changing focus. The helper uses
+Kitty's neighboring windows to choose the wider/narrower or taller/shorter
+operation.
+
+Existing Neovim `IS_NVIM` mappings, Kitty's ordinary resize mappings, and
+LazyDB `Ctrl-w` bindings remain independent. If Kitty is unavailable, internal
+LazyDB resize still works and an external boundary request is ignored.

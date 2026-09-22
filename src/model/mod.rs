@@ -18,6 +18,7 @@ pub mod notification;
 pub mod omni;
 pub mod pagination;
 pub mod pane_navigation;
+pub mod pane_resize;
 pub mod pending_execution;
 pub mod principal;
 pub mod profile_group;

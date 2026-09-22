@@ -138,6 +138,10 @@ smart-focus-pane-left = []
 smart-focus-pane-down = []
 smart-focus-pane-up = []
 smart-focus-pane-right = []
+smart-resize-pane-left = []
+smart-resize-pane-down = []
+smart-resize-pane-up = []
+smart-resize-pane-right = []
 
 [keybindings.explorer]
 # j moves down through Explorer entries.
