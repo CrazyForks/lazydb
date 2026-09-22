@@ -21,6 +21,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
+pub mod kitty;
+
 static KEYBOARD_ENHANCEMENT_ENABLED: AtomicBool = AtomicBool::new(false);
 
 pub struct TerminalSession {
@@ -33,6 +35,7 @@ impl TerminalSession {
     pub fn enter(mouse_enabled: bool) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
+        let _ = kitty::set_user_var(&mut stdout, true);
         if let Err(error) = execute!(
             stdout,
             EnterAlternateScreen,
@@ -157,6 +160,7 @@ fn write_osc52_to(writer: &mut impl io::Write, text: &str, max_bytes: usize) -> 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let backend = self.terminal.backend_mut();
+        let _ = kitty::set_user_var(backend, false);
         if self.mouse_enabled {
             let _ = execute!(backend, DisableMouseCapture);
         }
@@ -186,6 +190,7 @@ pub fn install_panic_hook() {
 
 pub fn restore_terminal() {
     let mut stdout = io::stdout();
+    let _ = kitty::set_user_var(&mut stdout, false);
     disable_keyboard_enhancement(&mut stdout);
     let _ = execute!(
         stdout,

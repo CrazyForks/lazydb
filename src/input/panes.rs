@@ -1,3 +1,4 @@
+use crate::model::pane_navigation::PaneDirection;
 use crate::{
     action::Action,
     app::App,
@@ -7,6 +8,34 @@ use crate::{
         workspace::{Focus, redis_pane_resize},
     },
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SmartPaneCommand {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+impl SmartPaneCommand {
+    pub(crate) const ALL: [Self; 4] = [Self::Left, Self::Down, Self::Up, Self::Right];
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Left => "smart-focus-pane-left",
+            Self::Down => "smart-focus-pane-down",
+            Self::Up => "smart-focus-pane-up",
+            Self::Right => "smart-focus-pane-right",
+        }
+    }
+    pub(crate) fn direction(self) -> PaneDirection {
+        match self {
+            Self::Left => PaneDirection::Left,
+            Self::Down => PaneDirection::Down,
+            Self::Up => PaneDirection::Up,
+            Self::Right => PaneDirection::Right,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PaneCommand {

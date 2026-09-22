@@ -133,6 +133,11 @@ focus-pane-right = ["Ctrl-w l"]
 toggle-pane-maximized = ["Ctrl-w f"]
 # Ctrl-w = restores the default pane sizes.
 reset-pane-sizes = ["Ctrl-w ="]
+# Optional cross-application navigation. Kitty must forward cmd+ctrl h/j/k/l.
+smart-focus-pane-left = []
+smart-focus-pane-down = []
+smart-focus-pane-up = []
+smart-focus-pane-right = []
 
 [keybindings.explorer]
 # j moves down through Explorer entries.

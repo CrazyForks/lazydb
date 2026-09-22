@@ -63,6 +63,125 @@ fn is_grid_navigation_action(action: &Action) -> bool {
     )
 }
 
+async fn handle_smart_focus(
+    app: &mut App,
+    runtime: &mut Runtime,
+    terminal: &TerminalSession,
+    direction: crate::model::pane_navigation::PaneDirection,
+) {
+    use crate::model::pane_navigation::{PaneNavigation, PaneTarget, navigate};
+    use crate::model::redis_browser::RedisBrowserFocus;
+    use crate::ui::layout::AppLayout;
+
+    if app.overlay.is_some() {
+        return;
+    }
+    let Ok(area) = terminal.size() else {
+        return;
+    };
+    let is_special = matches!(
+        app.tabs.get(app.active_tab),
+        Some(
+            crate::model::tab::WorkspaceTab::Relation(_)
+                | crate::model::tab::WorkspaceTab::Dashboard(_)
+                | crate::model::tab::WorkspaceTab::RedisBrowser(_)
+                | crate::model::tab::WorkspaceTab::PrincipalDdl(_)
+        )
+    );
+    let layout = AppLayout::calculate(
+        area,
+        app.focus,
+        is_special,
+        app.pane_sizes,
+        app.pane_maximized,
+    );
+    let mut panes = Vec::new();
+    if let Some(rect) = layout.explorer {
+        panes.push((PaneTarget::Explorer, rect));
+    }
+    if let Some(rect) = layout.editor {
+        panes.push((PaneTarget::Editor, rect));
+    }
+    if let Some(rect) = layout.results {
+        panes.push((PaneTarget::Results, rect));
+    }
+    if let Some(rect) = layout.relation {
+        if matches!(
+            app.tabs.get(app.active_tab),
+            Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
+        ) {
+            let redis = crate::ui::layout::RedisBrowserLayout::calculate(
+                rect,
+                app.pane_sizes.redis_keys_width,
+            );
+            panes.push((PaneTarget::RedisKeys, redis.keys));
+            panes.push((PaneTarget::RedisPreview, redis.preview));
+        } else {
+            panes.push((PaneTarget::Relation, rect));
+        }
+    }
+    let source = match app.tabs.get(app.active_tab) {
+        Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) => match tab.focus {
+            RedisBrowserFocus::Keys => PaneTarget::RedisKeys,
+            RedisBrowserFocus::Preview => PaneTarget::RedisPreview,
+        },
+        _ => match app.focus {
+            crate::model::workspace::Focus::Explorer => PaneTarget::Explorer,
+            crate::model::workspace::Focus::Editor => PaneTarget::Editor,
+            crate::model::workspace::Focus::Results => {
+                if layout.relation.is_some() {
+                    PaneTarget::Relation
+                } else {
+                    PaneTarget::Results
+                }
+            }
+        },
+    };
+    match navigate(source, direction, &panes) {
+        PaneNavigation::Internal(PaneTarget::Explorer) => {
+            apply_action(
+                app,
+                runtime,
+                Action::Focus(crate::model::workspace::Focus::Explorer),
+            );
+        }
+        PaneNavigation::Internal(PaneTarget::Editor) => {
+            apply_action(
+                app,
+                runtime,
+                Action::Focus(crate::model::workspace::Focus::Editor),
+            );
+        }
+        PaneNavigation::Internal(PaneTarget::Results | PaneTarget::Relation) => {
+            apply_action(
+                app,
+                runtime,
+                Action::Focus(crate::model::workspace::Focus::Results),
+            );
+        }
+        PaneNavigation::Internal(PaneTarget::RedisKeys) => {
+            apply_action(
+                app,
+                runtime,
+                Action::RedisFocusPane(RedisBrowserFocus::Keys),
+            );
+        }
+        PaneNavigation::Internal(PaneTarget::RedisPreview) => {
+            apply_action(
+                app,
+                runtime,
+                Action::RedisFocusPane(RedisBrowserFocus::Preview),
+            );
+        }
+        PaneNavigation::Boundary(direction) => {
+            if crate::terminal::kitty::available() {
+                let _ = crate::terminal::kitty::neighboring_window(direction).await;
+            }
+        }
+        PaneNavigation::Blocked => {}
+    }
+}
+
 fn is_candidate_grid_key(key: KeyEvent) -> bool {
     if !key.modifiers.is_empty() || matches!(key.kind, KeyEventKind::Release) {
         return false;
@@ -6323,7 +6442,10 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                         | Action::GridAlignSelectedRow(_)
                                 );
                                 let force_grid_redraw = matches!(&action, Action::GridSelect { .. });
-                                if action == Action::ToggleTerminalSelection {
+                                 let smart_focus = if let Action::SmartFocusPane(direction) = action {
+                                     handle_smart_focus(&mut app, &mut runtime, &terminal, direction).await;
+                                     true
+                                  } else if action == Action::ToggleTerminalSelection {
                                     if !terminal.mouse_captured() {
                                         app.notify_warning(
                                             "Terminal",
@@ -6337,20 +6459,23 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                                 app.notify_info(
                                                     "Terminal selection",
                                                     "Mouse released for terminal selection. Press Esc to return.",
-                                                );
-                                            }
-                                            Err(error) => app.notify_warning(
+                                                 );
+                                             }
+                                             Err(error) => app.notify_warning(
                                                 "Terminal",
                                                 format!("Could not release mouse capture: {error}"),
                                             ),
-                                        }
-                                    }
-                                } else {
-                                    apply_action(&mut app, &mut runtime, action);
-                                }
-                                redraw = !is_grid_navigation
-                                    || grid_before != app.active_grid_navigation_state()
-                                    || force_grid_redraw;
+                                         }
+                                     }
+                                     false
+                                 } else {
+                                     apply_action(&mut app, &mut runtime, action);
+                                     false
+                                 };
+                                 redraw = !is_grid_navigation
+                                     || grid_before != app.active_grid_navigation_state()
+                                     || force_grid_redraw
+                                     || smart_focus;
                             }
                             redraw |= cancelled_pane_drag;
                             redraw |= had_text_gesture;
