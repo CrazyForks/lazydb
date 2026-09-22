@@ -182,6 +182,9 @@ The Explorer navigation commands are `explorer-move-down`, `explorer-move-up`,
 The remaining basic Explorer commands currently configurable are
 `explorer-copy-selection`, `explorer-find`, `explorer-search`,
 `explorer-new-profile`, `explorer-refresh`, and `explorer-toggle`.
+`explorer-new-profile` has no default key; it remains available only as an
+explicit custom binding. Use Enter on `No profiles`, or `a` followed by the
+Connection option, for the default connection-creation flow.
 Additional Results commands are `results-open-record`, `results-copy-cell`,
 `results-copy-row`, `results-copy-row-headers`, `results-toggle-view`,
 `results-first-column`, and `results-last-column`.

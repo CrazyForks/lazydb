@@ -381,7 +381,6 @@ pub enum HelpShortcutId {
     ExplorerCollapse,
     ExplorerToggle,
     ExplorerActivate,
-    ExplorerNewProfile,
     ExplorerAddToConnection,
     ExplorerEditProfile,
     ExplorerCreateCatalog,
@@ -833,6 +832,7 @@ enum ShortcutRequirement {
     RelationEditAvailable,
     ProfileScopeReady,
     ActiveSqlConsole,
+    ExplorerAddAvailable,
     ProfileEditAvailable,
     CatalogCreateAvailable,
     CatalogEditAvailable,
@@ -1434,13 +1434,12 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         "Enter",
         "open table preview / activate"
     ),
-    row!(ExplorerNewProfile, [Explorer], "n", "new connection"),
     row!(
         ExplorerAddToConnection,
         [Explorer],
         "a",
         "add to connection",
-        ProfileEditAvailable,
+        ExplorerAddAvailable,
         executable
     ),
     row!(
@@ -3111,6 +3110,7 @@ pub struct ShortcutCapabilities {
     profile_scope_loading: bool,
     active_sql_console: bool,
     pub(crate) profile_edit_available: bool,
+    pub(crate) explorer_add_available: bool,
     pub(crate) catalog_create_available: bool,
     pub(crate) catalog_edit_available: bool,
 }
@@ -3126,6 +3126,7 @@ impl ShortcutCapabilities {
             record_view_available: true,
             profile_scope_loading: false,
             active_sql_console: true,
+            explorer_add_available: false,
             profile_edit_available: false,
             catalog_create_available: false,
             catalog_edit_available: false,
@@ -3167,9 +3168,33 @@ pub(crate) fn shortcut_capabilities(app: &App) -> ShortcutCapabilities {
             .as_ref()
             .is_some_and(|manager| manager.scope_discovery_loading()),
         active_sql_console: app.active_console_opt().is_some(),
+        explorer_add_available: explorer_add_available(app),
         profile_edit_available,
         catalog_create_available,
         catalog_edit_available,
+    }
+}
+
+fn explorer_add_available(app: &App) -> bool {
+    use crate::model::explorer::ExplorerNodeId;
+
+    let Some(selected) = app.explorer.normalized.selected.as_ref() else {
+        return false;
+    };
+    match selected {
+        ExplorerNodeId::EmptyProfiles => true,
+        ExplorerNodeId::Profile(profile_id) => {
+            app.profiles.iter().any(|profile| profile.id == *profile_id)
+        }
+        ExplorerNodeId::PrincipalGroup { profile_id }
+        | ExplorerNodeId::PrincipalNotice { profile_id } => {
+            app.profiles.iter().any(|profile| profile.id == *profile_id)
+        }
+        ExplorerNodeId::Principal { entry } => app
+            .profiles
+            .iter()
+            .any(|profile| profile.id == entry.profile_id),
+        _ => false,
     }
 }
 
@@ -3258,6 +3283,7 @@ fn available(shortcut: &Shortcut, capabilities: ShortcutCapabilities) -> bool {
         ShortcutRequirement::RelationEditAvailable => capabilities.relation_edit_available,
         ShortcutRequirement::ProfileScopeReady => !capabilities.profile_scope_loading,
         ShortcutRequirement::ActiveSqlConsole => capabilities.active_sql_console,
+        ShortcutRequirement::ExplorerAddAvailable => capabilities.explorer_add_available,
         ShortcutRequirement::ProfileEditAvailable => capabilities.profile_edit_available,
         ShortcutRequirement::CatalogCreateAvailable => capabilities.catalog_create_available,
         ShortcutRequirement::CatalogEditAvailable => capabilities.catalog_edit_available,
@@ -3389,7 +3415,6 @@ pub(crate) fn configured_sequence(
         HelpShortcutId::ResultsAlignBottom => Some("results-align-bottom"),
         HelpShortcutId::ExplorerFindOpen => Some("explorer-find"),
         HelpShortcutId::ExplorerSearchOpen => Some("explorer-search"),
-        HelpShortcutId::ExplorerNewProfile => Some("explorer-new-profile"),
         HelpShortcutId::ExplorerRefresh => Some("explorer-refresh"),
         HelpShortcutId::ExplorerToggle => Some("explorer-toggle"),
         HelpShortcutId::OpenUpdateCenter => Some("update"),

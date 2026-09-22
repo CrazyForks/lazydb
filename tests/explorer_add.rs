@@ -17,7 +17,7 @@ fn option(kind: ExplorerAddKind, enabled: bool) -> ExplorerAddOption {
 #[test]
 fn add_menu_starts_on_the_first_enabled_option() {
     let menu = ExplorerAddMenu::new(
-        Uuid::from_u128(1),
+        Some(Uuid::from_u128(1)),
         vec![
             option(ExplorerAddKind::Connection, true),
             option(ExplorerAddKind::Database, false),
@@ -30,7 +30,7 @@ fn add_menu_starts_on_the_first_enabled_option() {
 #[test]
 fn movement_skips_disabled_options_and_clamps() {
     let mut menu = ExplorerAddMenu::new(
-        Uuid::from_u128(1),
+        Some(Uuid::from_u128(1)),
         vec![
             option(ExplorerAddKind::Connection, true),
             option(ExplorerAddKind::Database, false),
@@ -48,7 +48,7 @@ fn movement_skips_disabled_options_and_clamps() {
 #[test]
 fn direct_selection_rejects_disabled_options() {
     let mut menu = ExplorerAddMenu::new(
-        Uuid::from_u128(1),
+        Some(Uuid::from_u128(1)),
         vec![
             option(ExplorerAddKind::Connection, true),
             option(ExplorerAddKind::Database, false),
@@ -56,4 +56,17 @@ fn direct_selection_rejects_disabled_options() {
     );
     assert!(!menu.select(1));
     assert_eq!(menu.selected, 0);
+}
+
+#[test]
+fn menu_without_connection_starts_on_connection_and_rejects_catalog_items() {
+    let menu = ExplorerAddMenu::new(
+        None,
+        vec![
+            option(ExplorerAddKind::Connection, true),
+            option(ExplorerAddKind::Database, false),
+        ],
+    );
+    assert_eq!(menu.selected_kind(), Some(ExplorerAddKind::Connection));
+    assert!(!menu.options[1].availability.is_available());
 }

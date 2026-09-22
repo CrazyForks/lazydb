@@ -4346,7 +4346,6 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
         KeyCode::Char('y') => return Some(Action::CopyExplorerSelection),
         KeyCode::Char('/') => return Some(Action::ExplorerFindOpen),
         KeyCode::Char('f') => return Some(Action::ExplorerSearchOpen),
-        KeyCode::Char('n') => return Some(Action::ProfileStartNew),
         KeyCode::Char('a') => {
             if let Some(ExplorerNodeId::RedisDatabase {
                 profile_id,
@@ -4361,6 +4360,12 @@ fn map_explorer(code: KeyCode, app: &App) -> Option<Action> {
             if matches!(
                 app.explorer.normalized.selected,
                 Some(ExplorerNodeId::Profile(_))
+            ) {
+                return Some(Action::OpenExplorerAdd);
+            }
+            if matches!(
+                app.explorer.normalized.selected,
+                Some(ExplorerNodeId::EmptyProfiles)
             ) {
                 return Some(Action::OpenExplorerAdd);
             }
