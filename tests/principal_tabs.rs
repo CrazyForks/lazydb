@@ -230,7 +230,9 @@ fn applying_ddl_fills_the_read_only_editor_and_stale_responses_are_rejected() {
         details,
     });
     let output = render(&app, 120, 30);
-    assert!(output.contains("public.orders  SELECT  direct"), "{output}");
+    assert!(output.contains("public.orders"), "{output}");
+    assert!(output.contains("SELECT"), "{output}");
+    assert!(output.contains("Direct"), "{output}");
 }
 
 #[test]

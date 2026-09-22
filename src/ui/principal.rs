@@ -17,9 +17,10 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Vertical split used by the principal DDL view.
 ///
@@ -180,128 +181,298 @@ fn render_overview(
             .style(Style::new().fg(theme.text).bg(theme.surface)),
         chunks[1],
     );
-    let details = tab.details.snapshot();
-    let details_status = tab.details.status();
-    let status = if tab.entry.system {
-        "System-managed principal; modification is restricted."
-    } else if let Some((message, true)) = details_status.as_ref() {
-        message.as_str()
-    } else if details.is_none() {
-        "Permissions are loading from the active database.  Press r to retry."
-    } else {
-        "Current statements from the active database.  Press o for DDL."
-    };
-    let mut access_lines = vec![Line::raw("Permissions / membership details")];
-    if let Some(details) = details {
-        let visible_rows = chunks[2].height.saturating_sub(5).max(1) as usize;
-        let permission_start = tab
-            .selected_permission
-            .saturating_sub(visible_rows.saturating_sub(1));
-        let permission_end = (permission_start + visible_rows).min(details.permissions.len());
-        for index in permission_start..permission_end {
-            let permission = &details.permissions[index];
-            state.hit_regions.push(HitRegion {
-                area: Rect::new(
-                    chunks[2].x,
-                    chunks[2]
-                        .y
-                        .saturating_add(1 + (index - permission_start) as u16),
-                    chunks[2].width,
-                    1,
-                ),
-                target: HitTarget::PrincipalPermission(index),
-            });
-            access_lines.push(Line::raw(format!(
-                "{} {}  {}  {}:{:?}{}",
-                if index == tab.selected_permission {
-                    ">"
-                } else {
-                    " "
-                },
-                permission.target,
-                permission.privilege,
-                permission.source,
-                format_args!(":{:?}", permission.source_kind),
-                if permission.grantable {
-                    "  GRANTABLE"
-                } else {
-                    ""
-                }
-            )));
-        }
-        for membership in &details.member_of {
-            access_lines.push(Line::raw(format!(
-                "MEMBER OF  {}{}",
-                membership.role,
-                if membership.admin_option {
-                    "  ADMIN"
-                } else {
-                    ""
-                }
-            )));
-        }
-        for membership in &details.members {
-            access_lines.push(Line::raw(format!(
-                "MEMBER  {}{}",
-                membership.member,
-                if membership.admin_option {
-                    "  ADMIN"
-                } else {
-                    ""
-                }
-            )));
-        }
-    } else {
-        access_lines.push(Line::styled(
-            details_status
-                .as_ref()
-                .map(|(message, _)| message.as_str())
-                .unwrap_or("No permission snapshot available."),
-            Style::new().fg(theme.muted),
-        ));
-    }
-    if let Some(details) = details {
-        access_lines.push(Line::styled(
-            format!(
-                "Permissions coverage: {:?}; membership coverage: {:?}",
-                details.permissions_coverage, details.membership_coverage
-            ),
-            Style::new().fg(theme.muted),
-        ));
-    }
-    access_lines.push(Line::styled(status, Style::new().fg(theme.muted)));
-    access_lines.push(Line::styled(
-        match app.principal_capability(tab.entry.id.profile_id) {
-            Some(crate::db::principal::PrincipalCapability::DetailsAndMutation) =>
-                "Grant/Revoke: select a permission, then g/v; DDL is applied only after confirmation.",
-            Some(crate::db::principal::PrincipalCapability::Details) =>
-                "Permissions are read-only for this database connection.",
-            Some(crate::db::principal::PrincipalCapability::DdlOnly) =>
-                "This database exposes principal DDL only.",
-            _ => "Principal permissions are unsupported for this database.",
-        },
-        Style::new().fg(theme.muted),
-    ));
-    if let Some(form) = tab.mutation_draft.as_ref() {
-        access_lines.push(Line::styled(
-            format!(
-                "FORM {:?}  {:?}  {}  {}",
-                form.selected_field,
-                form.draft.section,
-                if form.draft.grant { "GRANT" } else { "REVOKE" },
-                form.draft.privilege
-            ),
-            Style::new().fg(theme.action),
-        ));
-    }
-    frame.render_widget(
-        Paragraph::new(access_lines).block(panel_block(" ACCESS ", false, theme)),
-        chunks[2],
-    );
+    let focused = app.focus == Focus::Results && app.overlay.is_none();
+    let block = panel_block(" ACCESS ", focused, theme);
+    let inner = block.inner(chunks[2]);
     state.hit_regions.push(HitRegion {
-        area,
+        area: chunks[2],
         target: HitTarget::Focus(Focus::Results),
     });
+    let sections = crate::model::principal::PrincipalAccessSection::ALL;
+    let mut lines = Vec::new();
+    let mut section_x = inner.x;
+    let mut section_line = Line::default();
+    for section in sections {
+        let (label, count) = access_section_label(section, tab.details.snapshot());
+        let selected = section == tab.access_section;
+        let text = format!(" {label} ({count}) ");
+        let width = text.width() as u16;
+        section_line.spans.push(Span::styled(
+            text.clone(),
+            if selected {
+                theme.title(focused)
+            } else {
+                Style::new().fg(theme.muted)
+            },
+        ));
+        state.hit_regions.push(HitRegion {
+            area: Rect::new(
+                section_x,
+                inner.y,
+                width.min(inner.right().saturating_sub(section_x)),
+                1,
+            ),
+            target: HitTarget::PrincipalAccessSection(section),
+        });
+        section_x = section_x.saturating_add(width);
+    }
+    lines.push(section_line);
+    let header_y = inner.y.saturating_add(1);
+    let body_y = header_y.saturating_add(1);
+    let footer_y = inner.bottom().saturating_sub(1);
+    lines.push(Line::styled(
+        access_header(tab.access_section, inner.width),
+        Style::new()
+            .fg(theme.grid_header_text)
+            .bg(theme.grid_header),
+    ));
+    let visible = footer_y.saturating_sub(body_y) as usize;
+    if let Some(details) = tab.details.snapshot() {
+        let (count, stored_offset) = access_count_offset(tab, details);
+        let offset = if visible == 0 {
+            stored_offset
+        } else {
+            stored_offset.max(
+                tab.access_selection()
+                    .saturating_sub(visible.saturating_sub(1)),
+            )
+        };
+        for row in 0..visible.min(count.saturating_sub(offset)) {
+            let index = offset + row;
+            let selected = index == tab.access_selection();
+            let line = access_line(
+                tab.access_section,
+                details,
+                index,
+                inner.width,
+                selected,
+                focused,
+                theme,
+            );
+            lines.push(line);
+            state.hit_regions.push(HitRegion {
+                area: Rect::new(inner.x, body_y.saturating_add(row as u16), inner.width, 1),
+                target: HitTarget::PrincipalAccessItem(index),
+            });
+        }
+        if count == 0 {
+            lines.push(Line::styled(
+                "No entries in the current snapshot.",
+                Style::new().fg(theme.muted),
+            ));
+        }
+        let coverage = match tab.access_section {
+            crate::model::principal::PrincipalAccessSection::Permissions => {
+                &details.permissions_coverage
+            }
+            _ => &details.membership_coverage,
+        };
+        lines.push(Line::styled(
+            format!("Coverage: {}", coverage_label(coverage)),
+            Style::new().fg(theme.muted),
+        ));
+    } else {
+        let message = tab.details.status().map_or_else(
+            || "No access snapshot available.".to_owned(),
+            |(message, _)| message,
+        );
+        lines.push(Line::styled(message, Style::new().fg(theme.muted)));
+    }
+    let hint = match app.principal_capability(tab.entry.id.profile_id) {
+        Some(crate::db::principal::PrincipalCapability::DetailsAndMutation)
+            if tab.access_section
+                == crate::model::principal::PrincipalAccessSection::Permissions =>
+        {
+            "↑/↓ select  ←/→ section  Enter details  g/v grant/revoke  r refresh  o DDL"
+        }
+        Some(crate::db::principal::PrincipalCapability::Details) => {
+            "↑/↓ select  ←/→ section  Enter details  read-only  r refresh  o DDL"
+        }
+        _ => "↑/↓ select  ←/→ section  Enter details  r refresh  o DDL",
+    };
+    lines.push(Line::styled(hint, Style::new().fg(theme.muted)));
+    frame.render_widget(Paragraph::new(lines).block(block), chunks[2]);
+}
+
+fn access_section_label(
+    section: crate::model::principal::PrincipalAccessSection,
+    details: Option<&crate::db::principal::PrincipalDetails>,
+) -> (&'static str, usize) {
+    let count = details.map_or(0, |details| match section {
+        crate::model::principal::PrincipalAccessSection::Permissions => details.permissions.len(),
+        crate::model::principal::PrincipalAccessSection::MemberOf => details.member_of.len(),
+        crate::model::principal::PrincipalAccessSection::Members => details.members.len(),
+    });
+    (
+        match section {
+            crate::model::principal::PrincipalAccessSection::Permissions => "Permissions",
+            crate::model::principal::PrincipalAccessSection::MemberOf => "Member of",
+            crate::model::principal::PrincipalAccessSection::Members => "Members",
+        },
+        count,
+    )
+}
+
+fn access_count_offset(
+    tab: &crate::model::principal::PrincipalDdlTab,
+    details: &crate::db::principal::PrincipalDetails,
+) -> (usize, usize) {
+    (
+        access_section_label(tab.access_section, Some(details)).1,
+        tab.access_offset(),
+    )
+}
+
+fn shorten(value: &str, width: usize) -> String {
+    let value = crate::security::sanitize_terminal_text(value).replace(['\n', '\t'], " ");
+    if value.width() <= width {
+        return format!("{value:<width$}");
+    }
+    if width <= 1 {
+        return "…".to_owned();
+    }
+    let mut result = String::new();
+    for ch in value.chars() {
+        if result.width() + ch.to_string().width() + 1 >= width {
+            break;
+        }
+        result.push(ch);
+    }
+    format!("{result}…")
+}
+
+fn access_header(section: crate::model::principal::PrincipalAccessSection, width: u16) -> String {
+    if width < 56 {
+        return "  Entry".to_owned();
+    }
+    match section {
+        crate::model::principal::PrincipalAccessSection::Permissions => {
+            "  Target                         Privilege       Origin".to_owned()
+        }
+        crate::model::principal::PrincipalAccessSection::MemberOf => {
+            "  Role                                           Admin option".to_owned()
+        }
+        crate::model::principal::PrincipalAccessSection::Members => {
+            "  Member                                         Admin option".to_owned()
+        }
+    }
+}
+
+fn access_line(
+    section: crate::model::principal::PrincipalAccessSection,
+    details: &crate::db::principal::PrincipalDetails,
+    index: usize,
+    width: u16,
+    selected: bool,
+    focused: bool,
+    theme: Theme,
+) -> Line<'static> {
+    let prefix = if selected { ">" } else { " " };
+    let row_style = if selected && focused {
+        Style::new().fg(theme.text).bg(theme.selection)
+    } else if selected {
+        Style::new().fg(theme.action).bg(theme.surface)
+    } else {
+        Style::new().fg(theme.text).bg(theme.surface)
+    };
+    if section == crate::model::principal::PrincipalAccessSection::Permissions && width >= 56 {
+        let permission = &details.permissions[index];
+        let source = source_label(permission.source_kind);
+        let source_style = match permission.source_kind {
+            crate::db::principal::PrincipalPermissionSource::Direct => {
+                Style::new().fg(theme.success)
+            }
+            crate::db::principal::PrincipalPermissionSource::Owner => Style::new().fg(theme.accent),
+            crate::db::principal::PrincipalPermissionSource::Default => {
+                Style::new().fg(theme.warning)
+            }
+            _ => Style::new().fg(theme.muted),
+        }
+        .bg(if selected && focused {
+            theme.selection
+        } else {
+            theme.surface
+        });
+        return Line::from(vec![
+            Span::styled(format!("{prefix} "), row_style),
+            Span::styled(shorten(&permission.target, 28), row_style),
+            Span::styled("  ", row_style),
+            Span::styled(
+                shorten(&permission.privilege, 15),
+                Style::new()
+                    .fg(theme.action)
+                    .bg(row_style.bg.unwrap_or(theme.surface)),
+            ),
+            Span::styled("  ", row_style),
+            Span::styled(shorten(source, 9), source_style),
+        ]);
+    }
+    let base = match section {
+        crate::model::principal::PrincipalAccessSection::Permissions => {
+            let p = &details.permissions[index];
+            format!(
+                "{prefix} {}  {}  {}",
+                shorten(&p.target, 28),
+                shorten(&p.privilege, 15),
+                source_label(p.source_kind)
+            )
+        }
+        crate::model::principal::PrincipalAccessSection::MemberOf => {
+            let m = &details.member_of[index];
+            format!(
+                "{prefix} {}  {}",
+                shorten(&m.role, 42),
+                if m.admin_option { "ADMIN" } else { "-" }
+            )
+        }
+        crate::model::principal::PrincipalAccessSection::Members => {
+            let m = &details.members[index];
+            format!(
+                "{prefix} {}  {}",
+                shorten(&m.member, 42),
+                if m.admin_option { "ADMIN" } else { "-" }
+            )
+        }
+    };
+    let fg = if selected && focused {
+        theme.text
+    } else if selected {
+        theme.action
+    } else {
+        theme.text
+    };
+    let bg = if selected && focused {
+        theme.selection
+    } else {
+        theme.surface
+    };
+    Line::styled(
+        shorten(&base, width.saturating_sub(1) as usize),
+        Style::new().fg(fg).bg(bg),
+    )
+}
+
+fn source_label(source: crate::db::principal::PrincipalPermissionSource) -> &'static str {
+    match source {
+        crate::db::principal::PrincipalPermissionSource::Direct => "Direct",
+        crate::db::principal::PrincipalPermissionSource::Public => "Public",
+        crate::db::principal::PrincipalPermissionSource::Owner => "Owner",
+        crate::db::principal::PrincipalPermissionSource::Default => "Default",
+        crate::db::principal::PrincipalPermissionSource::Inherited => "Inherited",
+    }
+}
+
+fn coverage_label(coverage: &crate::db::principal::PrincipalCoverage) -> String {
+    match coverage {
+        crate::db::principal::PrincipalCoverage::Complete => "Complete".to_owned(),
+        crate::db::principal::PrincipalCoverage::Partial(reason) => format!("Partial: {reason}"),
+        crate::db::principal::PrincipalCoverage::Unavailable(reason) => {
+            format!("Unavailable: {reason}")
+        }
+        crate::db::principal::PrincipalCoverage::Unsupported(reason) => {
+            format!("Unsupported: {reason}")
+        }
+    }
 }
 
 fn principal_scope(scope: &crate::db::principal::PrincipalScope) -> String {

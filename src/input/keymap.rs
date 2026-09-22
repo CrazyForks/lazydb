@@ -2401,14 +2401,19 @@ impl Keymap {
                 )
             {
                 match event.code {
-                    KeyCode::Char('g') => {
+                    KeyCode::Char('g')
+                        if app.active_principal_access_section()
+                            == crate::model::principal::PrincipalAccessSection::Permissions =>
+                    {
                         return Some(Action::OpenPrincipalPermissionMutation { grant: true });
                     }
-                    KeyCode::Char('v') => {
+                    KeyCode::Char('v')
+                        if app.active_principal_access_section()
+                            == crate::model::principal::PrincipalAccessSection::Permissions =>
+                    {
                         return Some(Action::OpenPrincipalPermissionMutation { grant: false });
                     }
-                    KeyCode::Tab => return Some(Action::PrincipalMutationFieldNext),
-                    KeyCode::Char(' ') => return Some(Action::PrincipalMutationToggleOperation),
+                    KeyCode::Enter => return Some(Action::OpenPrincipalAccessDetails),
                     _ => {}
                 }
             }
@@ -2778,6 +2783,28 @@ fn map_configured_navigation(
         }
     }
     if app.focus == Focus::Results && !app.is_active_relation_tab() {
+        if matches!(
+            app.tabs.get(app.active_tab),
+            Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                if tab.view == crate::model::principal::PrincipalView::Overview
+        ) {
+            if bindings.matches("results-move-left", event) {
+                return Some(Action::SelectPrincipalAccess(
+                    app.active_principal_access_section().next(-1),
+                ));
+            }
+            if bindings.matches("results-move-right", event) {
+                return Some(Action::SelectPrincipalAccess(
+                    app.active_principal_access_section().next(1),
+                ));
+            }
+            if bindings.matches("results-move-down", event) {
+                return Some(Action::MovePrincipalAccess(1));
+            }
+            if bindings.matches("results-move-up", event) {
+                return Some(Action::MovePrincipalAccess(-1));
+            }
+        }
         if let Some(action) = map_configured_pagination(event, false, app, bindings) {
             return Some(action);
         }
