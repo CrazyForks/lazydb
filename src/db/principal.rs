@@ -69,6 +69,7 @@ pub struct PrincipalDdl {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrincipalPermission {
     pub target: String,
+    pub mutation_target: Option<PrincipalMutationTarget>,
     pub privilege: String,
     pub source: String,
     pub grantable: bool,

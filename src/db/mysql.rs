@@ -3016,6 +3016,7 @@ impl MySqlAdapter {
             .into_iter()
             .map(|grant| crate::db::principal::PrincipalPermission {
                 target: "native SHOW GRANTS".to_owned(),
+                mutation_target: None,
                 privilege: grant,
                 source: "native grant".to_owned(),
                 grantable: false,

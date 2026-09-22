@@ -4374,9 +4374,21 @@ impl App {
             Action::ExecutePrincipalMutation(plan) => {
                 vec![Command::ExecutePrincipalMutation(plan)]
             }
-            Action::PrincipalMutationSucceeded { plan: _ } => {
+            Action::PrincipalMutationSucceeded { plan } => {
                 self.notify_success("Principal", "Permission change applied");
-                self.refresh_active_principal()
+                let Some(index) = self.tabs.iter().position(|tab| {
+                    matches!(
+                        tab,
+                        WorkspaceTab::PrincipalDdl(tab)
+                            if tab.entry.id == plan.principal.id
+                                && tab.entry.id.profile_id == plan.connection.profile_id
+                    )
+                }) else {
+                    return Vec::new();
+                };
+                let mut commands = self.load_principal_ddl(index, true);
+                commands.extend(self.load_principal_details(index, true));
+                commands
             }
             Action::PrincipalMutationFailed { plan: _, message } => {
                 self.notify_error("Principal", message);
@@ -11402,17 +11414,22 @@ impl App {
                     self.notify_warning("Principal", "No structured permission is available");
                     return Vec::new();
                 };
-                let Some((schema, relation)) = permission.target.split_once('.') else {
+                let Some(target) = permission.mutation_target.clone() else {
                     self.notify_warning("Principal", "This permission target is not editable yet");
                     return Vec::new();
                 };
+                if permission.source_kind != crate::db::principal::PrincipalPermissionSource::Direct
+                {
+                    self.notify_warning(
+                        "Principal",
+                        "Only direct permissions can be revoked from this view",
+                    );
+                    return Vec::new();
+                }
                 let draft = crate::db::principal::PrincipalMutationDraft {
                     section: crate::db::principal::PrincipalMutationSection::Permission,
                     grant,
-                    target: crate::db::principal::PrincipalMutationTarget::Relation {
-                        schema: schema.to_owned(),
-                        relation: relation.to_owned(),
-                    },
+                    target,
                     privilege: permission.privilege.clone(),
                     grant_option: grant && permission.grantable,
                     role: None,
@@ -11512,6 +11529,11 @@ impl App {
                     || !tab.apply_details_success(&request, details)
                 {
                     return Vec::new();
+                }
+                if let Some(details) = tab.details.snapshot() {
+                    tab.selected_permission = tab
+                        .selected_permission
+                        .min(details.permissions.len().saturating_sub(1));
                 }
                 Vec::new()
             }
@@ -20063,7 +20085,9 @@ impl App {
         let Some(WorkspaceTab::PrincipalDdl(_)) = self.tabs.get(self.active_tab) else {
             return Vec::new();
         };
-        self.load_principal_ddl(self.active_tab, true)
+        let mut commands = self.load_principal_ddl(self.active_tab, true);
+        commands.extend(self.load_principal_details(self.active_tab, true));
+        commands
     }
 
     fn reconcile_principal_selection(&mut self, profile_id: Uuid) {

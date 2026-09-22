@@ -196,6 +196,10 @@ fn applying_ddl_fills_the_read_only_editor_and_stale_responses_are_rejected() {
         database: None,
         permissions: vec![PrincipalPermission {
             target: "public.orders".to_owned(),
+            mutation_target: Some(lazydb::db::principal::PrincipalMutationTarget::Relation {
+                schema: "public".to_owned(),
+                relation: "orders".to_owned(),
+            }),
             privilege: "SELECT".to_owned(),
             source: "direct".to_owned(),
             grantable: false,
@@ -227,6 +231,36 @@ fn applying_ddl_fills_the_read_only_editor_and_stale_responses_are_rejected() {
     });
     let output = render(&app, 120, 30);
     assert!(output.contains("public.orders  SELECT  direct"), "{output}");
+}
+
+#[test]
+fn failed_permission_details_render_the_database_error_instead_of_empty_snapshot() {
+    let (mut app, profile_id) = app_with_profile();
+    app.update(Action::OpenPrincipal {
+        profile_id,
+        entry: entry(profile_id),
+    });
+    let index = principal_tab_index(&app);
+    let request = match &app.tabs[index] {
+        WorkspaceTab::PrincipalDdl(tab) => details_request_for_test(tab),
+        _ => unreachable!(),
+    };
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[index] {
+        tab.begin_details_load(request.clone());
+    }
+    app.update(Action::PrincipalDetailsFailed {
+        request,
+        message: "permission denied for schema private".to_owned(),
+    });
+    let output = render(&app, 120, 30);
+    assert!(
+        output.contains("permission denied for schema private"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("No permission snapshot available."),
+        "{output}"
+    );
 }
 
 fn details_request_for_test(
