@@ -58,6 +58,7 @@ const SUPPORTED_COMMANDS: &[&str] = &[
     "focus-pane-up",
     "focus-pane-right",
     "toggle-pane-maximized",
+    "smart-toggle-pane-maximized",
     "reset-pane-sizes",
     "smart-focus-pane-left",
     "smart-focus-pane-down",
@@ -456,6 +457,16 @@ impl KeybindingConfig {
                 let sequences = keys
                     .iter()
                     .map(|key| {
+                        if command == "smart-toggle-pane-maximized"
+                            && key.split_whitespace().count() != 1
+                        {
+                            return Err(ConfigError::InvalidKeybindingDetail {
+                                command: command.clone(),
+                                key: key.clone(),
+                                token: key.clone(),
+                                reason: "smart maximize requires a single key chord".into(),
+                            });
+                        }
                         if key.split_whitespace().next().is_none() {
                             return Err(ConfigError::InvalidKeybinding {
                                 command: command.clone(),

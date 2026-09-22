@@ -276,6 +276,22 @@ async fn handle_smart_resize(
     }
 }
 
+async fn handle_smart_maximize(app: &mut App) {
+    if app.overlay.is_some() || app.omni.is_some() {
+        return;
+    }
+    if !crate::terminal::kitty::available() {
+        app.pane_maximized = !app.pane_maximized;
+        return;
+    }
+    match crate::terminal::kitty::toggle_maximized().await {
+        Ok(target) => app.pane_maximized = target.unwrap_or(!app.pane_maximized),
+        Err(error) => {
+            app.notify_warning("Kitty", format!("Could not synchronize pane zoom: {error}"))
+        }
+    }
+}
+
 fn is_candidate_grid_key(key: KeyEvent) -> bool {
     if !key.modifiers.is_empty() || matches!(key.kind, KeyEventKind::Release) {
         return false;
@@ -6541,6 +6557,9 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                       true
                                   } else if let Action::SmartResizePane(direction) = action {
                                       handle_smart_resize(&mut app, &mut runtime, &terminal, direction).await;
+                                      true
+                                  } else if action == Action::SmartTogglePaneMaximized {
+                                      handle_smart_maximize(&mut app).await;
                                       true
                                   } else if action == Action::ToggleTerminalSelection {
                                     if !terminal.mouse_captured() {

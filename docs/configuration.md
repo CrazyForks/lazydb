@@ -175,6 +175,9 @@ defaults to `F2`. The current Leader commands are
 `run-leader-buffer`, and `open-target-selector`.
 The pane commands are `focus-pane-left`, `focus-pane-down`, `focus-pane-up`,
 `focus-pane-right`, `toggle-pane-maximized`, and `reset-pane-sizes`.
+The opt-in `smart-toggle-pane-maximized` command synchronizes the focused pane
+with its Kitty tab's stack/previous layout. Bind it to a single key chord; see
+[Kitty synchronized maximize](keybindings.md#kitty-synchronized-maximize).
 The Explorer navigation commands are `explorer-move-down`, `explorer-move-up`,
 `explorer-expand`, and `explorer-collapse`. The SQL Results grid commands are
 `results-move-left`, `results-move-down`, `results-move-up`, and

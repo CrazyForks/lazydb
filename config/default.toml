@@ -131,6 +131,8 @@ focus-pane-up = ["Ctrl-w k"]
 focus-pane-right = ["Ctrl-w l"]
 # Ctrl-w f maximizes the focused pane.
 toggle-pane-maximized = ["Ctrl-w f"]
+# Optional synchronized Kitty/LazyDB maximize. Kitty must forward this shortcut.
+smart-toggle-pane-maximized = []
 # Ctrl-w = restores the default pane sizes.
 reset-pane-sizes = ["Ctrl-w ="]
 # Optional cross-application navigation. Kitty must forward cmd+ctrl h/j/k/l.
