@@ -15,6 +15,27 @@ pub enum PrincipalView {
     Ddl,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PrincipalAccessSection {
+    #[default]
+    Permissions,
+    MemberOf,
+    Members,
+}
+
+impl PrincipalAccessSection {
+    pub const ALL: [Self; 3] = [Self::Permissions, Self::MemberOf, Self::Members];
+
+    pub const fn next(self, delta: isize) -> Self {
+        let index = match self {
+            Self::Permissions => 0,
+            Self::MemberOf => 1,
+            Self::Members => 2,
+        };
+        Self::ALL[(index as isize + delta).rem_euclid(Self::ALL.len() as isize) as usize]
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrincipalListRequest {
     pub profile_id: Uuid,
@@ -215,6 +236,12 @@ pub struct PrincipalDdlTab {
     pub view: PrincipalView,
     pub details: PrincipalDetailsLoad,
     pub selected_permission: usize,
+    pub access_section: PrincipalAccessSection,
+    pub permission_offset: usize,
+    pub member_of_selected: usize,
+    pub member_of_offset: usize,
+    pub members_selected: usize,
+    pub members_offset: usize,
     pub mutation_draft: Option<PrincipalMutationForm>,
 }
 
@@ -230,6 +257,12 @@ impl PrincipalDdlTab {
             view: PrincipalView::Overview,
             details: PrincipalDetailsLoad::Empty,
             selected_permission: 0,
+            access_section: PrincipalAccessSection::default(),
+            permission_offset: 0,
+            member_of_selected: 0,
+            member_of_offset: 0,
+            members_selected: 0,
+            members_offset: 0,
             mutation_draft: None,
         }
     }
@@ -255,6 +288,59 @@ impl PrincipalDdlTab {
 
     pub fn title(&self) -> &str {
         &self.entry.name
+    }
+
+    pub fn access_selection(&self) -> usize {
+        match self.access_section {
+            PrincipalAccessSection::Permissions => self.selected_permission,
+            PrincipalAccessSection::MemberOf => self.member_of_selected,
+            PrincipalAccessSection::Members => self.members_selected,
+        }
+    }
+
+    pub fn access_offset(&self) -> usize {
+        match self.access_section {
+            PrincipalAccessSection::Permissions => self.permission_offset,
+            PrincipalAccessSection::MemberOf => self.member_of_offset,
+            PrincipalAccessSection::Members => self.members_offset,
+        }
+    }
+
+    pub fn set_access_selection(&mut self, value: usize) {
+        match self.access_section {
+            PrincipalAccessSection::Permissions => self.selected_permission = value,
+            PrincipalAccessSection::MemberOf => self.member_of_selected = value,
+            PrincipalAccessSection::Members => self.members_selected = value,
+        }
+    }
+
+    pub fn set_access_offset(&mut self, value: usize) {
+        match self.access_section {
+            PrincipalAccessSection::Permissions => self.permission_offset = value,
+            PrincipalAccessSection::MemberOf => self.member_of_offset = value,
+            PrincipalAccessSection::Members => self.members_offset = value,
+        }
+    }
+
+    pub fn clamp_access_state(&mut self, details: &PrincipalDetails) {
+        self.selected_permission = self
+            .selected_permission
+            .min(details.permissions.len().saturating_sub(1));
+        self.member_of_selected = self
+            .member_of_selected
+            .min(details.member_of.len().saturating_sub(1));
+        self.members_selected = self
+            .members_selected
+            .min(details.members.len().saturating_sub(1));
+        self.permission_offset = self
+            .permission_offset
+            .min(details.permissions.len().saturating_sub(1));
+        self.member_of_offset = self
+            .member_of_offset
+            .min(details.member_of.len().saturating_sub(1));
+        self.members_offset = self
+            .members_offset
+            .min(details.members.len().saturating_sub(1));
     }
 
     pub fn allocate_details_request(

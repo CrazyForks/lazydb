@@ -503,6 +503,78 @@ enum CompletionAfterEdit {
 }
 
 impl App {
+    pub fn active_principal_access_section(
+        &self,
+    ) -> crate::model::principal::PrincipalAccessSection {
+        match self.tabs.get(self.active_tab) {
+            Some(WorkspaceTab::PrincipalDdl(tab)) => tab.access_section,
+            _ => crate::model::principal::PrincipalAccessSection::Permissions,
+        }
+    }
+
+    fn principal_access_detail_request(
+        &self,
+    ) -> Option<crate::model::text_detail::TextDetailRequest> {
+        let WorkspaceTab::PrincipalDdl(tab) = self.tabs.get(self.active_tab)? else {
+            return None;
+        };
+        let details = tab.details.snapshot()?;
+        let (title, text) = match tab.access_section {
+            crate::model::principal::PrincipalAccessSection::Permissions => {
+                let permission = details.permissions.get(tab.selected_permission)?;
+                let source = match permission.source_kind {
+                    crate::db::principal::PrincipalPermissionSource::Direct => "Direct",
+                    crate::db::principal::PrincipalPermissionSource::Public => "Public",
+                    crate::db::principal::PrincipalPermissionSource::Owner => "Owner",
+                    crate::db::principal::PrincipalPermissionSource::Default => "Default",
+                    crate::db::principal::PrincipalPermissionSource::Inherited => "Inherited",
+                };
+                (
+                    format!("Permission: {}", permission.privilege),
+                    format!(
+                        "Target: {}\nPrivilege: {}\nOrigin: {}\nSource: {}\nGrantable: {}",
+                        permission.target,
+                        permission.privilege,
+                        source,
+                        permission.source,
+                        if permission.grantable { "yes" } else { "no" }
+                    ),
+                )
+            }
+            crate::model::principal::PrincipalAccessSection::MemberOf => {
+                let membership = details.member_of.get(tab.member_of_selected)?;
+                (
+                    format!("Membership: {}", membership.role),
+                    format!(
+                        "Role: {}\nMember: {}\nAdmin option: {}",
+                        membership.role,
+                        membership.member,
+                        if membership.admin_option { "yes" } else { "no" }
+                    ),
+                )
+            }
+            crate::model::principal::PrincipalAccessSection::Members => {
+                let membership = details.members.get(tab.members_selected)?;
+                (
+                    format!("Member: {}", membership.member),
+                    format!(
+                        "Role: {}\nMember: {}\nAdmin option: {}",
+                        membership.role,
+                        membership.member,
+                        if membership.admin_option { "yes" } else { "no" }
+                    ),
+                )
+            }
+        };
+        Some(crate::model::text_detail::TextDetailRequest::new(
+            title,
+            Uuid::nil(),
+            0,
+            text.clone(),
+            text,
+            None,
+        ))
+    }
     pub(crate) fn principal_capability(
         &self,
         profile_id: Uuid,
@@ -4479,7 +4551,14 @@ impl App {
             }
             Action::SelectPrincipalPermission(index) => {
                 if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
-                    tab.selected_permission = index;
+                    if let Some(details) = tab.details.snapshot()
+                        && index < details.permissions.len()
+                    {
+                        tab.access_section =
+                            crate::model::principal::PrincipalAccessSection::Permissions;
+                        tab.selected_permission = index;
+                        self.focus = Focus::Results;
+                    }
                 }
                 Vec::new()
             }
@@ -4493,6 +4572,72 @@ impl App {
                 }
                 Vec::new()
             }
+            Action::SelectPrincipalAccess(section) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.access_section = section;
+                    self.focus = Focus::Results;
+                }
+                Vec::new()
+            }
+            Action::MovePrincipalAccess(delta) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let count = match tab.access_section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    };
+                    if count > 0 {
+                        let selected = (tab.access_selection() as isize + delta)
+                            .clamp(0, count.saturating_sub(1) as isize)
+                            as usize;
+                        tab.set_access_selection(selected);
+                        let visible_rows = 1usize;
+                        let offset = tab.access_offset();
+                        if selected < offset {
+                            tab.set_access_offset(selected);
+                        } else if selected >= offset + visible_rows {
+                            tab.set_access_offset(selected.saturating_sub(visible_rows - 1));
+                        }
+                        self.focus = Focus::Results;
+                    }
+                }
+                Vec::new()
+            }
+            Action::SelectPrincipalAccessItem(index) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let count = match tab.access_section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    };
+                    if index < count {
+                        tab.set_access_selection(index);
+                        self.focus = Focus::Results;
+                    }
+                }
+                Vec::new()
+            }
+            Action::OpenPrincipalAccessDetails => self
+                .principal_access_detail_request()
+                .map_or_else(Vec::new, |request| {
+                    self.update(Action::OpenTextDetail(request))
+                }),
             Action::PrincipalMutationFieldNext => {
                 if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
                     && let Some(form) = tab.mutation_draft.as_mut()
@@ -11676,10 +11821,8 @@ impl App {
                 {
                     return Vec::new();
                 }
-                if let Some(details) = tab.details.snapshot() {
-                    tab.selected_permission = tab
-                        .selected_permission
-                        .min(details.permissions.len().saturating_sub(1));
+                if let Some(details) = tab.details.snapshot().cloned() {
+                    tab.clamp_access_state(&details);
                 }
                 Vec::new()
             }

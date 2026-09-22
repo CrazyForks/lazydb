@@ -1080,6 +1080,13 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 HitTarget::PrincipalPermission(index) => {
                     Some(Action::SelectPrincipalPermission(index))
                 }
+                HitTarget::PrincipalAccessSection(section) => {
+                    Some(Action::SelectPrincipalAccess(section))
+                }
+                HitTarget::PrincipalAccessItem(index) => {
+                    Some(Action::SelectPrincipalAccessItem(index))
+                }
+                HitTarget::PrincipalAccessDetails => Some(Action::OpenPrincipalAccessDetails),
                 HitTarget::PrincipalMutationForm => None,
                 HitTarget::ExecutionCancel => Some(Action::CancelExecution),
                 HitTarget::ClearTransactionConfirm => Some(Action::ConfirmClearTransactionOutcome),
@@ -1204,6 +1211,16 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             if app.overlay.is_some() {
                 return None;
             }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(WorkspaceTab::PrincipalDdl(tab))
+                    if tab.view == crate::model::principal::PrincipalView::Overview
+            ) && ui
+                .target_at(event.column, event.row)
+                .is_some_and(|target| matches!(target, HitTarget::PrincipalAccessItem(_)))
+            {
+                return Some(Action::MovePrincipalAccess(3));
+            }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
                 Focus::Explorer => Some(Action::ExplorerScrollNodes {
                     direction: 1,
@@ -1315,6 +1332,16 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             }
             if app.overlay.is_some() {
                 return None;
+            }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(WorkspaceTab::PrincipalDdl(tab))
+                    if tab.view == crate::model::principal::PrincipalView::Overview
+            ) && ui
+                .target_at(event.column, event.row)
+                .is_some_and(|target| matches!(target, HitTarget::PrincipalAccessItem(_)))
+            {
+                return Some(Action::MovePrincipalAccess(-3));
             }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
                 Focus::Explorer => Some(Action::ExplorerScrollNodes {
@@ -1574,6 +1601,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::ExecutionConfirm | HitTarget::ExecutionCancel => None,
         HitTarget::PrincipalMutationCancel | HitTarget::PrincipalMutationApply => None,
         HitTarget::PrincipalPermission(_) => Some(Focus::Results),
+        HitTarget::PrincipalAccessSection(_)
+        | HitTarget::PrincipalAccessItem(_)
+        | HitTarget::PrincipalAccessDetails => Some(Focus::Results),
         HitTarget::PrincipalMutationForm => None,
         HitTarget::ClearTransactionConfirm | HitTarget::ClearTransactionCancel => None,
         HitTarget::TextDetailCopyAll
