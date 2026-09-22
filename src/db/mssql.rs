@@ -2549,6 +2549,7 @@ impl MsSqlAdapter {
                     .unwrap_or_else(|| class.clone());
                 Some(crate::db::principal::PrincipalPermission {
                     target,
+                    mutation_target: None,
                     privilege: format!("{state} {privilege}"),
                     source: "direct".into(),
                     grantable: state == "GRANT_WITH_GRANT_OPTION",

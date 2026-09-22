@@ -356,7 +356,10 @@ impl PostgresAdapter {
                 grant_option,
             } => {
                 let privilege = validate_privilege(&privilege)?;
-                let target = mutation_target_sql(target, database)?;
+                let (target, column) = mutation_target_sql(target, database)?;
+                let privilege = column.map_or(privilege.clone(), |column| {
+                    format!("{privilege} ({})", quote_identifier(&column))
+                });
                 format!(
                     "GRANT {privilege} ON {target} TO {grantee}{};",
                     if grant_option {
@@ -372,7 +375,10 @@ impl PostgresAdapter {
                 grant_option,
             } => {
                 let privilege = validate_privilege(&privilege)?;
-                let target = mutation_target_sql(target, database)?;
+                let (target, column) = mutation_target_sql(target, database)?;
+                let privilege = column.map_or(privilege.clone(), |column| {
+                    format!("{privilege} ({})", quote_identifier(&column))
+                });
                 if grant_option {
                     format!("REVOKE GRANT OPTION FOR {privilege} ON {target} FROM {grantee};")
                 } else {
@@ -442,6 +448,10 @@ impl PostgresAdapter {
                     row.try_get::<String, _>("table_schema")?,
                     row.try_get::<String, _>("table_name")?
                 ),
+                mutation_target: Some(PrincipalMutationTarget::Relation {
+                    schema: row.try_get("table_schema")?,
+                    relation: row.try_get("table_name")?,
+                }),
                 privilege: row.try_get("privilege_type")?,
                 source: "direct".to_owned(),
                 grantable: row
@@ -452,30 +462,8 @@ impl PostgresAdapter {
         })
         .collect::<Result<Vec<_>, sqlx::Error>>()
         .map_err(decode_error)?;
-        let schema_permissions = sqlx::query(
-            "SELECT schema_name, privilege_type, is_grantable
-             FROM information_schema.role_schema_grants
-             WHERE grantee = $1 ORDER BY schema_name, privilege_type",
-        )
-        .bind(&name)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sql_error)?
-        .into_iter()
-        .map(|row| {
-            Ok(PrincipalPermission {
-                target: format!("schema:{}", row.try_get::<String, _>("schema_name")?),
-                privilege: row.try_get("privilege_type")?,
-                source: "direct".to_owned(),
-                grantable: row
-                    .try_get::<String, _>("is_grantable")?
-                    .eq_ignore_ascii_case("YES"),
-                source_kind: PrincipalPermissionSource::Direct,
-            })
-        })
-        .collect::<Result<Vec<_>, sqlx::Error>>()
-        .map_err(decode_error)?;
-        permissions.extend(schema_permissions);
+        // PostgreSQL has no information_schema.role_schema_grants view. Schema
+        // privileges are read from the native ACL below.
         let column_permissions = sqlx::query(
             "SELECT table_schema, table_name, column_name, privilege_type, is_grantable
              FROM information_schema.role_column_grants
@@ -494,6 +482,11 @@ impl PostgresAdapter {
                     row.try_get::<String, _>("table_name")?,
                     row.try_get::<String, _>("column_name")?
                 ),
+                mutation_target: Some(PrincipalMutationTarget::Column {
+                    schema: row.try_get("table_schema")?,
+                    relation: row.try_get("table_name")?,
+                    column: row.try_get("column_name")?,
+                }),
                 privilege: row.try_get("privilege_type")?,
                 source: "direct".to_owned(),
                 grantable: row
@@ -522,6 +515,7 @@ impl PostgresAdapter {
                     row.try_get::<String, _>("routine_schema")?,
                     row.try_get::<String, _>("routine_name")?
                 ),
+                mutation_target: None,
                 privilege: row.try_get("privilege_type")?,
                 source: "direct".to_owned(),
                 grantable: row
@@ -551,6 +545,7 @@ impl PostgresAdapter {
                     row.try_get::<String, _>("object_name")?,
                     row.try_get::<String, _>("object_type")?
                 ),
+                mutation_target: None,
                 privilege: row.try_get("privilege_type")?,
                 source: "direct".to_owned(),
                 grantable: row
@@ -589,6 +584,10 @@ impl PostgresAdapter {
                             row.try_get::<String, _>("relation_name")
                                 .map_err(decode_error)?
                         ),
+                        mutation_target: Some(PrincipalMutationTarget::Relation {
+                            schema: row.try_get("schema_name").map_err(decode_error)?,
+                            relation: row.try_get("relation_name").map_err(decode_error)?,
+                        }),
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: if public { "PUBLIC" } else { "native ACL" }.to_owned(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -627,6 +626,9 @@ impl PostgresAdapter {
                             row.try_get::<String, _>("schema_name")
                                 .map_err(decode_error)?
                         ),
+                        mutation_target: Some(PrincipalMutationTarget::Schema {
+                            schema: row.try_get("schema_name").map_err(decode_error)?,
+                        }),
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: if public { "PUBLIC" } else { "native ACL" }.into(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -661,6 +663,7 @@ impl PostgresAdapter {
                             row.try_get::<String, _>("database_name")
                                 .map_err(decode_error)?
                         ),
+                        mutation_target: Some(PrincipalMutationTarget::Database),
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: if public { "PUBLIC" } else { "native ACL" }.into(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -697,6 +700,7 @@ impl PostgresAdapter {
                                 .map_err(decode_error)?
                                 .unwrap_or_else(|| "database".into())
                         ),
+                        mutation_target: None,
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: "default ACL".into(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -734,6 +738,7 @@ impl PostgresAdapter {
                             row.try_get::<String, _>("sequence_name")
                                 .map_err(decode_error)?
                         ),
+                        mutation_target: None,
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: if public { "PUBLIC" } else { "native ACL" }.into(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -774,6 +779,7 @@ impl PostgresAdapter {
                             row.try_get::<String, _>("arguments")
                                 .map_err(decode_error)?
                         ),
+                        mutation_target: None,
                         privilege: row.try_get("privilege_type").map_err(decode_error)?,
                         source: if public { "PUBLIC" } else { "native ACL" }.into(),
                         grantable: row.try_get("is_grantable").map_err(decode_error)?,
@@ -821,6 +827,7 @@ impl PostgresAdapter {
                                 )
                             },
                         ),
+                        mutation_target: None,
                         privilege: format!("OWNER ({kind})"),
                         source: "owner".into(),
                         grantable: true,
@@ -6124,33 +6131,41 @@ fn validate_privilege(privilege: &str) -> Result<String, DatabaseError> {
 fn mutation_target_sql(
     target: PrincipalMutationTarget,
     database: Option<&str>,
-) -> Result<String, DatabaseError> {
+) -> Result<(String, Option<String>), DatabaseError> {
     match target {
-        PrincipalMutationTarget::Database => Ok(format!(
-            "DATABASE {}",
-            quote_identifier(database.ok_or_else(|| {
-                DatabaseError::configuration(
-                    "database privilege mutation requires a database target",
-                )
-            })?)
+        PrincipalMutationTarget::Database => Ok((
+            format!(
+                "DATABASE {}",
+                quote_identifier(database.ok_or_else(|| {
+                    DatabaseError::configuration(
+                        "database privilege mutation requires a database target",
+                    )
+                })?)
+            ),
+            None,
         )),
         PrincipalMutationTarget::Schema { schema } => {
-            Ok(format!("SCHEMA {}", quote_identifier(&schema)))
+            Ok((format!("SCHEMA {}", quote_identifier(&schema)), None))
         }
-        PrincipalMutationTarget::Relation { schema, relation } => Ok(format!(
-            "TABLE {}.{}",
-            quote_identifier(&schema),
-            quote_identifier(&relation)
+        PrincipalMutationTarget::Relation { schema, relation } => Ok((
+            format!(
+                "TABLE {}.{}",
+                quote_identifier(&schema),
+                quote_identifier(&relation)
+            ),
+            None,
         )),
         PrincipalMutationTarget::Column {
             schema,
             relation,
             column,
-        } => Ok(format!(
-            "TABLE {}.{} ({})",
-            quote_identifier(&schema),
-            quote_identifier(&relation),
-            quote_identifier(&column)
+        } => Ok((
+            format!(
+                "TABLE {}.{}",
+                quote_identifier(&schema),
+                quote_identifier(&relation)
+            ),
+            Some(column),
         )),
     }
 }
@@ -8238,6 +8253,29 @@ mod tests {
                 .contains("GRANT SELECT ON TABLE \"public\".\"orders\"")
         );
         assert!(plan.sql.contains("\"alice\"\"ops\""));
+        let column_plan = adapter
+            .plan_principal_mutation(
+                &principal,
+                crate::identity::ConnectionIdentity {
+                    profile_id: Uuid::from_u128(1),
+                    generation: 1,
+                },
+                Some("app"),
+                crate::db::principal::PrincipalMutation::Grant {
+                    target: crate::db::principal::PrincipalMutationTarget::Column {
+                        schema: "public".into(),
+                        relation: "orders".into(),
+                        column: "customer.name".into(),
+                    },
+                    privilege: "SELECT".into(),
+                    grant_option: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            column_plan.sql,
+            "GRANT SELECT (\"customer.name\") ON TABLE \"public\".\"orders\" TO \"alice\"\"ops\";"
+        );
         assert!(
             adapter
                 .plan_principal_mutation(

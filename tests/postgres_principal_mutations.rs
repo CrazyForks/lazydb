@@ -24,6 +24,9 @@ use lazydb::{
 #[tokio::test]
 async fn postgres_principal_mutation_environment_is_explicit() {
     let Some(url) = std::env::var_os("LAZYDB_TEST_POSTGRES_URL") else {
+        if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+            panic!("LAZYDB_TEST_POSTGRES_URL is required for PostgreSQL principal tests");
+        }
         return;
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-mutations"))
@@ -33,6 +36,9 @@ async fn postgres_principal_mutation_environment_is_explicit() {
     let connection = match DatabaseConnection::connect(&profile, None).await {
         Ok(connection) => connection,
         Err(error) => {
+            if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+                panic!("PostgreSQL principal test connection failed: {error}");
+            }
             eprintln!("PostgreSQL principal test skipped: {error}");
             return;
         }
@@ -169,6 +175,9 @@ async fn postgres_principal_mutation_environment_is_explicit() {
 #[tokio::test]
 async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
     let Some(url) = std::env::var_os("LAZYDB_TEST_POSTGRES_URL") else {
+        if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+            panic!("LAZYDB_TEST_POSTGRES_URL is required for PostgreSQL principal tests");
+        }
         return;
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-round-trip"))
@@ -177,6 +186,9 @@ async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
     let connection = match DatabaseConnection::connect(&profile, None).await {
         Ok(connection) => connection,
         Err(error) => {
+            if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+                panic!("PostgreSQL grant round-trip connection failed: {error}");
+            }
             eprintln!("PostgreSQL grant round-trip skipped: {error}");
             return;
         }

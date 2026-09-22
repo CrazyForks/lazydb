@@ -162,6 +162,8 @@ jobs:
       - run: rustup default 1.94.0
       - name: PostgreSQL adapter tests
         run: timeout 10m cargo test --locked --test postgres_adapter -- --nocapture --test-threads=1
+      - name: PostgreSQL principal permission tests
+        run: timeout 10m env LAZYDB_REQUIRE_DATABASE_TESTS=1 cargo test --locked --test postgres_principal_mutations -- --nocapture --test-threads=1
       - name: MySQL adapter tests
         run: timeout 10m env LAZYDB_REQUIRE_DATABASE_TESTS=1 cargo test --locked --test mysql_adapter -- --nocapture --test-threads=1
       - name: MariaDB adapter tests

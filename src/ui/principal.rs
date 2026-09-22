@@ -181,20 +181,31 @@ fn render_overview(
         chunks[1],
     );
     let details = tab.details.snapshot();
+    let details_status = tab.details.status();
     let status = if tab.entry.system {
         "System-managed principal; modification is restricted."
+    } else if let Some((message, true)) = details_status.as_ref() {
+        message.as_str()
     } else if details.is_none() {
-        "Permissions are loading from the active database.  Press o for DDL."
+        "Permissions are loading from the active database.  Press r to retry."
     } else {
         "Current statements from the active database.  Press o for DDL."
     };
-    let mut access_lines = vec![Line::raw("Permissions     Member of     Members")];
+    let mut access_lines = vec![Line::raw("Permissions / membership details")];
     if let Some(details) = details {
-        for (index, permission) in details.permissions.iter().take(5).enumerate() {
+        let visible_rows = chunks[2].height.saturating_sub(5).max(1) as usize;
+        let permission_start = tab
+            .selected_permission
+            .saturating_sub(visible_rows.saturating_sub(1));
+        let permission_end = (permission_start + visible_rows).min(details.permissions.len());
+        for index in permission_start..permission_end {
+            let permission = &details.permissions[index];
             state.hit_regions.push(HitRegion {
                 area: Rect::new(
                     chunks[2].x,
-                    chunks[2].y.saturating_add(1 + index as u16),
+                    chunks[2]
+                        .y
+                        .saturating_add(1 + (index - permission_start) as u16),
                     chunks[2].width,
                     1,
                 ),
@@ -218,7 +229,7 @@ fn render_overview(
                 }
             )));
         }
-        for membership in details.member_of.iter().take(2) {
+        for membership in &details.member_of {
             access_lines.push(Line::raw(format!(
                 "MEMBER OF  {}{}",
                 membership.role,
@@ -229,9 +240,32 @@ fn render_overview(
                 }
             )));
         }
+        for membership in &details.members {
+            access_lines.push(Line::raw(format!(
+                "MEMBER  {}{}",
+                membership.member,
+                if membership.admin_option {
+                    "  ADMIN"
+                } else {
+                    ""
+                }
+            )));
+        }
     } else {
         access_lines.push(Line::styled(
-            "No permission snapshot available.",
+            details_status
+                .as_ref()
+                .map(|(message, _)| message.as_str())
+                .unwrap_or("No permission snapshot available."),
+            Style::new().fg(theme.muted),
+        ));
+    }
+    if let Some(details) = details {
+        access_lines.push(Line::styled(
+            format!(
+                "Permissions coverage: {:?}; membership coverage: {:?}",
+                details.permissions_coverage, details.membership_coverage
+            ),
             Style::new().fg(theme.muted),
         ));
     }

@@ -978,6 +978,7 @@ impl OracleAdapter {
                     let row = row.map_err(oracle_error)?;
                     permissions.push(crate::db::principal::PrincipalPermission {
                         target: format!("{}.{}", row.get::<usize, String>(0).map_err(oracle_error)?, row.get::<usize, String>(1).map_err(oracle_error)?),
+                        mutation_target: None,
                         privilege: row.get::<usize, String>(2).map_err(oracle_error)?,
                         source: "direct".into(),
                         grantable: row.get::<usize, String>(3).map_err(oracle_error)?.eq_ignore_ascii_case("YES"),
