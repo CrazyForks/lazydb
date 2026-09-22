@@ -763,6 +763,17 @@ Display-only catalog rows are informational and cannot execute an action.
 | --- | --- |
 | `Esc`, `q` | Close message |
 
+## Workspace Save Failure
+
+| Keys | Behavior |
+| --- | --- |
+| `Tab`, `Shift-Tab`, Left/Right, Up/Down | Move between actions |
+| `Enter` | Activate the focused action |
+| `Esc` | Stay in LazyDB and cancel quitting |
+| `d` | Quit without saving |
+| `r` | Retry saving when the failure is retryable |
+| PageUp/PageDown | Scroll technical error details |
+
 ## Confirmations and Selectors
 
 ### Substitute Confirmation

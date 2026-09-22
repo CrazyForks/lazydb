@@ -2234,6 +2234,16 @@ impl App {
                 !matches!(tab, PersistedTab::Console { console_id } if removed.contains(console_id))
             });
         }
+        for profile in &mut snapshot.profiles {
+            if profile.active_tab.is_some_and(|active_tab| {
+                !profile
+                    .tabs
+                    .iter()
+                    .any(|tab| crate::persistence::workspace::tab_id(tab) == active_tab)
+            }) {
+                profile.active_tab = None;
+            }
+        }
         let valid_ids = seen;
         let mut sql_ids = HashSet::new();
         snapshot
@@ -5262,6 +5272,8 @@ impl App {
                         revision,
                         message,
                         retryable,
+                        focus: crate::model::workspace_save::WorkspaceSaveFocus::Stay,
+                        detail_scroll: 0,
                     });
                 }
                 vec![Command::CompleteWorkspaceSave {
@@ -5286,6 +5298,66 @@ impl App {
                 ) {
                     self.overlay = None;
                     return self.update(Action::WorkspaceSaveRetry);
+                }
+                Vec::new()
+            }
+            Action::WorkspaceSaveFocusNext => {
+                if let Some(Overlay::WorkspaceSaveFailed {
+                    retryable, focus, ..
+                }) = self.overlay.as_mut()
+                {
+                    let count = if *retryable { 3 } else { 2 };
+                    let index = (focus.index(*retryable) + 1) % count;
+                    *focus = crate::model::workspace_save::WorkspaceSaveFocus::from_index(
+                        index, *retryable,
+                    );
+                }
+                Vec::new()
+            }
+            Action::WorkspaceSaveFocusPrevious => {
+                if let Some(Overlay::WorkspaceSaveFailed {
+                    retryable, focus, ..
+                }) = self.overlay.as_mut()
+                {
+                    let count = if *retryable { 3 } else { 2 };
+                    let index = (focus.index(*retryable) + count - 1) % count;
+                    *focus = crate::model::workspace_save::WorkspaceSaveFocus::from_index(
+                        index, *retryable,
+                    );
+                }
+                Vec::new()
+            }
+            Action::WorkspaceSaveActivate => {
+                let choice = match self.overlay.as_ref() {
+                    Some(Overlay::WorkspaceSaveFailed {
+                        retryable, focus, ..
+                    }) => Some((focus.index(*retryable), *retryable)),
+                    _ => None,
+                };
+                match choice {
+                    Some((0, _)) => self.update(Action::DismissOverlay),
+                    Some((1, true)) => self.update(Action::RetryWorkspaceQuitSave),
+                    Some((1, false)) => self.update(Action::DiscardWorkspaceQuitSave),
+                    Some((2, true)) => self.update(Action::DiscardWorkspaceQuitSave),
+                    _ => Vec::new(),
+                }
+            }
+            Action::WorkspaceSaveActivateAt(index) => {
+                if let Some(Overlay::WorkspaceSaveFailed {
+                    retryable, focus, ..
+                }) = self.overlay.as_mut()
+                {
+                    *focus = crate::model::workspace_save::WorkspaceSaveFocus::from_index(
+                        index, *retryable,
+                    );
+                }
+                self.update(Action::WorkspaceSaveActivate)
+            }
+            Action::WorkspaceSaveScroll(delta) => {
+                if let Some(Overlay::WorkspaceSaveFailed { detail_scroll, .. }) =
+                    self.overlay.as_mut()
+                {
+                    *detail_scroll = detail_scroll.saturating_add_signed(delta);
                 }
                 Vec::new()
             }
@@ -26607,6 +26679,18 @@ mod tests {
                 .count(),
             1
         );
+        assert!(snapshot.profiles.iter().all(|profile| {
+            profile.active_tab.is_none_or(|active| {
+                profile
+                    .tabs
+                    .iter()
+                    .any(|tab| crate::persistence::workspace::tab_id(tab) == active)
+            })
+        }));
+        let temp = TempDir::new().unwrap();
+        let store =
+            WorkspaceStore::new(temp.path().join("workspace.toml"), temp.path().join("sql"));
+        assert!(store.save(&snapshot).is_ok());
     }
 
     #[test]

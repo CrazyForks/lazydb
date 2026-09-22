@@ -131,6 +131,7 @@ pub enum HitTarget {
     RedisPreviewLoadMore(Uuid),
     RedisValueSaveAction(usize),
     RedisUnsavedValueAction(usize),
+    WorkspaceSaveAction(usize),
     ExplorerToggle(crate::model::explorer::ExplorerNodeId),
     ExplorerFind,
     ExplorerSearch,
@@ -4784,7 +4785,19 @@ fn render_overlay(
             revision,
             message,
             retryable,
-        } => render_workspace_save_failed(frame, area, *revision, message, *retryable, theme),
+            focus,
+            detail_scroll,
+        } => render_workspace_save_failed(
+            frame,
+            area,
+            *revision,
+            message,
+            *retryable,
+            *focus,
+            *detail_scroll,
+            theme,
+            state,
+        ),
         Overlay::SubstituteConfirm { remaining } => {
             render_substitute_confirm(frame, area, *remaining, theme)
         }
@@ -7376,38 +7389,116 @@ fn render_message(frame: &mut Frame<'_>, area: Rect, title: &str, body: &str, th
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_workspace_save_failed(
     frame: &mut Frame<'_>,
     area: Rect,
     revision: u64,
     message: &str,
     retryable: bool,
+    focus: crate::model::workspace_save::WorkspaceSaveFocus,
+    detail_scroll: usize,
     theme: Theme,
+    state: &mut UiState,
 ) {
-    let popup = centered(area, 76, 12);
+    let width = area.width.saturating_sub(4).min(76);
+    let height = area.height.saturating_sub(2).min(16);
+    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let block = panel_block(" WORKSPACE SAVE FAILED ", true, theme);
+    let block = Block::default()
+        .title(" WORKSPACE NOT SAVED ")
+        .title_style(theme.title(true).fg(theme.error))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .style(Style::new().fg(theme.text).bg(theme.surface_raised));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let action_hint = if retryable {
-        "r Retry save    d Discard and quit    Esc Cancel quit"
+    let buttons = if retryable {
+        vec![
+            DialogButton {
+                label: "Stay in LazyDB",
+                tone: DialogTone::Normal,
+                emphasis: crate::ui::dialog::DialogEmphasis::Primary,
+                enabled: true,
+            },
+            DialogButton {
+                label: "Retry save",
+                tone: DialogTone::Normal,
+                emphasis: crate::ui::dialog::DialogEmphasis::Secondary,
+                enabled: true,
+            },
+            DialogButton {
+                label: "Quit without saving",
+                tone: DialogTone::Danger,
+                emphasis: crate::ui::dialog::DialogEmphasis::Secondary,
+                enabled: true,
+            },
+        ]
     } else {
-        "d Discard and quit    Esc Cancel quit"
+        vec![
+            DialogButton {
+                label: "Stay in LazyDB",
+                tone: DialogTone::Normal,
+                emphasis: crate::ui::dialog::DialogEmphasis::Primary,
+                enabled: true,
+            },
+            DialogButton {
+                label: "Quit without saving",
+                tone: DialogTone::Danger,
+                emphasis: crate::ui::dialog::DialogEmphasis::Secondary,
+                enabled: true,
+            },
+        ]
     };
-    let lines = vec![
-        Line::from(Span::styled(
-            format!("Revision {revision} could not be saved."),
-            theme.title(true),
-        )),
-        Line::from(Span::styled(message, Style::new().fg(theme.text))),
-        Line::from(""),
-        Line::from(Span::styled(action_hint, Style::new().fg(theme.action))),
-    ];
+    let action_index = focus.index(retryable);
+    let action_height =
+        if buttons.len() * 18 + buttons.len().saturating_sub(1) * 2 > usize::from(inner.width) {
+            buttons.len() as u16
+        } else {
+            1
+        };
+    let sections = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(1),
+        Constraint::Length(action_height),
+        Constraint::Length(1),
+    ])
+    .split(inner);
     frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::new().fg(theme.text).bg(theme.surface_raised))
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "Your latest workspace changes could not be saved.",
+                Style::new().fg(theme.text).add_modifier(Modifier::BOLD),
+            )),
+            Line::raw("Quitting may lose the latest tab layout and SQL editor changes."),
+        ])
+        .wrap(Wrap { trim: true }),
+        sections[0],
+    );
+    let detail = format!("Details · Revision {revision}\n{message}");
+    frame.render_widget(
+        Paragraph::new(detail)
+            .style(Style::new().fg(theme.muted).bg(theme.surface))
+            .scroll((detail_scroll as u16, 0))
             .wrap(Wrap { trim: true }),
-        inner,
+        sections[1],
+    );
+    let actions = dialog::render_actions(frame, sections[2], &buttons, action_index, theme);
+    for action in actions {
+        state.hit_regions.push(HitRegion {
+            area: action.area,
+            target: HitTarget::WorkspaceSaveAction(action.index),
+        });
+    }
+    let hint = if retryable {
+        "Tab switch   Enter activate   r retry   d quit   Esc stay"
+    } else {
+        "Tab switch   Enter activate   d quit   Esc stay"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(theme.muted)),
+        sections[3],
     );
 }
 

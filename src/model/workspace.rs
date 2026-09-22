@@ -178,6 +178,8 @@ pub enum Overlay {
         revision: u64,
         message: String,
         retryable: bool,
+        focus: crate::model::workspace_save::WorkspaceSaveFocus,
+        detail_scroll: usize,
     },
     SubstituteConfirm {
         remaining: usize,

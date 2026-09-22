@@ -518,7 +518,7 @@ fn validate_sql_file_path(console: &PersistedConsole) -> Result<(), WorkspaceErr
     Ok(())
 }
 
-fn tab_id(tab: &PersistedTab) -> Uuid {
+pub(crate) fn tab_id(tab: &PersistedTab) -> Uuid {
     match tab {
         PersistedTab::Console { console_id } => *console_id,
         PersistedTab::Relation(relation) => relation.id,
