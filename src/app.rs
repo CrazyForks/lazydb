@@ -18600,7 +18600,7 @@ impl App {
         let tab = self.active_console_opt()?;
         let (text, cursor) = self.active_editor_text_and_cursor();
         let before_cursor = &text[..cursor.min(text.len())];
-        if (before_cursor.trim().is_empty() && before_cursor.chars().count() < 2)
+        if before_cursor.chars().count() < 2
             || !sql::should_offer_completion_for_dialect(&text, cursor, self.editor_sql_dialect())
         {
             return None;
