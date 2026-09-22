@@ -75,6 +75,42 @@ statement or complete buffer), `Space d` (execution target selector), and
 `F6` is also a global console-manager shortcut and works while no connection or
 Console tab is active.
 
+## Kitty synchronized maximize
+
+`smart-toggle-pane-maximized` is an opt-in single-chord shortcut. Unlike
+`toggle-pane-maximized` (`Ctrl-w f`), it synchronizes Kitty and LazyDB to an
+explicit target state: multiple Kitty panes enter stack layout and maximize the
+focused LazyDB pane, or leave stack for the previous layout and restore LazyDB.
+The owning tab is selected by `KITTY_WINDOW_ID`, including when LazyDB runs in
+a Kitty overlay. Overlays sharing one layout group count as one pane.
+
+With only one Kitty pane, or outside Kitty, the command toggles LazyDB locally.
+While a LazyDB overlay or Omni is open, the shortcut is consumed without
+changing either layout. Key repeats are ignored. A remote-control failure
+shows a notification and preserves LazyDB's maximize state.
+
+Add to the existing `[keybindings.panes]` table in `settings.toml`:
+
+```toml
+[keybindings.panes]
+smart-toggle-pane-maximized = ["Ctrl+Alt+F12"]
+```
+
+Configure Kitty (merge with any existing remote-control/layout settings):
+
+```conf
+allow_remote_control yes
+listen_on unix:/tmp/kitty
+enabled_layouts splits,stack
+map --when-focus-on var:IS_LAZYDB cmd+shift+f send_key ctrl+alt+f12
+map --when-focus-on var:IS_LAZYDB cmd+ctrl+f send_key ctrl+alt+f12
+```
+
+Both physical shortcuts send the same dedicated chord to LazyDB. Conditional
+mappings preserve other applications' mappings. `kitten` must be available on
+PATH, and `KITTY_LISTEN_ON` and `KITTY_WINDOW_ID` must be inherited by LazyDB.
+Restart LazyDB after changing its settings and reload Kitty's configuration.
+
 ## Connection profile form
 
 The connection URL field is parsed automatically after URL content stops

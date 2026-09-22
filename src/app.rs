@@ -6385,6 +6385,7 @@ impl App {
             }
             Action::SmartFocusPane(_) => Vec::new(),
             Action::SmartResizePane(_) => Vec::new(),
+            Action::SmartTogglePaneMaximized => Vec::new(),
             Action::TogglePaneMaximized => {
                 self.pane_maximized = !self.pane_maximized;
                 Vec::new()

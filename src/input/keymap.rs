@@ -133,6 +133,16 @@ impl Keymap {
         if matches!(event.kind, KeyEventKind::Release) {
             return None;
         }
+        if self.bindings.matches(
+            "smart-toggle-pane-maximized",
+            KeyEvent::new(event.code, event.modifiers),
+        ) {
+            self.clear_pending();
+            return (event.kind == KeyEventKind::Press
+                && app.overlay.is_none()
+                && app.omni.is_none())
+            .then_some(Action::SmartTogglePaneMaximized);
+        }
         if app.omni.is_some() {
             self.pending = None;
             if event.kind == KeyEventKind::Repeat && self.bindings.matches("omni", event) {
@@ -4946,6 +4956,58 @@ mod tests {
                 crate::model::pane_navigation::PaneDirection::Right
             ))
         );
+    }
+
+    #[test]
+    fn smart_maximize_works_in_workspace_modes_and_cancels_pending_keys() {
+        use crate::model::editor::EditorMode;
+
+        let mut app = App::new(Vec::new());
+        let mut config = crate::config::AppConfig::default();
+        config.keybindings.panes.insert(
+            "smart-toggle-pane-maximized".into(),
+            vec!["Ctrl+Alt+F12".into()],
+        );
+        let mut keymap = Keymap::with_sequence_timeout_and_bindings(
+            Duration::from_millis(750),
+            config.keybindings.key_bindings().unwrap(),
+        );
+        let shortcut = KeyEvent::new(KeyCode::F(12), KeyModifiers::CONTROL | KeyModifiers::ALT);
+        for focus in [Focus::Explorer, Focus::Results, Focus::Editor] {
+            app.focus = focus;
+            assert_eq!(
+                keymap.map(shortcut, &app),
+                Some(Action::SmartTogglePaneMaximized)
+            );
+        }
+        app.update(Action::EditorKey(key(KeyCode::Esc)));
+        for (enter_mode, mode) in [('i', EditorMode::Insert), ('v', EditorMode::VisualChar)] {
+            app.update(Action::EditorKey(key(KeyCode::Char(enter_mode))));
+            assert_eq!(app.active_editor_mode(), mode);
+            assert_eq!(
+                keymap.map(shortcut, &app),
+                Some(Action::SmartTogglePaneMaximized)
+            );
+            app.update(Action::EditorKey(key(KeyCode::Esc)));
+        }
+        app.focus = Focus::Results;
+        keymap.map(key(KeyCode::Char('g')), &app);
+        assert!(keymap.pending.is_some());
+        assert_eq!(
+            keymap.map(shortcut, &app),
+            Some(Action::SmartTogglePaneMaximized)
+        );
+        assert!(keymap.pending.is_none());
+        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+            assert_eq!(keymap.map(KeyEvent { kind, ..shortcut }, &app), None);
+        }
+        app.update(Action::ShowHelp);
+        assert!(app.overlay.is_some());
+        assert_eq!(keymap.map(shortcut, &app), None);
+        app.overlay = None;
+        app.update(Action::OpenOmni);
+        assert!(app.omni.is_some());
+        assert_eq!(keymap.map(shortcut, &app), None);
     }
 
     #[test]
