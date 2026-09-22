@@ -3262,10 +3262,7 @@ fn explorer_catalog_mutation_maps_selected_profile_root_actions_by_stable_id() {
     app.update(Action::OpenCatalogEdit);
     assert!(matches!(app.overlay, Some(Overlay::ProfileManager)));
     app.update(Action::CloseProfileManager);
-    assert_eq!(
-        keymap.map(key(KeyCode::Char('n')), &app),
-        Some(Action::ProfileStartNew)
-    );
+    assert_eq!(keymap.map(key(KeyCode::Char('n')), &app), None);
     assert_eq!(
         keymap.map(key(KeyCode::Char('d')), &app),
         Some(Action::ProfileRequestDelete { profile_id })
@@ -3331,7 +3328,6 @@ fn explorer_catalog_mutation_synthetic_nodes_are_noops() {
     let mut keymap = Keymap::default();
 
     for selected in [
-        ExplorerNodeId::EmptyProfiles,
         ExplorerNodeId::Others,
         ExplorerNodeId::Status {
             owner: lazydb::model::explorer::ExplorerOwnerId::Profile(profile_id),
@@ -3345,6 +3341,40 @@ fn explorer_catalog_mutation_synthetic_nodes_are_noops() {
         assert_eq!(keymap.map(key(KeyCode::Char('a')), &app), None);
         assert_eq!(keymap.map(key(KeyCode::Char('e')), &app), None);
     }
+
+    app.explorer.normalized.selected = Some(ExplorerNodeId::EmptyProfiles);
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('a')), &app),
+        Some(Action::OpenExplorerAdd)
+    );
+    assert_eq!(keymap.map(key(KeyCode::Char('e')), &app), None);
+}
+
+#[test]
+fn empty_explorer_enter_and_add_open_connection_creation() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    let mut keymap = Keymap::default();
+
+    assert_eq!(
+        keymap.map(key(KeyCode::Enter), &app),
+        Some(Action::ExplorerOpenSelected)
+    );
+    app.update(Action::ExplorerOpenSelected);
+    assert!(matches!(app.overlay, Some(Overlay::ProfileManager)));
+
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    assert_eq!(
+        keymap.map(key(KeyCode::Char('a')), &app),
+        Some(Action::OpenExplorerAdd)
+    );
+    app.update(Action::OpenExplorerAdd);
+    assert!(
+        matches!(app.overlay, Some(Overlay::ExplorerAdd(ref menu)) if menu.selected_kind() == Some(lazydb::model::explorer_add::ExplorerAddKind::Connection))
+    );
+    app.update(Action::ExplorerAddConfirm);
+    assert!(matches!(app.overlay, Some(Overlay::ProfileManager)));
 }
 
 fn materialized_view_editor(

@@ -51,13 +51,13 @@ pub struct ExplorerAddOption {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExplorerAddMenu {
-    pub profile_id: Uuid,
+    pub profile_id: Option<Uuid>,
     pub selected: usize,
     pub options: Vec<ExplorerAddOption>,
 }
 
 impl ExplorerAddMenu {
-    pub fn new(profile_id: Uuid, options: Vec<ExplorerAddOption>) -> Self {
+    pub fn new(profile_id: Option<Uuid>, options: Vec<ExplorerAddOption>) -> Self {
         let selected = options
             .iter()
             .position(|option| option.availability.is_available())

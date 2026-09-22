@@ -561,6 +561,19 @@ fn explorer_add_overlay_uses_ascii_icons() {
 }
 
 #[test]
+fn empty_explorer_add_overlay_shows_unbound_target_and_disabled_catalog_actions() {
+    let mut app = App::new(Vec::new());
+    app.focus = Focus::Explorer;
+    app.explorer.normalized.selected = Some(ExplorerNodeId::EmptyProfiles);
+    app.update(Action::OpenExplorerAdd);
+
+    let output = render(&app, 80, 24);
+    assert!(output.contains("ADD TO CONNECTION"), "{output}");
+    assert!(output.contains("No connection selected"), "{output}");
+    assert!(output.contains("Create a connection first"), "{output}");
+}
+
+#[test]
 fn catalog_editor_busy_renders_real_cancel_control() {
     let profile = import_connection_url("postgresql://localhost/db", Some("busy"))
         .unwrap()

@@ -2541,7 +2541,7 @@ fn render_explorer(
         } else if app.connection.status == ConnectionStatus::Connected {
             "No visible objects"
         } else {
-            "No active connection\n\nPress n or Enter to create a profile"
+            "No active connection\n\nPress Enter for a new connection or a for the add menu"
         };
         frame.render_widget(
             Paragraph::new(message)
@@ -5841,12 +5841,11 @@ fn render_explorer_add(
     let block = panel_block(" ADD TO CONNECTION ", true, theme);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    let profile = app
-        .profiles
-        .iter()
-        .find(|profile| profile.id == menu.profile_id);
+    let profile = menu
+        .profile_id
+        .and_then(|profile_id| app.profiles.iter().find(|profile| profile.id == profile_id));
     let target = profile.map_or_else(
-        || "TARGET  connection".to_owned(),
+        || "TARGET  No connection selected".to_owned(),
         |profile| {
             format!(
                 "TARGET  {} · {:?}",

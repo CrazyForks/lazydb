@@ -154,8 +154,6 @@ copy-selection = ["y"]
 find = ["/"]
 # f opens catalog search.
 search = ["f"]
-# n creates a new connection profile.
-new-profile = ["n"]
 # r refreshes the Explorer catalog.
 refresh = ["r"]
 # o toggles expansion of the selected entry.

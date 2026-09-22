@@ -286,7 +286,8 @@ not expose every session. Filtering applies to the bounded visible snapshot.
 | `/` | Open visible-node find |
 | `f` | Open catalog search |
 | `n/N` | Next/previous confirmed find/search match |
-| `n` | New profile |
+| `Enter` on `No profiles` | New connection |
+| `a` on `No profiles` or a connection | Open the add-to-connection menu |
 | `e` | Edit selected profile |
 | `a` | Add a supported object when the selected PostgreSQL node has a create option |
 | `e` | Edit the directly selected PostgreSQL catalog object when supported |

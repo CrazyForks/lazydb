@@ -2798,7 +2798,6 @@ impl App {
             Id::ExplorerCollapse => vec![Action::ExplorerCollapse],
             Id::ExplorerToggle => vec![Action::ExplorerToggle],
             Id::ExplorerActivate => vec![Action::ExplorerOpenSelected],
-            Id::ExplorerNewProfile => vec![Action::ProfileStartNew],
             Id::ExplorerAddToConnection => vec![Action::OpenExplorerAdd],
             Id::ExplorerEditProfile => vec![Action::OpenCatalogEdit],
             Id::ExplorerDeleteProfile => self
@@ -20977,28 +20976,36 @@ impl App {
 
     fn explorer_add_options(
         &self,
-        profile_id: Uuid,
+        profile_id: Option<Uuid>,
         principals_only: bool,
     ) -> Vec<ExplorerAddOption> {
         let catalog_unavailability = self
             .profiles
             .iter()
-            .find(|profile| profile.id == profile_id)
-            .map_or(Some("Connection is unavailable"), |profile| {
-                if profile.read_only {
-                    Some("Read-only connection")
-                } else if self.connection.active_identity().is_none() {
-                    Some("Connect this connection first")
-                } else if self
-                    .connection
-                    .active_identity()
-                    .is_some_and(|identity| identity.profile_id != profile_id)
-                {
-                    Some("Activate this connection first")
-                } else {
-                    None
-                }
-            });
+            .find(|profile| Some(profile.id) == profile_id)
+            .map_or_else(
+                || {
+                    Some(
+                        profile_id
+                            .map_or("Create a connection first", |_| "Connection is unavailable"),
+                    )
+                },
+                |profile| {
+                    if profile.read_only {
+                        Some("Read-only connection")
+                    } else if self.connection.active_identity().is_none() {
+                        Some("Connect this connection first")
+                    } else if self
+                        .connection
+                        .active_identity()
+                        .is_some_and(|identity| Some(identity.profile_id) != profile_id)
+                    {
+                        Some("Activate this connection first")
+                    } else {
+                        None
+                    }
+                },
+            );
         let profile_create_availability = |kind: ExplorerAddKind| {
             if catalog_unavailability.is_some() {
                 return catalog_unavailability;
@@ -21008,7 +21015,7 @@ impl App {
                 ExplorerAddKind::User | ExplorerAddKind::Role => match self
                     .profiles
                     .iter()
-                    .find(|profile| profile.id == profile_id)
+                    .find(|profile| Some(profile.id) == profile_id)
                     .map(|profile| profile.kind)
                 {
                     Some(DatabaseKind::Postgres) => None,
@@ -21064,15 +21071,18 @@ impl App {
             return Vec::new();
         };
         let (profile_id, principals_only) = match selected {
-            ExplorerNodeId::Profile(profile_id) => (profile_id, false),
+            ExplorerNodeId::Profile(profile_id) => (Some(profile_id), false),
             ExplorerNodeId::PrincipalGroup { profile_id }
             | ExplorerNodeId::Principal {
                 entry: crate::db::principal::PrincipalId { profile_id, .. },
             }
-            | ExplorerNodeId::PrincipalNotice { profile_id } => (profile_id, true),
+            | ExplorerNodeId::PrincipalNotice { profile_id } => (Some(profile_id), true),
+            ExplorerNodeId::EmptyProfiles => (None, false),
             _ => return Vec::new(),
         };
-        if !self.profiles.iter().any(|profile| profile.id == profile_id) {
+        if profile_id
+            .is_some_and(|profile_id| !self.profiles.iter().any(|profile| profile.id == profile_id))
+        {
             return Vec::new();
         }
         self.overlay = Some(Overlay::ExplorerAdd(ExplorerAddMenu::new(
@@ -21104,7 +21114,9 @@ impl App {
                         unreachable!()
                     }
                 };
-                self.open_profile_catalog_create(menu.profile_id, object_type)
+                menu.profile_id.map_or_else(Vec::new, |profile_id| {
+                    self.open_profile_catalog_create(profile_id, object_type)
+                })
             }
         }
     }
