@@ -5106,6 +5106,7 @@ fn render_overlay(
             candidates,
             selected,
             console_id,
+            ..
         } => {
             const MAX_VISIBLE_ROWS: usize = 16;
             let height = (candidates.len().min(MAX_VISIBLE_ROWS) as u16)

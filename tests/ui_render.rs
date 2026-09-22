@@ -7173,6 +7173,7 @@ fn target_selector_renders_visible_rows_and_mouse_regions() {
         candidates,
         selected: 23,
         console_id: None,
+        execution: None,
     });
 
     let (output, state) = render_with_state(&app, 80, 24);

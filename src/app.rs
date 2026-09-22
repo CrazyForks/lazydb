@@ -10806,6 +10806,7 @@ impl App {
                     candidates,
                     selected,
                     console_id: Some(console_id),
+                    execution: None,
                 });
                 Vec::new()
             }
@@ -11032,6 +11033,7 @@ impl App {
                     candidates,
                     selected,
                     console_id,
+                    execution,
                 }) = self.overlay.take()
                 else {
                     return Vec::new();
@@ -11039,6 +11041,76 @@ impl App {
                 let Some(candidate) = candidates.get(selected).cloned() else {
                     return Vec::new();
                 };
+                if let Some(mut pending) = execution {
+                    let Some(target) = candidate.target().cloned() else {
+                        return Vec::new();
+                    };
+                    if console_id != Some(pending.console_id) || !self.is_sql_editor_target(&target)
+                    {
+                        return Vec::new();
+                    }
+                    let console_id = pending.console_id;
+                    let Some(tab) = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id() == console_id)
+                        .and_then(WorkspaceTab::as_console)
+                    else {
+                        return Vec::new();
+                    };
+                    if tab.execution_target.is_some()
+                        || tab.transaction_generation != pending.transaction_generation
+                        || tab.transaction_mode != pending.transaction_mode
+                        || tab.transaction_state != pending.transaction_state
+                        || self.editor.revision(console_id).ok() != Some(pending.document_revision)
+                    {
+                        return Vec::new();
+                    }
+                    let Some(profile) = self
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == target.profile_id)
+                    else {
+                        return Vec::new();
+                    };
+                    pending.target = Some(target.clone());
+                    pending.dialect = SqlDialect::for_database_kind(profile.kind);
+                    let bind_commands = self.bind_console_target(console_id, target.clone());
+                    if self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id() == console_id)
+                        .and_then(WorkspaceTab::as_console)
+                        .and_then(|tab| tab.execution_target.as_ref())
+                        != Some(&target)
+                    {
+                        return bind_commands;
+                    }
+                    if let Some(session) = self.sessions.get(&target).filter(|session| {
+                        session.status == crate::model::session::SessionStatus::Connected
+                    }) {
+                        let scope = sql::ResolvedScope {
+                            kind: pending.scope,
+                            source: pending.source,
+                            sql: pending.sql,
+                        };
+                        let mut commands = bind_commands;
+                        commands.extend(self.run_console_sql_on_session(
+                            console_id,
+                            target,
+                            session.identity,
+                            scope,
+                            pending.dialect,
+                        ));
+                        return commands;
+                    }
+                    self.pending_executions.insert(console_id, pending);
+                    let mut commands = bind_commands;
+                    commands.extend(
+                        self.request_connection_target_for_editor_target(target, console_id),
+                    );
+                    return commands;
+                }
                 if let Some(console_id) = console_id {
                     return self.bind_console_target(console_id, candidate.target().cloned());
                 }
@@ -18527,19 +18599,21 @@ impl App {
         }
         let tab = self.active_console_opt()?;
         let (text, cursor) = self.active_editor_text_and_cursor();
-        if text.trim().is_empty() {
-            return None;
-        }
-        if tab.execution_target.is_none() && tab.execution_connection.is_none() {
+        let before_cursor = &text[..cursor.min(text.len())];
+        if (before_cursor.trim().is_empty() && before_cursor.chars().count() < 2)
+            || !sql::should_offer_completion_for_dialect(&text, cursor, self.editor_sql_dialect())
+        {
             return None;
         }
         Some(CompletionScheduleKey {
             console_id: tab.id,
             document_revision: self.active_editor_revision(),
             cursor,
-            connection: tab
-                .execution_connection
-                .or(self.connection.active_identity()),
+            connection: tab.execution_connection.or_else(|| {
+                tab.execution_target
+                    .as_ref()
+                    .and_then(|_| self.connection.active_identity())
+            }),
             target: tab.execution_target.clone(),
             catalog_generation: self.explorer.catalog_generation,
         })
@@ -18597,9 +18671,11 @@ impl App {
             && request.cursor == self.active_editor_text_and_cursor().1
             && request.target == tab.execution_target
             && request.connection
-                == tab
-                    .execution_connection
-                    .or(self.connection.active_identity())
+                == tab.execution_connection.or_else(|| {
+                    tab.execution_target
+                        .as_ref()
+                        .and_then(|_| self.connection.active_identity())
+                })
     }
 
     fn complete_now(&mut self, automatic: bool) -> Vec<Command> {
@@ -18764,8 +18840,11 @@ impl App {
             .active_console_opt()
             .map(|tab| {
                 (
-                    tab.execution_connection
-                        .or(self.connection.active_identity()),
+                    tab.execution_connection.or_else(|| {
+                        tab.execution_target
+                            .as_ref()
+                            .and_then(|_| self.connection.active_identity())
+                    }),
                     tab.execution_target.clone(),
                 )
             })
@@ -19095,15 +19174,19 @@ impl App {
             self.notify_warning("Query", "No active SQL console");
             return Vec::new();
         };
-        let Some(target) = self
+        let target = self
             .active_console_opt()
-            .and_then(|tab| tab.execution_target.clone())
-        else {
-            self.notify_warning("Query", "Select an execution target before running SQL");
-            return Vec::new();
-        };
+            .and_then(|tab| tab.execution_target.clone());
         let sql = self.editor_text(tab_id).unwrap_or_default();
-        let dialect = self.editor_sql_dialect();
+        let dialect = target
+            .as_ref()
+            .and_then(|target| {
+                self.profiles
+                    .iter()
+                    .find(|profile| profile.id == target.profile_id)
+            })
+            .map(|profile| SqlDialect::for_database_kind(profile.kind))
+            .unwrap_or(SqlDialect::Generic);
         let scope = if full_buffer {
             (!sql.trim().is_empty()).then(|| sql::ResolvedScope {
                 kind: sql::ScopeKind::FullBuffer,
@@ -19115,6 +19198,36 @@ impl App {
         };
         let Some(scope) = scope else {
             self.notify_warning("Query", "No SQL scope at cursor");
+            return Vec::new();
+        };
+        let Some(target) = target else {
+            self.next_pending_execution_id = self.next_pending_execution_id.saturating_add(1);
+            let pending = PendingExecution {
+                request_id: self.next_pending_execution_id,
+                console_id: tab_id,
+                target: None,
+                document_revision: self.editor.revision(tab_id).unwrap_or_default(),
+                scope: scope.kind,
+                source: scope.source,
+                sql: scope.sql,
+                dialect: SqlDialect::Generic,
+                transaction_generation: self.active_console().transaction_generation,
+                transaction_mode: self.active_console().transaction_mode,
+                transaction_state: self.active_console().transaction_state,
+            };
+            let candidates = std::iter::once(TargetSelectorCandidate::None)
+                .chain(
+                    self.execution_target_candidates_all_profiles()
+                        .into_iter()
+                        .map(TargetSelectorCandidate::Target),
+                )
+                .collect();
+            self.overlay = Some(Overlay::TargetSelector {
+                candidates,
+                selected: 0,
+                console_id: Some(tab_id),
+                execution: Some(pending),
+            });
             return Vec::new();
         };
         let connection = self.database_command_identity();

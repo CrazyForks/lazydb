@@ -75,3 +75,87 @@ fn unbound_console_can_be_saved_restored_bound_and_executed_lazily() {
         Some(Overlay::ExecutionConfirm { .. })
     ));
 }
+
+#[test]
+fn unbound_execution_selects_target_connects_and_resumes_once() {
+    let profile = import_connection_url(":memory:", Some("run-unbound"))
+        .unwrap()
+        .profile;
+    let profile_id = profile.id;
+    let mut app = App::new(vec![profile]);
+    app.update(Action::NewUnboundConsoleNamed("scratch".into()));
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+    let console_id = app.active_console().id;
+
+    assert!(
+        app.update(Action::RunActiveSql)
+            .iter()
+            .all(|command| !matches!(command, Command::Connect { .. }))
+    );
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(
+        app.profiles.first().unwrap(),
+    );
+    let target_index = match app.overlay.as_ref().unwrap() {
+        Overlay::TargetSelector { candidates, .. } => candidates
+            .iter()
+            .position(|candidate| candidate.target() == Some(&target))
+            .unwrap(),
+        overlay => panic!("unexpected overlay: {overlay:?}"),
+    };
+    let commands = app.update(Action::SelectTargetSelector(target_index));
+    let generation = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Connect { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .expect("selecting a target should connect");
+    assert_eq!(
+        app.active_console().execution_target.as_ref(),
+        Some(&target)
+    );
+
+    let commands = app.update(Action::ConnectionSucceeded {
+        profile_id,
+        generation,
+        server: ServerInfo {
+            kind: lazydb::profile::DatabaseKind::Sqlite,
+            version: "3.50".into(),
+            database: ":memory:".into(),
+            current_user: None,
+        },
+        mutation_capabilities: Default::default(),
+    });
+    assert_eq!(app.active_console().id, console_id);
+    assert!(
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::RunQueryPage { .. }))
+    );
+}
+
+#[test]
+fn unbound_execution_is_discarded_when_document_changes_before_selection() {
+    let profile = import_connection_url(":memory:", Some("stale-run"))
+        .unwrap()
+        .profile;
+    let mut app = App::new(vec![profile]);
+    app.update(Action::NewUnboundConsoleNamed("scratch".into()));
+    app.update(Action::ReplaceEditor("SELECT 1".into()));
+    app.update(Action::RunActiveSql);
+    app.update(Action::ReplaceEditor("SELECT 2".into()));
+
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(
+        app.profiles.first().unwrap(),
+    );
+    let target_index = match app.overlay.as_ref().unwrap() {
+        Overlay::TargetSelector { candidates, .. } => candidates
+            .iter()
+            .position(|candidate| candidate.target() == Some(&target))
+            .unwrap(),
+        overlay => panic!("unexpected overlay: {overlay:?}"),
+    };
+    let commands = app.update(Action::SelectTargetSelector(target_index));
+    assert!(commands.is_empty());
+    assert!(app.active_console().execution_connection.is_none());
+}
