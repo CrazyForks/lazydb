@@ -1111,8 +1111,12 @@ impl Keymap {
         if matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             && let Some(command) = crate::input::panes::SmartResizePaneCommand::ALL
                 .into_iter()
-                .find(|command| self.bindings.matches(command.name(), event))
+                .find(|command| {
+                    self.bindings
+                        .matches(command.name(), KeyEvent::new(event.code, event.modifiers))
+                })
         {
+            self.clear_pending();
             return Some(Action::SmartResizePane(command.direction()));
         }
         if app.overlay.is_none()
@@ -4978,31 +4982,75 @@ mod tests {
     }
 
     #[test]
-    fn smart_resize_binding_maps_cmd_ctrl_shift_l_when_configured() {
+    fn smart_resize_bindings_map_all_cmd_ctrl_shift_directions() {
         let mut app = App::new(Vec::new());
         let mut config = crate::config::AppConfig::default();
-        config.keybindings.panes.insert(
-            "smart-resize-pane-right".into(),
-            vec!["Cmd+Ctrl+Shift+l".into()],
-        );
+        for (command, key) in [
+            ("smart-resize-pane-left", 'h'),
+            ("smart-resize-pane-down", 'j'),
+            ("smart-resize-pane-up", 'k'),
+            ("smart-resize-pane-right", 'l'),
+        ] {
+            config
+                .keybindings
+                .panes
+                .insert(command.into(), vec![format!("Cmd+Ctrl+Shift+{key}")]);
+        }
         app.key_bindings = config.keybindings.key_bindings().unwrap();
         let mut keymap = Keymap::with_sequence_timeout_and_bindings(
             Duration::from_millis(750),
             app.key_bindings.clone(),
         );
-        let action = keymap.map(
-            KeyEvent::new(
-                KeyCode::Char('l'),
-                KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            ),
-            &app,
+        for (key, direction) in [
+            ('h', crate::model::pane_navigation::PaneDirection::Left),
+            ('j', crate::model::pane_navigation::PaneDirection::Down),
+            ('k', crate::model::pane_navigation::PaneDirection::Up),
+            ('l', crate::model::pane_navigation::PaneDirection::Right),
+        ] {
+            assert_eq!(
+                keymap.map(
+                    KeyEvent::new(
+                        KeyCode::Char(key),
+                        KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                    ),
+                    &app,
+                ),
+                Some(Action::SmartResizePane(direction))
+            );
+        }
+    }
+
+    #[test]
+    fn smart_resize_accepts_repeats_and_clears_pending_sequences() {
+        let mut app = App::new(Vec::new());
+        app.focus = Focus::Results;
+        let mut config = crate::config::AppConfig::default();
+        config.keybindings.panes.insert(
+            "smart-resize-pane-left".into(),
+            vec!["Cmd+Ctrl+Shift+h".into()],
         );
+        let bindings = config.keybindings.key_bindings().unwrap();
+        app.key_bindings = bindings.clone();
+        let mut keymap =
+            Keymap::with_sequence_timeout_and_bindings(Duration::from_millis(750), bindings);
+        keymap.map(key(KeyCode::Char('g')), &app);
+        assert!(keymap.pending.is_some());
+
+        let mut resize = KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        resize.kind = KeyEventKind::Repeat;
         assert_eq!(
-            action,
+            keymap.map(resize, &app),
             Some(Action::SmartResizePane(
-                crate::model::pane_navigation::PaneDirection::Right
+                crate::model::pane_navigation::PaneDirection::Left
             ))
         );
+        assert!(keymap.pending.is_none());
+
+        resize.kind = KeyEventKind::Release;
+        assert_eq!(keymap.map(resize, &app), None);
     }
 
     #[test]

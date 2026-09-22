@@ -49,11 +49,12 @@ map --when-focus-on var:IS_LAZYDB kitty_mod+shift+l
 
 Install the project's `contrib/kitty/lazydb_resize.py` in Kitty's config
 directory. It is intentionally separate from Neovim's `relative_resize.py`.
-LazyDB first resizes a visible internal boundary in the requested direction.
-At an internal boundary it invokes the helper through Kitty remote control to
-resize the current Kitty window without changing focus. The helper uses
-Kitty's neighboring windows to choose the wider/narrower or taller/shorter
-operation.
+LazyDB first moves a visible internal divider in the requested direction;
+`h`/`l` move the Explorer/main divider and `k`/`j` move the editor/results
+divider. At a divider that is hidden or cannot move, it invokes the helper
+through Kitty remote control to resize the current Kitty window without
+changing focus. The helper uses Kitty's neighboring windows to choose the
+wider/narrower or taller/shorter operation.
 
 Existing Neovim `IS_NVIM` mappings, Kitty's ordinary resize mappings, and
 LazyDB `Ctrl-w` bindings remain independent. If Kitty is unavailable, internal

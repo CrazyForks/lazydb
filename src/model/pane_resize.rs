@@ -24,63 +24,78 @@ pub fn decide(
     editor_height: Option<(u16, u16, u16)>,
     redis_keys_width: Option<(u16, u16, u16)>,
 ) -> SmartResizeDecision {
+    fn resize(
+        split: PaneSplit,
+        current: u16,
+        minimum: u16,
+        maximum: u16,
+        increase: bool,
+    ) -> Option<(PaneSplit, u16)> {
+        let next = if increase {
+            current.saturating_add(3).min(maximum)
+        } else {
+            current.saturating_sub(3).max(minimum)
+        };
+        (next != current).then_some((split, next))
+    }
+
     let internal = match (pane, direction) {
-        (SmartResizePane::Explorer, PaneDirection::Right) => {
-            explorer_width.and_then(|(current, _, maximum)| {
-                (current < maximum).then_some((
-                    PaneSplit::ExplorerWidth,
-                    current.saturating_add(3).min(maximum),
-                ))
+        (SmartResizePane::Explorer, PaneDirection::Left)
+        | (SmartResizePane::Editor, PaneDirection::Left)
+        | (SmartResizePane::Results, PaneDirection::Left)
+        | (SmartResizePane::Relation, PaneDirection::Left) => {
+            explorer_width.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::ExplorerWidth, current, minimum, maximum, false)
             })
         }
-        (SmartResizePane::Editor, PaneDirection::Left) => {
-            explorer_width.and_then(|(current, minimum, _)| {
-                (current > minimum).then_some((
-                    PaneSplit::ExplorerWidth,
-                    current.saturating_sub(3).max(minimum),
-                ))
+        (SmartResizePane::RedisKeys, PaneDirection::Left) => redis_keys_width.map_or_else(
+            || {
+                explorer_width.and_then(|(current, minimum, maximum)| {
+                    resize(PaneSplit::ExplorerWidth, current, minimum, maximum, false)
+                })
+            },
+            |(current, minimum, maximum)| {
+                resize(PaneSplit::RedisKeysWidth, current, minimum, maximum, false)
+            },
+        ),
+        (SmartResizePane::Explorer, PaneDirection::Right)
+        | (SmartResizePane::Editor, PaneDirection::Right)
+        | (SmartResizePane::Results, PaneDirection::Right)
+        | (SmartResizePane::Relation, PaneDirection::Right) => {
+            explorer_width.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::ExplorerWidth, current, minimum, maximum, true)
             })
         }
-        (SmartResizePane::Results, PaneDirection::Left)
-        | (SmartResizePane::Relation, PaneDirection::Left)
-        | (SmartResizePane::RedisKeys, PaneDirection::Left) => {
-            explorer_width.and_then(|(current, minimum, _)| {
-                (current > minimum).then_some((
-                    PaneSplit::ExplorerWidth,
-                    current.saturating_sub(3).max(minimum),
-                ))
-            })
-        }
-        (SmartResizePane::Editor, PaneDirection::Down) => {
-            editor_height.and_then(|(current, _, maximum)| {
-                (current < maximum).then_some((
-                    PaneSplit::EditorHeight,
-                    current.saturating_add(3).min(maximum),
-                ))
-            })
-        }
-        (SmartResizePane::Results, PaneDirection::Up) => {
-            editor_height.and_then(|(current, minimum, _)| {
-                (current > minimum).then_some((
-                    PaneSplit::EditorHeight,
-                    current.saturating_sub(3).max(minimum),
-                ))
-            })
-        }
-        (SmartResizePane::RedisKeys, PaneDirection::Right) => {
-            redis_keys_width.and_then(|(current, _, maximum)| {
-                (current < maximum).then_some((
-                    PaneSplit::RedisKeysWidth,
-                    current.saturating_add(3).min(maximum),
-                ))
-            })
-        }
+        (SmartResizePane::RedisKeys, PaneDirection::Right) => redis_keys_width.map_or_else(
+            || {
+                explorer_width.and_then(|(current, minimum, maximum)| {
+                    resize(PaneSplit::ExplorerWidth, current, minimum, maximum, true)
+                })
+            },
+            |(current, minimum, maximum)| {
+                resize(PaneSplit::RedisKeysWidth, current, minimum, maximum, true)
+            },
+        ),
         (SmartResizePane::RedisPreview, PaneDirection::Left) => {
-            redis_keys_width.and_then(|(current, minimum, _)| {
-                (current > minimum).then_some((
-                    PaneSplit::RedisKeysWidth,
-                    current.saturating_sub(3).max(minimum),
-                ))
+            redis_keys_width.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::RedisKeysWidth, current, minimum, maximum, false)
+            })
+        }
+        (SmartResizePane::RedisPreview, PaneDirection::Right) => {
+            redis_keys_width.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::RedisKeysWidth, current, minimum, maximum, true)
+            })
+        }
+        (SmartResizePane::Editor, PaneDirection::Up)
+        | (SmartResizePane::Results, PaneDirection::Up) => {
+            editor_height.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::EditorHeight, current, minimum, maximum, false)
+            })
+        }
+        (SmartResizePane::Editor, PaneDirection::Down)
+        | (SmartResizePane::Results, PaneDirection::Down) => {
+            editor_height.and_then(|(current, minimum, maximum)| {
+                resize(PaneSplit::EditorHeight, current, minimum, maximum, true)
             })
         }
         _ => None,
@@ -124,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn right_edge_editor_falls_back_to_kitty() {
+    fn editor_horizontal_resize_moves_explorer_boundary() {
         let (explorer, editor, redis) = sizes();
         assert_eq!(
             decide(
@@ -134,7 +149,10 @@ mod tests {
                 editor,
                 redis
             ),
-            SmartResizeDecision::Boundary(PaneDirection::Right)
+            SmartResizeDecision::Internal {
+                split: PaneSplit::ExplorerWidth,
+                size: 53,
+            }
         );
     }
 
@@ -180,6 +198,37 @@ mod tests {
             SmartResizeDecision::Internal {
                 split: PaneSplit::EditorHeight,
                 size: 17
+            }
+        );
+    }
+
+    #[test]
+    fn explorer_and_editor_resize_in_both_directions() {
+        let (explorer, editor, redis) = sizes();
+        assert_eq!(
+            decide(
+                SmartResizePane::Explorer,
+                PaneDirection::Left,
+                explorer,
+                editor,
+                redis
+            ),
+            SmartResizeDecision::Internal {
+                split: PaneSplit::ExplorerWidth,
+                size: 47,
+            }
+        );
+        assert_eq!(
+            decide(
+                SmartResizePane::Editor,
+                PaneDirection::Up,
+                explorer,
+                editor,
+                redis
+            ),
+            SmartResizeDecision::Internal {
+                split: PaneSplit::EditorHeight,
+                size: 17,
             }
         );
     }
