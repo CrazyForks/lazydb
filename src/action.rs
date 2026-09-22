@@ -123,6 +123,7 @@ pub enum Action {
     FocusNext,
     FocusPrevious,
     Focus(Focus),
+    SmartFocusPane(crate::model::pane_navigation::PaneDirection),
     TogglePaneMaximized,
     ResizePane(PaneResize),
     SetPaneSize {

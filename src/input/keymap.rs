@@ -1071,6 +1071,13 @@ impl Keymap {
                 _ => None,
             };
         }
+        if event.kind == KeyEventKind::Press
+            && let Some(command) = crate::input::panes::SmartPaneCommand::ALL
+                .into_iter()
+                .find(|command| self.bindings.matches(command.name(), event))
+        {
+            return Some(Action::SmartFocusPane(command.direction()));
+        }
         if app.overlay.is_none()
             && event.kind == KeyEventKind::Press
             && (app.focus != Focus::Editor
@@ -4872,6 +4879,33 @@ mod tests {
             KeyCode::Char(code),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         )
+    }
+
+    #[test]
+    fn smart_pane_binding_maps_cmd_ctrl_l_when_explicitly_configured() {
+        let mut app = App::new(Vec::new());
+        let mut config = crate::config::AppConfig::default();
+        config
+            .keybindings
+            .panes
+            .insert("smart-focus-pane-right".into(), vec!["Cmd+Ctrl+l".into()]);
+        app.key_bindings = config.keybindings.key_bindings().unwrap();
+        let mut keymap = Keymap::with_sequence_timeout_and_bindings(
+            Duration::from_millis(750),
+            app.key_bindings.clone(),
+        );
+        assert_eq!(
+            keymap.map(
+                KeyEvent::new(
+                    KeyCode::Char('l'),
+                    KeyModifiers::SUPER | KeyModifiers::CONTROL
+                ),
+                &app,
+            ),
+            Some(Action::SmartFocusPane(
+                crate::model::pane_navigation::PaneDirection::Right
+            ))
+        );
     }
 
     #[test]

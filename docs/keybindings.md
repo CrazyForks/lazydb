@@ -26,6 +26,22 @@ focus-pane-left = ["Cmd+Ctrl+h", "Ctrl-w h"]
 focus-pane-down = ["Alt+j"]
 ```
 
+For Kitty cross-pane focus, opt in to the smart pane commands separately. The
+default preset leaves these commands unbound so existing users are not changed:
+
+```toml
+[keybindings.panes]
+smart-focus-pane-left = ["Cmd+Ctrl+h"]
+smart-focus-pane-down = ["Cmd+Ctrl+j"]
+smart-focus-pane-up = ["Cmd+Ctrl+k"]
+smart-focus-pane-right = ["Cmd+Ctrl+l"]
+```
+
+These commands focus a visible LazyDB pane first. At a LazyDB edge they ask
+Kitty to focus the neighboring Kitty window. They require Kitty mappings for
+`IS_LAZYDB`; see the Kitty integration guide. The existing `Ctrl-w` pane
+commands and pane-resize behavior are unchanged.
+
 An override replaces that command's built-in bindings. Use an empty list to
 disable it, or include the default sequence explicitly to retain both. The
 configurable pane actions are focus left/down/up/right, maximize/restore, and
