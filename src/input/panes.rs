@@ -17,6 +17,34 @@ pub(crate) enum SmartPaneCommand {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SmartResizePaneCommand {
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+impl SmartResizePaneCommand {
+    pub(crate) const ALL: [Self; 4] = [Self::Left, Self::Down, Self::Up, Self::Right];
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Left => "smart-resize-pane-left",
+            Self::Down => "smart-resize-pane-down",
+            Self::Up => "smart-resize-pane-up",
+            Self::Right => "smart-resize-pane-right",
+        }
+    }
+    pub(crate) fn direction(self) -> PaneDirection {
+        match self {
+            Self::Left => PaneDirection::Left,
+            Self::Down => PaneDirection::Down,
+            Self::Up => PaneDirection::Up,
+            Self::Right => PaneDirection::Right,
+        }
+    }
+}
+
 impl SmartPaneCommand {
     pub(crate) const ALL: [Self; 4] = [Self::Left, Self::Down, Self::Up, Self::Right];
     pub(crate) fn name(self) -> &'static str {

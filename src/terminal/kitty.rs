@@ -49,6 +49,48 @@ pub async fn neighboring_window(direction: PaneDirection) -> io::Result<()> {
     }
 }
 
+pub async fn resize_window(direction: PaneDirection, amount: u16) -> io::Result<()> {
+    let socket = env::var_os("KITTY_LISTEN_ON")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "KITTY_LISTEN_ON is unset"))?;
+    let window = env::var_os("KITTY_WINDOW_ID")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "KITTY_WINDOW_ID is unset"))?;
+    let direction = match direction {
+        PaneDirection::Left => "left",
+        PaneDirection::Right => "right",
+        PaneDirection::Up => "up",
+        PaneDirection::Down => "down",
+    };
+    let mut child = Command::new("kitten")
+        .arg("@")
+        .arg("--to")
+        .arg(socket)
+        .arg("kitten")
+        .arg("--match")
+        .arg(format!("id:{}", window.to_string_lossy()))
+        .arg("lazydb_resize.py")
+        .arg(direction)
+        .arg(amount.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    match timeout(Duration::from_secs(1), child.wait()).await {
+        Ok(result) => result.and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| io::Error::other("kitty resize action failed"))
+        }),
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "kitty resize timed out",
+            ))
+        }
+    }
+}
+
 pub fn set_user_var(writer: &mut impl io::Write, enabled: bool) -> io::Result<()> {
     if !available() {
         return Ok(());

@@ -1078,6 +1078,13 @@ impl Keymap {
         {
             return Some(Action::SmartFocusPane(command.direction()));
         }
+        if matches!(event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && let Some(command) = crate::input::panes::SmartResizePaneCommand::ALL
+                .into_iter()
+                .find(|command| self.bindings.matches(command.name(), event))
+        {
+            return Some(Action::SmartResizePane(command.direction()));
+        }
         if app.overlay.is_none()
             && event.kind == KeyEventKind::Press
             && (app.focus != Focus::Editor
@@ -4908,6 +4915,34 @@ mod tests {
                 &app,
             ),
             Some(Action::SmartFocusPane(
+                crate::model::pane_navigation::PaneDirection::Right
+            ))
+        );
+    }
+
+    #[test]
+    fn smart_resize_binding_maps_cmd_ctrl_shift_l_when_configured() {
+        let mut app = App::new(Vec::new());
+        let mut config = crate::config::AppConfig::default();
+        config.keybindings.panes.insert(
+            "smart-resize-pane-right".into(),
+            vec!["Cmd+Ctrl+Shift+l".into()],
+        );
+        app.key_bindings = config.keybindings.key_bindings().unwrap();
+        let mut keymap = Keymap::with_sequence_timeout_and_bindings(
+            Duration::from_millis(750),
+            app.key_bindings.clone(),
+        );
+        let action = keymap.map(
+            KeyEvent::new(
+                KeyCode::Char('l'),
+                KeyModifiers::SUPER | KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            &app,
+        );
+        assert_eq!(
+            action,
+            Some(Action::SmartResizePane(
                 crate::model::pane_navigation::PaneDirection::Right
             ))
         );

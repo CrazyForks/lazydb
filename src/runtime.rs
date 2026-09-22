@@ -79,6 +79,9 @@ async fn handle_smart_focus(
     let Ok(area) = terminal.size() else {
         return;
     };
+    if area.width < 56 || area.height < 16 {
+        return;
+    }
     let is_special = matches!(
         app.tabs.get(app.active_tab),
         Some(
@@ -179,6 +182,97 @@ async fn handle_smart_focus(
             }
         }
         PaneNavigation::Blocked => {}
+    }
+}
+
+async fn handle_smart_resize(
+    app: &mut App,
+    runtime: &mut Runtime,
+    terminal: &TerminalSession,
+    direction: crate::model::pane_navigation::PaneDirection,
+) {
+    use crate::model::pane_resize::{SmartResizeDecision, SmartResizePane, decide};
+    use crate::model::redis_browser::RedisBrowserFocus;
+    use crate::ui::layout::{AppLayout, RedisBrowserLayout};
+
+    if app.overlay.is_some() {
+        return;
+    }
+    let Ok(area) = terminal.size() else {
+        return;
+    };
+    let is_redis = matches!(
+        app.tabs.get(app.active_tab),
+        Some(crate::model::tab::WorkspaceTab::RedisBrowser(_))
+    );
+    let is_special = matches!(
+        app.tabs.get(app.active_tab),
+        Some(
+            crate::model::tab::WorkspaceTab::Relation(_)
+                | crate::model::tab::WorkspaceTab::Dashboard(_)
+                | crate::model::tab::WorkspaceTab::RedisBrowser(_)
+                | crate::model::tab::WorkspaceTab::PrincipalDdl(_)
+        )
+    );
+    let layout = AppLayout::calculate(
+        area,
+        app.focus,
+        is_special,
+        app.pane_sizes,
+        app.pane_maximized,
+    );
+    let redis_layout = layout
+        .relation
+        .map(|rect| RedisBrowserLayout::calculate(rect, app.pane_sizes.redis_keys_width));
+    let source = if app.focus == crate::model::workspace::Focus::Explorer {
+        SmartResizePane::Explorer
+    } else if is_redis {
+        match app.tabs.get(app.active_tab) {
+            Some(crate::model::tab::WorkspaceTab::RedisBrowser(tab)) => match tab.focus {
+                RedisBrowserFocus::Keys => SmartResizePane::RedisKeys,
+                RedisBrowserFocus::Preview => SmartResizePane::RedisPreview,
+            },
+            _ => SmartResizePane::Results,
+        }
+    } else if layout.relation.is_some() {
+        SmartResizePane::Relation
+    } else {
+        match app.focus {
+            crate::model::workspace::Focus::Editor => SmartResizePane::Editor,
+            crate::model::workspace::Focus::Results => SmartResizePane::Results,
+            crate::model::workspace::Focus::Explorer => SmartResizePane::Explorer,
+        }
+    };
+    let explorer = layout.pane_metrics.explorer_width.map(|current| {
+        let maximum = area.width.saturating_sub(60);
+        (current, 34.min(maximum), maximum)
+    });
+    let editor = layout.pane_metrics.editor_height.map(|current| {
+        let content_height = layout.body.height.saturating_sub(3);
+        let maximum = content_height.saturating_sub(2 + 7);
+        (current, 5.min(maximum), maximum)
+    });
+    let redis = redis_layout.and_then(|r| {
+        r.keys_width.map(|current| {
+            let maximum = r
+                .keys
+                .width
+                .saturating_add(r.preview.width)
+                .saturating_sub(24);
+            (current, 16, maximum)
+        })
+    });
+    match decide(source, direction, explorer, editor, redis) {
+        SmartResizeDecision::Internal { split, size } => {
+            let mut metrics = layout.pane_metrics;
+            metrics.redis_keys_width = redis_layout.and_then(|redis| redis.keys_width);
+            apply_action(app, runtime, Action::PaneLayoutChanged(metrics));
+            apply_action(app, runtime, Action::SetPaneSize { split, size });
+        }
+        SmartResizeDecision::Boundary(direction) if crate::terminal::kitty::available() => {
+            let _ = crate::terminal::kitty::resize_window(direction, 3).await;
+        }
+        SmartResizeDecision::Boundary(_) | SmartResizeDecision::Blocked => {}
     }
 }
 
@@ -6442,9 +6536,12 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                                         | Action::GridAlignSelectedRow(_)
                                 );
                                 let force_grid_redraw = matches!(&action, Action::GridSelect { .. });
-                                 let smart_focus = if let Action::SmartFocusPane(direction) = action {
-                                     handle_smart_focus(&mut app, &mut runtime, &terminal, direction).await;
-                                     true
+                                  let smart_focus = if let Action::SmartFocusPane(direction) = action {
+                                      handle_smart_focus(&mut app, &mut runtime, &terminal, direction).await;
+                                      true
+                                  } else if let Action::SmartResizePane(direction) = action {
+                                      handle_smart_resize(&mut app, &mut runtime, &terminal, direction).await;
+                                      true
                                   } else if action == Action::ToggleTerminalSelection {
                                     if !terminal.mouse_captured() {
                                         app.notify_warning(

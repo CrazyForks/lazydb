@@ -342,6 +342,10 @@ pub enum HelpShortcutId {
     ResizeHeightDecrease,
     ResizeWidthIncrease,
     ResizeWidthDecrease,
+    SmartResizeLeft,
+    SmartResizeDown,
+    SmartResizeUp,
+    SmartResizeRight,
     ResetPaneSizes,
     PreviousTab,
     NextTab,
@@ -918,6 +922,12 @@ macro_rules! row {
             sequence: $sequence, description: $description, footer_priority: footer_priority(HelpShortcutId::$id),
             prefix: Some(ShortcutPrefix::Window), suffix: Some($suffix),
             requirement: ShortcutRequirement::PaneResize($suffix.as_bytes()[0] as char), executable: true }
+    };
+    ($id:ident, [$($context:ident),+], $sequence:literal, $description:literal, smart_resize) => {
+        Shortcut { id: HelpShortcutId::$id, contexts: &[$(ShortcutContext::$context),+],
+            sequence: $sequence, description: $description, footer_priority: footer_priority(HelpShortcutId::$id),
+            prefix: None, suffix: None,
+            requirement: ShortcutRequirement::Always, executable: true }
     };
 }
 
@@ -2272,6 +2282,66 @@ static SHORTCUT_CATALOG: &[Shortcut] = &[
         resize
     ),
     row!(
+        SmartResizeLeft,
+        [
+            Explorer,
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            RelationDataBrowse,
+            RelationDdl,
+            PrincipalDdl
+        ],
+        "Cmd+Ctrl+Shift+h",
+        "smart resize left boundary",
+        smart_resize
+    ),
+    row!(
+        SmartResizeDown,
+        [
+            Explorer,
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            RelationDataBrowse,
+            RelationDdl,
+            PrincipalDdl
+        ],
+        "Cmd+Ctrl+Shift+j",
+        "smart resize down boundary",
+        smart_resize
+    ),
+    row!(
+        SmartResizeUp,
+        [
+            Explorer,
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            RelationDataBrowse,
+            RelationDdl,
+            PrincipalDdl
+        ],
+        "Cmd+Ctrl+Shift+k",
+        "smart resize up boundary",
+        smart_resize
+    ),
+    row!(
+        SmartResizeRight,
+        [
+            Explorer,
+            EditorNormal,
+            EditorVisual,
+            SqlResultsData,
+            RelationDataBrowse,
+            RelationDdl,
+            PrincipalDdl
+        ],
+        "Cmd+Ctrl+Shift+l",
+        "smart resize right boundary",
+        smart_resize
+    ),
+    row!(
         ResetPaneSizes,
         [
             Explorer,
@@ -3350,6 +3420,10 @@ pub(crate) fn pane_command_for_shortcut(id: HelpShortcutId) -> Option<&'static s
         }
         HelpShortcutId::TogglePaneMaximized => Some("toggle-pane-maximized"),
         HelpShortcutId::ResetPaneSizes => Some("reset-pane-sizes"),
+        HelpShortcutId::SmartResizeLeft => Some("smart-resize-pane-left"),
+        HelpShortcutId::SmartResizeDown => Some("smart-resize-pane-down"),
+        HelpShortcutId::SmartResizeUp => Some("smart-resize-pane-up"),
+        HelpShortcutId::SmartResizeRight => Some("smart-resize-pane-right"),
         _ => None,
     }
 }
