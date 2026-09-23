@@ -140,6 +140,9 @@ async fn save_and_connect(
     assert!(matches!(saved, Action::ProfileSaved { connect: true, .. }));
     apply_until_connection_succeeds(app, runtime, receiver).await;
     drain_catalog(app, runtime, receiver).await;
+    if app.active_console_opt().is_none() {
+        dispatch(app, runtime, Action::NewConsole);
+    }
 }
 
 async fn query(
@@ -153,10 +156,16 @@ async fn query(
     assert!(commands.is_empty());
     dispatch(app, runtime, Action::ToggleExecutionConfirmationFocus);
     let commands = dispatch(app, runtime, Action::ConfirmExecution);
-    assert!(matches!(
-        commands.as_slice(),
-        [Command::RunQuery { .. } | Command::RunQueryPage { .. }]
-    ));
+    assert!(
+        matches!(
+            commands.as_slice(),
+            [Command::RunQuery { .. } | Command::RunQueryPage { .. }]
+        ),
+        "expected query command for {sql:?}; commands={commands:?}; overlay={:?}; profile={:?}; active={:?}",
+        app.overlay,
+        app.connection.profile_id,
+        app.active_console_opt().map(|tab| tab.id)
+    );
     loop {
         let action = apply_next(app, runtime, receiver).await;
         if matches!(
@@ -214,7 +223,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
         &mut app,
         &mut runtime,
         &mut receiver,
-        "CREATE TABLE marker (value TEXT); INSERT INTO marker VALUES ('alpha');",
+        "CREATE TABLE IF NOT EXISTS marker (value TEXT); INSERT INTO marker VALUES ('alpha');",
     )
     .await;
 
@@ -227,7 +236,7 @@ async fn two_sqlite_profiles_complete_the_full_runtime_lifecycle() {
         &mut app,
         &mut runtime,
         &mut receiver,
-        "CREATE TABLE marker (value TEXT); INSERT INTO marker VALUES ('beta');",
+        "CREATE TABLE IF NOT EXISTS marker (value TEXT); INSERT INTO marker VALUES ('beta');",
     )
     .await;
 
