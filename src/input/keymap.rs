@@ -1756,6 +1756,46 @@ impl Keymap {
             return None;
         }
 
+        if is_principal_overview(app)
+            && let Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab)) =
+                app.tabs.get(app.active_tab)
+            && let Some(find) = tab.access_find.as_ref()
+        {
+            match find.phase {
+                crate::model::principal::PrincipalFindPhase::Editing => {
+                    if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT {
+                        self.pending = None;
+                    }
+                    if is_text_undo(event) {
+                        return Some(Action::PrincipalAccessFindEdit(
+                            crate::model::text_input::TextInputEdit::Undo,
+                        ));
+                    }
+                    if is_text_redo(event) {
+                        return Some(Action::PrincipalAccessFindEdit(
+                            crate::model::text_input::TextInputEdit::Redo,
+                        ));
+                    }
+                    return match event.code {
+                        KeyCode::Esc => Some(Action::PrincipalAccessFindClose),
+                        KeyCode::Enter => Some(Action::PrincipalAccessFindConfirm),
+                        _ => map_text_input_edit(event).map(Action::PrincipalAccessFindEdit),
+                    };
+                }
+                crate::model::principal::PrincipalFindPhase::Confirmed => match event.code {
+                    KeyCode::Esc => return Some(Action::PrincipalAccessFindClose),
+                    KeyCode::Char('n') if event.modifiers.is_empty() => {
+                        return Some(Action::PrincipalAccessFindNext);
+                    }
+                    KeyCode::Char('N')
+                        if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT =>
+                    {
+                        return Some(Action::PrincipalAccessFindPrevious);
+                    }
+                    _ => {}
+                },
+            }
+        }
         if is_ddl_only_focus(app)
             && event.modifiers.is_empty()
             && event.code == KeyCode::Char(' ')
@@ -2114,6 +2154,12 @@ impl Keymap {
         }
 
         if event.modifiers.contains(KeyModifiers::CONTROL) {
+            if event.modifiers == KeyModifiers::CONTROL
+                && is_principal_overview(app)
+                && let Some(action) = map_principal_access_page(event.code)
+            {
+                return Some(action);
+            }
             if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
                 return Some(action);
             }
@@ -2429,11 +2475,27 @@ impl Keymap {
         {
             if event.modifiers.is_empty()
                 && matches!(
-                    app.tabs.get(app.active_tab),
-                    Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
-                        if tab.view == crate::model::principal::PrincipalView::Overview
+                        app.tabs.get(app.active_tab),
+                        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                            if tab.view == crate::model::principal::PrincipalView::Overview
                 )
             {
+                if event.code == KeyCode::Char('/') {
+                    return Some(Action::PrincipalAccessFindOpen);
+                }
+                if event.code == KeyCode::Char('?') {
+                    return Some(Action::ShowHelp);
+                }
+                if let Some(action) = map_configured_navigation(event, app, &self.bindings) {
+                    return Some(action);
+                }
+                match event.code {
+                    KeyCode::Char('j') => return Some(Action::MovePrincipalAccess(1)),
+                    KeyCode::Char('k') => return Some(Action::MovePrincipalAccess(-1)),
+                    KeyCode::Down => return Some(Action::MovePrincipalAccess(1)),
+                    KeyCode::Up => return Some(Action::MovePrincipalAccess(-1)),
+                    _ => {}
+                }
                 match event.code {
                     KeyCode::Char('g')
                         if app.active_principal_access_section()
@@ -2901,6 +2963,28 @@ fn map_configured_navigation(
         return Some(action);
     }
     None
+}
+
+fn is_principal_overview(app: &App) -> bool {
+    matches!(
+        app.tabs.get(app.active_tab),
+        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+            if tab.view == crate::model::principal::PrincipalView::Overview
+    ) && app.focus == Focus::Results
+}
+
+fn map_principal_access_page(code: KeyCode) -> Option<Action> {
+    let (direction, half_page) = match code {
+        KeyCode::Char('f') => (1, false),
+        KeyCode::Char('b') => (-1, false),
+        KeyCode::Char('d') => (1, true),
+        KeyCode::Char('u') => (-1, true),
+        _ => return None,
+    };
+    Some(Action::PagePrincipalAccess {
+        direction,
+        half_page,
+    })
 }
 
 fn map_configured_pagination(
@@ -3833,7 +3917,11 @@ fn ddl_only_session_id(app: &App) -> Option<uuid::Uuid> {
         {
             Some(tab.ddl_editor_id)
         }
-        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab)) => Some(tab.editor_id),
+        Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+            if tab.view == crate::model::principal::PrincipalView::Ddl =>
+        {
+            Some(tab.editor_id)
+        }
         _ => None,
     }
 }

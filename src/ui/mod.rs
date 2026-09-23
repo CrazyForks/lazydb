@@ -196,6 +196,24 @@ pub enum HitTarget {
         thumb_length: u16,
         max_offset: usize,
     },
+    PrincipalAccessScrollbarPage {
+        tab_id: Uuid,
+        section: crate::model::principal::PrincipalAccessSection,
+        offset: usize,
+    },
+    PrincipalAccessBody {
+        tab_id: Uuid,
+        section: crate::model::principal::PrincipalAccessSection,
+    },
+    PrincipalAccessScrollbarThumb {
+        tab_id: Uuid,
+        section: crate::model::principal::PrincipalAccessSection,
+        track_start: u16,
+        track_length: u16,
+        thumb_start: u16,
+        thumb_length: u16,
+        max_offset: usize,
+    },
     ProfileField(ProfileField),
     ProfileDriver(crate::profile::DatabaseKind),
     ProfileCategory(crate::db::descriptor::DatabaseCategory),
@@ -352,6 +370,7 @@ pub struct UiState {
     pub grid_horizontal_scroll: Option<GridHorizontalScrollTargets>,
     pub record_view_fields: Option<(Uuid, usize)>,
     pub explorer_viewport_rows: Option<usize>,
+    pub principal_access_viewport: Option<(Uuid, usize, Rect)>,
     pub help_viewport_rows: Option<usize>,
     pub omni_viewport_rows: Option<usize>,
     pub redis_keys_viewport_rows: Option<(Uuid, usize)>,
@@ -369,6 +388,7 @@ pub struct UiState {
     pub grid_scrollbar_drag: RefCell<Option<GridScrollbarDrag>>,
     pub editor_scrollbar_drag: RefCell<Option<EditorScrollbarDrag>>,
     pub explorer_scrollbar_drag: RefCell<Option<ExplorerScrollbarDrag>>,
+    pub principal_access_scrollbar_drag: RefCell<Option<PrincipalAccessScrollbarDrag>>,
     pub panel_scrollbar_drag: RefCell<Option<PanelScrollbarDrag>>,
     pub pane_resize_drag: RefCell<Option<PaneResizeDrag>>,
     pub mouse_gesture: RefCell<Option<text_selection::GestureOwner>>,
@@ -439,6 +459,17 @@ pub struct EditorScrollbarDrag {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExplorerScrollbarDrag {
+    pub track_start: u16,
+    pub track_length: u16,
+    pub thumb_length: u16,
+    pub pointer_offset: u16,
+    pub max_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrincipalAccessScrollbarDrag {
+    pub tab_id: Uuid,
+    pub section: crate::model::principal::PrincipalAccessSection,
     pub track_start: u16,
     pub track_length: u16,
     pub thumb_length: u16,
@@ -518,6 +549,7 @@ impl UiState {
             grid_horizontal_scroll: None,
             record_view_fields: None,
             explorer_viewport_rows: None,
+            principal_access_viewport: None,
             help_viewport_rows: None,
             omni_viewport_rows: None,
             redis_keys_viewport_rows: None,
@@ -534,6 +566,7 @@ impl UiState {
             grid_scrollbar_drag: RefCell::new(None),
             editor_scrollbar_drag: RefCell::new(None),
             explorer_scrollbar_drag: RefCell::new(None),
+            principal_access_scrollbar_drag: RefCell::new(None),
             panel_scrollbar_drag: RefCell::new(None),
             pane_resize_drag: RefCell::new(None),
             mouse_gesture: RefCell::new(None),
@@ -1089,6 +1122,7 @@ fn render_with_state_at(
     state.grid_horizontal_scroll = None;
     state.record_view_fields = None;
     state.explorer_viewport_rows = None;
+    state.principal_access_viewport = None;
     state.help_viewport_rows = None;
     state.omni_viewport_rows = None;
     state.redis_keys_viewport_rows = None;

@@ -575,6 +575,100 @@ impl App {
             None,
         ))
     }
+
+    fn principal_access_match_fields(
+        details: &crate::db::principal::PrincipalDetails,
+        section: crate::model::principal::PrincipalAccessSection,
+        index: usize,
+    ) -> Vec<String> {
+        match section {
+            crate::model::principal::PrincipalAccessSection::Permissions => {
+                let Some(row) = details.permissions.get(index) else {
+                    return Vec::new();
+                };
+                vec![
+                    row.target.clone(),
+                    row.privilege.clone(),
+                    row.source.clone(),
+                    match row.source_kind {
+                        crate::db::principal::PrincipalPermissionSource::Direct => "direct",
+                        crate::db::principal::PrincipalPermissionSource::Public => "public",
+                        crate::db::principal::PrincipalPermissionSource::Owner => "owner",
+                        crate::db::principal::PrincipalPermissionSource::Default => "default",
+                        crate::db::principal::PrincipalPermissionSource::Inherited => "inherited",
+                    }
+                    .to_owned(),
+                    if row.grantable { "grant option" } else { "" }.to_owned(),
+                ]
+            }
+            crate::model::principal::PrincipalAccessSection::MemberOf => {
+                details.member_of.get(index).map_or_else(Vec::new, |row| {
+                    vec![
+                        row.role.clone(),
+                        row.member.clone(),
+                        if row.admin_option { "admin option" } else { "" }.to_owned(),
+                    ]
+                })
+            }
+            crate::model::principal::PrincipalAccessSection::Members => {
+                details.members.get(index).map_or_else(Vec::new, |row| {
+                    vec![
+                        row.role.clone(),
+                        row.member.clone(),
+                        if row.admin_option { "admin option" } else { "" }.to_owned(),
+                    ]
+                })
+            }
+        }
+    }
+
+    fn refresh_principal_find_matches(&mut self) {
+        let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        let Some(find) = tab.access_find.as_mut() else {
+            return;
+        };
+        let query = find.query.value().trim().to_owned();
+        let section = find.section;
+        let original_selection = find.original_selection;
+        let original_offset = find.original_offset;
+        let Some(details) = tab.details.snapshot() else {
+            find.matches.clear();
+            find.current = 0;
+            return;
+        };
+        let count = match section {
+            crate::model::principal::PrincipalAccessSection::Permissions => {
+                details.permissions.len()
+            }
+            crate::model::principal::PrincipalAccessSection::MemberOf => details.member_of.len(),
+            crate::model::principal::PrincipalAccessSection::Members => details.members.len(),
+        };
+        if query.is_empty() {
+            find.matches.clear();
+            find.current = 0;
+            let _ = find;
+            tab.access_section = section;
+            tab.set_access_selection(original_selection);
+            tab.set_access_offset(original_offset);
+            tab.normalize_access_state(count, tab.access_viewport_rows);
+            return;
+        }
+        find.matches = (0..count)
+            .filter(|index| {
+                Self::principal_access_match_fields(details, section, *index)
+                    .iter()
+                    .any(|field| crate::db::catalog::search_text_matches(field, &query))
+            })
+            .collect();
+        find.current = 0;
+        if let Some(index) = find.matches.first().copied() {
+            tab.access_section = section;
+            tab.set_access_selection(index);
+            tab.normalize_access_state(count, tab.access_viewport_rows);
+        }
+    }
     pub(crate) fn principal_capability(
         &self,
         profile_id: Uuid,
@@ -4049,6 +4143,10 @@ impl App {
                         | Action::GridSetRowOffset { .. }
                         | Action::CopyGridCell
                         | Action::CopyGridRow { .. }
+                        | Action::MovePrincipalAccess(_)
+                        | Action::PagePrincipalAccess { .. }
+                        | Action::ScrollPrincipalAccess(_)
+                        | Action::SetPrincipalAccessOffset(_)
                         | Action::ViewGridCell
                         | Action::CopyRecordViewCell
                         | Action::CopyRecordViewRow { .. }
@@ -4168,6 +4266,13 @@ impl App {
                         | Action::ExplorerFindNext
                         | Action::ExplorerFindPrevious
                         | Action::ExplorerFindClose
+                        | Action::PrincipalAccessViewportChanged { .. }
+                        | Action::PrincipalAccessFindOpen
+                        | Action::PrincipalAccessFindEdit(_)
+                        | Action::PrincipalAccessFindConfirm
+                        | Action::PrincipalAccessFindNext
+                        | Action::PrincipalAccessFindPrevious
+                        | Action::PrincipalAccessFindClose
                         | Action::ExplorerSearchOpen
                         | Action::ExplorerSearchInsert(_)
                         | Action::ExplorerSearchBackspace
@@ -4554,9 +4659,14 @@ impl App {
                     if let Some(details) = tab.details.snapshot()
                         && index < details.permissions.len()
                     {
+                        tab.access_find = None;
                         tab.access_section =
                             crate::model::principal::PrincipalAccessSection::Permissions;
                         tab.selected_permission = index;
+                        tab.normalize_access_state(
+                            details.permissions.len(),
+                            tab.access_viewport_rows,
+                        );
                         self.focus = Focus::Results;
                     }
                 }
@@ -4574,6 +4684,7 @@ impl App {
             }
             Action::SelectPrincipalAccess(section) => {
                 if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
+                    tab.access_find = None;
                     tab.access_section = section;
                     self.focus = Focus::Results;
                 }
@@ -4595,18 +4706,190 @@ impl App {
                         }
                     };
                     if count > 0 {
-                        let selected = (tab.access_selection() as isize + delta)
-                            .clamp(0, count.saturating_sub(1) as isize)
-                            as usize;
-                        tab.set_access_selection(selected);
-                        let visible_rows = 1usize;
-                        let offset = tab.access_offset();
-                        if selected < offset {
-                            tab.set_access_offset(selected);
-                        } else if selected >= offset + visible_rows {
-                            tab.set_access_offset(selected.saturating_sub(visible_rows - 1));
-                        }
+                        tab.move_access_selection(delta, count, tab.access_viewport_rows);
                         self.focus = Focus::Results;
+                    }
+                }
+                Vec::new()
+            }
+            Action::PagePrincipalAccess {
+                direction,
+                half_page,
+            } => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let count = match tab.access_section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    };
+                    tab.page_access(direction, half_page, count, tab.access_viewport_rows);
+                    self.focus = Focus::Results;
+                }
+                Vec::new()
+            }
+            Action::ScrollPrincipalAccess(delta) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let count = match tab.access_section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    };
+                    tab.scroll_access(delta, count, tab.access_viewport_rows);
+                    self.focus = Focus::Results;
+                }
+                Vec::new()
+            }
+            Action::SetPrincipalAccessOffset(offset) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(details) = tab.details.snapshot()
+                {
+                    let count = match tab.access_section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    };
+                    tab.set_access_scroll_offset(offset, count, tab.access_viewport_rows);
+                    self.focus = Focus::Results;
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessViewportChanged { tab_id, rows } => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) =
+                    self.tabs.iter_mut().find(|tab| tab.id() == tab_id)
+                    && tab.view == crate::model::principal::PrincipalView::Overview
+                {
+                    tab.access_viewport_rows = rows;
+                    if let Some(details) = tab.details.snapshot() {
+                        let count = match tab.access_section {
+                            crate::model::principal::PrincipalAccessSection::Permissions => {
+                                details.permissions.len()
+                            }
+                            crate::model::principal::PrincipalAccessSection::MemberOf => {
+                                details.member_of.len()
+                            }
+                            crate::model::principal::PrincipalAccessSection::Members => {
+                                details.members.len()
+                            }
+                        };
+                        tab.normalize_access_state(count, rows);
+                    }
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessFindOpen => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.view == crate::model::principal::PrincipalView::Overview
+                {
+                    tab.access_find = Some(crate::model::principal::PrincipalAccessFind {
+                        section: tab.access_section,
+                        phase: crate::model::principal::PrincipalFindPhase::Editing,
+                        query: crate::model::text_input::TextInput::default(),
+                        matches: Vec::new(),
+                        current: 0,
+                        original_selection: tab.access_selection(),
+                        original_offset: tab.access_offset(),
+                    });
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessFindEdit(edit) => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.access_find.as_mut()
+                    && find.phase == crate::model::principal::PrincipalFindPhase::Editing
+                {
+                    find.query.apply(edit);
+                }
+                self.refresh_principal_find_matches();
+                Vec::new()
+            }
+            Action::PrincipalAccessFindConfirm => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.access_find.as_mut()
+                {
+                    find.phase = crate::model::principal::PrincipalFindPhase::Confirmed;
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessFindNext | Action::PrincipalAccessFindPrevious => {
+                let delta = if matches!(action, Action::PrincipalAccessFindPrevious) {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.access_find.as_ref().is_some_and(|find| {
+                        find.phase == crate::model::principal::PrincipalFindPhase::Confirmed
+                    })
+                {
+                    let selected = tab.access_selection();
+                    let Some(find) = tab.access_find.as_mut() else {
+                        return Vec::new();
+                    };
+                    let Some(index) = find.advance_from(selected, delta) else {
+                        return Vec::new();
+                    };
+                    let section = find.section;
+                    tab.access_section = section;
+                    let count = tab.details.snapshot().map_or(0, |details| match section {
+                        crate::model::principal::PrincipalAccessSection::Permissions => {
+                            details.permissions.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::MemberOf => {
+                            details.member_of.len()
+                        }
+                        crate::model::principal::PrincipalAccessSection::Members => {
+                            details.members.len()
+                        }
+                    });
+                    tab.set_access_selection(index);
+                    tab.normalize_access_state(count, tab.access_viewport_rows);
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessFindClose => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && let Some(find) = tab.access_find.take()
+                {
+                    if find.phase == crate::model::principal::PrincipalFindPhase::Editing {
+                        tab.access_section = find.section;
+                        tab.set_access_selection(find.original_selection);
+                        tab.set_access_offset(find.original_offset);
+                        if let Some(details) = tab.details.snapshot() {
+                            let count = match find.section {
+                                crate::model::principal::PrincipalAccessSection::Permissions => {
+                                    details.permissions.len()
+                                }
+                                crate::model::principal::PrincipalAccessSection::MemberOf => {
+                                    details.member_of.len()
+                                }
+                                crate::model::principal::PrincipalAccessSection::Members => {
+                                    details.members.len()
+                                }
+                            };
+                            tab.normalize_access_state(count, tab.access_viewport_rows);
+                        }
                     }
                 }
                 Vec::new()
@@ -4628,6 +4911,7 @@ impl App {
                     };
                     if index < count {
                         tab.set_access_selection(index);
+                        tab.normalize_access_state(count, tab.access_viewport_rows);
                         self.focus = Focus::Results;
                     }
                 }
@@ -11690,6 +11974,9 @@ impl App {
             Action::SetPrincipalView(view) => {
                 if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab) {
                     tab.view = view;
+                    if view != crate::model::principal::PrincipalView::Overview {
+                        tab.access_find = None;
+                    }
                 }
                 Vec::new()
             }
@@ -11823,6 +12110,11 @@ impl App {
                 }
                 if let Some(details) = tab.details.snapshot().cloned() {
                     tab.clamp_access_state(&details);
+                }
+                let is_active = index == self.active_tab;
+                if is_active && tab.access_find.is_some() {
+                    let _ = tab;
+                    self.refresh_principal_find_matches();
                 }
                 Vec::new()
             }

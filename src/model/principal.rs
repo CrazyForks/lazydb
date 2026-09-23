@@ -7,6 +7,60 @@ use crate::db::principal::{
     PrincipalMutationDraft, PrincipalMutationSection, PrincipalMutationTarget,
 };
 use crate::identity::ConnectionIdentity;
+use crate::model::text_input::TextInput;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrincipalFindPhase {
+    Editing,
+    Confirmed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrincipalAccessFind {
+    pub section: PrincipalAccessSection,
+    pub phase: PrincipalFindPhase,
+    pub query: TextInput,
+    pub matches: Vec<usize>,
+    pub current: usize,
+    pub original_selection: usize,
+    pub original_offset: usize,
+}
+
+impl PrincipalAccessFind {
+    pub fn position(&self) -> (usize, usize) {
+        if self.matches.is_empty() {
+            (0, 0)
+        } else {
+            (self.current + 1, self.matches.len())
+        }
+    }
+
+    pub fn advance_from(&mut self, selection: usize, direction: isize) -> Option<usize> {
+        if self.matches.is_empty() {
+            return None;
+        }
+        let len = self.matches.len();
+        self.current =
+            if let Some(current) = self.matches.iter().position(|index| *index == selection) {
+                if direction < 0 {
+                    (current + len - 1) % len
+                } else {
+                    (current + 1) % len
+                }
+            } else if direction < 0 {
+                self.matches
+                    .iter()
+                    .rposition(|index| *index < selection)
+                    .unwrap_or(len - 1)
+            } else {
+                self.matches
+                    .iter()
+                    .position(|index| *index > selection)
+                    .unwrap_or(0)
+            };
+        self.matches.get(self.current).copied()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PrincipalView {
@@ -242,6 +296,8 @@ pub struct PrincipalDdlTab {
     pub member_of_offset: usize,
     pub members_selected: usize,
     pub members_offset: usize,
+    pub access_viewport_rows: usize,
+    pub access_find: Option<PrincipalAccessFind>,
     pub mutation_draft: Option<PrincipalMutationForm>,
 }
 
@@ -263,6 +319,8 @@ impl PrincipalDdlTab {
             member_of_offset: 0,
             members_selected: 0,
             members_offset: 0,
+            access_viewport_rows: 0,
+            access_find: None,
             mutation_draft: None,
         }
     }
@@ -320,6 +378,100 @@ impl PrincipalDdlTab {
             PrincipalAccessSection::MemberOf => self.member_of_offset = value,
             PrincipalAccessSection::Members => self.members_offset = value,
         }
+    }
+
+    pub fn normalize_access_state(&mut self, count: usize, visible_rows: usize) {
+        if count == 0 {
+            self.set_access_selection(0);
+            self.set_access_offset(0);
+            return;
+        }
+
+        let selected = self.access_selection().min(count - 1);
+        let visible_rows = visible_rows.min(count);
+        let max_offset = count.saturating_sub(visible_rows);
+        let mut offset = self.access_offset().min(max_offset);
+        if visible_rows > 0 {
+            if selected < offset {
+                offset = selected;
+            } else if selected >= offset.saturating_add(visible_rows) {
+                offset = selected.saturating_sub(visible_rows - 1).min(max_offset);
+            }
+        }
+        self.set_access_selection(selected);
+        self.set_access_offset(offset);
+    }
+
+    pub fn move_access_selection(&mut self, delta: isize, count: usize, visible_rows: usize) {
+        if count == 0 {
+            self.normalize_access_state(count, visible_rows);
+            return;
+        }
+        let selected = self
+            .access_selection()
+            .min(count - 1)
+            .saturating_add_signed(delta)
+            .min(count - 1);
+        self.set_access_selection(selected);
+        self.normalize_access_state(count, visible_rows);
+    }
+
+    pub fn scroll_access(&mut self, delta: isize, count: usize, visible_rows: usize) {
+        self.normalize_access_state(count, visible_rows);
+        if count == 0 || visible_rows == 0 {
+            return;
+        }
+        let max_offset = count.saturating_sub(visible_rows);
+        let offset = self
+            .access_offset()
+            .saturating_add_signed(delta)
+            .min(max_offset);
+        self.set_access_offset(offset);
+        let selected = self
+            .access_selection()
+            .clamp(offset, offset + visible_rows - 1);
+        self.set_access_selection(selected);
+    }
+
+    pub fn set_access_scroll_offset(&mut self, offset: usize, count: usize, visible_rows: usize) {
+        if count == 0 {
+            self.normalize_access_state(count, visible_rows);
+            return;
+        }
+        let visible_rows = visible_rows.min(count);
+        if visible_rows == 0 {
+            self.normalize_access_state(count, visible_rows);
+            return;
+        }
+        let offset = offset.min(count.saturating_sub(visible_rows));
+        self.set_access_offset(offset);
+        self.set_access_selection(
+            self.access_selection()
+                .clamp(offset, offset + visible_rows - 1),
+        );
+    }
+
+    pub fn page_access(
+        &mut self,
+        direction: isize,
+        half_page: bool,
+        count: usize,
+        visible_rows: usize,
+    ) {
+        if visible_rows == 0 || count == 0 || direction == 0 {
+            return;
+        }
+        let page = if half_page {
+            (visible_rows / 2).max(1)
+        } else {
+            visible_rows
+        };
+        let delta = if direction.is_negative() {
+            -(page.min(isize::MAX as usize) as isize)
+        } else {
+            page.min(isize::MAX as usize) as isize
+        };
+        self.move_access_selection(delta, count, visible_rows);
     }
 
     pub fn clamp_access_state(&mut self, details: &PrincipalDetails) {

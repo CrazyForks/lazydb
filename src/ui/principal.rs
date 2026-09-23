@@ -217,7 +217,8 @@ fn render_overview(
         section_x = section_x.saturating_add(width);
     }
     lines.push(section_line);
-    let header_y = inner.y.saturating_add(1);
+    let find_row = tab.access_find.is_some();
+    let header_y = inner.y.saturating_add(1 + u16::from(find_row));
     let body_y = header_y.saturating_add(1);
     let footer_y = inner.bottom().saturating_sub(1);
     lines.push(Line::styled(
@@ -226,7 +227,47 @@ fn render_overview(
             .fg(theme.grid_header_text)
             .bg(theme.grid_header),
     ));
+    if let Some(find) = tab.access_find.as_ref() {
+        let (current, total) = find.position();
+        lines.insert(
+            1,
+            Line::styled(
+                format!(
+                    "/{}  {current}/{total}   Enter confirm  Esc close  n/N next/prev",
+                    find.query.value()
+                ),
+                Style::new().fg(theme.action).bg(theme.surface),
+            ),
+        );
+    }
+    let scrollbar_width = u16::from(inner.width > 1);
+    let body_width = inner.width.saturating_sub(scrollbar_width);
     let visible = footer_y.saturating_sub(body_y) as usize;
+    let body = Rect::new(inner.x, body_y, body_width, visible as u16);
+    state.principal_access_viewport = Some((tab.id, visible, body));
+    if !body.is_empty() {
+        state.hit_regions.push(HitRegion {
+            area: body,
+            target: HitTarget::PrincipalAccessBody {
+                tab_id: tab.id,
+                section: tab.access_section,
+            },
+        });
+    }
+    if let Some(find) = tab.access_find.as_ref()
+        && find.phase == crate::model::principal::PrincipalFindPhase::Editing
+    {
+        state.cursor = Some(super::CursorSpec {
+            position: ratatui::layout::Position::new(
+                inner
+                    .x
+                    .saturating_add(1)
+                    .saturating_add(find.query.value().width().min(inner.width as usize) as u16),
+                inner.y.saturating_add(1),
+            ),
+            style: super::CursorStyle::Bar,
+        });
+    }
     if let Some(details) = tab.details.snapshot() {
         let (count, stored_offset) = access_count_offset(tab, details);
         let offset = if visible == 0 {
@@ -244,14 +285,21 @@ fn render_overview(
                 tab.access_section,
                 details,
                 index,
-                inner.width,
+                body_width,
                 selected,
                 focused,
                 theme,
             );
+            let line = tab
+                .access_find
+                .as_ref()
+                .filter(|find| find.matches.contains(&index))
+                .map_or(line.clone(), |find| {
+                    highlight_access_line(line, find.query.value(), selected, focused, theme)
+                });
             lines.push(line);
             state.hit_regions.push(HitRegion {
-                area: Rect::new(inner.x, body_y.saturating_add(row as u16), inner.width, 1),
+                area: Rect::new(inner.x, body_y.saturating_add(row as u16), body_width, 1),
                 target: HitTarget::PrincipalAccessItem(index),
             });
         }
@@ -292,6 +340,56 @@ fn render_overview(
     };
     lines.push(Line::styled(hint, Style::new().fg(theme.muted)));
     frame.render_widget(Paragraph::new(lines).block(block), chunks[2]);
+    if let Some(details) = tab.details.snapshot() {
+        let (count, offset) = access_count_offset(tab, details);
+        let track = Rect::new(
+            inner.right().saturating_sub(1),
+            body_y,
+            1,
+            visible.min(u16::MAX as usize) as u16,
+        );
+        if let Some(geometry) = super::scrollbar::geometry(track, visible, count, offset) {
+            super::scrollbar::render_vertical(frame, track, geometry, theme);
+            let before = geometry.thumb_start;
+            let after = geometry
+                .rail
+                .height
+                .saturating_sub(before)
+                .saturating_sub(geometry.thumb_length);
+            if before > 0 {
+                state.hit_regions.push(HitRegion {
+                    area: Rect::new(track.x, track.y.saturating_add(1), 1, before),
+                    target: HitTarget::PrincipalAccessScrollbarPage {
+                        tab_id: tab.id,
+                        section: tab.access_section,
+                        offset: offset.saturating_sub(visible),
+                    },
+                });
+            }
+            state.hit_regions.push(HitRegion {
+                area: geometry.thumb_area(),
+                target: HitTarget::PrincipalAccessScrollbarThumb {
+                    tab_id: tab.id,
+                    section: tab.access_section,
+                    track_start: geometry.rail.y,
+                    track_length: geometry.rail.height,
+                    thumb_start: geometry.thumb_area().y,
+                    thumb_length: geometry.thumb_length,
+                    max_offset: geometry.max_offset,
+                },
+            });
+            if after > 0 {
+                state.hit_regions.push(HitRegion {
+                    area: Rect::new(track.x, geometry.thumb_area().bottom(), 1, after),
+                    target: HitTarget::PrincipalAccessScrollbarPage {
+                        tab_id: tab.id,
+                        section: tab.access_section,
+                        offset: offset.saturating_add(visible).min(geometry.max_offset),
+                    },
+                });
+            }
+        }
+    }
 }
 
 fn access_section_label(
@@ -321,6 +419,47 @@ fn access_count_offset(
         access_section_label(tab.access_section, Some(details)).1,
         tab.access_offset(),
     )
+}
+
+fn highlight_access_line(
+    line: Line<'static>,
+    query: &str,
+    selected: bool,
+    focused: bool,
+    theme: Theme,
+) -> Line<'static> {
+    let selection_background = if selected && focused {
+        theme.selection
+    } else {
+        theme.surface
+    };
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let text = span.content.into_owned();
+        let ranges = crate::db::catalog::search_text_match_ranges(&text, query);
+        if ranges.is_empty() {
+            spans.push(Span::styled(text, span.style));
+            continue;
+        }
+        let mut cursor = 0;
+        for (start, end) in ranges {
+            if cursor < start {
+                spans.push(Span::styled(text[cursor..start].to_owned(), span.style));
+            }
+            spans.push(Span::styled(
+                text[start..end].to_owned(),
+                Style::new()
+                    .fg(theme.warning)
+                    .bg(selection_background)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            cursor = end;
+        }
+        if cursor < text.len() {
+            spans.push(Span::styled(text[cursor..].to_owned(), span.style));
+        }
+    }
+    Line::from(spans)
 }
 
 fn shorten(value: &str, width: usize) -> String {

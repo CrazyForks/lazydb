@@ -6491,6 +6491,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
         sync_grid_viewport(&mut app, &mut runtime, &ui_state);
         sync_record_view_fields(&mut app, &mut runtime, &ui_state);
         sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+        sync_principal_access_viewport(&mut app, &mut runtime, &ui_state);
         sync_panel_viewports(&mut app, &mut runtime, &ui_state);
         sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
         sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
@@ -6735,6 +6736,7 @@ pub async fn run_tui(cli: Cli) -> Result<RunOutcome> {
                 sync_grid_viewport(&mut app, &mut runtime, &ui_state);
                 sync_record_view_fields(&mut app, &mut runtime, &ui_state);
                 sync_explorer_viewport(&mut app, &mut runtime, &ui_state);
+                sync_principal_access_viewport(&mut app, &mut runtime, &ui_state);
                 sync_panel_viewports(&mut app, &mut runtime, &ui_state);
                 sync_redis_keys_viewport(&mut app, &mut runtime, &ui_state);
                 sync_redis_preview_viewport(&mut app, &mut runtime, &ui_state);
@@ -7089,6 +7091,25 @@ fn sync_explorer_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState)
     };
     if app.explorer.normalized.viewport_height != rows {
         apply_action(app, runtime, Action::ExplorerViewportChanged(rows));
+    }
+}
+
+fn sync_principal_access_viewport(app: &mut App, runtime: &mut Runtime, state: &UiState) {
+    let Some((tab_id, rows, _)) = state.principal_access_viewport else {
+        return;
+    };
+    let current = app.tabs.iter().find_map(|tab| match tab {
+        crate::model::tab::WorkspaceTab::PrincipalDdl(tab) if tab.id == tab_id => {
+            Some(tab.access_viewport_rows)
+        }
+        _ => None,
+    });
+    if current != Some(rows) {
+        apply_action(
+            app,
+            runtime,
+            Action::PrincipalAccessViewportChanged { tab_id, rows },
+        );
     }
 }
 

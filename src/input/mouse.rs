@@ -245,6 +245,48 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 .offset_at(event.row, drag.pointer_offset);
                 return Some(Action::ExplorerSetScrollOffset(offset));
             }
+            let principal_access_drag = *ui.principal_access_scrollbar_drag.borrow();
+            if let Some(drag) = principal_access_drag {
+                if !principal_access_drag_is_current(drag, app) || app.overlay.is_some() {
+                    ui.principal_access_scrollbar_drag.borrow_mut().take();
+                    ui.mouse_gesture.borrow_mut().take();
+                    return None;
+                }
+                let current_metrics = ui
+                    .principal_access_viewport
+                    .filter(|(tab_id, _, _)| *tab_id == drag.tab_id)
+                    .and_then(|(_, rows, body)| {
+                        app.tabs.get(app.active_tab).and_then(|tab| match tab {
+                            WorkspaceTab::PrincipalDdl(tab) => tab.details.snapshot().map(|details| {
+                                let count = match drag.section {
+                                    crate::model::principal::PrincipalAccessSection::Permissions => details.permissions.len(),
+                                    crate::model::principal::PrincipalAccessSection::MemberOf => details.member_of.len(),
+                                    crate::model::principal::PrincipalAccessSection::Members => details.members.len(),
+                                };
+                                (count.saturating_sub(rows), body.height.saturating_sub(2))
+                            }),
+                            _ => None,
+                        })
+                    });
+                let Some((max_offset, current_track_length)) = current_metrics else {
+                    ui.principal_access_scrollbar_drag.borrow_mut().take();
+                    ui.mouse_gesture.borrow_mut().take();
+                    return None;
+                };
+                if current_track_length != drag.track_length {
+                    ui.principal_access_scrollbar_drag.borrow_mut().take();
+                    ui.mouse_gesture.borrow_mut().take();
+                    return None;
+                }
+                let offset = crate::ui::scrollbar::ScrollbarGeometry {
+                    rail: ratatui::layout::Rect::new(0, drag.track_start, 1, drag.track_length),
+                    thumb_start: 0,
+                    thumb_length: drag.thumb_length,
+                    max_offset,
+                }
+                .offset_at(event.row, drag.pointer_offset);
+                return Some(Action::SetPrincipalAccessOffset(offset));
+            }
             if let Some(drag) = *ui.editor_scrollbar_drag.borrow() {
                 let pointer_position = if drag.vertical {
                     event.row
@@ -357,11 +399,17 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             let was_editor_scrollbar_drag = ui.editor_scrollbar_drag.borrow_mut().take().is_some();
             let was_explorer_scrollbar_drag =
                 ui.explorer_scrollbar_drag.borrow_mut().take().is_some();
+            let was_principal_access_scrollbar_drag = ui
+                .principal_access_scrollbar_drag
+                .borrow_mut()
+                .take()
+                .is_some();
             let was_panel_scrollbar_drag = ui.panel_scrollbar_drag.borrow_mut().take().is_some();
             if was_column_resize
                 || was_scrollbar_drag
                 || was_editor_scrollbar_drag
                 || was_explorer_scrollbar_drag
+                || was_principal_access_scrollbar_drag
                 || was_panel_scrollbar_drag
             {
                 ui.mouse_gesture.borrow_mut().take();
@@ -391,6 +439,7 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
             ui.grid_scrollbar_drag.borrow_mut().take();
             ui.editor_scrollbar_drag.borrow_mut().take();
             ui.explorer_scrollbar_drag.borrow_mut().take();
+            ui.principal_access_scrollbar_drag.borrow_mut().take();
             ui.pane_resize_drag.borrow_mut().take();
             if let Some(overlay) = app.overlay.as_ref()
                 && let Some((session_id, revision, source)) = match overlay {
@@ -930,6 +979,52 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                     crate::ui::GridScrollAxis::Horizontal => Action::GridSetColumnOffset { offset },
                     crate::ui::GridScrollAxis::Vertical => Action::GridSetRowOffset { offset },
                 }),
+                HitTarget::PrincipalAccessScrollbarPage {
+                    tab_id,
+                    section,
+                    offset,
+                } if principal_access_target_is_current(tab_id, section, app) => {
+                    Some(Action::SetPrincipalAccessOffset(offset))
+                }
+                HitTarget::PrincipalAccessBody { tab_id, section }
+                    if principal_access_target_is_current(tab_id, section, app) =>
+                {
+                    Some(Action::Focus(Focus::Results))
+                }
+                HitTarget::PrincipalAccessScrollbarThumb {
+                    tab_id,
+                    section,
+                    track_start,
+                    track_length,
+                    thumb_start,
+                    thumb_length,
+                    max_offset,
+                } if principal_access_target_is_current(tab_id, section, app) => {
+                    *ui.principal_access_scrollbar_drag.borrow_mut() =
+                        Some(crate::ui::PrincipalAccessScrollbarDrag {
+                            tab_id,
+                            section,
+                            track_start,
+                            track_length,
+                            thumb_length,
+                            pointer_offset: event.row.saturating_sub(thumb_start),
+                            max_offset,
+                        });
+                    *ui.mouse_gesture.borrow_mut() =
+                        Some(crate::ui::text_selection::GestureOwner::GridScrollbar);
+                    Some(Action::SetPrincipalAccessOffset(
+                        crate::ui::scrollbar::ScrollbarGeometry {
+                            rail: ratatui::layout::Rect::new(0, track_start, 1, track_length),
+                            thumb_start: 0,
+                            thumb_length,
+                            max_offset,
+                        }
+                        .offset_at(event.row, event.row.saturating_sub(thumb_start)),
+                    ))
+                }
+                HitTarget::PrincipalAccessBody { .. }
+                | HitTarget::PrincipalAccessScrollbarPage { .. } => None,
+                HitTarget::PrincipalAccessScrollbarThumb { .. } => None,
                 HitTarget::ExplorerScrollbarPage { offset } => {
                     Some(Action::ExplorerSetScrollOffset(offset))
                 }
@@ -1215,11 +1310,10 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 app.tabs.get(app.active_tab),
                 Some(WorkspaceTab::PrincipalDdl(tab))
                     if tab.view == crate::model::principal::PrincipalView::Overview
-            ) && ui
-                .target_at(event.column, event.row)
-                .is_some_and(|target| matches!(target, HitTarget::PrincipalAccessItem(_)))
-            {
-                return Some(Action::MovePrincipalAccess(3));
+            ) && ui.principal_access_viewport.is_some_and(|(_, _, _)| {
+                principal_access_body_contains(ui, event.column, event.row)
+            }) {
+                return Some(Action::ScrollPrincipalAccess(3));
             }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
                 Focus::Explorer => Some(Action::ExplorerScrollNodes {
@@ -1337,11 +1431,9 @@ pub fn map_mouse(event: MouseEvent, ui: &UiState, app: &App) -> Option<Action> {
                 app.tabs.get(app.active_tab),
                 Some(WorkspaceTab::PrincipalDdl(tab))
                     if tab.view == crate::model::principal::PrincipalView::Overview
-            ) && ui
-                .target_at(event.column, event.row)
-                .is_some_and(|target| matches!(target, HitTarget::PrincipalAccessItem(_)))
+            ) && principal_access_body_contains(ui, event.column, event.row)
             {
-                return Some(Action::MovePrincipalAccess(-3));
+                return Some(Action::ScrollPrincipalAccess(-3));
             }
             match focus_at(ui, event.column, event.row).unwrap_or(app.focus) {
                 Focus::Explorer => Some(Action::ExplorerScrollNodes {
@@ -1603,6 +1695,9 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         HitTarget::PrincipalPermission(_) => Some(Focus::Results),
         HitTarget::PrincipalAccessSection(_)
         | HitTarget::PrincipalAccessItem(_)
+        | HitTarget::PrincipalAccessBody { .. }
+        | HitTarget::PrincipalAccessScrollbarPage { .. }
+        | HitTarget::PrincipalAccessScrollbarThumb { .. }
         | HitTarget::PrincipalAccessDetails => Some(Focus::Results),
         HitTarget::PrincipalMutationForm => None,
         HitTarget::ClearTransactionConfirm | HitTarget::ClearTransactionCancel => None,
@@ -1623,6 +1718,29 @@ fn focus_at(ui: &UiState, column: u16, row: u16) -> Option<Focus> {
         | HitTarget::ResultLastPage => Some(Focus::Results),
         HitTarget::Shortcut(_) => None,
     }
+}
+
+fn principal_access_target_is_current(
+    tab_id: uuid::Uuid,
+    section: crate::model::principal::PrincipalAccessSection,
+    app: &App,
+) -> bool {
+    matches!(app.tabs.get(app.active_tab), Some(WorkspaceTab::PrincipalDdl(tab))
+        if tab.id == tab_id
+            && tab.view == crate::model::principal::PrincipalView::Overview
+            && tab.access_section == section)
+}
+
+fn principal_access_drag_is_current(
+    drag: crate::ui::PrincipalAccessScrollbarDrag,
+    app: &App,
+) -> bool {
+    principal_access_target_is_current(drag.tab_id, drag.section, app)
+}
+
+fn principal_access_body_contains(ui: &UiState, column: u16, row: u16) -> bool {
+    ui.principal_access_viewport
+        .is_some_and(|(_, _, body)| body.contains(ratatui::layout::Position::new(column, row)))
 }
 
 fn is_relation_ddl_focus(app: &App) -> bool {
