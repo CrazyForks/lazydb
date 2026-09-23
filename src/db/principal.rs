@@ -277,7 +277,7 @@ impl PrincipalMutationDraft {
             PrincipalMutation::Revoke {
                 target: self.target.clone(),
                 privilege: self.privilege.clone(),
-                grant_option: false,
+                grant_option: self.grant_option,
             }
         }
     }

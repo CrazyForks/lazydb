@@ -221,8 +221,10 @@ fn render_overview(
     let header_y = inner.y.saturating_add(1 + u16::from(find_row));
     let body_y = header_y.saturating_add(1);
     let footer_y = inner.bottom().saturating_sub(1);
+    let scrollbar_width = u16::from(inner.width > 1);
+    let body_width = inner.width.saturating_sub(scrollbar_width);
     lines.push(Line::styled(
-        access_header(tab.access_section, inner.width),
+        access_header(tab.access_section, body_width),
         Style::new()
             .fg(theme.grid_header_text)
             .bg(theme.grid_header),
@@ -240,8 +242,6 @@ fn render_overview(
             ),
         );
     }
-    let scrollbar_width = u16::from(inner.width > 1);
-    let body_width = inner.width.saturating_sub(scrollbar_width);
     let visible = footer_y.saturating_sub(body_y) as usize;
     let body = Rect::new(inner.x, body_y, body_width, visible as u16);
     state.principal_access_viewport = Some((tab.id, visible, body));
@@ -331,12 +331,12 @@ fn render_overview(
             if tab.access_section
                 == crate::model::principal::PrincipalAccessSection::Permissions =>
         {
-            "↑/↓ select  ←/→ section  Enter details  g/v grant/revoke  r refresh  o DDL"
+            "↑/↓ select  ←/→ section  gg/G ends  y copy  v details  e edit  (only structured direct grants)  r refresh  o DDL"
         }
         Some(crate::db::principal::PrincipalCapability::Details) => {
-            "↑/↓ select  ←/→ section  Enter details  read-only  r refresh  o DDL"
+            "↑/↓ select  ←/→ section  gg/G ends  y copy  v details  read-only  r refresh  o DDL"
         }
-        _ => "↑/↓ select  ←/→ section  Enter details  r refresh  o DDL",
+        _ => "↑/↓ select  ←/→ section  gg/G ends  y copy  v details  read-only  r refresh  o DDL",
     };
     lines.push(Line::styled(hint, Style::new().fg(theme.muted)));
     frame.render_widget(Paragraph::new(lines).block(block), chunks[2]);
@@ -464,30 +464,61 @@ fn highlight_access_line(
 
 fn shorten(value: &str, width: usize) -> String {
     let value = crate::security::sanitize_terminal_text(value).replace(['\n', '\t'], " ");
-    if value.width() <= width {
-        return format!("{value:<width$}");
-    }
-    if width <= 1 {
-        return "…".to_owned();
-    }
     let mut result = String::new();
+    if width == 0 {
+        return result;
+    }
+    let value_width = value.width();
+    let truncated = value_width > width;
+    let content_width = if truncated {
+        width.saturating_sub(1)
+    } else {
+        width
+    };
+    let mut used = 0_usize;
     for ch in value.chars() {
-        if result.width() + ch.to_string().width() + 1 >= width {
+        let ch_width = ch.to_string().width();
+        if used.saturating_add(ch_width) > content_width {
             break;
         }
         result.push(ch);
+        used += ch_width;
     }
-    format!("{result}…")
+    if truncated && width > 0 {
+        result.push('…');
+        used += 1;
+    }
+    result.push_str(&" ".repeat(width.saturating_sub(used)));
+    result
+}
+
+#[derive(Clone, Copy)]
+struct PermissionColumnWidths {
+    target: usize,
+    privilege: usize,
+    origin: usize,
+}
+
+fn permission_column_widths(width: u16) -> PermissionColumnWidths {
+    PermissionColumnWidths {
+        target: usize::from(width.saturating_sub(30)),
+        privilege: 15,
+        origin: 9,
+    }
 }
 
 fn access_header(section: crate::model::principal::PrincipalAccessSection, width: u16) -> String {
-    if width < 56 {
-        return "  Entry".to_owned();
-    }
     match section {
-        crate::model::principal::PrincipalAccessSection::Permissions => {
-            "  Target                         Privilege       Origin".to_owned()
+        crate::model::principal::PrincipalAccessSection::Permissions if width >= 56 => {
+            let columns = permission_column_widths(width);
+            format!(
+                "  {}  {}  {}",
+                shorten("Target", columns.target),
+                shorten("Privilege", columns.privilege),
+                shorten("Origin", columns.origin)
+            )
         }
+        crate::model::principal::PrincipalAccessSection::Permissions => "  Entry".to_owned(),
         crate::model::principal::PrincipalAccessSection::MemberOf => {
             "  Role                                           Admin option".to_owned()
         }
@@ -516,6 +547,7 @@ fn access_line(
     };
     if section == crate::model::principal::PrincipalAccessSection::Permissions && width >= 56 {
         let permission = &details.permissions[index];
+        let columns = permission_column_widths(width);
         let source = source_label(permission.source_kind);
         let source_style = match permission.source_kind {
             crate::db::principal::PrincipalPermissionSource::Direct => {
@@ -534,27 +566,24 @@ fn access_line(
         });
         return Line::from(vec![
             Span::styled(format!("{prefix} "), row_style),
-            Span::styled(shorten(&permission.target, 28), row_style),
+            Span::styled(shorten(&permission.target, columns.target), row_style),
             Span::styled("  ", row_style),
             Span::styled(
-                shorten(&permission.privilege, 15),
+                shorten(&permission.privilege, columns.privilege),
                 Style::new()
                     .fg(theme.action)
                     .bg(row_style.bg.unwrap_or(theme.surface)),
             ),
             Span::styled("  ", row_style),
-            Span::styled(shorten(source, 9), source_style),
+            Span::styled(shorten(source, columns.origin), source_style),
         ]);
     }
     let base = match section {
         crate::model::principal::PrincipalAccessSection::Permissions => {
             let p = &details.permissions[index];
-            format!(
-                "{prefix} {}  {}  {}",
-                shorten(&p.target, 28),
-                shorten(&p.privilege, 15),
-                source_label(p.source_kind)
-            )
+            let available = usize::from(width.saturating_sub(1));
+            let target_width = available.min(p.target.width());
+            format!("{prefix} {}", shorten(&p.target, target_width))
         }
         crate::model::principal::PrincipalAccessSection::MemberOf => {
             let m = &details.member_of[index];

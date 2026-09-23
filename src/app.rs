@@ -576,6 +576,11 @@ impl App {
         ))
     }
 
+    fn principal_access_copy_text(&self) -> Option<String> {
+        self.principal_access_detail_request()
+            .map(|request| request.copy_text)
+    }
+
     fn principal_access_match_fields(
         details: &crate::db::principal::PrincipalDetails,
         section: crate::model::principal::PrincipalAccessSection,
@@ -4613,13 +4618,19 @@ impl App {
             }
             Action::TogglePrincipalMutationFormField => {
                 if let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.as_mut() {
-                    form.next_field();
+                    form.next_permission_field();
                 }
                 Vec::new()
             }
             Action::TogglePrincipalMutationFormOption => {
                 if let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.as_mut() {
                     form.toggle_option();
+                }
+                Vec::new()
+            }
+            Action::TogglePrincipalMutationFormOperation => {
+                if let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.as_mut() {
+                    form.toggle_operation();
                 }
                 Vec::new()
             }
@@ -4631,25 +4642,39 @@ impl App {
                 let Some(Overlay::PrincipalMutationForm(form)) = self.overlay.take() else {
                     return Vec::new();
                 };
-                let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
+                let Some(tab_id) = form.tab_id else {
                     return Vec::new();
                 };
-                let Some(connection) = self.principal_connection(tab.entry.id.profile_id) else {
+                let Some(index) = self.tabs.iter().position(
+                    |tab| matches!(tab, WorkspaceTab::PrincipalDdl(tab) if tab.id == tab_id),
+                ) else {
                     return Vec::new();
                 };
+                let Some(principal) = form.principal.as_ref() else {
+                    return Vec::new();
+                };
+                let Some(connection) = self.principal_connection(principal.id.profile_id) else {
+                    return Vec::new();
+                };
+                let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(index) else {
+                    return Vec::new();
+                };
+                if Some(tab.generation) != form.tab_generation
+                    || tab.entry.id != principal.id
+                    || Some(connection) != form.connection
+                {
+                    return Vec::new();
+                }
                 let Some(request_id) = tab.next_request_id.checked_add(1) else {
                     return Vec::new();
                 };
+                tab.next_request_id = request_id;
                 vec![Command::PlanPrincipalMutation(
                     crate::db::principal::PrincipalMutationRequest {
                         connection,
                         request_id,
-                        principal: tab.entry.clone(),
-                        database: self
-                            .profiles
-                            .iter()
-                            .find(|profile| profile.id == tab.entry.id.profile_id)
-                            .and_then(|profile| profile.database.clone()),
+                        principal: principal.clone(),
+                        database: form.database,
                         mutation: form.draft.mutation(),
                     },
                 )]
@@ -4709,6 +4734,32 @@ impl App {
                         tab.move_access_selection(delta, count, tab.access_viewport_rows);
                         self.focus = Focus::Results;
                     }
+                }
+                Vec::new()
+            }
+            Action::PrincipalAccessSelectFirst | Action::PrincipalAccessSelectLast => {
+                if let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get_mut(self.active_tab)
+                    && tab.view == crate::model::principal::PrincipalView::Overview
+                {
+                    let count =
+                        tab.details
+                            .snapshot()
+                            .map_or(0, |details| match tab.access_section {
+                                crate::model::principal::PrincipalAccessSection::Permissions => {
+                                    details.permissions.len()
+                                }
+                                crate::model::principal::PrincipalAccessSection::MemberOf => {
+                                    details.member_of.len()
+                                }
+                                crate::model::principal::PrincipalAccessSection::Members => {
+                                    details.members.len()
+                                }
+                            });
+                    tab.select_access_target(
+                        matches!(action, Action::PrincipalAccessSelectLast),
+                        count,
+                        tab.access_viewport_rows,
+                    );
                 }
                 Vec::new()
             }
@@ -10866,6 +10917,16 @@ impl App {
             Action::CopyEditorStatement => self.copy_editor_statement(),
             Action::CopyEditorBuffer => self.copy_editor_buffer(),
             Action::CopyGridCell => self.copy_grid_cell(),
+            Action::CopyPrincipalAccess => self
+                .principal_access_copy_text()
+                .map(|text| {
+                    vec![Command::WriteClipboard(ClipboardPayload {
+                        text,
+                        description: "principal access entry".to_owned(),
+                        sensitive: false,
+                    })]
+                })
+                .unwrap_or_default(),
             Action::CopyGridRow { include_headers } => self.copy_grid_row(include_headers),
             Action::ClipboardWriteFailed { message } => {
                 self.notify_error("Clipboard", &message);
@@ -11984,26 +12045,97 @@ impl App {
                 let Some(WorkspaceTab::PrincipalDdl(tab)) = self.tabs.get(self.active_tab) else {
                     return Vec::new();
                 };
+                if tab.access_section
+                    != crate::model::principal::PrincipalAccessSection::Permissions
+                {
+                    self.notify_warning(
+                        "Principal",
+                        "Membership editing is not supported from this access view",
+                    );
+                    return Vec::new();
+                }
                 let Some(details) = tab.details.snapshot() else {
                     self.notify_warning("Principal", "Permissions are still loading");
                     return Vec::new();
                 };
                 let Some(permission) = details.permissions.get(tab.selected_permission) else {
-                    self.notify_warning("Principal", "No structured permission is available");
-                    return Vec::new();
-                };
-                let Some(target) = permission.mutation_target.clone() else {
-                    self.notify_warning("Principal", "This permission target is not editable yet");
+                    self.notify_warning("Principal", "No permission is selected in this section");
                     return Vec::new();
                 };
                 if permission.source_kind != crate::db::principal::PrincipalPermissionSource::Direct
                 {
+                    let reason = match permission.source_kind {
+                        crate::db::principal::PrincipalPermissionSource::Public => {
+                            "PUBLIC permission is shared, not a direct grant to this principal"
+                        }
+                        crate::db::principal::PrincipalPermissionSource::Owner => {
+                            "Ownership is not a GRANT/REVOKE permission and cannot be edited here"
+                        }
+                        crate::db::principal::PrincipalPermissionSource::Default => {
+                            "Default ACL requires ALTER DEFAULT PRIVILEGES, not a direct GRANT/REVOKE"
+                        }
+                        crate::db::principal::PrincipalPermissionSource::Inherited => {
+                            "Inherited permission must be changed at its granting role"
+                        }
+                        crate::db::principal::PrincipalPermissionSource::Direct => unreachable!(),
+                    };
+                    self.notify_warning("Principal", reason);
+                    return Vec::new();
+                }
+                let Some(target) = permission.mutation_target.clone() else {
                     self.notify_warning(
                         "Principal",
-                        "Only direct permissions can be revoked from this view",
+                        "This direct permission has no structured editable target in the database adapter",
+                    );
+                    return Vec::new();
+                };
+                let target_kind = match target {
+                    crate::db::principal::PrincipalMutationTarget::Database => {
+                        crate::db::principal::PrincipalMutationTargetKind::Database
+                    }
+                    crate::db::principal::PrincipalMutationTarget::Schema { .. } => {
+                        crate::db::principal::PrincipalMutationTargetKind::Schema
+                    }
+                    crate::db::principal::PrincipalMutationTarget::Relation { .. } => {
+                        crate::db::principal::PrincipalMutationTargetKind::Relation
+                    }
+                    crate::db::principal::PrincipalMutationTarget::Column { .. } => {
+                        crate::db::principal::PrincipalMutationTargetKind::Column
+                    }
+                };
+                let supports_mutation = self
+                    .profiles
+                    .iter()
+                    .find(|profile| profile.id == tab.entry.id.profile_id)
+                    .is_some_and(|profile| profile.kind == DatabaseKind::Postgres)
+                    && matches!(
+                        target_kind,
+                        crate::db::principal::PrincipalMutationTargetKind::Database
+                            | crate::db::principal::PrincipalMutationTargetKind::Schema
+                            | crate::db::principal::PrincipalMutationTargetKind::Relation
+                            | crate::db::principal::PrincipalMutationTargetKind::Column
+                    )
+                    && ["SELECT", "INSERT", "UPDATE", "DELETE", "USAGE", "EXECUTE"]
+                        .iter()
+                        .any(|privilege| privilege.eq_ignore_ascii_case(&permission.privilege));
+                if !supports_mutation {
+                    self.notify_warning(
+                        "Principal",
+                        "This database adapter does not support editing this permission target and privilege",
                     );
                     return Vec::new();
                 }
+                let Some(connection) = self.principal_connection(tab.entry.id.profile_id) else {
+                    self.notify_warning(
+                        "Principal",
+                        "Connect to this principal's database before editing",
+                    );
+                    return Vec::new();
+                };
+                let tab_id = tab.id;
+                let tab_generation = tab.generation;
+                let principal = tab.entry.clone();
+                let database = details.database.clone();
                 let draft = crate::db::principal::PrincipalMutationDraft {
                     section: crate::db::principal::PrincipalMutationSection::Permission,
                     grant,
@@ -12017,6 +12149,11 @@ impl App {
                     crate::model::principal::PrincipalMutationForm {
                         draft,
                         selected_field: crate::model::principal::PrincipalMutationField::Operation,
+                        tab_id: Some(tab_id),
+                        tab_generation: Some(tab_generation),
+                        connection: Some(connection),
+                        principal: Some(principal),
+                        database,
                     },
                 )));
                 Vec::new()

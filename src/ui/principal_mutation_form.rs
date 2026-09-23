@@ -30,25 +30,38 @@ pub(crate) fn render(
         .split(inner);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::raw(format!("Section: {:?}", form.draft.section)),
-            Line::raw(format!(
-                "Operation: {}",
-                if form.draft.grant { "GRANT" } else { "REVOKE" }
-            )),
             Line::raw(format!("Target: {:?}", form.draft.target)),
             Line::raw(format!("Privilege: {}", form.draft.privilege)),
-            Line::raw(format!(
-                "Role: {}",
-                form.draft.role.as_deref().unwrap_or("—")
-            )),
-            Line::raw(format!(
-                "Option: {}",
-                if form.draft.grant_option || form.draft.admin_option {
-                    "ON"
+            Line::styled(
+                format!(
+                    "Operation: {}  (o toggles)",
+                    if form.draft.grant { "GRANT" } else { "REVOKE" }
+                ),
+                if form.selected_field == crate::model::principal::PrincipalMutationField::Operation
+                {
+                    Style::new().fg(theme.action).add_modifier(Modifier::BOLD)
                 } else {
-                    "OFF"
-                }
-            )),
+                    Style::new()
+                },
+            ),
+            Line::styled(
+                format!(
+                    "{}: {}",
+                    if form.draft.grant {
+                        "WITH GRANT OPTION"
+                    } else {
+                        "GRANT OPTION ONLY"
+                    },
+                    if form.draft.grant_option { "ON" } else { "OFF" }
+                ),
+                if form.selected_field
+                    == crate::model::principal::PrincipalMutationField::GrantOption
+                {
+                    Style::new().fg(theme.action).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                },
+            ),
             Line::styled(
                 format!("Focus: {:?}", form.selected_field),
                 Style::new().fg(theme.action).add_modifier(Modifier::BOLD),
@@ -57,7 +70,7 @@ pub(crate) fn render(
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new("Tab next field  Space toggle  Enter review SQL  Esc cancel"),
+        Paragraph::new("Tab field  Space toggle option  o operation  Enter review SQL  Esc cancel"),
         chunks[1],
     );
     state.hit_regions.push(HitRegion {

@@ -590,6 +590,7 @@ pub enum Action {
     CopyEditorStatement,
     CopyEditorBuffer,
     CopyGridCell,
+    CopyPrincipalAccess,
     CopyGridRow {
         include_headers: bool,
     },
@@ -747,10 +748,13 @@ pub enum Action {
     CancelPrincipalMutationForm,
     TogglePrincipalMutationFormField,
     TogglePrincipalMutationFormOption,
+    TogglePrincipalMutationFormOperation,
     SelectPrincipalPermission(usize),
     MovePrincipalPermission(isize),
     SelectPrincipalAccess(crate::model::principal::PrincipalAccessSection),
     MovePrincipalAccess(isize),
+    PrincipalAccessSelectFirst,
+    PrincipalAccessSelectLast,
     PagePrincipalAccess {
         direction: isize,
         half_page: bool,

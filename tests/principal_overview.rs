@@ -108,6 +108,16 @@ fn app_with_access(rows: usize) -> (App, usize) {
     (app, tab_index)
 }
 
+fn app_with_long_access_target(target: &str) -> (App, usize) {
+    let (mut app, tab_index) = app_with_access(1);
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        let mut details = tab.details.snapshot().unwrap().clone();
+        details.permissions[0].target = target.to_owned();
+        tab.details = lazydb::model::principal::PrincipalDetailsLoad::Ready(details);
+    }
+    (app, tab_index)
+}
+
 fn access_selection(app: &App, tab_index: usize) -> usize {
     match &app.tabs[tab_index] {
         WorkspaceTab::PrincipalDdl(tab) => tab.access_selection(),
@@ -220,6 +230,478 @@ fn overview_routes_vim_and_arrow_navigation_to_access_selection() {
     app.update(Action::SetPrincipalView(PrincipalView::Ddl));
     let ddl_action = keymap.map(key(KeyCode::Char('j')), &app);
     assert!(matches!(ddl_action, Some(Action::ReadOnlyEditorKey { .. })));
+}
+
+#[test]
+fn overview_v_and_enter_open_readonly_details_for_selected_permission() {
+    let (mut app, tab_index) = app_with_access(3);
+    let selected_target = "public.table_001";
+    let details = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab.details.snapshot().unwrap().clone(),
+        _ => unreachable!(),
+    };
+    let sources = [
+        (
+            lazydb::db::principal::PrincipalPermissionSource::Direct,
+            "direct",
+        ),
+        (
+            lazydb::db::principal::PrincipalPermissionSource::Public,
+            "public grant",
+        ),
+        (
+            lazydb::db::principal::PrincipalPermissionSource::Owner,
+            "owner",
+        ),
+        (
+            lazydb::db::principal::PrincipalPermissionSource::Default,
+            "default ACL",
+        ),
+        (
+            lazydb::db::principal::PrincipalPermissionSource::Inherited,
+            "inherited from readers",
+        ),
+    ];
+    let mut keymap = Keymap::default();
+    for (source_kind, source) in sources {
+        let mut current_details = details.clone();
+        current_details.permissions[1].mutation_target = None;
+        current_details.permissions[1].source_kind = source_kind;
+        current_details.permissions[1].source = source.to_owned();
+        if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+            tab.details = lazydb::model::principal::PrincipalDetailsLoad::Ready(current_details);
+            tab.selected_permission = 1;
+        }
+        for key_code in [KeyCode::Char('v'), KeyCode::Enter] {
+            let action = keymap.map(key(key_code), &app).expect("detail action");
+            assert_eq!(action, Action::OpenPrincipalAccessDetails);
+            assert!(app.update(action).is_empty());
+            let Some(lazydb::model::workspace::Overlay::TextDetail(detail)) = app.overlay.as_ref()
+            else {
+                panic!("expected read-only text detail overlay");
+            };
+            assert!(detail.copy_text.contains(selected_target));
+            assert!(detail.copy_text.contains(source));
+            app.update(Action::CloseTextDetail);
+            assert_eq!(access_selection(&app, tab_index), 1);
+        }
+    }
+}
+
+#[test]
+fn overview_y_copies_complete_selected_permission_record() {
+    let (mut app, tab_index) = app_with_access(3);
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        tab.selected_permission = 1;
+    }
+    let mut keymap = Keymap::default();
+    let action = keymap
+        .map(key(KeyCode::Char('y')), &app)
+        .expect("copy action");
+    assert_eq!(action, Action::CopyPrincipalAccess);
+    let commands = app.update(action);
+    assert_eq!(commands.len(), 1);
+    assert!(matches!(
+        &commands[0],
+        lazydb::action::Command::WriteClipboard(payload)
+            if payload.text.contains("Target: public.table_001")
+                && payload.text.contains("Privilege: SELECT")
+                && payload.text.contains("Origin: Direct")
+                && payload.text.contains("Source: direct")
+    ));
+}
+
+#[test]
+fn overview_uses_the_configured_results_copy_cell_binding() {
+    let (mut app, tab_index) = app_with_access(1);
+    let mut config = lazydb::config::AppConfig::default();
+    config
+        .keybindings
+        .results
+        .insert("copy-cell".to_owned(), vec!["Ctrl+y".to_owned()]);
+    let bindings = config.keybindings.key_bindings().unwrap();
+    let mut keymap =
+        Keymap::with_sequence_timeout_and_bindings(std::time::Duration::from_millis(750), bindings);
+    let action = keymap
+        .map(
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            &app,
+        )
+        .unwrap();
+    assert_eq!(action, Action::CopyPrincipalAccess);
+    assert!(matches!(
+        app.update(action).as_slice(),
+        [lazydb::action::Command::WriteClipboard(payload)]
+            if payload.text.contains("Target: public.table_000")
+    ));
+    assert!(matches!(app.tabs[tab_index], WorkspaceTab::PrincipalDdl(_)));
+}
+
+#[test]
+fn overview_y_copies_selected_membership_records() {
+    for (section, expected) in [
+        (
+            lazydb::model::principal::PrincipalAccessSection::MemberOf,
+            "Role: role_001",
+        ),
+        (
+            lazydb::model::principal::PrincipalAccessSection::Members,
+            "Member: member_001",
+        ),
+    ] {
+        let (mut app, tab_index) = app_with_access(3);
+        if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+            tab.access_section = section;
+            tab.set_access_selection(1);
+        }
+        let action = Keymap::default()
+            .map(key(KeyCode::Char('y')), &app)
+            .expect("copy action");
+        let commands = app.update(action);
+        assert!(matches!(
+            &commands[0],
+            lazydb::action::Command::WriteClipboard(payload)
+                if payload.text.contains(expected) && payload.text.contains("Admin option: no")
+        ));
+    }
+}
+
+#[test]
+fn e_opens_permission_editor_and_form_controls_change_the_planned_operation() {
+    let (mut app, tab_index) = app_with_access(1);
+    if let Some(profile) = app.profiles.first_mut() {
+        profile.kind = lazydb::profile::DatabaseKind::Postgres;
+    }
+    let profile_id = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id,
+        _ => unreachable!(),
+    };
+    app.explorer.catalog_sessions.insert(
+        profile_id,
+        ConnectionIdentity {
+            profile_id,
+            generation: 1,
+        },
+    );
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        let mut details = tab.details.snapshot().unwrap().clone();
+        details.permissions[0].mutation_target =
+            Some(lazydb::db::principal::PrincipalMutationTarget::Relation {
+                schema: "public".to_owned(),
+                relation: "table_000".to_owned(),
+            });
+        tab.details = lazydb::model::principal::PrincipalDetailsLoad::Ready(details);
+    }
+    let mut keymap = Keymap::default();
+    let edit = keymap.map(key(KeyCode::Char('e')), &app).unwrap();
+    assert_eq!(
+        edit,
+        Action::OpenPrincipalPermissionMutation { grant: true }
+    );
+    assert!(app.update(edit).is_empty());
+    assert!(matches!(
+        app.overlay,
+        Some(lazydb::model::workspace::Overlay::PrincipalMutationForm(_))
+    ));
+
+    let operation = keymap.map(key(KeyCode::Char('o')), &app).unwrap();
+    app.update(operation);
+    assert!(matches!(
+        app.overlay.as_ref(),
+        Some(lazydb::model::workspace::Overlay::PrincipalMutationForm(form))
+            if !form.draft.grant && !form.draft.grant_option
+    ));
+    let tab = keymap.map(key(KeyCode::Tab), &app).unwrap();
+    app.update(tab);
+    let toggle_option = keymap.map(key(KeyCode::Char(' ')), &app).unwrap();
+    app.update(toggle_option);
+    assert!(matches!(
+        app.overlay.as_ref(),
+        Some(lazydb::model::workspace::Overlay::PrincipalMutationForm(form))
+            if !form.draft.grant && form.draft.grant_option
+    ));
+    let (tab_id, tab_generation, connection, database) = match app.overlay.as_ref() {
+        Some(lazydb::model::workspace::Overlay::PrincipalMutationForm(form)) => (
+            form.tab_id.unwrap(),
+            form.tab_generation.unwrap(),
+            form.connection.unwrap(),
+            form.database.clone(),
+        ),
+        _ => unreachable!(),
+    };
+    let request = keymap.map(key(KeyCode::Enter), &app).unwrap();
+    let commands = app.update(request);
+    assert!(matches!(
+        commands.as_slice(),
+        [lazydb::action::Command::PlanPrincipalMutation(plan)]
+            if plan.connection == connection
+                && plan.database == database
+                && plan.request_id == 1
+                && matches!(plan.mutation, lazydb::db::principal::PrincipalMutation::Revoke { .. })
+    ));
+    let source_tab = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab,
+        _ => unreachable!(),
+    };
+    assert_eq!(source_tab.id, tab_id);
+    assert_eq!(source_tab.generation, tab_generation);
+    assert_eq!(source_tab.next_request_id, 1);
+}
+
+#[test]
+fn editing_unsupported_access_permission_reports_readonly_without_command() {
+    let (mut app, tab_index) = app_with_access(1);
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        tab.selected_permission = 0;
+    }
+    let action = Keymap::default()
+        .map(key(KeyCode::Char('e')), &app)
+        .unwrap();
+    assert_eq!(
+        action,
+        Action::OpenPrincipalPermissionMutation { grant: true }
+    );
+    assert!(app.update(action).is_empty());
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.notifications.history().next().unwrap().body,
+        "This direct permission has no structured editable target in the database adapter"
+    );
+}
+
+#[test]
+fn editing_inherited_permission_explains_its_granting_role() {
+    let (mut app, tab_index) = app_with_access(1);
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        let mut details = tab.details.snapshot().unwrap().clone();
+        details.permissions[0].source_kind =
+            lazydb::db::principal::PrincipalPermissionSource::Inherited;
+        tab.details = lazydb::model::principal::PrincipalDetailsLoad::Ready(details);
+    }
+    let action = Keymap::default()
+        .map(key(KeyCode::Char('e')), &app)
+        .unwrap();
+    assert!(app.update(action).is_empty());
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.notifications.history().next().unwrap().body,
+        "Inherited permission must be changed at its granting role"
+    );
+}
+
+#[test]
+fn editing_membership_sections_explains_the_readonly_limit() {
+    for section in [
+        lazydb::model::principal::PrincipalAccessSection::MemberOf,
+        lazydb::model::principal::PrincipalAccessSection::Members,
+    ] {
+        let (mut app, tab_index) = app_with_access(1);
+        if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+            tab.access_section = section;
+        }
+        let action = Keymap::default()
+            .map(key(KeyCode::Char('e')), &app)
+            .unwrap();
+        assert_eq!(
+            action,
+            Action::OpenPrincipalPermissionMutation { grant: true }
+        );
+        assert!(app.update(action).is_empty());
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.notifications.history().next().unwrap().body,
+            "Membership editing is not supported from this access view"
+        );
+    }
+}
+
+#[test]
+fn mutation_form_rejects_confirmation_after_source_tab_generation_changes() {
+    let (mut app, tab_index) = app_with_access(1);
+    if let Some(profile) = app.profiles.first_mut() {
+        profile.kind = lazydb::profile::DatabaseKind::Postgres;
+    }
+    let profile_id = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab.entry.id.profile_id,
+        _ => unreachable!(),
+    };
+    let connection = ConnectionIdentity {
+        profile_id,
+        generation: 1,
+    };
+    app.explorer.catalog_sessions.insert(profile_id, connection);
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        let mut details = tab.details.snapshot().unwrap().clone();
+        details.permissions[0].mutation_target =
+            Some(lazydb::db::principal::PrincipalMutationTarget::Relation {
+                schema: "public".to_owned(),
+                relation: "table_000".to_owned(),
+            });
+        tab.details = lazydb::model::principal::PrincipalDetailsLoad::Ready(details);
+    }
+    app.update(
+        Keymap::default()
+            .map(key(KeyCode::Char('e')), &app)
+            .unwrap(),
+    );
+    if let WorkspaceTab::PrincipalDdl(tab) = &mut app.tabs[tab_index] {
+        tab.generation += 1;
+    }
+    let commands = app.update(Action::ConfirmPrincipalMutationForm);
+    assert!(commands.is_empty());
+    assert!(app.overlay.is_none());
+}
+
+#[test]
+fn principal_mutation_review_defaults_to_cancel_and_apply_refreshes_source_principal() {
+    let (mut app, tab_index) = app_with_access(1);
+    if let Some(profile) = app.profiles.first_mut() {
+        profile.kind = lazydb::profile::DatabaseKind::Postgres;
+    }
+    let (principal, tab_id) = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => (tab.entry.clone(), tab.id),
+        _ => unreachable!(),
+    };
+    let connection = ConnectionIdentity {
+        profile_id: principal.id.profile_id,
+        generation: 1,
+    };
+    app.explorer
+        .catalog_sessions
+        .insert(connection.profile_id, connection);
+    let plan = lazydb::db::principal::PrincipalMutationPlan {
+        connection,
+        principal: principal.clone(),
+        database: Some("db".to_owned()),
+        sql: "REVOKE SELECT ON TABLE public.table_000 FROM alice;".to_owned(),
+    };
+
+    app.update(Action::PrincipalMutationPlanReady(plan.clone()));
+    let default_confirm = match app.overlay.as_ref() {
+        Some(lazydb::model::workspace::Overlay::PrincipalMutationConfirm { focus, .. }) => *focus,
+        _ => panic!("expected SQL review confirmation"),
+    };
+    assert_eq!(
+        default_confirm,
+        lazydb::model::workspace::PrincipalMutationConfirmFocus::Cancel
+    );
+    assert!(app.update(Action::ConfirmPrincipalMutation).is_empty());
+    assert!(app.overlay.is_none());
+
+    app.update(Action::PrincipalMutationPlanReady(plan.clone()));
+    app.update(Action::TogglePrincipalMutationFocus);
+    let execute = app.update(Action::ConfirmPrincipalMutation);
+    assert!(matches!(
+        execute.as_slice(),
+        [lazydb::action::Command::ExecutePrincipalMutation(execute_plan)] if execute_plan == &plan
+    ));
+
+    let refreshed = app.update(Action::PrincipalMutationSucceeded { plan });
+    assert!(matches!(
+        refreshed.as_slice(),
+        [
+            lazydb::action::Command::LoadPrincipalDdl(request),
+            lazydb::action::Command::LoadPrincipalDetails(details_request)
+        ] if request.tab_id == tab_id
+            && details_request.tab_id == tab_id
+            && request.connection == connection
+            && details_request.connection == connection
+    ));
+    let source_tab = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab,
+        _ => unreachable!(),
+    };
+    assert_eq!(source_tab.next_request_id, 2);
+}
+
+#[test]
+fn overview_gg_and_shift_g_select_first_and_last_visible_access_row() {
+    let (mut app, tab_index) = app_with_access(100);
+    let tab_id = match &app.tabs[tab_index] {
+        WorkspaceTab::PrincipalDdl(tab) => tab.id,
+        _ => unreachable!(),
+    };
+    app.update(Action::PrincipalAccessViewportChanged { tab_id, rows: 10 });
+    let mut keymap = Keymap::default();
+
+    for _ in 0..25 {
+        app.update(Action::MovePrincipalAccess(1));
+    }
+    assert_eq!(access_selection(&app, tab_index), 25);
+    assert_eq!(keymap.map(key(KeyCode::Char('g')), &app), None);
+    let first = keymap.map(key(KeyCode::Char('g')), &app).unwrap();
+    assert_eq!(first, Action::PrincipalAccessSelectFirst);
+    app.update(first);
+    assert_eq!(access_selection(&app, tab_index), 0);
+    assert_eq!(access_offset(&app, tab_index), 0);
+
+    let last = keymap
+        .map(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT), &app)
+        .unwrap();
+    assert_eq!(last, Action::PrincipalAccessSelectLast);
+    app.update(last);
+    assert_eq!(access_selection(&app, tab_index), 99);
+    assert_eq!(access_offset(&app, tab_index), 90);
+
+    app.update(Action::PrincipalAccessSelectFirst);
+    let last = keymap.map(key(KeyCode::Char('G')), &app).unwrap();
+    assert_eq!(last, Action::PrincipalAccessSelectLast);
+    app.update(last);
+    assert_eq!(access_selection(&app, tab_index), 99);
+    assert_eq!(access_offset(&app, tab_index), 90);
+}
+
+#[test]
+fn permissions_target_uses_available_width_and_truncates_by_terminal_cells() {
+    let target = "public.schema_with_long_name.table_with_a_target_wider_than_twenty_eight_cells";
+    let (app, _) = app_with_long_access_target(target);
+
+    {
+        let width = 180;
+        let backend = TestBackend::new(width, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains(target),
+            "target clipped at terminal width {width}: {rendered}"
+        );
+    }
+
+    let backend = TestBackend::new(80, 16);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("public.schema_with_long_name"));
+    assert!(!rendered.contains(target));
+
+    let (app, _) = app_with_long_access_target(
+        "公共.schema.table_with_a_target_that_is_longer_than_this_narrow_terminal",
+    );
+    let backend = TestBackend::new(80, 16);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| ui::render(frame, &app)).unwrap();
+    let target_cells = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .filter(|cell| !cell.symbol().trim().is_empty())
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(target_cells.contains("公共.schema"), "{target_cells}");
 }
 
 #[test]

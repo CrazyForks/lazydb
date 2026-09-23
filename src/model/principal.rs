@@ -120,6 +120,11 @@ pub struct PrincipalDetailsRequest {
 pub struct PrincipalMutationForm {
     pub draft: PrincipalMutationDraft,
     pub selected_field: PrincipalMutationField,
+    pub tab_id: Option<Uuid>,
+    pub tab_generation: Option<u64>,
+    pub connection: Option<ConnectionIdentity>,
+    pub principal: Option<PrincipalEntry>,
+    pub database: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,16 +142,29 @@ impl PrincipalMutationForm {
         Self {
             draft: PrincipalMutationDraft::permission(target),
             selected_field: PrincipalMutationField::Operation,
+            tab_id: None,
+            tab_generation: None,
+            connection: None,
+            principal: None,
+            database: None,
         }
     }
     pub fn membership(role: impl Into<String>) -> Self {
         Self {
             draft: PrincipalMutationDraft::membership(role),
             selected_field: PrincipalMutationField::Operation,
+            tab_id: None,
+            tab_generation: None,
+            connection: None,
+            principal: None,
+            database: None,
         }
     }
     pub fn toggle_operation(&mut self) {
-        self.draft.set_grant(!self.draft.grant);
+        self.draft.grant = !self.draft.grant;
+        if !self.draft.grant {
+            self.draft.grant_option = false;
+        }
     }
     pub fn toggle_option(&mut self) {
         if self.draft.section == PrincipalMutationSection::Membership {
@@ -172,6 +190,13 @@ impl PrincipalMutationForm {
             PrincipalMutationField::GrantOption => PrincipalMutationField::Role,
             PrincipalMutationField::Role => PrincipalMutationField::AdminOption,
             PrincipalMutationField::AdminOption => PrincipalMutationField::Operation,
+        };
+    }
+
+    pub fn next_permission_field(&mut self) {
+        self.selected_field = match self.selected_field {
+            PrincipalMutationField::Operation => PrincipalMutationField::GrantOption,
+            _ => PrincipalMutationField::Operation,
         };
     }
 }
@@ -412,6 +437,12 @@ impl PrincipalDdlTab {
             .min(count - 1)
             .saturating_add_signed(delta)
             .min(count - 1);
+        self.set_access_selection(selected);
+        self.normalize_access_state(count, visible_rows);
+    }
+
+    pub fn select_access_target(&mut self, last: bool, count: usize, visible_rows: usize) {
+        let selected = if last { count.saturating_sub(1) } else { 0 };
         self.set_access_selection(selected);
         self.normalize_access_state(count, visible_rows);
     }

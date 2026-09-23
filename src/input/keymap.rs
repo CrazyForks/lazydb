@@ -594,11 +594,19 @@ impl Keymap {
         }
         if matches!(app.overlay, Some(Overlay::PrincipalMutationForm(_))) {
             self.pending = None;
-            return match event.code {
-                KeyCode::Tab | KeyCode::BackTab => Some(Action::TogglePrincipalMutationFormField),
-                KeyCode::Char(' ') => Some(Action::TogglePrincipalMutationFormOption),
-                KeyCode::Enter => Some(Action::ConfirmPrincipalMutationForm),
-                KeyCode::Esc | KeyCode::Char('q') => Some(Action::CancelPrincipalMutationForm),
+            return match (event.code, app.overlay.as_ref()) {
+                (KeyCode::Tab | KeyCode::BackTab, _) => {
+                    Some(Action::TogglePrincipalMutationFormField)
+                }
+                (KeyCode::Char(' '), Some(Overlay::PrincipalMutationForm(form)))
+                    if form.selected_field
+                        == crate::model::principal::PrincipalMutationField::GrantOption =>
+                {
+                    Some(Action::TogglePrincipalMutationFormOption)
+                }
+                (KeyCode::Char('o'), _) => Some(Action::TogglePrincipalMutationFormOperation),
+                (KeyCode::Enter, _) => Some(Action::ConfirmPrincipalMutationForm),
+                (KeyCode::Esc | KeyCode::Char('q'), _) => Some(Action::CancelPrincipalMutationForm),
                 _ => None,
             };
         }
@@ -2473,6 +2481,23 @@ impl Keymap {
                 Some(crate::model::tab::WorkspaceTab::PrincipalDdl(_))
             )
         {
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                    if tab.view == crate::model::principal::PrincipalView::Overview
+            ) && self.bindings.matches("results-copy-cell", event)
+            {
+                return Some(Action::CopyPrincipalAccess);
+            }
+            if matches!(
+                app.tabs.get(app.active_tab),
+                Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                    if tab.view == crate::model::principal::PrincipalView::Overview
+            ) && event.code == KeyCode::Char('G')
+                && (event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT)
+            {
+                return Some(Action::PrincipalAccessSelectLast);
+            }
             if event.modifiers.is_empty()
                 && matches!(
                         app.tabs.get(app.active_tab),
@@ -2497,19 +2522,13 @@ impl Keymap {
                     _ => {}
                 }
                 match event.code {
-                    KeyCode::Char('g')
-                        if app.active_principal_access_section()
-                            == crate::model::principal::PrincipalAccessSection::Permissions =>
-                    {
+                    KeyCode::Char('v') | KeyCode::Enter => {
+                        return Some(Action::OpenPrincipalAccessDetails);
+                    }
+                    KeyCode::Char('y') => return Some(Action::CopyPrincipalAccess),
+                    KeyCode::Char('e') => {
                         return Some(Action::OpenPrincipalPermissionMutation { grant: true });
                     }
-                    KeyCode::Char('v')
-                        if app.active_principal_access_section()
-                            == crate::model::principal::PrincipalAccessSection::Permissions =>
-                    {
-                        return Some(Action::OpenPrincipalPermissionMutation { grant: false });
-                    }
-                    KeyCode::Enter => return Some(Action::OpenPrincipalAccessDetails),
                     _ => {}
                 }
             }
@@ -2884,6 +2903,9 @@ fn map_configured_navigation(
             Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
                 if tab.view == crate::model::principal::PrincipalView::Overview
         ) {
+            if bindings.matches("results-copy-cell", event) {
+                return Some(Action::CopyPrincipalAccess);
+            }
             if bindings.matches("results-move-left", event) {
                 return Some(Action::SelectPrincipalAccess(
                     app.active_principal_access_section().next(-1),
@@ -3663,6 +3685,12 @@ fn map_pending(
         (Pending::Goto, KeyCode::Char('g')) if app.focus == Focus::Explorer => Some(
             Action::ExplorerSelectTarget(crate::model::explorer::ExplorerNodeTarget::First),
         ),
+        (Pending::Goto, KeyCode::Char('g'))
+            if matches!(app.tabs.get(app.active_tab), Some(crate::model::tab::WorkspaceTab::PrincipalDdl(tab))
+                if app.focus == Focus::Results && tab.view == crate::model::principal::PrincipalView::Overview) =>
+        {
+            Some(Action::PrincipalAccessSelectFirst)
+        }
         (Pending::Goto, KeyCode::Char('g')) if is_grid_navigation_focus(app) => Some(
             Action::GridSelectRow(crate::model::tab::GridRowTarget::First),
         ),

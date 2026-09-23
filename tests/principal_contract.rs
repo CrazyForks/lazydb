@@ -124,6 +124,24 @@ fn principal_mutation_draft_builds_permission_and_membership_operations() {
 }
 
 #[test]
+fn principal_revoke_draft_preserves_grant_option_only_selection() {
+    let mut permission = PrincipalMutationDraft::permission(PrincipalMutationTarget::Relation {
+        schema: "public".to_owned(),
+        relation: "orders".to_owned(),
+    });
+    permission.grant = false;
+    permission.grant_option = true;
+    assert!(matches!(
+        permission.mutation(),
+        PrincipalMutation::Revoke {
+            privilege,
+            grant_option: true,
+            ..
+        } if privilege == "SELECT"
+    ));
+}
+
+#[test]
 fn principal_mutation_form_edits_target_privilege_and_membership_options() {
     let mut form = PrincipalMutationForm::permission(PrincipalMutationTarget::Relation {
         schema: "public".into(),
