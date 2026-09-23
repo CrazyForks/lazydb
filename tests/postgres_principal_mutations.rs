@@ -31,9 +31,10 @@ async fn postgres_principal_mutation_environment_is_explicit() {
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-mutations"))
         .expect("test URL should parse");
+    let password = imported.transient_password.as_ref();
     let profile = imported.profile.clone();
     let _ = PrincipalKind::User;
-    let connection = match DatabaseConnection::connect(&profile, None).await {
+    let connection = match DatabaseConnection::connect(&profile, password).await {
         Ok(connection) => connection,
         Err(error) => {
             if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
@@ -182,8 +183,9 @@ async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-round-trip"))
         .expect("PostgreSQL URL should parse");
+    let password = imported.transient_password.as_ref();
     let profile = imported.profile.clone();
-    let connection = match DatabaseConnection::connect(&profile, None).await {
+    let connection = match DatabaseConnection::connect(&profile, password).await {
         Ok(connection) => connection,
         Err(error) => {
             if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
