@@ -1367,6 +1367,95 @@
 - [`4093b47`](https://github.com/yelog/lazydb/commit/4093b474b27bad145ff1313427e4171d647b62c4) ci(release): collapse commit lists in release notes
 - [`1285bc0`](https://github.com/yelog/lazydb/commit/1285bc0bf315b0f83efa3489d8365effa41b07a7) fix(ci): satisfy release clippy checks
 
+## [0.1.7] - 2026-09-23
+
+### Added
+
+- Added user and role access workflows for navigating principals, reviewing permissions, and managing grants and memberships.
+- Added offline SQL console editing with target-aware execution, automatic connection URL parsing, and configurable key sequences.
+- Added optional Kitty-aware pane navigation, resizing, and maximize synchronization, alongside Redis scan recovery.
+
+### Changed
+
+- Improved pane navigation and resizing, SQL completion and connection flows, principal overview interactions, help scrolling, and result-grid responsiveness.
+- Refined workspace persistence, profile deletion behavior, PostgreSQL permission details, and status-bar presentation.
+
+### Fixed
+
+- Restored relation-row navigation and corrected workspace save, Redis reconnect, and principal access workflow behavior.
+
+### Internal
+
+- Expanded CI and release packaging checks, integration coverage, and user documentation.
+
+### Commits
+
+- [`da41f75`](https://github.com/yelog/lazydb/commit/da41f75) docs(plan): add access workflow implementation plan
+- [`564bee3`](https://github.com/yelog/lazydb/commit/564bee3) feat(principal): improve access entry workflow
+- [`6841cb5`](https://github.com/yelog/lazydb/commit/6841cb5) Merge branch 'main' into task/principal-overview-access-navigation
+- [`4694462`](https://github.com/yelog/lazydb/commit/4694462) test(principal): cover access navigation interactions
+- [`4b2ee87`](https://github.com/yelog/lazydb/commit/4b2ee87) feat(principal): complete overview access navigation
+- [`cbc4128`](https://github.com/yelog/lazydb/commit/cbc4128) fix(tests): align render assertions with current layout
+- [`fe55b79`](https://github.com/yelog/lazydb/commit/fe55b79) fix(tests): follow current workspace and pane behavior
+- [`2a4afb1`](https://github.com/yelog/lazydb/commit/2a4afb1) fix(tests): align fixtures with workspace connection flow
+- [`81a70ec`](https://github.com/yelog/lazydb/commit/81a70ec) fix(ci): repair failing integration test setup
+- [`344d1f0`](https://github.com/yelog/lazydb/commit/344d1f0) Merge branch 'task/fix-bidirectional-smart-pane-resizing'
+- [`5f74835`](https://github.com/yelog/lazydb/commit/5f74835) docs: add smart pane resizing plan
+- [`0edaa99`](https://github.com/yelog/lazydb/commit/0edaa99) merge: fix bidirectional smart pane resizing
+- [`7a962ff`](https://github.com/yelog/lazydb/commit/7a962ff) fix(panes): make smart resizing bidirectional
+- [`51c77a8`](https://github.com/yelog/lazydb/commit/51c77a8) Merge branch 'task/principal-overview-access-navigation'
+- [`d37353a`](https://github.com/yelog/lazydb/commit/d37353a) docs(principal): add access navigation plan
+- [`c5b9206`](https://github.com/yelog/lazydb/commit/c5b9206) merge: improve principal overview access navigation
+- [`ef7ba23`](https://github.com/yelog/lazydb/commit/ef7ba23) feat(principal): improve overview access navigation
+- [`e2b0d34`](https://github.com/yelog/lazydb/commit/e2b0d34) merge: fix workspace save active tab dialog
+- [`1f139d0`](https://github.com/yelog/lazydb/commit/1f139d0) fix(workspace): prevent invalid active tab save failures
+- [`2c19622`](https://github.com/yelog/lazydb/commit/2c19622) feat(kitty): synchronize LazyDB pane maximize
+- [`c6de978`](https://github.com/yelog/lazydb/commit/c6de978) feat(kitty): add smart maximize shortcut
+- [`23c63a1`](https://github.com/yelog/lazydb/commit/23c63a1) Merge branch 'task/lazydb-kitty-smart-pane-resize'
+- [`c6a77a0`](https://github.com/yelog/lazydb/commit/c6a77a0) feat: add smart pane resize across LazyDB and Kitty
+- [`a2beff1`](https://github.com/yelog/lazydb/commit/a2beff1) merge: fix postgres principal permission details
+- [`7621f9c`](https://github.com/yelog/lazydb/commit/7621f9c) fix(postgres): restore principal permission details
+- [`b43731b`](https://github.com/yelog/lazydb/commit/b43731b) Merge branch 'task/unbound-console-completion-target-execution'
+- [`3650c20`](https://github.com/yelog/lazydb/commit/3650c20) docs: add unbound console implementation plan
+- [`7781fd8`](https://github.com/yelog/lazydb/commit/7781fd8) fix(completion): ignore single-character insert commands
+- [`93fe215`](https://github.com/yelog/lazydb/commit/93fe215) merge: integrate unbound console execution
+- [`a23f472`](https://github.com/yelog/lazydb/commit/a23f472) feat(console): run SQL after selecting unbound target
+- [`5f8c149`](https://github.com/yelog/lazydb/commit/5f8c149) Merge branch 'task/unify-explorer-connection-creation-shortcuts'
+- [`afc8e22`](https://github.com/yelog/lazydb/commit/afc8e22) docs: add Explorer connection shortcut plan
+- [`32634c1`](https://github.com/yelog/lazydb/commit/32634c1) merge: unify Explorer connection creation shortcuts
+- [`530b487`](https://github.com/yelog/lazydb/commit/530b487) fix(explorer): unify connection creation shortcuts
+- [`a6b0097`](https://github.com/yelog/lazydb/commit/a6b0097) merge: add Kitty-aware smart pane navigation
+- [`8fe3110`](https://github.com/yelog/lazydb/commit/8fe3110) feat(panes): add Kitty-aware smart navigation
+- [`904f9d9`](https://github.com/yelog/lazydb/commit/904f9d9) merge: align consoles footer with omni
+- [`3314a67`](https://github.com/yelog/lazydb/commit/3314a67) fix(ui): align console manager footer with omni
+- [`7b76fe9`](https://github.com/yelog/lazydb/commit/7b76fe9) merge: configurable pane keybindings
+- [`709ea46`](https://github.com/yelog/lazydb/commit/709ea46) feat(keybindings): support configurable pane shortcuts
+- [`0edbec5`](https://github.com/yelog/lazydb/commit/0edbec5) merge: add connection URL auto-parse
+- [`bc1c5a8`](https://github.com/yelog/lazydb/commit/bc1c5a8) feat(profiles): auto-parse connection URLs
+- [`e93f366`](https://github.com/yelog/lazydb/commit/e93f366) Merge branch 'task/omni-help-mouse-scrollbar'
+- [`c26a77f`](https://github.com/yelog/lazydb/commit/c26a77f) docs: add omni help mouse scrollbar plan
+- [`fb011eb`](https://github.com/yelog/lazydb/commit/fb011eb) merge: add omni help mouse scrolling
+- [`444c8d6`](https://github.com/yelog/lazydb/commit/444c8d6) feat(ui): add mouse scrolling to help panels
+- [`6b2a656`](https://github.com/yelog/lazydb/commit/6b2a656) docs: add footer implementation plan
+- [`fe31cde`](https://github.com/yelog/lazydb/commit/fe31cde) fix(ui): simplify footer and clarify update status
+- [`aff7947`](https://github.com/yelog/lazydb/commit/aff7947) feat(ui): merge header into bottom status bar
+- [`4526561`](https://github.com/yelog/lazydb/commit/4526561) fix(input): restore relation data row navigation
+- [`fef2489`](https://github.com/yelog/lazydb/commit/fef2489) merge: optimize grid input responsiveness
+- [`ac913fb`](https://github.com/yelog/lazydb/commit/ac913fb) perf(grid): improve large result input responsiveness
+- [`4d51ce9`](https://github.com/yelog/lazydb/commit/4d51ce9) Merge branch 'task/redis-connection-manager-scan-recovery'
+- [`2587c60`](https://github.com/yelog/lazydb/commit/2587c60) docs: add redis recovery implementation plan
+- [`7c27994`](https://github.com/yelog/lazydb/commit/7c27994) merge: redis connection manager scan recovery
+- [`90e1b3f`](https://github.com/yelog/lazydb/commit/90e1b3f) fix(redis): recover dropped scan connections
+- [`f1c243c`](https://github.com/yelog/lazydb/commit/f1c243c) merge: users and roles permission workspace
+- [`3e0f8a9`](https://github.com/yelog/lazydb/commit/3e0f8a9) feat(principals): add users and roles permission workspace
+- [`23a638f`](https://github.com/yelog/lazydb/commit/23a638f) Merge branch 'main' into task/explicit-console-management
+- [`61039c0`](https://github.com/yelog/lazydb/commit/61039c0) fix(console): prevent implicit consoles on connection
+- [`a9c8f7f`](https://github.com/yelog/lazydb/commit/a9c8f7f) merge: console offline editing and lazy connections
+- [`d3c747a`](https://github.com/yelog/lazydb/commit/d3c747a) feat(console): support offline editing and lazy connections
+- [`dd9246d`](https://github.com/yelog/lazydb/commit/dd9246d) fix(profiles): preserve valid config when deleting connections
+- [`b7c3c0d`](https://github.com/yelog/lazydb/commit/b7c3c0d) fix(release): install quality check components
+- [`ef5b9ce`](https://github.com/yelog/lazydb/commit/ef5b9ce) fix(release): recover v0.1.6 packaging
+
 ## Unreleased
 
 - Add persistent Explorer connection groups, group membership, and profile ordering.
