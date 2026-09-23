@@ -3838,6 +3838,10 @@ fn footer_rank(
             Id::CatalogEditorCancel => Some(4),
             _ => None,
         },
+        ShortcutContext::Message => match id {
+            Id::MessageClose => Some(1),
+            _ => None,
+        },
         ShortcutContext::CatalogEditorColumnDetails => match id {
             Id::CatalogEditorColumnDetailsMove => Some(1),
             Id::CatalogEditorColumnDetailsEdit => Some(2),

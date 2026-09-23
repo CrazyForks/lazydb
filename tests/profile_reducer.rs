@@ -1685,6 +1685,7 @@ fn active_scope_only_save_keeps_connection_clears_completion_and_reloads_catalog
     profile.catalog_scope =
         CatalogScope::for_profile(DatabaseKind::Sqlite, ":memory:", Some("main"));
     let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 3,
@@ -1767,6 +1768,7 @@ fn query_started_while_save_is_in_flight_preserves_the_active_connection() {
     let profile = sqlite_profile("active");
     let profile_id = profile.id;
     let mut app = App::new(vec![profile]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 3,
@@ -1865,6 +1867,7 @@ fn running_queries_block_switching_active_profile_saves_and_deletion() {
     let active_id = active.id;
     let other_id = other.id;
     let mut app = App::new(vec![active, other]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id: active_id,
         generation: 1,

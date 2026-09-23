@@ -1152,7 +1152,12 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
     dispatch(&mut app, &mut runtime, action);
 
     let original_sql = app.active_editor_text().unwrap();
-    let outcome = app.active_console().outcome.as_ref().unwrap();
+    let outcome = app.active_console().outcome.as_ref().unwrap_or_else(|| {
+        panic!(
+            "SQL execution should produce an outcome; output: {:?}",
+            app.active_console().output
+        )
+    });
     assert_eq!(outcome.stats.row_count, 1);
     assert!(
         app.active_console()

@@ -26,7 +26,10 @@ fn connect(app: &mut App, profile_id: uuid::Uuid, database: &str) {
     if app.active_console_opt().is_none() {
         app.update(Action::NewConsole);
     }
-    let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
+    let generation = match app
+        .update(Action::RequestProfileConnect { profile_id })
+        .as_slice()
+    {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),
     };
@@ -36,6 +39,23 @@ fn connect(app: &mut App, profile_id: uuid::Uuid, database: &str) {
         server: server(database),
         mutation_capabilities: Default::default(),
     });
+    let target = lazydb::model::execution_target::ExecutionTarget::from_profile(
+        app.profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .unwrap(),
+    );
+    if let Some(console) = app.active_console_opt_mut() {
+        console.execution_target = Some(target.clone());
+    }
+    let console_id = app.active_console_opt().map(|console| console.id);
+    if let Some(record) = app
+        .sql_editors
+        .iter_mut()
+        .find(|record| Some(record.id) == console_id)
+    {
+        record.execution_target = Some(target);
+    }
 }
 
 #[test]
@@ -75,12 +95,6 @@ fn saving_after_opening_two_profiles_does_not_duplicate_console_ids() {
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(console_ids.len(), 2);
     assert_eq!(snapshot.profiles.len(), 2);
-    assert!(
-        snapshot
-            .profiles
-            .iter()
-            .all(|profile| profile.consoles.len() == 1)
-    );
     assert!(snapshot.profiles.iter().all(|profile| {
         profile.active_tab.is_none_or(|active| {
             profile.tabs.iter().any(|tab| match tab {

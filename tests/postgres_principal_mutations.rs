@@ -31,9 +31,10 @@ async fn postgres_principal_mutation_environment_is_explicit() {
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-mutations"))
         .expect("test URL should parse");
+    let password = imported.transient_password.as_ref();
     let profile = imported.profile.clone();
     let _ = PrincipalKind::User;
-    let connection = match DatabaseConnection::connect(&profile, None).await {
+    let connection = match DatabaseConnection::connect(&profile, password).await {
         Ok(connection) => connection,
         Err(error) => {
             if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
@@ -150,10 +151,12 @@ async fn postgres_principal_mutation_environment_is_explicit() {
     assert!(plan.sql().contains("LOGIN"));
     assert!(plan.sql().contains("PASSWORD '<REDACTED>'"));
     assert!(!plan.sql().contains("lazydb-test-password"));
-    connection
-        .execute(&plan.sql())
-        .await
-        .expect("apply role edit");
+    for statement in plan.statements() {
+        connection
+            .execute(statement)
+            .await
+            .expect("apply role edit statement");
+    }
     let renamed = format!("{role_name}_renamed");
     let renamed_oid = connection
         .execute(&format!(
@@ -182,8 +185,9 @@ async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
     };
     let imported = import_connection_url(&url.to_string_lossy(), Some("principal-round-trip"))
         .expect("PostgreSQL URL should parse");
+    let password = imported.transient_password.as_ref();
     let profile = imported.profile.clone();
-    let connection = match DatabaseConnection::connect(&profile, None).await {
+    let connection = match DatabaseConnection::connect(&profile, password).await {
         Ok(connection) => connection,
         Err(error) => {
             if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
@@ -193,6 +197,22 @@ async fn postgres_principal_grant_read_revoke_round_trip_is_explicit() {
             return;
         }
     };
+    let can_create = matches!(
+        connection
+            .execute("SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user")
+            .await
+            .ok()
+            .and_then(|outcome| outcome.result_sets.last()?.rows.first()?.first().cloned()),
+        Some(CellValue::Boolean(true))
+    );
+    if !can_create {
+        if std::env::var_os("LAZYDB_REQUIRE_DATABASE_TESTS").is_some() {
+            panic!("PostgreSQL grant round-trip requires CREATEROLE");
+        }
+        eprintln!("PostgreSQL grant round-trip skipped: current role lacks CREATEROLE");
+        connection.close().await;
+        return;
+    }
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let role = format!("lazydb_acl_{suffix}");
     let table = format!("lazydb_acl_table_{suffix}");

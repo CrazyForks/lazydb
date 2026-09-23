@@ -22,9 +22,19 @@ fn fixture() -> App {
         .unwrap()
         .profile;
     let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
+    let generation = match app
+        .update(Action::RequestProfileConnect {
+            profile_id: profile.id,
+        })
+        .as_slice()
+    {
+        [lazydb::action::Command::Connect { generation, .. }] => *generation,
+        commands => panic!("unexpected commands: {commands:?}"),
+    };
     app.update(Action::ConnectionSucceeded {
         profile_id: profile.id,
-        generation: 1,
+        generation,
         server: ServerInfo {
             kind: DatabaseKind::Sqlite,
             version: "3.50.0".into(),
