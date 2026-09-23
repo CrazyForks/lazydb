@@ -107,9 +107,14 @@ fn install_failure_is_retryable() {
     app.update(Action::UpdateOverlayConfirm);
     app.update(Action::UpdateInstallFailed {
         request_id: 2,
-        message: "network down".into(),
+        message: "failed to request update asset: network down (connection refused)".into(),
     });
-    assert!(matches!(app.update_state, UpdateState::Failed { .. }));
+    assert!(matches!(
+        &app.update_state,
+        UpdateState::Failed { message, .. }
+            if message.contains("failed to request update asset")
+                && message.contains("connection refused")
+    ));
     assert!(matches!(app.overlay, Some(Overlay::Update(_))));
 }
 

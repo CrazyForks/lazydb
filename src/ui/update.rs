@@ -723,6 +723,23 @@ mod tests {
     }
 
     #[test]
+    fn failed_render_keeps_the_request_context_and_root_cause_visible() {
+        let app = overlay_app(
+            UpdateState::Failed {
+                operation: crate::model::update::UpdateOperation::Install,
+                message: "failed to request update asset (connection refused)".to_owned(),
+            },
+            false,
+        );
+        let mut ui = UiState::new();
+        let text = render_app(&app, &mut ui);
+        assert!(text.contains("Update failed"), "{text}");
+        assert!(text.contains("failed to request update asset"), "{text}");
+        assert!(text.contains("connection refused"), "{text}");
+        assert!(text.contains("Check again"), "{text}");
+    }
+
+    #[test]
     fn hit_regions_match_the_rendered_buttons_inside_the_popup() {
         let state = UpdateState::Available(inspection(
             InstallationManager::Native,

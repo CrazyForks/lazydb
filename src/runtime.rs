@@ -1254,7 +1254,7 @@ impl Runtime {
                             let _ = sender.send(Action::UpdateCheckFailed {
                                 request_id,
                                 automatic,
-                                message: error.to_string(),
+                                message: format!("{error:#}"),
                             });
                         }
                     }
@@ -1295,7 +1295,7 @@ impl Runtime {
                         Err(error) => {
                             let _ = sender.send(Action::UpdateInstallFailed {
                                 request_id,
-                                message: error.to_string(),
+                                message: format!("{error:#}"),
                             });
                         }
                     }

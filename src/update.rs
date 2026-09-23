@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
 use async_trait::async_trait;
 use clap::ValueEnum;
 use crossterm::style::Stylize;
@@ -280,15 +281,36 @@ fn validate_response_url(requested: &str, response: &url::Url) -> anyhow::Result
 #[async_trait]
 impl UpdateHttpClient for SystemUpdateHttpClient {
     async fn get(&self, url: &str) -> anyhow::Result<String> {
-        let response = self.client.get(url).send().await?.error_for_status()?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("failed to request update manifest {url}"))?
+            .error_for_status()
+            .with_context(|| format!("update manifest request failed for {url}"))?;
         validate_response_url(url, response.url())?;
-        Ok(response.text().await?)
+        response
+            .text()
+            .await
+            .context("failed to read update manifest response")
     }
 
     async fn download(&self, url: &str) -> anyhow::Result<Vec<u8>> {
-        let response = self.client.get(url).send().await?.error_for_status()?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("failed to request update asset {url}"))?
+            .error_for_status()
+            .with_context(|| format!("update asset request failed for {url}"))?;
         validate_response_url(url, response.url())?;
-        Ok(response.bytes().await?.to_vec())
+        response
+            .bytes()
+            .await
+            .context("failed to read update asset response")
+            .map(|bytes| bytes.to_vec())
     }
 
     async fn download_with_progress(
@@ -296,7 +318,14 @@ impl UpdateHttpClient for SystemUpdateHttpClient {
         url: &str,
         progress: &(dyn Fn(UpdateProgress) + Send + Sync),
     ) -> anyhow::Result<Vec<u8>> {
-        let response = self.client.get(url).send().await?.error_for_status()?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("failed to request update asset {url}"))?
+            .error_for_status()
+            .with_context(|| format!("update asset request failed for {url}"))?;
         validate_response_url(url, response.url())?;
         let total_bytes = response.content_length();
         let mut downloaded_bytes = 0;
@@ -307,7 +336,11 @@ impl UpdateHttpClient for SystemUpdateHttpClient {
             downloaded_bytes,
             total_bytes,
         });
-        while let Some(chunk) = response.chunk().await? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("failed to read update asset response")?
+        {
             downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
             archive.extend_from_slice(&chunk);
             progress(UpdateProgress {
@@ -2549,6 +2582,67 @@ mod tests {
         );
         assert_eq!(fs::read_link(data.join("current")).unwrap(), old);
         assert_eq!(fs::read(old.join("marker")).unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn download_failure_leaves_current_release_and_install_state_unchanged() {
+        use std::os::unix::fs::symlink;
+
+        struct FailedDownload;
+
+        #[async_trait]
+        impl UpdateHttpClient for FailedDownload {
+            async fn get(&self, _url: &str) -> anyhow::Result<String> {
+                unreachable!("manifest is supplied directly")
+            }
+
+            async fn download(&self, _url: &str) -> anyhow::Result<Vec<u8>> {
+                Err(anyhow::anyhow!("fixture download failed"))
+            }
+        }
+
+        let dir = tempdir().unwrap();
+        let data = dir.path().join("data");
+        let old = data.join("releases/1.2.3");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("marker"), b"old release").unwrap();
+        symlink(Path::new("releases/1.2.3"), data.join("current")).unwrap();
+        let bin = dir.path().join("bin/lazydb");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        symlink(data.join("current/lazydb"), &bin).unwrap();
+        let state = InstallationState {
+            schema: 1,
+            product: "lazydb".into(),
+            manager: InstallationManager::Native,
+            channel: "stable".into(),
+            version: "1.2.3".into(),
+            target: SUPPORTED_TARGETS[0].into(),
+            path: bin,
+            bin_dir: None,
+            installed_at: None,
+            shell_profiles: Vec::new(),
+        };
+        let manifest = update_manifest("1.3.0", "a".repeat(64));
+        let state_path = data.join("install.json");
+        let original_state = serde_json::to_vec(&state).unwrap();
+        fs::write(&state_path, &original_state).unwrap();
+
+        let result =
+            apply_native_update(&state, SUPPORTED_TARGETS[0], &manifest, &FailedDownload).await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("fixture download failed")
+        );
+        assert_eq!(
+            fs::read_link(data.join("current")).unwrap(),
+            Path::new("releases/1.2.3")
+        );
+        assert_eq!(fs::read(old.join("marker")).unwrap(), b"old release");
+        assert_eq!(fs::read(state_path).unwrap(), original_state);
+        assert!(!data.join("releases/1.3.0").exists());
     }
 
     #[tokio::test]
