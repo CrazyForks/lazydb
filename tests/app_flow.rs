@@ -1122,7 +1122,7 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
     assert_eq!(app.connection.status, ConnectionStatus::Connected);
     let tab_id = app.active_console().id;
 
-    drain_catalog(&mut app, &mut runtime, &mut receiver).await;
+    drain_runtime_events(&mut app, &mut runtime, &mut receiver).await;
 
     dispatch(
         &mut app,
@@ -1173,7 +1173,7 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
     );
 
     dispatch(&mut app, &mut runtime, Action::RefreshCatalog);
-    drain_catalog(&mut app, &mut runtime, &mut receiver).await;
+    drain_runtime_events(&mut app, &mut runtime, &mut receiver).await;
     assert!(app.explorer.nodes.iter().any(|node| node.name == "users"));
 
     let users = app.explorer.normalized.profiles[&profile_id]
@@ -1202,7 +1202,7 @@ async fn connects_loads_catalog_and_executes_through_runtime() {
             break;
         }
     }
-    drain_catalog(&mut app, &mut runtime, &mut receiver).await;
+    drain_runtime_events(&mut app, &mut runtime, &mut receiver).await;
     assert!(matches!(
         app.tabs[app.active_tab],
         lazydb::model::tab::WorkspaceTab::Relation(lazydb::model::relation::RelationTab {
@@ -1242,7 +1242,7 @@ fn dispatch(app: &mut App, runtime: &mut Runtime, action: Action) {
     }
 }
 
-async fn drain_catalog(
+async fn drain_runtime_events(
     app: &mut App,
     runtime: &mut Runtime,
     receiver: &mut mpsc::UnboundedReceiver<Action>,
@@ -1251,10 +1251,6 @@ async fn drain_catalog(
         let Ok(Some(action)) = timeout(Duration::from_millis(100), receiver.recv()).await else {
             break;
         };
-        assert!(matches!(
-            action,
-            Action::CatalogPageLoaded(_) | Action::CatalogPageFailed { .. }
-        ));
         dispatch(app, runtime, action);
     }
 }
