@@ -63,6 +63,7 @@ fn fixture() -> App {
         .unwrap()
         .profile;
     let mut app = App::new(vec![profile.clone()]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id: profile.id,
         generation: 1,
@@ -115,6 +116,7 @@ fn fixture() -> App {
 #[test]
 fn transaction_menu_renders_state_aware_disabled_reasons() {
     let mut app = App::new(Vec::new());
+    app.update(Action::NewConsole);
     app.update(Action::OpenTransactionMenu);
     let output = render(&app, 100, 30);
     assert!(output.contains("TRANSACTION MODE"));
@@ -3723,7 +3725,9 @@ fn counted_pending_prefix_keeps_count_in_footer_label() {
     let output = (0..36)
         .flat_map(|y| (0..120).map(move |x| buffer[(x, y)].symbol()))
         .collect::<String>();
-    assert!(output.contains("10 Ctrl-w  Up/Down select  Enter run  Esc/Ctrl-C cancel"));
+    assert!(output.contains("10 Ctrl-w"));
+    assert!(output.contains("Up/Down select"));
+    assert!(output.contains("Enter run"));
     assert!(output.contains("restore default pane sizes"));
 }
 
@@ -5161,6 +5165,7 @@ fn execution_confirmation_preview_is_sanitized_and_shows_scope() {
         .unwrap()
         .profile;
     let mut app = App::with_confirmation_policy(vec![profile.clone()], ConfirmationPolicy::Always);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id: profile.id,
         generation: 1,

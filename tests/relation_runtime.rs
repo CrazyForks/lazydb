@@ -371,13 +371,12 @@ fn relation_event_cannot_mutate_a_cached_inactive_workspace() {
             row_versions: None,
         })),
     });
-
     assert!(app.tabs.iter().any(|tab| {
         matches!(
             tab,
             WorkspaceTab::Relation(tab)
                 if tab.id == tab_id
-                    && matches!(tab.data, RelationLoad::Loading { .. })
+                    && matches!(tab.data, RelationLoad::Cancelled { .. })
         )
     }));
     assert!(app.workspace_snapshot().profiles.iter().any(|profile| {

@@ -652,6 +652,7 @@ fn builtin_app_completion_popup_and_accept_work_end_to_end() {
         .profile;
     let profile_id = profile.id;
     let mut app = App::new(vec![profile]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 1,
@@ -4525,6 +4526,7 @@ fn app_completion_prefers_the_active_console_target_schema() {
         })
         .to_vec();
     let mut app = App::new(vec![profile]);
+    app.update(Action::NewConsole);
     app.update(Action::ConnectionSucceeded {
         profile_id,
         generation: 1,
@@ -4611,6 +4613,7 @@ fn completion_app_with_table() -> (App, Uuid, CatalogEntry) {
         CatalogScope::for_profile(DatabaseKind::Postgres, "app", Some("public"));
     let profile_id = profile.id;
     let mut app = App::new(vec![profile]);
+    app.update(Action::NewConsole);
     let generation = match app.update(Action::RequestConnect(profile_id)).as_slice() {
         [Command::Connect { generation, .. }] => *generation,
         commands => panic!("unexpected commands: {commands:?}"),

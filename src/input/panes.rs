@@ -2,11 +2,7 @@ use crate::model::pane_navigation::PaneDirection;
 use crate::{
     action::Action,
     app::App,
-    model::{
-        redis_browser::RedisBrowserFocus,
-        tab::WorkspaceTab,
-        workspace::{Focus, redis_pane_resize},
-    },
+    model::{redis_browser::RedisBrowserFocus, tab::WorkspaceTab, workspace::Focus},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,16 +92,6 @@ impl PaneCommand {
         }
     }
 
-    pub(crate) fn direction(self) -> Option<char> {
-        match self {
-            Self::Left => Some('h'),
-            Self::Down => Some('j'),
-            Self::Up => Some('k'),
-            Self::Right => Some('l'),
-            Self::ToggleMaximized | Self::ResetSizes => None,
-        }
-    }
-
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|command| command.name() == name)
     }
@@ -118,17 +104,24 @@ pub(crate) enum PaneDispatch {
 }
 
 pub(crate) fn dispatch(command: PaneCommand, app: &App) -> PaneDispatch {
-    if let Some(WorkspaceTab::RedisBrowser(tab)) = app.tabs.get(app.active_tab)
-        && app.focus == Focus::Results
-        && tab.focus == RedisBrowserFocus::Preview
-        && let Some(direction) = command.direction()
-    {
-        let keys_focused = tab.focus == RedisBrowserFocus::Keys;
-        let resize = redis_pane_resize(Focus::Results, keys_focused, direction, 1);
-        return match resize {
-            Some(resize) => PaneDispatch::Action(Box::new(Action::ResizePane(resize))),
-            _ => PaneDispatch::Consumed,
-        };
+    if let Some(WorkspaceTab::RedisBrowser(tab)) = app.tabs.get(app.active_tab) {
+        if app.focus == Focus::Explorer && command == PaneCommand::Right {
+            return PaneDispatch::Action(Box::new(Action::RedisFocusPane(RedisBrowserFocus::Keys)));
+        }
+        if app.focus == Focus::Results {
+            return match (tab.focus, command) {
+                (RedisBrowserFocus::Keys, PaneCommand::Right) => PaneDispatch::Action(Box::new(
+                    Action::RedisFocusPane(RedisBrowserFocus::Preview),
+                )),
+                (RedisBrowserFocus::Preview, PaneCommand::Left) => {
+                    PaneDispatch::Action(Box::new(Action::RedisFocusPane(RedisBrowserFocus::Keys)))
+                }
+                (RedisBrowserFocus::Keys, PaneCommand::Left) => {
+                    PaneDispatch::Action(Box::new(Action::Focus(Focus::Explorer)))
+                }
+                _ => PaneDispatch::Consumed,
+            };
+        }
     }
 
     match command {
